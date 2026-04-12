@@ -93,6 +93,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Install cmake + ninja via Chocolatey
           $missing = @()
           foreach ($tool in @('cmake', 'ninja')) {
             if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
@@ -102,8 +103,18 @@ jobs:
           if ($missing.Count -gt 0) {
             choco install -y @missing --no-progress
           }
+
+          # Install StrawberryPerl portable via direct download (choco package is broken)
           if (-not (Get-Command 'perl' -ErrorAction SilentlyContinue)) {
-            choco install -y strawberryperl --no-progress
+            $perlUrl = "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54001_64bit/strawberry-perl-5.40.0.1-64bit-portable.zip"
+            $perlZip = "$env:TEMP\strawberry-perl.zip"
+            $perlDir = "$env:GITHUB_WORKSPACE\third_party\tools\perl"
+            curl -fSL $perlUrl -o $perlZip
+            Expand-Archive $perlZip -DestinationPath $perlDir -Force
+            $perlBin = "$perlDir\perl\bin"
+            $env:PATH = "$perlBin;$env:PATH"
+            Add-Content $env:GITHUB_PATH "$perlBin"
+            perl -v
           }
 
       - name: Build OpenSSL (Windows)
