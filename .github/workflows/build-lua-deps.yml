@@ -52,6 +52,9 @@ env:
   PCRE2_VERSION: "10.45"
   LIBYAML_VERSION: "0.2.5"
   PERL_VERSION: "5.38.2.2"
+  # WINDOWS_LIBYAML_BUILD_VERSION only tracks Windows libyaml-specific rebuild semantics.
+  # WINDOWS_LIBYAML_BUILD_VERSION 仅跟踪 Windows 下 libyaml 的专属重建语义。
+  WINDOWS_LIBYAML_BUILD_VERSION: "20260413-01"
 
 jobs:
   prepare-matrix:
@@ -189,14 +192,40 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.DEPS_DIR }}
-          key: ${{ format('{0}-{1}-{2}-{3}', env.DEPS_STATE_KEY, matrix.platform, matrix.runner, hashFiles('.github/workflows/build-lua-deps.yml')) }}
+          key: ${{ matrix.os == 'Windows' && format('{0}-{1}-{2}-win-libyaml-{3}', env.DEPS_STATE_KEY, matrix.platform, matrix.runner, env.WINDOWS_LIBYAML_BUILD_VERSION) || format('{0}-{1}-{2}', env.DEPS_STATE_KEY, matrix.platform, matrix.runner) }}
+
+      - name: Check libyaml refresh state (Windows)
+        id: libyaml-refresh-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # This marker lets us refresh only Windows libyaml without invalidating the whole dependency bundle.
+          # 该标记用于只刷新 Windows 的 libyaml，而不让整套依赖缓存全部失效。
+          $libyamlDir = Join-Path $env:DEPS_DIR "libyaml"
+          $markerPath = Join-Path $libyamlDir ".build-version"
+          $needsRefresh = "false"
+
+          if (-not (Test-Path $libyamlDir)) {
+            $needsRefresh = "true"
+          }
+          elseif (-not (Test-Path $markerPath)) {
+            $needsRefresh = "true"
+          }
+          else {
+            $currentVersion = (Get-Content -Raw $markerPath).Trim()
+            if ($currentVersion -ne $env:WINDOWS_LIBYAML_BUILD_VERSION) {
+              $needsRefresh = "true"
+            }
+          }
+
+          "needs_refresh=$needsRefresh" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && ((steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true') || steps.libyaml-refresh-windows.outputs.needs_refresh == 'true')
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install build tools (Windows)
-        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && ((steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true') || steps.libyaml-refresh-windows.outputs.needs_refresh == 'true')
         shell: pwsh
         run: |
           # MissingTools collects only the Windows tools that are still absent on the current runner.
@@ -295,7 +324,7 @@ jobs:
           Pop-Location
 
       - name: Build libyaml (Windows)
-        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && ((steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true') || steps.libyaml-refresh-windows.outputs.needs_refresh == 'true')
         shell: pwsh
         run: |
           # Build libyaml from source to avoid vcpkg manifest-mode failures on self-hosted runners.
@@ -308,10 +337,23 @@ jobs:
           $buildDir = "build"
           New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
           Push-Location $buildDir
-          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:DEPS_DIR\libyaml" -DBUILD_SHARED_LIBS=OFF
+          # Newer CMake releases reject libyaml 0.2.5's legacy minimum policy unless we set it explicitly.
+          # 新版 CMake 会拒绝 libyaml 0.2.5 的旧最小策略，需要显式指定兼容策略下限。
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:DEPS_DIR\libyaml" -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           ninja install
           Pop-Location
           Pop-Location
+
+      - name: Write libyaml build marker (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The marker records the Windows libyaml fix level so future runs can refresh only this component.
+          # 该标记记录 Windows libyaml 的修复级别，便于后续仅刷新这个组件。
+          $libyamlDir = Join-Path $env:DEPS_DIR "libyaml"
+          $markerPath = Join-Path $libyamlDir ".build-version"
+          New-Item -ItemType Directory -Force -Path $libyamlDir | Out-Null
+          Set-Content -Path $markerPath -Value $env:WINDOWS_LIBYAML_BUILD_VERSION -NoNewline
 
       - name: Install build tools (Linux)
         if: runner.os == 'Linux' && steps.local-deps-unix.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
