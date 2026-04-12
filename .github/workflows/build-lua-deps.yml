@@ -99,41 +99,54 @@ jobs:
           path: ${{ runner.os == 'Windows' && format('{0}\deps', github.workspace) || format('{0}/deps', github.workspace) }}
           key: lua-deps-${{ matrix.platform }}-${{ inputs.version }}
 
-      # --- Platform filter ---
-      - name: Check platform filter
-        id: filter
+      # --- Platform filter + skip marker ---
+      - name: Check if should build
+        id: check
         shell: bash
         run: |
           plat="${{ matrix.platform }}"
           want="${{ inputs.platforms || 'all' }}"
+          cached="${{ steps.cache-deps.outputs.cache-hit }}"
+          skip="false"
+          build="true"
           if [ "$want" != "all" ] && [ "$plat" != "$want" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            skip="true"
             echo "Skipping $plat (user selected: $want)"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif [ "$cached" = "true" ]; then
+            build="false"
+            echo "Cache hit! Skipping build for $plat"
           fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
 
-      # --- Skip marker ---
-      - name: Create skip marker (if cached)
-        id: should-build
-        if: steps.filter.outputs.skip == 'false'
-        shell: bash
+      - name: Check if should build (Windows pwsh)
+        id: check-win
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          if [ "${{ steps.cache-deps.outputs.cache-hit }}" = "true" ]; then
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "Cache hit! Skipping build for ${{ matrix.platform }}"
-          else
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          fi
+          $plat = "${{ matrix.platform }}"
+          $want = "${{ inputs.platforms || 'all' }}"
+          $cached = "${{ steps.cache-deps.outputs.cache-hit }}"
+          $skip = "false"
+          $build = "true"
+          if ($want -ne "all" -and $plat -ne $want) {
+            $skip = "true"
+            Write-Output "Skipping $plat (user selected: $want)"
+          } elseif ($cached -eq "true") {
+            $build = "false"
+            Write-Output "Cache hit! Skipping build for $plat"
+          }
+          Write-Output "skip=$skip" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+          Write-Output "build=$build" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
 
       # --- Windows: Setup MSVC ---
       - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Windows' && (steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true')
         uses: ilammy/msvc-dev-cmd@v1
 
       # --- Windows: Install build tools ---
       - name: Install build tools (Windows)
-        if: runner.os == 'Windows' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Windows' && (steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true')
         shell: pwsh
         run: |
           # Install cmake + ninja + nasm via Chocolatey (nasm needed for OpenSSL)
@@ -170,7 +183,7 @@ jobs:
 
       # --- Windows: Build OpenSSL ---
       - name: Build OpenSSL (Windows)
-        if: runner.os == 'Windows' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Windows' && (steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true')
         shell: pwsh
         run: |
           $url = "https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz"
@@ -184,7 +197,7 @@ jobs:
 
       # --- Windows: Build zlib ---
       - name: Build zlib (Windows)
-        if: runner.os == 'Windows' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Windows' && (steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true')
         shell: pwsh
         run: |
           $url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
@@ -198,7 +211,7 @@ jobs:
 
       # --- Windows: Build PCRE2 ---
       - name: Build PCRE2 (Windows)
-        if: runner.os == 'Windows' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Windows' && (steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true')
         shell: pwsh
         run: |
           $url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz"
@@ -211,7 +224,7 @@ jobs:
 
       # --- Windows: Install vcpkg ---
       - name: Install vcpkg (Windows)
-        if: runner.os == 'Windows' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Windows' && (steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true')
         shell: pwsh
         run: |
           $vcpkgDir = "$env:USERPROFILE\.vcpkg"
@@ -223,7 +236,7 @@ jobs:
 
       # --- Windows: Build LibYAML via vcpkg ---
       - name: Build LibYAML via vcpkg (Windows)
-        if: runner.os == 'Windows' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Windows' && (steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true')
         shell: pwsh
         run: |
           # Clear VCPKG_ROOT from VS BuildTools to avoid lock conflicts
@@ -266,7 +279,7 @@ jobs:
 
       # --- Linux: Install build tools ---
       - name: Install build tools (Linux)
-        if: runner.os == 'Linux' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Linux' && steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -275,7 +288,7 @@ jobs:
 
       # --- Linux: Build deps ---
       - name: Build deps (Linux)
-        if: runner.os == 'Linux' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'Linux' && steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -312,7 +325,7 @@ jobs:
 
       # --- macOS: Install build tools ---
       - name: Install build tools (macOS)
-        if: runner.os == 'macOS' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'macOS' && steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -320,7 +333,7 @@ jobs:
 
       # --- macOS: Build deps ---
       - name: Build deps (macOS)
-        if: runner.os == 'macOS' && steps.should-build.outputs.build == 'true'
+        if: runner.os == 'macOS' && steps.check.outputs.build == 'true' || steps.check-win.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -357,7 +370,7 @@ jobs:
 
       # --- Package and upload ---
       - name: Package deps
-        if: steps.filter.outputs.skip == 'false'
+        if: steps.check.outputs.skip == 'false' || (steps.check-win.outputs.skip == 'false' && runner.os == 'Windows')
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE/deps"
@@ -365,7 +378,7 @@ jobs:
           echo "Package size: $(du -h "$GITHUB_WORKSPACE/lua-deps-${{ matrix.platform }}.tar.gz" | cut -f1)"
 
       - name: Upload to Release
-        if: steps.filter.outputs.skip == 'false'
+        if: steps.check.outputs.skip == 'false' || (steps.check-win.outputs.skip == 'false' && runner.os == 'Windows')
         uses: softprops/action-gh-release@v2
         with:
           files: lua-deps-${{ matrix.platform }}.tar.gz
