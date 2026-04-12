@@ -171,7 +171,7 @@ jobs:
           curl -fSL $url -o libyaml.tar.gz; tar -xzf libyaml.tar.gz
           Push-Location yaml-0.2.5
           $b = "build"; mkdir $b; Push-Location $b
-          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\libyaml" -DBUILD_SHARED_LIBS=OFF
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\libyaml" -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           ninja install
           Pop-Location; Pop-Location
 
