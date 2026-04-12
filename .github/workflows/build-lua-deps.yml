@@ -106,10 +106,11 @@ jobs:
 
           # Install StrawberryPerl portable via direct download (choco package is broken)
           if (-not (Get-Command 'perl' -ErrorAction SilentlyContinue)) {
-            $perlUrl = "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54001_64bit/strawberry-perl-5.40.0.1-64bit-portable.zip"
+            $perlUrl = "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_53822_64bit/strawberry-perl-5.38.2.2-64bit-portable.zip"
+            $perlUrl2 = "https://strawberryperl.com/download/5.38.2.2/strawberry-perl-5.38.2.2-64bit-portable.zip"
             $perlZip = "$env:TEMP\strawberry-perl.zip"
             $perlDir = "$env:GITHUB_WORKSPACE\third_party\tools\perl"
-            curl -fSL $perlUrl -o $perlZip
+            try { curl -fSL $perlUrl -o $perlZip } catch { curl -fSL $perlUrl2 -o $perlZip }
             Expand-Archive $perlZip -DestinationPath $perlDir -Force
             $perlBin = "$perlDir\perl\bin"
             $env:PATH = "$perlBin;$env:PATH"
