@@ -230,10 +230,33 @@ jobs:
           $env:VCPKG_ROOT = ""
           $vcpkgDir = "$env:USERPROFILE\.vcpkg"
           $vcpkg = "$vcpkgDir\vcpkg.exe"
+
+          # Kill any stale vcpkg processes from previous builds
+          Get-Process -Name vcpkg -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+
           # Remove stale lock if present
-          Remove-Item "$vcpkgDir\buildtrees\vcpkg-running.lock" -Force -ErrorAction SilentlyContinue
-          & $vcpkg install libyaml:x64-windows-static --triplet=x64-windows-static --vcpkg-root=$vcpkgDir
-          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
+          $lockFile = "$vcpkgDir\buildtrees\vcpkg-running.lock"
+          if (Test-Path $lockFile) {
+            Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+          }
+
+          # Retry vcpkg install with backoff
+          $maxRetries = 3
+          $retryDelay = 5
+          for ($i = 1; $i -le $maxRetries; $i++) {
+            # Clear lock before each attempt
+            if (Test-Path $lockFile) {
+              Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+            }
+            & $vcpkg install libyaml:x64-windows-static --triplet=x64-windows-static --vcpkg-root=$vcpkgDir
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Warning "vcpkg attempt $i failed, retrying in ${retryDelay}s..."
+            Start-Sleep -Seconds $retryDelay
+            $retryDelay = $retryDelay * 2
+          }
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed after $maxRetries attempts" }
+
           # Copy installed files to deps directory
           $dest = "$env:GITHUB_WORKSPACE\deps\libyaml"
           New-Item -ItemType Directory -Force -Path "$dest\lib" | Out-Null
