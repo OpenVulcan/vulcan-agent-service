@@ -93,9 +93,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Install cmake + ninja via Chocolatey
+          # Install cmake + ninja + nasm via Chocolatey (nasm needed for OpenSSL)
           $missing = @()
-          foreach ($tool in @('cmake', 'ninja')) {
+          foreach ($tool in @('cmake', 'ninja', 'nasm')) {
             if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
               $missing += $tool
             }
@@ -116,6 +116,13 @@ jobs:
             $env:PATH = "$perlBin;$env:PATH"
             Add-Content $env:GITHUB_PATH "$perlBin"
             perl -v
+          }
+
+          # Add NASM to PATH (just installed via choco above)
+          $nasmPath = "C:\Program Files\NASM"
+          if (Test-Path $nasmPath) {
+            $env:PATH = "$nasmPath;$env:PATH"
+            Add-Content $env:GITHUB_PATH $nasmPath
           }
 
       - name: Build OpenSSL (Windows)
