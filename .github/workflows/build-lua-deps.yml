@@ -1,0 +1,263 @@
+name: Build Lua C Dependencies
+
+# Pre-built binaries for lua_deps. Trigger manually or when deps change.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. deps-v1)"
+        required: true
+        default: "deps-v1"
+      linux_x64:
+        description: "Linux x64 runner"
+        required: true
+        default: "9950x"
+        type: choice
+        options: [ "9950x", "proart", "ubuntu-24.04" ]
+      linux_arm:
+        description: "Linux ARM runner"
+        required: true
+        default: "9950x"
+        type: choice
+        options: [ "9950x", "proart", "ubuntu-24.04" ]
+      mac_arm:
+        description: "macOS ARM runner"
+        required: true
+        default: "macos-15"
+        type: choice
+        options: [ "macos-15", "9950x", "proart" ]
+      win_x64:
+        description: "Windows x64 runner"
+        required: true
+        default: "9950x-win"
+        type: choice
+        options: [ "9950x-win", "proart-win", "windows-latest" ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lua-deps-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: >-
+      ${{
+        (startsWith(matrix.runner, 'ubuntu') || startsWith(matrix.runner, 'macos') || startsWith(matrix.runner, 'windows'))
+        && fromJSON(format('["{0}"]', matrix.runner))
+        || fromJSON(format('["self-hosted", "{0}"]', matrix.runner))
+      }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ${{ inputs.linux_x64 || '9950x' }}
+            platform: linux-x64
+            os: Linux
+            pkg_openssl: openssl/3.4.1
+            pkg_zlib: zlib/1.3.1
+            pkg_pcre2: pcre2/10.45
+            pkg_libyaml: libyaml/0.2.5
+          - runner: ${{ inputs.linux_arm || '9950x' }}
+            platform: linux-arm64
+            os: Linux
+            pkg_openssl: openssl/3.4.1
+            pkg_zlib: zlib/1.3.1
+            pkg_pcre2: pcre2/10.45
+            pkg_libyaml: libyaml/0.2.5
+          - runner: ${{ inputs.mac_arm || 'macos-15' }}
+            platform: macos-arm64
+            os: macOS
+            pkg_openssl: openssl/3.4.1
+            pkg_zlib: zlib/1.3.1
+            pkg_pcre2: pcre2/10.45
+            pkg_libyaml: libyaml/0.2.5
+          - runner: ${{ inputs.win_x64 || '9950x-win' }}
+            platform: windows-x64
+            os: Windows
+            pkg_openssl: openssl/3.4.1
+            pkg_zlib: zlib/1.3.1
+            pkg_pcre2: pcre2/10.45
+            pkg_libyaml: libyaml/0.2.5
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Windows ---
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $missing = @()
+          foreach ($tool in @('cmake', 'ninja')) {
+            if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+              $missing += $tool
+            }
+          }
+          if ($missing.Count -gt 0) {
+            choco install -y @missing --no-progress
+          }
+          if (-not (Get-Command 'perl' -ErrorAction SilentlyContinue)) {
+            choco install -y strawberryperl --no-progress
+          }
+
+      - name: Build OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz"
+          curl -fSL $url -o openssl.tar.gz
+          tar -xzf openssl.tar.gz
+          Push-Location openssl-3.4.1
+          perl Configure VC-WIN64A --prefix="$env:GITHUB_WORKSPACE\deps\openssl" --openssldir="$env:GITHUB_WORKSPACE\deps\openssl\ssl" no-tests no-shared
+          nmake
+          nmake install_sw
+          Pop-Location
+
+      - name: Build zlib (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://zlib.net/zlib131.zip"
+          curl -fSL $url -o zlib.zip
+          Expand-Archive zlib.zip zlib-src
+          Push-Location zlib-src
+          $b = "build"; mkdir $b; Push-Location $b
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\zlib" -DBUILD_SHARED_LIBS=ON
+          ninja install
+          Pop-Location; Pop-Location
+
+      - name: Build PCRE2 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz"
+          curl -fSL $url -o pcre2.tar.gz; tar -xzf pcre2.tar.gz
+          Push-Location pcre2-10.45
+          $b = "build"; mkdir $b; Push-Location $b
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\pcre2" -DBUILD_SHARED_LIBS=OFF -DPCRE2_SUPPORT_JIT=ON
+          ninja install
+          Pop-Location; Pop-Location
+
+      - name: Build LibYAML (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz"
+          curl -fSL $url -o libyaml.tar.gz; tar -xzf libyaml.tar.gz
+          Push-Location yaml-0.2.5
+          $b = "build"; mkdir $b; Push-Location $b
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\libyaml" -DBUILD_SHARED_LIBS=OFF
+          ninja install
+          Pop-Location; Pop-Location
+
+      # --- Linux ---
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake perl libperl-dev
+
+      - name: Build deps (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$GITHUB_WORKSPACE/deps"
+          JOBS=$(nproc)
+
+          # OpenSSL
+          curl -fSL https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz | tar xz
+          cd openssl-3.4.1
+          ./config --prefix="$PREFIX/openssl" --openssldir="$PREFIX/openssl/ssl" no-tests no-shared
+          make -j$JOBS && make install_sw
+          cd ..
+
+          # zlib
+          curl -fSL https://zlib.net/zlib131.zip -o zlib.zip && unzip zlib.zip
+          cd zlib-1.3.1
+          ./configure --prefix="$PREFIX/zlib" --static
+          make -j$JOBS && make install
+          cd ..
+
+          # PCRE2
+          curl -fSL https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz | tar xz
+          cd pcre2-10.45
+          ./configure --prefix="$PREFIX/pcre2" --enable-jit --disable-shared
+          make -j$JOBS && make install
+          cd ..
+
+          # libyaml
+          curl -fSL https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz | tar xz
+          cd yaml-0.2.5
+          ./configure --prefix="$PREFIX/libyaml" --disable-shared
+          make -j$JOBS && make install
+          cd ..
+
+      # --- macOS ---
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install cmake perl
+
+      - name: Build deps (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$GITHUB_WORKSPACE/deps"
+          JOBS=$(sysctl -n hw.ncpu)
+
+          # OpenSSL
+          curl -fSL https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz | tar xz
+          cd openssl-3.4.1
+          ./config --prefix="$PREFIX/openssl" --openssldir="$PREFIX/openssl/ssl" no-tests no-shared
+          make -j$JOBS && make install_sw
+          cd ..
+
+          # zlib
+          curl -fSL https://zlib.net/zlib131.zip -o zlib.zip && unzip zlib.zip
+          cd zlib-1.3.1
+          ./configure --prefix="$PREFIX/zlib" --static
+          make -j$JOBS && make install
+          cd ..
+
+          # PCRE2
+          curl -fSL https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz | tar xz
+          cd pcre2-10.45
+          ./configure --prefix="$PREFIX/pcre2" --enable-jit --disable-shared
+          make -j$JOBS && make install
+          cd ..
+
+          # libyaml
+          curl -fSL https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz | tar xz
+          cd yaml-0.2.5
+          ./configure --prefix="$PREFIX/libyaml" --disable-shared
+          make -j$JOBS && make install
+          cd ..
+
+      # --- Package and upload ---
+      - name: Package deps
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/deps"
+          tar czf "$GITHUB_WORKSPACE/lua-deps-${{ matrix.platform }}.tar.gz" openssl/ zlib/ pcre2/ libyaml/
+          echo "Package size: $(du -h "$GITHUB_WORKSPACE/lua-deps-${{ matrix.platform }}.tar.gz" | cut -f1)"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: lua-deps-${{ matrix.platform }}.tar.gz
+          tag_name: ${{ inputs.version }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
