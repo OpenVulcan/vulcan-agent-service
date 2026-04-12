@@ -1,6 +1,7 @@
 name: Build Lua C Dependencies
 
-# Pre-built binaries for lua_deps. Trigger manually or when deps change.
+# This workflow only runs manually and is used to package reusable Lua native dependencies.
+# 该工作流仅支持手动触发，用于打包可复用的 Lua 原生依赖产物。
 on:
   workflow_dispatch:
     inputs:
@@ -8,47 +9,118 @@ on:
         description: "Release tag (e.g. deps-v1)"
         required: true
         default: "deps-v1"
-      platforms:
-        description: "Platforms to build (default: all)"
-        required: true
-        default: "all"
-        type: choice
-        options: [ "all", "windows-x64", "linux-x64", "linux-arm64", "macos-arm64" ]
-      linux_x64:
-        description: "Linux x64 runner"
+      linux_x64_runner:
+        description: "Linux x64 runner (off to disable)"
         required: true
         default: "9950x"
         type: choice
-        options: [ "9950x", "proart", "ubuntu-24.04" ]
-      linux_arm:
-        description: "Linux ARM runner"
+        options: ["off", "9950x", "proart", "ubuntu-24.04"]
+      linux_arm64_runner:
+        description: "Linux ARM64 runner (off to disable)"
         required: true
-        default: "9950x"
+        default: "off"
         type: choice
-        options: [ "9950x", "proart", "ubuntu-24.04" ]
-      mac_arm:
-        description: "macOS ARM runner"
+        options: ["off", "9950x", "proart", "ubuntu-24.04"]
+      macos_arm64_runner:
+        description: "macOS ARM64 runner (off to disable)"
         required: true
         default: "macos-15"
         type: choice
-        options: [ "macos-15", "9950x", "proart" ]
-      win_x64:
-        description: "Windows x64 runner"
+        options: ["off", "macos-15", "9950x", "proart"]
+      windows_x64_runner:
+        description: "Windows x64 runner (off to disable)"
         required: true
         default: "9950x-win"
         type: choice
-        options: [ "9950x-win", "proart-win", "windows-latest" ]
+        options: ["off", "9950x-win", "proart-win", "windows-latest"]
 
 permissions:
   contents: write
 
 concurrency:
-  group: lua-deps-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
+  group: lua-deps-${{ github.workflow }}-${{ inputs.version }}
   cancel-in-progress: true
 
+env:
+  # DEPS_LAYOUT_VERSION is the manual invalidation knob for local runner state.
+  # DEPS_LAYOUT_VERSION 用于控制本地 runner 持久化依赖状态的失效版本。
+  DEPS_LAYOUT_VERSION: "20260412-02"
+  # Dependency versions are centralized here so cache keys and build commands stay aligned.
+  # 依赖版本统一集中在这里维护，确保缓存键与构建命令始终保持一致。
+  OPENSSL_VERSION: "3.4.1"
+  ZLIB_VERSION: "1.3.1"
+  PCRE2_VERSION: "10.45"
+  LIBYAML_VERSION: "0.2.5"
+  PERL_VERSION: "5.38.2.2"
+
 jobs:
+  prepare-matrix:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+      has_targets: ${{ steps.build-matrix.outputs.has_targets }}
+    steps:
+      - name: Build matrix from manual runner inputs
+        id: build-matrix
+        shell: pwsh
+        env:
+          INPUT_LINUX_X64_RUNNER: ${{ inputs.linux_x64_runner }}
+          INPUT_LINUX_ARM64_RUNNER: ${{ inputs.linux_arm64_runner }}
+          INPUT_MACOS_ARM64_RUNNER: ${{ inputs.macos_arm64_runner }}
+          INPUT_WINDOWS_X64_RUNNER: ${{ inputs.windows_x64_runner }}
+        run: |
+          # Add-Target appends one enabled platform entry and ignores the explicit "off" state.
+          # Add-Target 用于追加启用的平台条目，并忽略显式关闭的 "off" 状态。
+          function Add-Target {
+            param(
+              [System.Collections.Generic.List[object]]$Targets,
+              [string]$Platform,
+              [string]$Runner,
+              [string]$OperatingSystem
+            )
+
+            if ([string]::IsNullOrWhiteSpace($Runner) -or $Runner -eq "off") {
+              return
+            }
+
+            $Targets.Add([ordered]@{
+              platform = $Platform
+              runner = $Runner
+              os = $OperatingSystem
+            })
+          }
+
+          # Targets stores only the platforms that the user explicitly left enabled.
+          # Targets 仅保存用户明确保持启用的平台，避免未选平台继续进入矩阵。
+          $targets = [System.Collections.Generic.List[object]]::new()
+
+          Add-Target -Targets $targets -Platform "linux-x64" -Runner $env:INPUT_LINUX_X64_RUNNER -OperatingSystem "Linux"
+          Add-Target -Targets $targets -Platform "linux-arm64" -Runner $env:INPUT_LINUX_ARM64_RUNNER -OperatingSystem "Linux"
+          Add-Target -Targets $targets -Platform "macos-arm64" -Runner $env:INPUT_MACOS_ARM64_RUNNER -OperatingSystem "macOS"
+          Add-Target -Targets $targets -Platform "windows-x64" -Runner $env:INPUT_WINDOWS_X64_RUNNER -OperatingSystem "Windows"
+
+          $matrixJson = @{ include = @($targets) } | ConvertTo-Json -Compress -Depth 4
+          $hasTargets = if ($targets.Count -gt 0) { "true" } else { "false" }
+
+          "matrix=$matrixJson" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "has_targets=$hasTargets" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+  no-targets:
+    name: No Enabled Targets
+    needs: prepare-matrix
+    if: needs.prepare-matrix.outputs.has_targets != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report skipped build
+        shell: bash
+        run: |
+          echo "All platform runners are set to off. Nothing to build."
+
   build:
-    name: ${{ matrix.platform }}
+    name: ${{ matrix.platform }} @ ${{ matrix.runner }}
+    needs: prepare-matrix
+    if: needs.prepare-matrix.outputs.has_targets == 'true'
     runs-on: >-
       ${{
         (startsWith(matrix.runner, 'ubuntu') || startsWith(matrix.runner, 'macos') || startsWith(matrix.runner, 'windows'))
@@ -56,323 +128,380 @@ jobs:
         || fromJSON(format('["self-hosted", "{0}"]', matrix.runner))
       }}
     strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - runner: ${{ inputs.linux_x64 || '9950x' }}
-            platform: linux-x64
-            os: Linux
-          - runner: ${{ inputs.linux_arm || '9950x' }}
-            platform: linux-arm64
-            os: Linux
-          - runner: ${{ inputs.mac_arm || 'macos-15' }}
-            platform: macos-arm64
-            os: macOS
-          - runner: ${{ inputs.win_x64 || '9950x-win' }}
-            platform: windows-x64
-            os: Windows
-
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+    env:
+      # DEPS_STATE_KEY identifies one reusable dependency layout independent of release tag names.
+      # DEPS_STATE_KEY 用于标识一套可复用的依赖布局，并且与发布标签名称解耦。
+      DEPS_STATE_KEY: lua-deps-${{ env.DEPS_LAYOUT_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-zlib-${{ env.ZLIB_VERSION }}-pcre2-${{ env.PCRE2_VERSION }}-libyaml-${{ env.LIBYAML_VERSION }}
+      # DEPS_DIR points at the workspace-local dependency directory consumed by packaging steps.
+      # DEPS_DIR 指向工作区内的依赖目录，后续打包步骤会直接使用这里的内容。
+      DEPS_DIR: ${{ runner.os == 'Windows' && format('{0}\deps', github.workspace) || format('{0}/deps', github.workspace) }}
+      # ARCHIVE_NAME is shared by packaging and release upload steps to avoid duplicated string assembly.
+      # ARCHIVE_NAME 供打包与发布上传步骤共享，避免重复拼接归档文件名。
+      ARCHIVE_NAME: lua-deps-${{ matrix.platform }}.tar.gz
     steps:
       - uses: actions/checkout@v4
 
-      # --- Cache ---
-      - name: Restore cached deps
-        id: cache-deps
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.os == 'Windows' && format('{0}\deps', github.workspace) || format('{0}/deps', github.workspace) }}
-          key: lua-deps-${{ matrix.platform }}-${{ inputs.version }}
-
-      # --- Windows: Setup MSVC ---
-      - name: Setup MSVC (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      # --- Windows: Install build tools ---
-      - name: Install build tools (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+      - name: Restore deps from local state (Windows)
+        id: local-deps-windows
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Install cmake + ninja + nasm via Chocolatey (nasm needed for OpenSSL)
-          $missing = @()
-          foreach ($tool in @('cmake', 'ninja', 'nasm')) {
+          # LocalRoot stores self-hosted runner state outside the workspace so repeated manual runs can reuse it.
+          # LocalRoot 把自托管 runner 的状态保存在工作区之外，便于多次手动触发时直接复用。
+          $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
+          $marker = Join-Path $localRoot ".complete"
+
+          if (Test-Path $marker) {
+            New-Item -ItemType Directory -Force -Path $env:DEPS_DIR | Out-Null
+            Copy-Item -Recurse -Force (Join-Path $localRoot "*") $env:DEPS_DIR
+            "hit=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Output "Reused local deps from $localRoot"
+          }
+          else {
+            "hit=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Output "No reusable local deps found at $localRoot"
+          }
+
+      - name: Restore deps from local state (Unix)
+        id: local-deps-unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          local_root="$HOME/.cache/vulcan-mcp/lua-deps/${{ matrix.platform }}/${{ matrix.runner }}/$DEPS_STATE_KEY"
+          marker="$local_root/.complete"
+
+          if [ -f "$marker" ]; then
+            mkdir -p "$DEPS_DIR"
+            cp -a "$local_root"/. "$DEPS_DIR"/
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Reused local deps from $local_root"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "No reusable local deps found at $local_root"
+          fi
+
+      - name: Restore deps cache
+        id: cache-deps
+        if: steps.local-deps-windows.outputs.hit != 'true' && steps.local-deps-unix.outputs.hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DEPS_DIR }}
+          key: ${{ format('{0}-{1}-{2}-{3}', env.DEPS_STATE_KEY, matrix.platform, matrix.runner, hashFiles('.github/workflows/build-lua-deps.yml')) }}
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # MissingTools collects only the Windows tools that are still absent on the current runner.
+          # MissingTools 仅收集当前 runner 上仍然缺失的 Windows 构建工具，避免重复安装。
+          $missingTools = @()
+          foreach ($tool in @("cmake", "ninja", "nasm")) {
             if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-              $missing += $tool
+              $missingTools += $tool
             }
           }
-          if ($missing.Count -gt 0) {
-            choco install -y @missing --no-progress
+
+          if ($missingTools.Count -gt 0) {
+            choco install -y @missingTools --no-progress
+          }
+          else {
+            Write-Output "All Windows build tools already exist on this runner."
           }
 
-          # Install StrawberryPerl portable via direct download (choco package is broken)
-          if (-not (Get-Command 'perl' -ErrorAction SilentlyContinue)) {
-            $perlUrl = "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_53822_64bit/strawberry-perl-5.38.2.2-64bit-portable.zip"
-            $perlUrl2 = "https://strawberryperl.com/download/5.38.2.2/strawberry-perl-5.38.2.2-64bit-portable.zip"
-            $perlZip = "$env:TEMP\strawberry-perl.zip"
-            $perlDir = "$env:GITHUB_WORKSPACE\third_party\tools\perl"
-            try { curl -fSL $perlUrl -o $perlZip } catch { curl -fSL $perlUrl2 -o $perlZip }
-            Expand-Archive $perlZip -DestinationPath $perlDir -Force
-            $perlBin = "$perlDir\perl\bin"
-            $env:PATH = "$perlBin;$env:PATH"
-            Add-Content $env:GITHUB_PATH "$perlBin"
-            perl -v
+          # PerlRoot stores the portable Perl runtime in a runner-persistent location instead of the workspace.
+          # PerlRoot 将便携版 Perl 安装在 runner 可持久化的位置，而不是临时工作区。
+          $perlRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\tools\perl\$env:PERL_VERSION"
+          $perlBin = Join-Path $perlRoot "perl\bin"
+          $perlExe = Join-Path $perlBin "perl.exe"
+
+          if (-not (Test-Path $perlExe)) {
+            $perlUrl = "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_53822_64bit/strawberry-perl-$env:PERL_VERSION-64bit-portable.zip"
+            $perlFallbackUrl = "https://strawberryperl.com/download/$env:PERL_VERSION/strawberry-perl-$env:PERL_VERSION-64bit-portable.zip"
+            $perlZip = Join-Path $env:TEMP "strawberry-perl-$env:PERL_VERSION.zip"
+
+            try {
+              curl -fSL $perlUrl -o $perlZip
+            }
+            catch {
+              curl -fSL $perlFallbackUrl -o $perlZip
+            }
+
+            New-Item -ItemType Directory -Force -Path $perlRoot | Out-Null
+            Expand-Archive $perlZip -DestinationPath $perlRoot -Force
           }
 
-          # Add NASM to PATH (just installed via choco above)
+          $env:PATH = "$perlBin;$env:PATH"
+          Add-Content $env:GITHUB_PATH "$perlBin"
+          perl -v
+
+          # NASM may be installed by Chocolatey under the default program files location.
+          # NASM 在 Chocolatey 默认安装时通常位于 Program Files，需要显式补充到 PATH。
           $nasmPath = "C:\Program Files\NASM"
           if (Test-Path $nasmPath) {
             $env:PATH = "$nasmPath;$env:PATH"
             Add-Content $env:GITHUB_PATH $nasmPath
           }
 
-      # --- Windows: Build OpenSSL ---
       - name: Build OpenSSL (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz"
+          $url = "https://github.com/openssl/openssl/releases/download/openssl-$env:OPENSSL_VERSION/openssl-$env:OPENSSL_VERSION.tar.gz"
           curl -fSL $url -o openssl.tar.gz
           tar -xzf openssl.tar.gz
-          Push-Location openssl-3.4.1
-          perl Configure VC-WIN64A --prefix="$env:GITHUB_WORKSPACE\deps\openssl" --openssldir="$env:GITHUB_WORKSPACE\deps\openssl\ssl" no-tests no-shared
+          Push-Location "openssl-$env:OPENSSL_VERSION"
+          perl Configure VC-WIN64A --prefix="$env:DEPS_DIR\openssl" --openssldir="$env:DEPS_DIR\openssl\ssl" no-tests no-shared
           nmake
           nmake install_sw
           Pop-Location
 
-      # --- Windows: Build zlib ---
       - name: Build zlib (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+          $url = "https://github.com/madler/zlib/releases/download/v$env:ZLIB_VERSION/zlib-$env:ZLIB_VERSION.tar.gz"
           curl -fSL $url -o zlib.tar.gz
           tar -xzf zlib.tar.gz
-          Push-Location zlib-1.3.1
-          $b = "build"; mkdir $b; Push-Location $b
-          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\zlib" -DBUILD_SHARED_LIBS=ON
+          Push-Location "zlib-$env:ZLIB_VERSION"
+          $buildDir = "build"
+          New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+          Push-Location $buildDir
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:DEPS_DIR\zlib" -DBUILD_SHARED_LIBS=ON
           ninja install
-          Pop-Location; Pop-Location
+          Pop-Location
+          Pop-Location
 
-      # --- Windows: Build PCRE2 ---
       - name: Build PCRE2 (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz"
-          curl -fSL $url -o pcre2.tar.gz; tar -xzf pcre2.tar.gz
-          Push-Location pcre2-10.45
-          $b = "build"; mkdir $b; Push-Location $b
-          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\pcre2" -DBUILD_SHARED_LIBS=OFF -DPCRE2_SUPPORT_JIT=ON
+          $url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$env:PCRE2_VERSION/pcre2-$env:PCRE2_VERSION.tar.gz"
+          curl -fSL $url -o pcre2.tar.gz
+          tar -xzf pcre2.tar.gz
+          Push-Location "pcre2-$env:PCRE2_VERSION"
+          $buildDir = "build"
+          New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+          Push-Location $buildDir
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:DEPS_DIR\pcre2" -DBUILD_SHARED_LIBS=OFF -DPCRE2_SUPPORT_JIT=ON
           ninja install
-          Pop-Location; Pop-Location
+          Pop-Location
+          Pop-Location
 
-      # --- Windows: Install vcpkg ---
-      - name: Install vcpkg (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+      - name: Build libyaml (Windows)
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $vcpkgDir = "$env:USERPROFILE\.vcpkg"
-          if (-not (Test-Path "$vcpkgDir\vcpkg.exe")) {
-            iex (iwr -usef https://aka.ms/vcpkg-init.ps1)
-          }
-          $env:PATH = "$vcpkgDir;$env:PATH"
-          Add-Content $env:GITHUB_PATH "$vcpkgDir"
+          # Build libyaml from source to avoid vcpkg manifest-mode failures on self-hosted runners.
+          # 直接源码编译 libyaml，以规避 self-hosted runner 上 vcpkg manifest 模式导致的失败。
+          $url = "https://github.com/yaml/libyaml/releases/download/$env:LIBYAML_VERSION/yaml-$env:LIBYAML_VERSION.tar.gz"
+          curl -fSL $url -o libyaml.tar.gz
+          tar -xzf libyaml.tar.gz
+          Push-Location "yaml-$env:LIBYAML_VERSION"
 
-      # --- Windows: Build LibYAML via vcpkg ---
-      - name: Build LibYAML via vcpkg (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          # Clear VCPKG_ROOT from VS BuildTools to avoid lock conflicts
-          $env:VCPKG_ROOT = ""
-          $vcpkgDir = "$env:USERPROFILE\.vcpkg"
-          $vcpkg = "$vcpkgDir\vcpkg.exe"
+          $buildDir = "build"
+          New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+          Push-Location $buildDir
+          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:DEPS_DIR\libyaml" -DBUILD_SHARED_LIBS=OFF
+          ninja install
+          Pop-Location
+          Pop-Location
 
-          # Kill any stale vcpkg processes from previous builds
-          Get-Process -Name vcpkg -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 2
-
-          # Remove stale lock if present
-          $lockFile = "$vcpkgDir\buildtrees\vcpkg-running.lock"
-          if (Test-Path $lockFile) {
-            Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
-          }
-
-          # Retry vcpkg install with backoff
-          $maxRetries = 3
-          $retryDelay = 5
-          for ($i = 1; $i -le $maxRetries; $i++) {
-            # Clear lock before each attempt
-            if (Test-Path $lockFile) {
-              Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
-            }
-            & $vcpkg install libyaml:x64-windows-static --triplet=x64-windows-static --vcpkg-root=$vcpkgDir
-            if ($LASTEXITCODE -eq 0) { break }
-            Write-Warning "vcpkg attempt $i failed, retrying in ${retryDelay}s..."
-            Start-Sleep -Seconds $retryDelay
-            $retryDelay = $retryDelay * 2
-          }
-          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed after $maxRetries attempts" }
-
-          # Copy installed files to deps directory
-          $dest = "$env:GITHUB_WORKSPACE\deps\libyaml"
-          New-Item -ItemType Directory -Force -Path "$dest\lib" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$dest\include" | Out-Null
-          Copy-Item "$vcpkgDir\installed\x64-windows-static\lib\*.lib" "$dest\lib\" -Force
-          Copy-Item "$vcpkgDir\installed\x64-windows-static\include\yaml.h" "$dest\include\" -Force
-
-      # --- Linux: Install build tools ---
       - name: Install build tools (Linux)
-        if: >-
-          runner.os == 'Linux'
-          && (inputs.platforms == 'all' || inputs.platforms == 'linux-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Linux' && steps.local-deps-unix.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
+
+          # missing_tools only records commands that are truly absent, which keeps self-hosted runners fast.
+          # missing_tools 只记录确实缺失的命令，从而让自托管 runner 尽量避免重复安装。
+          missing_tools=()
+          for tool in gcc g++ make cmake perl; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              missing_tools+=("$tool")
+            fi
+          done
+
+          if [ "${#missing_tools[@]}" -eq 0 ]; then
+            echo "All Linux build tools already exist on this runner."
+            exit 0
+          fi
+
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::Missing Linux build tools: ${missing_tools[*]}, and apt-get is unavailable."
+            exit 1
+          fi
+
           sudo apt-get update
           sudo apt-get install -y build-essential cmake perl libperl-dev
 
-      # --- Linux: Build deps ---
       - name: Build deps (Linux)
-        if: >-
-          runner.os == 'Linux'
-          && (inputs.platforms == 'all' || inputs.platforms == 'linux-x64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Linux' && steps.local-deps-unix.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          PREFIX="$GITHUB_WORKSPACE/deps"
-          JOBS=$(nproc)
+          jobs="$(nproc)"
 
-          # OpenSSL
-          curl -fSL https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz | tar xz
-          cd openssl-3.4.1
-          ./config --prefix="$PREFIX/openssl" --openssldir="$PREFIX/openssl/ssl" no-tests no-shared
-          make -j$JOBS && make install_sw
+          curl -fSL "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" | tar xz
+          cd "openssl-$OPENSSL_VERSION"
+          ./config --prefix="$DEPS_DIR/openssl" --openssldir="$DEPS_DIR/openssl/ssl" no-tests no-shared
+          make -j"$jobs"
+          make install_sw
           cd ..
 
-          # zlib (github mirror, zlib.net often blocked/unreliable)
-          curl -fSL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz | tar xz
-          cd zlib-1.3.1
-          ./configure --prefix="$PREFIX/zlib" --static
-          make -j$JOBS && make install
+          curl -fSL "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" | tar xz
+          cd "zlib-$ZLIB_VERSION"
+          ./configure --prefix="$DEPS_DIR/zlib" --static
+          make -j"$jobs"
+          make install
           cd ..
 
-          # PCRE2
-          curl -fSL https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz | tar xz
-          cd pcre2-10.45
-          ./configure --prefix="$PREFIX/pcre2" --enable-jit --disable-shared
-          make -j$JOBS && make install
+          curl -fSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$PCRE2_VERSION/pcre2-$PCRE2_VERSION.tar.gz" | tar xz
+          cd "pcre2-$PCRE2_VERSION"
+          ./configure --prefix="$DEPS_DIR/pcre2" --enable-jit --disable-shared
+          make -j"$jobs"
+          make install
           cd ..
 
-          # libyaml
-          curl -fSL https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz | tar xz
-          cd yaml-0.2.5
-          ./configure --prefix="$PREFIX/libyaml" --disable-shared
-          make -j$JOBS && make install
+          curl -fSL "https://github.com/yaml/libyaml/releases/download/$LIBYAML_VERSION/yaml-$LIBYAML_VERSION.tar.gz" | tar xz
+          cd "yaml-$LIBYAML_VERSION"
+          ./configure --prefix="$DEPS_DIR/libyaml" --disable-shared
+          make -j"$jobs"
+          make install
           cd ..
 
-      # --- macOS: Install build tools ---
       - name: Install build tools (macOS)
-        if: >-
-          runner.os == 'macOS'
-          && (inputs.platforms == 'all' || inputs.platforms == 'macos-arm64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'macOS' && steps.local-deps-unix.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
+
+          missing_tools=()
+          for tool in clang make cmake perl; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              missing_tools+=("$tool")
+            fi
+          done
+
+          if [ "${#missing_tools[@]}" -eq 0 ]; then
+            echo "All macOS build tools already exist on this runner."
+            exit 0
+          fi
+
+          if ! command -v brew >/dev/null 2>&1; then
+            echo "::error::Missing macOS build tools: ${missing_tools[*]}, and Homebrew is unavailable."
+            exit 1
+          fi
+
           brew install cmake perl
 
-      # --- macOS: Build deps ---
       - name: Build deps (macOS)
-        if: >-
-          runner.os == 'macOS'
-          && (inputs.platforms == 'all' || inputs.platforms == 'macos-arm64' || matrix.platform == inputs.platforms)
-          && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'macOS' && steps.local-deps-unix.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          PREFIX="$GITHUB_WORKSPACE/deps"
-          JOBS=$(sysctl -n hw.ncpu)
+          jobs="$(sysctl -n hw.ncpu)"
 
-          # OpenSSL
-          curl -fSL https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz | tar xz
-          cd openssl-3.4.1
-          ./config --prefix="$PREFIX/openssl" --openssldir="$PREFIX/openssl/ssl" no-tests no-shared
-          make -j$JOBS && make install_sw
+          curl -fSL "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" | tar xz
+          cd "openssl-$OPENSSL_VERSION"
+          ./config --prefix="$DEPS_DIR/openssl" --openssldir="$DEPS_DIR/openssl/ssl" no-tests no-shared
+          make -j"$jobs"
+          make install_sw
           cd ..
 
-          # zlib (github mirror, zlib.net often blocked/unreliable)
-          curl -fSL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz | tar xz
-          cd zlib-1.3.1
-          ./configure --prefix="$PREFIX/zlib" --static
-          make -j$JOBS && make install
+          curl -fSL "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" | tar xz
+          cd "zlib-$ZLIB_VERSION"
+          ./configure --prefix="$DEPS_DIR/zlib" --static
+          make -j"$jobs"
+          make install
           cd ..
 
-          # PCRE2
-          curl -fSL https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz | tar xz
-          cd pcre2-10.45
-          ./configure --prefix="$PREFIX/pcre2" --enable-jit --disable-shared
-          make -j$JOBS && make install
+          curl -fSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$PCRE2_VERSION/pcre2-$PCRE2_VERSION.tar.gz" | tar xz
+          cd "pcre2-$PCRE2_VERSION"
+          ./configure --prefix="$DEPS_DIR/pcre2" --enable-jit --disable-shared
+          make -j"$jobs"
+          make install
           cd ..
 
-          # libyaml
-          curl -fSL https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz | tar xz
-          cd yaml-0.2.5
-          ./configure --prefix="$PREFIX/libyaml" --disable-shared
-          make -j$JOBS && make install
+          curl -fSL "https://github.com/yaml/libyaml/releases/download/$LIBYAML_VERSION/yaml-$LIBYAML_VERSION.tar.gz" | tar xz
+          cd "yaml-$LIBYAML_VERSION"
+          ./configure --prefix="$DEPS_DIR/libyaml" --disable-shared
+          make -j"$jobs"
+          make install
           cd ..
 
-      # --- Package and upload ---
-      - name: Package deps (Windows)
-        if: >-
-          runner.os == 'Windows'
-          && (inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms)
+      - name: Verify deps layout (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Push-Location "$env:GITHUB_WORKSPACE\deps"
-          tar czf "$env:GITHUB_WORKSPACE\lua-deps-${{ matrix.platform }}.tar.gz" openssl/ zlib/ pcre2/ libyaml/
-          Pop-Location
-          $size = (Get-Item "$env:GITHUB_WORKSPACE\lua-deps-${{ matrix.platform }}.tar.gz").Length / 1MB
-          Write-Output "Package size: $("{0:F1}" -f $size) MB"
+          foreach ($dir in @("openssl", "zlib", "pcre2", "libyaml")) {
+            $path = Join-Path $env:DEPS_DIR $dir
+            if (-not (Test-Path $path)) {
+              throw "Missing dependency directory: $path"
+            }
+          }
 
-      - name: Package deps (Unix)
-        if: >-
-          (runner.os == 'Linux' || runner.os == 'macOS')
-          && (inputs.platforms == 'all' || matrix.platform == inputs.platforms)
+      - name: Verify deps layout (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          cd "$GITHUB_WORKSPACE/deps"
-          tar czf "$GITHUB_WORKSPACE/lua-deps-${{ matrix.platform }}.tar.gz" openssl/ zlib/ pcre2/ libyaml/
-          echo "Package size: $(du -h "$GITHUB_WORKSPACE/lua-deps-${{ matrix.platform }}.tar.gz" | cut -f1)"
+          set -euo pipefail
+          for dir in openssl zlib pcre2 libyaml; do
+            if [ ! -d "$DEPS_DIR/$dir" ]; then
+              echo "::error::Missing dependency directory: $DEPS_DIR/$dir"
+              exit 1
+            fi
+          done
+
+      - name: Persist deps to local state (Windows)
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true'
+        shell: pwsh
+        run: |
+          $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
+          New-Item -ItemType Directory -Force -Path $localRoot | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $env:DEPS_DIR "*") $localRoot
+          New-Item -ItemType File -Force -Path (Join-Path $localRoot ".complete") | Out-Null
+
+      - name: Persist deps to local state (Unix)
+        if: runner.os != 'Windows' && steps.local-deps-unix.outputs.hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          local_root="$HOME/.cache/vulcan-mcp/lua-deps/${{ matrix.platform }}/${{ matrix.runner }}/$DEPS_STATE_KEY"
+          mkdir -p "$local_root"
+          cp -a "$DEPS_DIR"/. "$local_root"/
+          touch "$local_root/.complete"
+
+      - name: Package deps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Push-Location $env:DEPS_DIR
+          tar czf "$env:GITHUB_WORKSPACE\$env:ARCHIVE_NAME" openssl/ zlib/ pcre2/ libyaml/
+          Pop-Location
+
+          $sizeMb = (Get-Item "$env:GITHUB_WORKSPACE\$env:ARCHIVE_NAME").Length / 1MB
+          Write-Output "Package size: $("{0:F1}" -f $sizeMb) MB"
+
+      - name: Package deps (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$DEPS_DIR"
+          tar czf "$GITHUB_WORKSPACE/$ARCHIVE_NAME" openssl/ zlib/ pcre2/ libyaml/
+          echo "Package size: $(du -h "$GITHUB_WORKSPACE/$ARCHIVE_NAME" | cut -f1)"
 
       - name: Upload to Release
-        if: inputs.platforms == 'all' || inputs.platforms == 'windows-x64' || matrix.platform == inputs.platforms
         uses: softprops/action-gh-release@v2
         with:
-          files: lua-deps-${{ matrix.platform }}.tar.gz
+          files: ${{ env.ARCHIVE_NAME }}
           tag_name: ${{ inputs.version }}
           fail_on_unmatched_files: true
         env:
