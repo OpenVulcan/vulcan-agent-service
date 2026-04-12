@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ProjectDir = $PSScriptRoot
+$ProjectDir = Split-Path $PSScriptRoot -Parent
 Set-Location $ProjectDir
 
 $BinName = "vulcan-mcp"
