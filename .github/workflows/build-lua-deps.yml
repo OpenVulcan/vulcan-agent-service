@@ -135,10 +135,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $url = "https://zlib.net/zlib131.zip"
-          curl -fSL $url -o zlib.zip
-          Expand-Archive zlib.zip zlib-src
-          Push-Location zlib-src
+          $url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+          curl -fSL $url -o zlib.tar.gz
+          tar -xzf zlib.tar.gz
+          Push-Location zlib-1.3.1
           $b = "build"; mkdir $b; Push-Location $b
           cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\zlib" -DBUILD_SHARED_LIBS=ON
           ninja install
@@ -192,8 +192,8 @@ jobs:
           make -j$JOBS && make install_sw
           cd ..
 
-          # zlib
-          curl -fSL https://zlib.net/zlib131.zip -o zlib.zip && unzip zlib.zip
+          # zlib (github mirror, zlib.net often blocked/unreliable)
+          curl -fSL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz | tar xz
           cd zlib-1.3.1
           ./configure --prefix="$PREFIX/zlib" --static
           make -j$JOBS && make install
@@ -236,8 +236,8 @@ jobs:
           make -j$JOBS && make install_sw
           cd ..
 
-          # zlib
-          curl -fSL https://zlib.net/zlib131.zip -o zlib.zip && unzip zlib.zip
+          # zlib (github mirror, zlib.net often blocked/unreliable)
+          curl -fSL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz | tar xz
           cd zlib-1.3.1
           ./configure --prefix="$PREFIX/zlib" --static
           make -j$JOBS && make install
