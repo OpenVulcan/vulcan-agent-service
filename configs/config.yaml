@@ -1,0 +1,17 @@
+# Vulcan MCP Client Configuration
+# Place this file as config.yaml next to the executable, or specify via -config flag.
+
+# HTTP transport address (optional).
+# If set, enables HTTP Streamable + Legacy SSE transport.
+# If absent, falls back to STDIO transport.
+# http: "0.0.0.0:3000"
+
+# LanceDb gRPC service endpoint (optional).
+# lancedb: "http://localhost:50051"
+
+# Sqlite gRPC service endpoint (optional).
+# When set, also enables the vmcp_scratchpad working memory store.
+sqlite: "http://localhost:50052"
+
+# VMM (VulcanMemoryMesh) gRPC service endpoint (optional).
+# vmm: "http://localhost:50053"
