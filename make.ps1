@@ -1,0 +1,129 @@
+# make.ps1 provides the PowerShell-native task entry for local build and run workflows.
+# make.ps1 用于提供本地构建与运行工作流的 PowerShell 原生入口。
+param(
+    # CommandMode selects the top-level command such as build, run, or release.
+    # CommandMode 用于选择顶层命令，例如 build、run 或 release。
+    [Parameter(Position = 0)]
+    [string]$CommandMode = "",
+
+    # CommandVariant carries the optional secondary mode such as release after run.
+    # CommandVariant 用于承接可选的二级模式，例如 run 之后的 release。
+    [Parameter(Position = 1)]
+    [string]$CommandVariant = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+# ScriptDir stores the repository root so child scripts are always resolved from a stable base path.
+# ScriptDir 用于保存仓库根目录，确保子脚本始终从稳定的基路径解析。
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+
+# BuildScriptPath points at the dedicated PowerShell build script to avoid duplicating cargo packaging logic here.
+# BuildScriptPath 用于指向专用的 PowerShell 构建脚本，避免在这里重复 cargo 打包逻辑。
+$BuildScriptPath = Join-Path $ScriptDir "scripts\build.ps1"
+
+# RunScriptPath points at the dedicated PowerShell run script so run behavior stays centralized.
+# RunScriptPath 用于指向专用的 PowerShell 运行脚本，让运行行为保持集中管理。
+$RunScriptPath = Join-Path $ScriptDir "scripts\run.ps1"
+
+# Normalize-Command converts nullable command text into a trimmed lower-case token so dispatch rules remain predictable.
+# Normalize-Command 用于把可空命令文本转换成去空白的小写标记，确保分发规则稳定可预测。
+function Normalize-Command {
+    param(
+        # Value is the raw command-line token to normalize before dispatch.
+        # Value 表示分发前需要归一化的原始命令行标记。
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    return $Value.Trim().ToLowerInvariant()
+}
+
+# Invoke-Build forwards the current mode to scripts/build.ps1 and returns the child exit code unchanged.
+# Invoke-Build 用于把当前模式转发给 scripts/build.ps1，并原样返回子进程退出码。
+function Invoke-Build {
+    param(
+        # IsRelease controls whether the packaged build should target Cargo release output.
+        # IsRelease 用于控制打包构建是否指向 Cargo 的 release 产物。
+        [bool]$IsRelease
+    )
+
+    if (-not (Test-Path -LiteralPath $BuildScriptPath)) {
+        throw "Missing build script: $BuildScriptPath"
+    }
+
+    if ($IsRelease) {
+        & $BuildScriptPath -Release
+    }
+    else {
+        & $BuildScriptPath
+    }
+
+    exit $LASTEXITCODE
+}
+
+# Invoke-Run forwards the current mode to scripts/run.ps1 so Ctrl+C no longer traverses a cmd batch wrapper.
+# Invoke-Run 用于把当前模式转发给 scripts/run.ps1，从而避免 Ctrl+C 再经过 cmd 批处理包装层。
+function Invoke-Run {
+    param(
+        # IsRelease controls whether the runtime should execute the release binary instead of the debug binary.
+        # IsRelease 用于控制运行时执行 release 二进制还是 debug 二进制。
+        [bool]$IsRelease
+    )
+
+    if (-not (Test-Path -LiteralPath $RunScriptPath)) {
+        throw "Missing run script: $RunScriptPath"
+    }
+
+    if ($IsRelease) {
+        & $RunScriptPath -Release
+    }
+    else {
+        & $RunScriptPath
+    }
+
+    exit $LASTEXITCODE
+}
+
+# Show-Usage prints the supported command forms so contributors can quickly recover from invalid input.
+# Show-Usage 用于输出支持的命令形式，方便贡献者在输入无效参数后快速恢复。
+function Show-Usage {
+    Write-Host "Usage:"
+    Write-Host "  ./make             # debug build"
+    Write-Host "  ./make build       # debug build"
+    Write-Host "  ./make release     # release build"
+    Write-Host "  ./make run         # run debug build"
+    Write-Host "  ./make run release # run release build"
+}
+
+# NormalizedMode stores the canonical top-level command token used by the dispatcher below.
+# NormalizedMode 用于保存下方分发器使用的规范化顶层命令标记。
+$NormalizedMode = Normalize-Command -Value $CommandMode
+
+# NormalizedVariant stores the canonical secondary token used to distinguish release runs from default runs.
+# NormalizedVariant 用于保存规范化的二级标记，以区分 release 运行与默认运行。
+$NormalizedVariant = Normalize-Command -Value $CommandVariant
+
+switch ($NormalizedMode) {
+    "" {
+        Invoke-Build -IsRelease $false
+    }
+    "build" {
+        Invoke-Build -IsRelease ($NormalizedVariant -eq "release")
+    }
+    "release" {
+        Invoke-Build -IsRelease $true
+    }
+    "run" {
+        Invoke-Run -IsRelease ($NormalizedVariant -eq "release")
+    }
+    default {
+        Write-Error "Unsupported command: '$CommandMode'"
+        Show-Usage
+        exit 1
+    }
+}

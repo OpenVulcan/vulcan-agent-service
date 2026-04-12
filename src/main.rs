@@ -42,11 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server = server.with_vmm(endpoint).await?;
     }
 
-    if let Some(addr) = cfg.http {
-        http_server::run_http(server, &addr).await?;
-    } else {
-        http_server::run_stdio(server).await?;
-    }
+    let addr = cfg.http.unwrap_or_else(|| "127.0.0.1:19201".to_string());
+    http_server::run_http(server, &addr).await?;
 
     Ok(())
 }

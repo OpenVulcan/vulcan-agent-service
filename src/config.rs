@@ -1,6 +1,5 @@
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
 
 // ============================================================
 // Configuration (loaded from YAML)
@@ -8,8 +7,8 @@ use std::path::PathBuf;
 
 #[derive(Deserialize, Debug, Default)]
 pub struct Config {
-    /// HTTP transport address, e.g. "0.0.0.0:3000"
-    /// If absent, STDIO transport is used.
+    /// HTTP transport address, e.g. "127.0.0.1:19201"
+    #[serde(default = "default_http_addr")]
     pub http: Option<String>,
 
     /// LanceDb gRPC service endpoint, e.g. "http://localhost:50051"
@@ -20,6 +19,10 @@ pub struct Config {
 
     /// VMM (VulcanMemoryMesh) gRPC service endpoint, e.g. "http://localhost:50053"
     pub vmm: Option<String>,
+}
+
+fn default_http_addr() -> Option<String> {
+    Some("127.0.0.1:19201".to_string())
 }
 
 impl Config {
@@ -33,10 +36,9 @@ impl Config {
     /// Load configuration with priority:
     /// 1. `-config` / `--config` CLI argument
     /// 2. `<exe_parent>/configs/config.yaml`
-    /// 3. `configs/config.yaml` in current working directory
-    /// If none found, exits with error (STDIO mode is not allowed).
+    /// If none found, exits with error.
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let config_path = find_config_arg().or_else(find_exe_parent_config).or_else(find_cwd_config);
+        let config_path = find_config_arg().or_else(find_exe_parent_config);
 
         match config_path {
             Some(path) => {
@@ -47,9 +49,9 @@ impl Config {
             None => {
                 eprintln!("[Config] Error: No config file found.");
                 eprintln!("[Config] Searched:");
+                eprintln!("[Config]   - -config flag");
                 eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
-                eprintln!("[Config]   - ./configs/config.yaml");
-                eprintln!("[Config] Provide config via -config flag or place it in the expected location.");
+                eprintln!("[Config] Provide config via -config flag or place configs/config.yaml in the expected location.");
                 std::process::exit(1);
             }
         }
@@ -73,18 +75,8 @@ fn find_config_arg() -> Option<String> {
 fn find_exe_parent_config() -> Option<String> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
-    // Look for configs/config.yaml relative to exe directory
-    let config_path = exe_dir.join("configs").join("config.yaml");
-    if config_path.exists() {
-        Some(config_path.to_string_lossy().to_string())
-    } else {
-        None
-    }
-}
-
-/// Find configs/config.yaml in current working directory.
-fn find_cwd_config() -> Option<String> {
-    let config_path = PathBuf::from("configs").join("config.yaml");
+    let parent_dir = exe_dir.parent()?;
+    let config_path = parent_dir.join("configs").join("config.yaml");
     if config_path.exists() {
         Some(config_path.to_string_lossy().to_string())
     } else {

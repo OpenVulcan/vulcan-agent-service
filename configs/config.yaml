@@ -1,10 +1,8 @@
 # Vulcan MCP Client Configuration
 # Place this file as config.yaml next to the executable, or specify via -config flag.
 
-# HTTP transport address (optional).
-# If set, enables HTTP Streamable + Legacy SSE transport.
-# If absent, falls back to STDIO transport.
-# http: "0.0.0.0:3000"
+# HTTP transport address (default: 127.0.0.1:19201).
+http: "127.0.0.1:19201"
 
 # LanceDb gRPC service endpoint (optional).
 lancedb: "http://127.0.0.1:19302"

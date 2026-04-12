@@ -1,7 +1,7 @@
 use axum::{
     body::Bytes,
     extract::{Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::{
         sse::{Event, Sse},
         IntoResponse,
@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::server::McpServer;
 use crate::session::{SessionManager, SseSessionManager};
@@ -34,55 +35,6 @@ pub struct AppState {
 }
 
 // ============================================================
-// STDIO transport runner
-// ============================================================
-
-pub async fn run_stdio(server: McpServer) -> Result<(), Box<dyn std::error::Error>> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin);
-    let mut writer = stdout;
-
-    eprintln!("[MCP] Starting STDIO transport...");
-    eprintln!("[MCP] Supported versions: 2025-11-25, 2025-03-26, 2024-11-05");
-
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            break;
-        }
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let parsed: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                let resp = McpServer::parse_error(&format!("Parse error: {}", e));
-                let output = serde_json::to_string(&resp).unwrap();
-                writer.write_all(output.as_bytes()).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
-                continue;
-            }
-        };
-
-        if let Some(resp) = server.handle_message(&parsed).await {
-            let output = serde_json::to_string(&resp).unwrap();
-            writer.write_all(output.as_bytes()).await?;
-            writer.write_all(b"\n").await?;
-            writer.flush().await?;
-        }
-    }
-
-    Ok(())
-}
-
-// ============================================================
 // HTTP transport runner
 // ============================================================
 
@@ -93,6 +45,11 @@ pub async fn run_http(server: McpServer, addr: &str) -> Result<(), Box<dyn std::
         sse_sessions: SseSessionManager::new(),
     };
 
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers(Any)
+        .allow_origin(Any);
+
     let app = Router::new()
         // HTTP Streamable (2025-11-25)
         .route("/mcp", post(handle_streamable_post))
@@ -102,7 +59,8 @@ pub async fn run_http(server: McpServer, addr: &str) -> Result<(), Box<dyn std::
         .route("/message", post(handle_sse_post))
         // Health check
         .route("/health", get(|| async { "OK" }))
-        .with_state(state);
+        .with_state(state)
+        .layer(cors);
 
     let addr: SocketAddr = addr.parse()?;
     eprintln!("[MCP] Starting HTTP transport on http://{} ...", addr);
@@ -153,7 +111,13 @@ async fn handle_streamable_post(
         }
     };
 
-    let session_id = query.session_id.clone();
+    // Get session ID from query param or Mcp-Session-Id header
+    let session_id = query.session_id.clone().or_else(|| {
+        headers
+            .get("Mcp-Session-Id")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+    });
 
     // Determine which session to use
     let (final_session_id, response) = match session_id {
@@ -266,9 +230,9 @@ fn sse_event_stream(
         Ok::<_, Infallible>(Event::default().event("message").data(data))
     });
 
+    // endpoint first, then merge ping and message streams concurrently
     futures::stream::once(async move { Ok(endpoint_event) })
-        .chain(ping_stream)
-        .chain(message_stream)
+        .chain(futures::stream::select(ping_stream, message_stream))
 }
 
 async fn handle_sse_get(
