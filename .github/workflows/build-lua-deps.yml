@@ -178,8 +178,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Clear VCPKG_ROOT from VS BuildTools to avoid lock conflicts
+          $env:VCPKG_ROOT = ""
           $vcpkgDir = "$env:USERPROFILE\.vcpkg"
-          & "$vcpkgDir\vcpkg.exe" install libyaml:x64-windows-static --triplet=x64-windows-static
+          $vcpkg = "$vcpkgDir\vcpkg.exe"
+          # Remove stale lock if present
+          Remove-Item "$vcpkgDir\buildtrees\vcpkg-running.lock" -Force -ErrorAction SilentlyContinue
+          & $vcpkg install libyaml:x64-windows-static --triplet=x64-windows-static --vcpkg-root=$vcpkgDir
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
           # Copy installed files to deps directory
           $dest = "$env:GITHUB_WORKSPACE\deps\libyaml"
           New-Item -ItemType Directory -Force -Path "$dest\lib" | Out-Null
