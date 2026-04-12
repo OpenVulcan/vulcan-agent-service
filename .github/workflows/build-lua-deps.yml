@@ -593,7 +593,10 @@ jobs:
         shell: pwsh
         run: |
           Push-Location $env:DEPS_DIR
-          tar czf "$env:GITHUB_WORKSPACE\$env:ARCHIVE_NAME" openssl/ zlib/ pcre2/ libyaml/
+          # PowerShell must pass archive members as explicit strings, otherwise trailing slashes can collapse into invalid args.
+          # PowerShell 需要把归档成员作为显式字符串传入，否则尾部斜杠可能被折叠成无效参数。
+          $archiveMembers = @("openssl", "zlib", "pcre2", "libyaml")
+          tar czf "$env:GITHUB_WORKSPACE\$env:ARCHIVE_NAME" @archiveMembers
           Pop-Location
 
           $sizeMb = (Get-Item "$env:GITHUB_WORKSPACE\$env:ARCHIVE_NAME").Length / 1MB
