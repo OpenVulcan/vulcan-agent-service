@@ -163,17 +163,29 @@ jobs:
           ninja install
           Pop-Location; Pop-Location
 
-      - name: Build LibYAML (Windows)
+      - name: Install vcpkg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $url = "https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz"
-          curl -fSL $url -o libyaml.tar.gz; tar -xzf libyaml.tar.gz
-          Push-Location yaml-0.2.5
-          $b = "build"; mkdir $b; Push-Location $b
-          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\deps\libyaml" -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          ninja install
-          Pop-Location; Pop-Location
+          $vcpkgDir = "$env:USERPROFILE\.vcpkg"
+          if (-not (Test-Path "$vcpkgDir\vcpkg.exe")) {
+            iex (iwr -usef https://aka.ms/vcpkg-init.ps1)
+          }
+          $env:PATH = "$vcpkgDir;$env:PATH"
+          Add-Content $env:GITHUB_PATH "$vcpkgDir"
+
+      - name: Build LibYAML via vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vcpkgDir = "$env:USERPROFILE\.vcpkg"
+          & "$vcpkgDir\vcpkg.exe" install libyaml:x64-windows-static --triplet=x64-windows-static
+          # Copy installed files to deps directory
+          $dest = "$env:GITHUB_WORKSPACE\deps\libyaml"
+          New-Item -ItemType Directory -Force -Path "$dest\lib" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$dest\include" | Out-Null
+          Copy-Item "$vcpkgDir\installed\x64-windows-static\lib\*.lib" "$dest\lib\" -Force
+          Copy-Item "$vcpkgDir\installed\x64-windows-static\include\yaml.h" "$dest\include\" -Force
 
       # --- Linux ---
       - name: Install build tools (Linux)
