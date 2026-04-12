@@ -1,0 +1,663 @@
+syntax = "proto3";
+
+package vmm.v1;
+
+option go_package = "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1;vmmv1";
+
+import "google/protobuf/empty.proto";
+
+// VMMService exposes the deterministic hierarchy management surface plus the main PreCheck/PostAction business chain.
+// VMMService 用于暴露确定性层级管理接口，以及主业务链路 PreCheck/PostAction。
+service VMMService {
+  // Healthz reports whether the local gateway process is alive.
+  // Healthz 用于报告本地网关进程是否存活。
+  rpc Healthz(google.protobuf.Empty) returns (HealthzResponse);
+
+  // ListProjects returns all Team/Space/Project paths in deterministic display order.
+  // ListProjects 用于按稳定展示顺序返回全部 Team/Space/Project 路径。
+  rpc ListProjects(google.protobuf.Empty) returns (ListProjectsResponse);
+
+  // ResolveProject resolves one project by numeric id or canonical Team/Space/Project path.
+  // ResolveProject 用于按数字 ID 或标准 Team/Space/Project 路径解析单个项目。
+  rpc ResolveProject(ResolveProjectRequest) returns (ResolveProjectResponse);
+
+  // EnsureProject resolves or creates one Team/Space/Project path according to the confirm-create contract.
+  // EnsureProject 用于按 confirm_create 规则解析或创建 Team/Space/Project 路径。
+  rpc EnsureProject(EnsureProjectRequest) returns (EnsureProjectResponse);
+
+  // DeleteProject deletes one project path and its SQL/vector data after explicit confirmation.
+  // DeleteProject 用于在显式确认后删除单个项目路径及其 SQL/向量数据。
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+
+  // MigrateProject moves all SQL/vector data from one source project path onto another target project path.
+  // MigrateProject 用于把某个源项目路径下的全部 SQL/向量数据迁移到目标项目路径。
+  rpc MigrateProject(MigrateProjectRequest) returns (MigrateProjectResponse);
+
+  // ResolveUser resolves one user by numeric id or name, and can optionally create it when confirm_create is true.
+  // ResolveUser 用于按数字 ID 或名称解析用户，并在 confirm_create 为真时按需创建用户。
+  rpc ResolveUser(ResolveUserRequest) returns (ResolveUserResponse);
+
+  // ListUsers returns the durable user list.
+  // ListUsers 用于返回长期用户列表。
+  rpc ListUsers(google.protobuf.Empty) returns (ListUsersResponse);
+
+  // DeleteUser removes one user and all SQL/vector data after the caller presents the generated confirmation code.
+  // DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+
+  // GetProfileNodes returns only active atomic profile nodes for one requested scope target.
+  // GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+  rpc GetProfileNodes(GetProfileNodesRequest) returns (GetProfileNodesResponse);
+
+  // GetProfileBundle assembles one deterministic TEAM/SPACE/PROJECT/USER prompt bundle for the requested user/project pair.
+  // GetProfileBundle 用于为指定 user/project 组合组装一份确定性的 TEAM/SPACE/PROJECT/USER 提示词 bundle。
+  rpc GetProfileBundle(GetProfileBundleRequest) returns (GetProfileBundleResponse);
+
+  // ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
+  // ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
+  rpc ApplyProfileInstruction(ApplyProfileInstructionRequest) returns (ApplyProfileInstructionResponse);
+
+  // SearchMemoryEvents searches durable memories for one simple query list and returns only the AI-facing hit fields needed for follow-up tool decisions.
+  // SearchMemoryEvents 用于按简单查询字符串列表检索长期记忆，并只返回 AI 后续决策真正需要的命中字段。
+  rpc SearchMemoryEvents(SearchMemoryEventsRequest) returns (SearchMemoryEventsResponse);
+
+  // GetTurnDetails loads one or more turn rows by turn id and returns AI-ready structured dialogue fields instead of dehydrated storage payloads.
+  // GetTurnDetails 用于按 turn id 读取一条或多条 turn 记录，并直接返回适合 AI 消费的结构化对话字段，而不是脱水存储载荷。
+  rpc GetTurnDetails(GetTurnDetailsRequest) returns (GetTurnDetailsResponse);
+
+  // WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
+  // WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
+  rpc WriteMemories(WriteMemoriesRequest) returns (WriteMemoriesResponse);
+
+  // ScratchpadUpsert writes one deterministic working-memory batch into the isolated DWM scratchpad guarded by the current plan name.
+  // ScratchpadUpsert 用于把一批确定性工作记忆写入由当前计划名守护的隔离 DWM scratchpad。
+  rpc ScratchpadUpsert(ScratchpadUpsertRequest) returns (ScratchpadUpsertResponse);
+
+  // ScratchpadDelete removes one or more keys from the isolated DWM scratchpad without fabricating a new plan lock for empty sessions.
+  // ScratchpadDelete 用于从隔离 DWM scratchpad 中删除一个或多个 key，并且不会为当前空 session 伪造新的计划锁。
+  rpc ScratchpadDelete(ScratchpadDeleteRequest) returns (ScratchpadDeleteResponse);
+
+  // ScratchpadGet reloads either one filtered key batch or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
+  // ScratchpadGet 用于重新读取一批过滤 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
+  rpc ScratchpadGet(ScratchpadGetRequest) returns (ScratchpadGetResponse);
+
+  // ScratchpadListKeys reloads the canonical plan name plus the full ordered scratchpad key list for the current isolated scope without fetching values.
+  // ScratchpadListKeys 用于在不拉取 value 的前提下，重新读取当前隔离范围的 canonical 计划名和完整有序 key 列表。
+  rpc ScratchpadListKeys(ScratchpadListKeysRequest) returns (ScratchpadListKeysResponse);
+
+  // ScratchpadClean clears the whole isolated DWM scratchpad for the current project/user/session scope.
+  // ScratchpadClean 用于清空当前 project/user/session 范围下的整个隔离 DWM scratchpad。
+  rpc ScratchpadClean(ScratchpadCleanRequest) returns (ScratchpadCleanResponse);
+
+  // ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
+  // ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
+  rpc ChatCompact(ChatCompactRequest) returns (ChatCompactResponse);
+
+  // PreCheck validates project_id/user_id through the interceptor, runs live intent extraction plus unified memory adoption, and returns the assembled context payload.
+  // PreCheck 用于通过拦截器校验 project_id/user_id，执行实时意图提取与统一记忆采纳，并返回组装后的上下文载荷。
+  rpc PreCheck(PreCheckRequest) returns (PreCheckResponse);
+
+  // PostAction validates project_id/user_id through the interceptor, logs the payload, durably appends the cleaned turn, and queues async extraction.
+  // PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志、稳定追加清洗后的 turn，并把后续提炼排入异步队列。
+  rpc PostAction(PostActionRequest) returns (PostActionResponse);
+}
+
+// HealthzResponse returns the runtime status plus trace metadata.
+// HealthzResponse 用于返回运行状态和 trace 元数据。
+message HealthzResponse {
+  string status = 1;
+  string trace_id = 2;
+}
+
+// ProjectEntry transports one canonical project node plus its display path.
+// ProjectEntry 用于承载一个标准项目节点及其展示路径。
+message ProjectEntry {
+  uint64 project_id = 1;
+  uint64 team_id = 2;
+  uint64 space_id = 3;
+  string team_name = 4;
+  string space_name = 5;
+  string project_name = 6;
+  string display_path = 7;
+}
+
+// UserEntry transports one durable user row.
+// UserEntry 用于承载一条长期用户记录。
+message UserEntry {
+  uint64 user_id = 1;
+  string user_name = 2;
+}
+
+// ListProjectsResponse returns all projects plus trace metadata.
+// ListProjectsResponse 用于返回全部项目和 trace 元数据。
+message ListProjectsResponse {
+  repeated ProjectEntry projects = 1;
+  string trace_id = 2;
+}
+
+// ResolveProjectRequest accepts either a numeric project id or one canonical Team/Space/Project path.
+// ResolveProjectRequest 用于接收数字 project id，或标准 Team/Space/Project 路径。
+message ResolveProjectRequest {
+  string project_ref = 1;
+}
+
+// ResolveProjectResponse returns the resolved canonical project node and a stable status message.
+// ResolveProjectResponse 用于返回解析后的标准项目节点和稳定状态消息。
+message ResolveProjectResponse {
+  ProjectEntry project = 1;
+  string message = 2;
+  string trace_id = 3;
+}
+
+// EnsureProjectRequest asks the server to resolve or create one canonical Team/Space/Project path.
+// EnsureProjectRequest 用于请求服务端解析或创建一个标准 Team/Space/Project 路径。
+message EnsureProjectRequest {
+  string project_path = 1;
+  bool confirm_create = 2;
+}
+
+// EnsureProjectResponse returns the project node plus creation/confirmation state.
+// EnsureProjectResponse 用于返回项目节点，以及创建或确认状态。
+message EnsureProjectResponse {
+  ProjectEntry project = 1;
+  string message = 2;
+  bool exists = 3;
+  bool needs_confirm = 4;
+  bool created_team = 5;
+  bool created_space = 6;
+  bool created_project = 7;
+  bool missing_team = 8;
+  bool missing_space = 9;
+  string trace_id = 10;
+}
+
+// DeleteProjectRequest identifies the target project path and whether deletion has been explicitly confirmed.
+// DeleteProjectRequest 用于标识目标项目路径，以及删除是否已经显式确认。
+message DeleteProjectRequest {
+  string project_path = 1;
+  bool confirm_delete = 2;
+}
+
+// DeleteProjectResponse returns deletion counts, confirmation status, and the affected project.
+// DeleteProjectResponse 用于返回删除计数、确认状态以及受影响项目。
+message DeleteProjectResponse {
+  ProjectEntry project = 1;
+  string message = 2;
+  bool needs_confirm = 3;
+  int64 deleted_sessions = 4;
+  int64 deleted_messages = 5;
+  int64 deleted_memories = 6;
+  uint64 deleted_vector_rows = 7;
+  string trace_id = 8;
+  int64 deleted_projects = 9;
+  int64 deleted_spaces = 10;
+  int64 deleted_teams = 11;
+  int64 deleted_profiles = 12;
+}
+
+// MigrateProjectRequest identifies the source and target project paths plus the explicit migration confirmation flag.
+// MigrateProjectRequest 用于标识源/目标项目路径，以及显式迁移确认标记。
+message MigrateProjectRequest {
+  string source_project_path = 1;
+  string target_project_path = 2;
+  bool confirm_migrate = 3;
+}
+
+// MigrateProjectResponse returns migration counts, confirmation status, and both source/target project nodes.
+// MigrateProjectResponse 用于返回迁移计数、确认状态，以及源/目标项目节点。
+message MigrateProjectResponse {
+  ProjectEntry source_project = 1;
+  ProjectEntry target_project = 2;
+  string message = 3;
+  bool needs_confirm = 4;
+  int64 migrated_sessions = 5;
+  int64 migrated_messages = 6;
+  int64 migrated_memories = 7;
+  int64 rebuilt_vector_rows = 8;
+  string trace_id = 9;
+}
+
+// ResolveUserRequest accepts either a numeric user id or a user name and can optionally create a missing user.
+// ResolveUserRequest 用于接收数字 user id 或用户名，并在需要时创建缺失用户。
+message ResolveUserRequest {
+  string user_ref = 1;
+  bool confirm_create = 2;
+}
+
+// ResolveUserResponse returns the resolved user row and creation/existence status.
+// ResolveUserResponse 用于返回解析后的用户记录，以及创建/存在状态。
+message ResolveUserResponse {
+  UserEntry user = 1;
+  string message = 2;
+  bool created = 3;
+  bool exists = 4;
+  string trace_id = 5;
+}
+
+// ListUsersResponse returns all durable users plus trace metadata.
+// ListUsersResponse 用于返回全部长期用户和 trace 元数据。
+message ListUsersResponse {
+  repeated UserEntry users = 1;
+  string trace_id = 2;
+}
+
+// DeleteUserRequest carries the user reference and the generated confirmation code for protected deletion.
+// DeleteUserRequest 用于承载用户引用和受保护删除所需的确认码。
+message DeleteUserRequest {
+  string user_ref = 1;
+  string confirmation_code = 2;
+}
+
+// DeleteUserResponse returns deletion counts, confirmation state, and the user row involved in the flow.
+// DeleteUserResponse 用于返回删除计数、确认状态，以及流程涉及的用户记录。
+message DeleteUserResponse {
+  UserEntry user = 1;
+  string message = 2;
+  bool requires_confirmation = 3;
+  string confirmation_code = 4;
+  int64 deleted_sessions = 5;
+  int64 deleted_messages = 6;
+  int64 deleted_memories = 7;
+  uint64 deleted_vector_rows = 8;
+  string trace_id = 9;
+  int64 deleted_users = 10;
+  int64 deleted_profiles = 11;
+}
+
+// ProfileTarget identifies the single scope whose profile nodes should be queried or updated.
+// ProfileTarget 用于标识应被查询或更新画像节点的单个目标 scope。
+enum ProfileTarget {
+  PROFILE_TARGET_UNSPECIFIED = 0;
+  PROFILE_TARGET_USER = 1;
+  PROFILE_TARGET_PROJECT = 2;
+  PROFILE_TARGET_TEAM = 3;
+  PROFILE_TARGET_SPACE = 4;
+}
+
+// ProfileNodeSourceKind describes where one durable profile node came from.
+// ProfileNodeSourceKind 用于描述一条长期画像节点的来源。
+enum ProfileNodeSourceKind {
+  PROFILE_NODE_SOURCE_KIND_UNSPECIFIED = 0;
+  PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT = 1;
+  PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION = 2;
+  PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED = 3;
+  PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE = 4;
+}
+
+// ProfileNodeEntry transports one active atomic profile node back to the caller.
+// ProfileNodeEntry 用于把一条 active 原子化画像节点返回给调用方。
+message ProfileNodeEntry {
+  uint64 profile_node_id = 1;
+  ProfileTarget target = 2;
+  uint64 bind_id = 3;
+  string content = 4;
+  string priority = 5;
+  string level = 6;
+  uint32 refresh_weight = 7;
+  string profile_date = 8;
+  int64 expires_timestamp = 9;
+  string level_reason = 10;
+  ProfileNodeSourceKind source_kind = 11;
+  uint64 source_id = 12;
+}
+
+// RetiredProfileNodeEntry transports one retired profile node plus the explicit reason attached during a manual instruction review.
+// RetiredProfileNodeEntry 用于承载一条被退役的画像节点，以及手工画像评审附带的明确原因。
+message RetiredProfileNodeEntry {
+  uint64 profile_node_id = 1;
+  string reason = 2;
+}
+
+// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target.
+// GetProfileNodesRequest 用于请求服务端返回单个目标下当前 active 的原子化画像节点。
+message GetProfileNodesRequest {
+  ProfileTarget target = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  uint32 limit = 4;
+}
+
+// GetProfileNodesResponse returns the active profile-node slice for the requested target plus trace metadata.
+// GetProfileNodesResponse 用于返回请求目标下的 active 画像节点切片和 trace 元数据。
+message GetProfileNodesResponse {
+  repeated ProfileNodeEntry nodes = 1;
+  string trace_id = 2;
+}
+
+// ProfileBundleMode selects whether callers want one combined prompt text or the split TEAM/SPACE/PROJECT/USER sections.
+// ProfileBundleMode 用于选择调用方希望返回一段组合提示词，还是拆分后的 TEAM/SPACE/PROJECT/USER 段落。
+enum ProfileBundleMode {
+  PROFILE_BUNDLE_MODE_UNSPECIFIED = 0;
+  PROFILE_BUNDLE_MODE_FULL = 1;
+  PROFILE_BUNDLE_MODE_SPLIT = 2;
+}
+
+// GetProfileBundleRequest asks the server to assemble one deterministic profile bundle for the current project/user pair.
+// GetProfileBundleRequest 用于请求服务端为当前 project/user 组合组装一份确定性的画像 bundle。
+message GetProfileBundleRequest {
+  uint64 user_id = 1;
+  uint64 project_id = 2;
+  ProfileBundleMode mode = 3;
+  optional bool include_explanation = 4;
+}
+
+// GetProfileBundleResponse returns both the split scope texts and the optional fully assembled prompt bundle.
+// GetProfileBundleResponse 用于返回拆分后的 scope 文本，以及按需提供的完整组合提示词。
+message GetProfileBundleResponse {
+  ProfileBundleMode mode = 1;
+  bool include_explanation = 2;
+  string explanation_text = 3;
+  string environment_priority_text = 4;
+  string combined_text = 5;
+  string team_profile = 6;
+  string space_profile = 7;
+  string project_profile = 8;
+  string user_profile = 9;
+  string trace_id = 10;
+}
+
+// ApplyProfileInstructionRequest carries one explicit natural-language instruction that should update a single profile target.
+// ApplyProfileInstructionRequest 用于承载一条显式自然语言画像指令，并更新单个画像目标。
+message ApplyProfileInstructionRequest {
+  ProfileTarget target = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string instruction = 4;
+}
+
+// ApplyProfileInstructionResponse returns the accepted new nodes and retired old nodes after the reviewed manual instruction succeeds.
+// ApplyProfileInstructionResponse 用于在手工画像指令评审成功后，返回被接纳的新节点和被退役的旧节点。
+message ApplyProfileInstructionResponse {
+  uint64 instruction_id = 1;
+  repeated ProfileNodeEntry accepted_nodes = 2;
+  repeated RetiredProfileNodeEntry retired_nodes = 3;
+  string review_reason = 4;
+  string trace_id = 5;
+}
+
+// SearchMemoryEventsRequest carries one simple query list together with the resolved user/project selectors.
+// SearchMemoryEventsRequest 用于承载一个简单查询字符串列表，以及解析范围所需的 user/project 选择参数。
+message SearchMemoryEventsRequest {
+  uint64 user_id = 1;
+  uint64 project_id = 2;
+  repeated string queries = 3;
+  uint32 top_k = 4;
+}
+
+// MemorySearchHit transports one AI-facing memory hit with the optional source turn id kept for later turn-detail lookup.
+// MemorySearchHit 用于承载一条面向 AI 的记忆命中结果，并保留可选的来源 turn id 供后续查看详情。
+message MemorySearchHit {
+  uint64 memory_id = 1;
+  uint64 source_turn_id = 2;
+  string abstract = 3;
+  string details_preview = 4;
+  string category = 5;
+}
+
+// MemorySearchGroupResult echoes one normalized query string and returns the hit list produced for that query.
+// MemorySearchGroupResult 用于原样回显一条规范化后的查询字符串，并返回针对该查询生成的命中列表。
+message MemorySearchGroupResult {
+  uint32 query_index = 1;
+  string query = 2;
+  repeated MemorySearchHit hits = 3;
+}
+
+// SearchMemoryEventsResponse returns all grouped memory-search results plus trace metadata.
+// SearchMemoryEventsResponse 用于返回全部分组记忆检索结果和 trace 元数据。
+message SearchMemoryEventsResponse {
+  repeated MemorySearchGroupResult results = 1;
+  string trace_id = 2;
+}
+
+// GetTurnDetailsRequest carries one or more turn ids whose structured dialogue fields should be loaded for AI-side inspection.
+// GetTurnDetailsRequest 用于承载一条或多条 turn id，让服务端读取适合 AI 查看的结构化对话字段。
+message GetTurnDetailsRequest {
+  repeated uint64 turn_ids = 1;
+}
+
+// TurnDetailEntry transports one AI-ready turn view so callers can inspect the structured dialogue and nearby turn ids without parsing storage JSON.
+// TurnDetailEntry 用于返回一条适合 AI 消费的 turn 视图，让调用方无需解析存储 JSON 也能查看结构化对话和相邻 turn id。
+message TurnDetailEntry {
+  uint64 turn_id = 1;
+  string user_question = 2;
+  repeated PostActionTimelineItem timeline = 3;
+  string assistant_answer = 4;
+  string detail = 5;
+  repeated uint64 previous_turn_ids = 6;
+  repeated uint64 next_turn_ids = 7;
+}
+
+// GetTurnDetailsResponse returns the requested structured turn details plus trace metadata.
+// GetTurnDetailsResponse 用于返回请求的结构化 turn 详情和 trace 元数据。
+message GetTurnDetailsResponse {
+  repeated TurnDetailEntry turns = 1;
+  string trace_id = 2;
+}
+
+// WriteMemoryItem carries one direct AI-written memory candidate before soft idempotency and persistence begin.
+// WriteMemoryItem 用于承载一条 AI 主动写入记忆候选，在软幂等和持久化开始前使用。
+message WriteMemoryItem {
+  int32 scope_level = 1;
+  string abstract = 2;
+  string details = 3;
+  int32 category = 4;
+  int32 priority = 5;
+  int32 memory_level = 6;
+}
+
+// WriteMemoriesRequest carries the resolved scope coordinates plus the direct memory items that should be persisted immediately.
+// WriteMemoriesRequest 用于承载已解析范围坐标，以及需要立刻持久化的主动记忆条目。
+message WriteMemoriesRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  repeated WriteMemoryItem items = 4;
+}
+
+// WriteMemoryResultItem returns only the created or deduplicated memory id so AI callers can keep the write path minimal.
+// WriteMemoryResultItem 用于只返回新建或复用的 memory id，让 AI 调用方保持最小写入反馈。
+message WriteMemoryResultItem {
+  uint64 memory_id = 1;
+  bool deduped = 2;
+}
+
+// WriteMemoriesResponse returns the ordered direct-write results plus trace metadata.
+// WriteMemoriesResponse 用于返回按顺序排列的主动写记忆结果和 trace 元数据。
+message WriteMemoriesResponse {
+  repeated WriteMemoryResultItem items = 1;
+  string trace_id = 2;
+}
+
+// ScratchpadStatus reports the final DWM CRUD outcome in a transport-stable enum form that callers should translate before exposing it to AI models.
+// ScratchpadStatus 用于以传输层稳定枚举的形式表示 DWM CRUD 最终结果；在直接对接 AI 模型前，调用方应先做语义转译。
+enum ScratchpadStatus {
+  SCRATCHPAD_STATUS_UNSPECIFIED = 0;
+  SCRATCHPAD_STATUS_SUCCESS = 1;
+  SCRATCHPAD_STATUS_FAILED = 2;
+}
+
+// ScratchpadItem carries one deterministic DWM key/value anchor.
+// ScratchpadItem 用于承载一条确定性的 DWM key/value 锚点。
+message ScratchpadItem {
+  string key = 1;
+  string value = 2;
+}
+
+// ScratchpadUpsertRequest carries the deterministic scope, canonical plan name, and either one single item or one batch item payload that should be written into DWM.
+// ScratchpadUpsertRequest 用于承载应写入 DWM 的确定性范围、canonical 计划名，以及单项或批量二选一的 item 载荷。
+message ScratchpadUpsertRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string plan_name = 4;
+  optional string key = 5;
+  optional string value = 6;
+  repeated ScratchpadItem items = 7;
+}
+
+// ScratchpadUpsertResponse returns the enum status, one English guidance message, and stable write counters for deterministic host integrations.
+// ScratchpadUpsertResponse 用于返回枚举状态、一条英文提示消息，以及面向确定性宿主集成的稳定写入计数字段。
+message ScratchpadUpsertResponse {
+  ScratchpadStatus status = 1;
+  string msg = 2;
+  uint32 affected_count = 3;
+  uint32 inserted_count = 4;
+  uint32 updated_count = 5;
+}
+
+// ScratchpadDeleteRequest carries the deterministic scope, canonical plan name, and either one single key or one batch key payload that should be removed from DWM.
+// ScratchpadDeleteRequest 用于承载应从 DWM 删除的确定性范围、canonical 计划名，以及单键或批量 key 二选一的载荷。
+message ScratchpadDeleteRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string plan_name = 4;
+  optional string key = 5;
+  repeated string keys = 6;
+}
+
+// ScratchpadDeleteResponse returns the enum status, one English guidance message, and the deterministic delete counter consumed by hosts.
+// ScratchpadDeleteResponse 用于返回枚举状态、一条英文提示消息，以及宿主侧消费的确定性删除计数。
+message ScratchpadDeleteResponse {
+  ScratchpadStatus status = 1;
+  string msg = 2;
+  uint32 affected_count = 3;
+}
+
+// ScratchpadGetRequest carries the deterministic scope plus an optional multi-key selector for DWM reloads.
+// ScratchpadGetRequest 用于承载 DWM 读取所需的确定性范围，以及可选的多 key 选择器。
+message ScratchpadGetRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  repeated string keys = 4;
+}
+
+// ScratchpadGetResponse returns the enum status, one English message, stable metadata for the canonical plan, and the selected DWM key/value anchors.
+// ScratchpadGetResponse 用于返回枚举状态、一条英文提示消息、canonical 计划的稳定 metadata，以及命中的 DWM key/value 锚点。
+message ScratchpadGetResponse {
+  ScratchpadStatus status = 1;
+  string msg = 2;
+  repeated ScratchpadItem items = 3;
+  string plan_name = 4;
+  uint32 item_count = 5;
+  int64 updated_timestamp = 6;
+}
+
+// ScratchpadListKeysRequest carries the deterministic scope whose canonical plan name and full ordered key list should be reloaded without fetching any values.
+// ScratchpadListKeysRequest 用于承载需要只读回载 canonical 计划名与完整有序 key 列表的确定性范围，并且不会拉取任何 value。
+message ScratchpadListKeysRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+}
+
+// ScratchpadListKeysResponse returns the enum status, one English message, stable metadata for the canonical plan, and the full ordered scratchpad key slice for the current scope.
+// ScratchpadListKeysResponse 用于返回枚举状态、一条英文提示消息、canonical 计划的稳定 metadata，以及当前范围下完整有序的 scratchpad key 切片。
+message ScratchpadListKeysResponse {
+  ScratchpadStatus status = 1;
+  string msg = 2;
+  string plan_name = 3;
+  repeated string keys = 4;
+  uint32 key_count = 5;
+  int64 updated_timestamp = 6;
+}
+
+// ScratchpadCleanRequest carries the deterministic scope whose full DWM state should be cleared.
+// ScratchpadCleanRequest 用于承载需要被整体清空 DWM 状态的确定性范围。
+message ScratchpadCleanRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+}
+
+// ScratchpadCleanResponse returns the enum status plus one English message describing whether the current DWM state was cleared or already empty.
+// ScratchpadCleanResponse 用于返回枚举状态以及一条英文消息，说明当前 DWM 状态已被清空还是本来就为空。
+message ScratchpadCleanResponse {
+  ScratchpadStatus status = 1;
+  string msg = 2;
+}
+
+// PreCheckRecallMode defines which memory-recall strategy one pre-check request wants the server to apply.
+// PreCheckRecallMode 用于定义单次 pre-check 请求希望服务端采用哪一种记忆召回策略。
+enum PreCheckRecallMode {
+  // PRE_CHECK_RECALL_MODE_LEGACY keeps the historical pre-check behavior and does not read any compact boundary.
+  // PRE_CHECK_RECALL_MODE_LEGACY 表示保持历史 pre-check 行为，不读取任何 compact 边界。
+  PRE_CHECK_RECALL_MODE_LEGACY = 0;
+
+  // PRE_CHECK_RECALL_MODE_SESSION_COMPACT enables the current-session compact-aware recall rule and reopens only turns at or before the compact anchor.
+  // PRE_CHECK_RECALL_MODE_SESSION_COMPACT 表示启用当前 session 的 compact-aware 召回规则，只重新开放 compact 锚点及之前的 turn。
+  PRE_CHECK_RECALL_MODE_SESSION_COMPACT = 1;
+}
+
+message PreCheckRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string user_content = 4;
+  PreCheckRecallMode recall_mode = 5;
+}
+
+// ChatCompactRequest carries the resolved scope selectors used to mark the latest persisted turn as the active compact boundary for one session.
+// ChatCompactRequest 用于承载解析范围所需的选择参数，把某个 session 的最新持久化 turn 标记为当前 compact 边界。
+message ChatCompactRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+}
+
+// ChatCompactResponse returns whether the compact acknowledgement changed session state and which turn now acts as the boundary anchor.
+// ChatCompactResponse 用于返回 compact 确认是否真正改变了 session 状态，以及当前作为边界锚点的 turn。
+message ChatCompactResponse {
+  bool accepted = 1;
+  bool updated = 2;
+  uint64 compacted_turn_id = 3;
+  string trace_id = 4;
+}
+
+// ContextItem transports one assembled context item back to the caller.
+// ContextItem 用于把一条组装后的上下文项返回给调用方。
+message ContextItem {
+  string kind = 1 [deprecated = true];
+  string title = 2 [deprecated = true];
+  string text = 3;
+  string source = 4 [deprecated = true];
+  double score = 5;
+  uint64 turn_id = 6;
+  bool has_dialogue = 7;
+}
+
+// PreCheckResponse returns the injection decision and assembled context payload.
+// PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
+message PreCheckResponse {
+  bool should_inject = 1;
+  string context_text = 2 [deprecated = true];
+  repeated ContextItem context_items = 3;
+  bool degraded = 4;
+  string trace_id = 5;
+}
+
+// PostActionTimelineItem carries one middle timeline node from the text-only contract.
+// PostActionTimelineItem 用于承载纯文本契约中的一条中间 timeline 节点。
+message PostActionTimelineItem {
+  string type = 1;
+  string content = 2;
+}
+
+// PostActionRequest carries the new text-only post-action payload.
+// PostActionRequest 用于承载新的纯文本 post-action 载荷。
+message PostActionRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string user_content = 4;
+  string assistant_content = 5;
+  repeated PostActionTimelineItem timeline = 6;
+}
+
+// PostActionResponse acknowledges whether the request was accepted, durably persisted as one turn, and queued for async extraction successfully.
+// PostActionResponse 用于确认请求是否已经成功被接受、稳定落为一条 turn，并成功排入异步提炼队列。
+message PostActionResponse {
+  bool accepted = 1;
+  string trace_id = 2;
+}

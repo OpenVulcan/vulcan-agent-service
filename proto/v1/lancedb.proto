@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package vldb.lancedb.v1;
+
+option go_package = "vldb-lancedb-go-demo/gen/proto/v1;lancedbv1";
+
+service LanceDbService {
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc VectorUpsert(UpsertRequest) returns (UpsertResponse);
+  rpc VectorSearch(SearchRequest) returns (SearchResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc DropTable(DropTableRequest) returns (DropTableResponse);
+}
+
+enum ColumnType {
+  COLUMN_TYPE_UNSPECIFIED = 0;
+  COLUMN_TYPE_STRING = 1;
+  COLUMN_TYPE_INT64 = 2;
+  COLUMN_TYPE_FLOAT64 = 3;
+  COLUMN_TYPE_BOOL = 4;
+  COLUMN_TYPE_VECTOR_FLOAT32 = 5;
+  COLUMN_TYPE_FLOAT32 = 6;
+  COLUMN_TYPE_UINT64 = 7;
+  COLUMN_TYPE_INT32 = 8;
+  COLUMN_TYPE_UINT32 = 9;
+}
+
+message ColumnDef {
+  string name = 1;
+  ColumnType column_type = 2;
+  uint32 vector_dim = 3;
+  bool nullable = 4;
+}
+
+message CreateTableRequest {
+  string table_name = 1;
+  repeated ColumnDef columns = 2;
+  bool overwrite_if_exists = 3;
+}
+
+message CreateTableResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+enum InputFormat {
+  INPUT_FORMAT_UNSPECIFIED = 0;
+  INPUT_FORMAT_JSON_ROWS = 1;
+  INPUT_FORMAT_ARROW_IPC = 2;
+}
+
+message UpsertRequest {
+  string table_name = 1;
+  InputFormat input_format = 2;
+  bytes data = 3;
+  repeated string key_columns = 4;
+}
+
+message UpsertResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 version = 3;
+  uint64 input_rows = 4;
+  uint64 inserted_rows = 5;
+  uint64 updated_rows = 6;
+  uint64 deleted_rows = 7;
+}
+
+enum OutputFormat {
+  OUTPUT_FORMAT_UNSPECIFIED = 0;
+  OUTPUT_FORMAT_ARROW_IPC = 1;
+  OUTPUT_FORMAT_JSON_ROWS = 2;
+}
+
+message SearchRequest {
+  string table_name = 1;
+  repeated float vector = 2;
+  uint32 limit = 3;
+  string filter = 4;
+  string vector_column = 5;
+  OutputFormat output_format = 6;
+}
+
+message SearchResponse {
+  bool success = 1;
+  string message = 2;
+  string format = 3;
+  uint64 rows = 4;
+  bytes data = 5;
+}
+
+message DeleteRequest {
+  string table_name = 1;
+  string condition = 2;
+}
+
+message DeleteResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 version = 3;
+  uint64 deleted_rows = 4;
+}
+
+message DropTableRequest {
+  string table_name = 1;
+}
+
+message DropTableResponse {
+  bool success = 1;
+  string message = 2;
+}

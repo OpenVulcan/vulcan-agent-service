@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package vldb.sqlite.v1;
+
+option go_package = "vldb-sqlite-go-demo/proto/v1;sqlitev1";
+
+service SqliteService {
+  rpc ExecuteScript(ExecuteRequest) returns (ExecuteResponse);
+  rpc ExecuteBatch(ExecuteBatchRequest) returns (ExecuteBatchResponse);
+  rpc QueryJson(QueryRequest) returns (QueryJsonResponse);
+  rpc QueryStream(QueryRequest) returns (stream QueryResponse);
+}
+
+message NullValue {}
+
+message SqliteValue {
+  oneof kind {
+    sint64 int64_value = 1;
+    double float64_value = 2;
+    string string_value = 3;
+    bytes bytes_value = 4;
+    bool bool_value = 5;
+    NullValue null_value = 6;
+  }
+}
+
+message ExecuteRequest {
+  string sql = 1;
+  string params_json = 2;
+  repeated SqliteValue params = 3;
+}
+
+message ExecuteResponse {
+  bool success = 1;
+  string message = 2;
+  int64 rows_changed = 3;
+  int64 last_insert_rowid = 4;
+}
+
+message ExecuteBatchRequest {
+  string sql = 1;
+  repeated ExecuteBatchItem items = 2;
+}
+
+message ExecuteBatchItem {
+  repeated SqliteValue params = 1;
+}
+
+message ExecuteBatchResponse {
+  bool success = 1;
+  string message = 2;
+  int64 rows_changed = 3;
+  int64 last_insert_rowid = 4;
+  int64 statements_executed = 5;
+}
+
+message QueryRequest {
+  string sql = 1;
+  string params_json = 2;
+  repeated SqliteValue params = 3;
+}
+
+message QueryResponse {
+  bytes arrow_ipc_chunk = 1;
+}
+
+message QueryJsonResponse {
+  string json_data = 1;
+}
