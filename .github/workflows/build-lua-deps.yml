@@ -54,7 +54,7 @@ env:
   PERL_VERSION: "5.38.2.2"
   # WINDOWS_LIBYAML_BUILD_VERSION only tracks Windows libyaml-specific rebuild semantics.
   # WINDOWS_LIBYAML_BUILD_VERSION 仅跟踪 Windows 下 libyaml 的专属重建语义。
-  WINDOWS_LIBYAML_BUILD_VERSION: "20260413-01"
+  WINDOWS_LIBYAML_BUILD_VERSION: "20260413-02"
 
 jobs:
   prepare-matrix:
@@ -155,17 +155,24 @@ jobs:
           # LocalRoot 把自托管 runner 的状态保存在工作区之外，便于多次手动触发时直接复用。
           $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
           $marker = Join-Path $localRoot ".complete"
+          $restored = "false"
+          $complete = "false"
 
-          if (Test-Path $marker) {
+          if (Test-Path $localRoot) {
             New-Item -ItemType Directory -Force -Path $env:DEPS_DIR | Out-Null
-            Copy-Item -Recurse -Force (Join-Path $localRoot "*") $env:DEPS_DIR
-            "hit=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            Write-Output "Reused local deps from $localRoot"
+            Copy-Item -Recurse -Force (Join-Path $localRoot "*") $env:DEPS_DIR -ErrorAction SilentlyContinue
+            $restored = "true"
+            if (Test-Path $marker) {
+              $complete = "true"
+            }
+            Write-Output "Reused local deps from $localRoot (complete=$complete)"
           }
           else {
-            "hit=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             Write-Output "No reusable local deps found at $localRoot"
           }
+
+          "hit=$restored" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "complete=$complete" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Restore deps from local state (Unix)
         id: local-deps-unix
@@ -175,24 +182,34 @@ jobs:
           set -euo pipefail
           local_root="$HOME/.cache/vulcan-mcp/lua-deps/${{ matrix.platform }}/${{ matrix.runner }}/$DEPS_STATE_KEY"
           marker="$local_root/.complete"
+          restored="false"
+          complete="false"
 
-          if [ -f "$marker" ]; then
+          if [ -d "$local_root" ]; then
             mkdir -p "$DEPS_DIR"
             cp -a "$local_root"/. "$DEPS_DIR"/
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-            echo "Reused local deps from $local_root"
+            restored="true"
+            if [ -f "$marker" ]; then
+              complete="true"
+            fi
+            echo "Reused local deps from $local_root (complete=$complete)"
           else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
             echo "No reusable local deps found at $local_root"
           fi
 
+          echo "hit=$restored" >> "$GITHUB_OUTPUT"
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+
       - name: Restore deps cache
         id: cache-deps
-        if: steps.local-deps-windows.outputs.hit != 'true' && steps.local-deps-unix.outputs.hit != 'true'
+        if: steps.local-deps-windows.outputs.complete != 'true' && steps.local-deps-unix.outputs.complete != 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.DEPS_DIR }}
           key: ${{ matrix.os == 'Windows' && format('{0}-{1}-{2}-win-libyaml-{3}', env.DEPS_STATE_KEY, matrix.platform, matrix.runner, env.WINDOWS_LIBYAML_BUILD_VERSION) || format('{0}-{1}-{2}', env.DEPS_STATE_KEY, matrix.platform, matrix.runner) }}
+          restore-keys: |
+            ${{ matrix.os == 'Windows' && format('{0}-{1}-{2}-win-libyaml-', env.DEPS_STATE_KEY, matrix.platform, matrix.runner) || '' }}
+            ${{ format('{0}-{1}-{2}', env.DEPS_STATE_KEY, matrix.platform, matrix.runner) }}
 
       - name: Check libyaml refresh state (Windows)
         id: libyaml-refresh-windows
@@ -220,12 +237,29 @@ jobs:
 
           "needs_refresh=$needsRefresh" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      - name: Check dependency refresh state (Windows)
+        id: windows-refresh
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Each component is checked independently so later failures do not force earlier successful builds to rerun.
+          # 每个依赖单独检查，避免后续步骤失败时让前面已成功的构建再次重跑。
+          $opensslNeeds = if (Test-Path (Join-Path $env:DEPS_DIR "openssl")) { "false" } else { "true" }
+          $zlibNeeds = if (Test-Path (Join-Path $env:DEPS_DIR "zlib")) { "false" } else { "true" }
+          $pcre2Needs = if (Test-Path (Join-Path $env:DEPS_DIR "pcre2")) { "false" } else { "true" }
+          $libyamlNeeds = "${{ steps.libyaml-refresh-windows.outputs.needs_refresh }}"
+
+          "openssl_needs_refresh=$opensslNeeds" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "zlib_needs_refresh=$zlibNeeds" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "pcre2_needs_refresh=$pcre2Needs" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "libyaml_needs_refresh=$libyamlNeeds" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows' && ((steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true') || steps.libyaml-refresh-windows.outputs.needs_refresh == 'true')
+        if: runner.os == 'Windows' && (steps.windows-refresh.outputs.openssl_needs_refresh == 'true' || steps.windows-refresh.outputs.zlib_needs_refresh == 'true' || steps.windows-refresh.outputs.pcre2_needs_refresh == 'true' || steps.windows-refresh.outputs.libyaml_needs_refresh == 'true')
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install build tools (Windows)
-        if: runner.os == 'Windows' && ((steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true') || steps.libyaml-refresh-windows.outputs.needs_refresh == 'true')
+        if: runner.os == 'Windows' && (steps.windows-refresh.outputs.openssl_needs_refresh == 'true' || steps.windows-refresh.outputs.zlib_needs_refresh == 'true' || steps.windows-refresh.outputs.pcre2_needs_refresh == 'true' || steps.windows-refresh.outputs.libyaml_needs_refresh == 'true')
         shell: pwsh
         run: |
           # MissingTools collects only the Windows tools that are still absent on the current runner.
@@ -279,7 +313,7 @@ jobs:
           }
 
       - name: Build OpenSSL (Windows)
-        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.openssl_needs_refresh == 'true'
         shell: pwsh
         run: |
           $url = "https://github.com/openssl/openssl/releases/download/openssl-$env:OPENSSL_VERSION/openssl-$env:OPENSSL_VERSION.tar.gz"
@@ -291,8 +325,18 @@ jobs:
           nmake install_sw
           Pop-Location
 
+      - name: Persist openssl to local state (Windows)
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.openssl_needs_refresh == 'true'
+        shell: pwsh
+        run: |
+          # Persist each dependency immediately so later failures do not discard earlier work.
+          # 每个依赖一旦构建成功就立即持久化，避免后续失败导致前序成果丢失。
+          $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
+          New-Item -ItemType Directory -Force -Path $localRoot | Out-Null
+          Copy-Item -Recurse -Force "$env:DEPS_DIR\openssl" "$localRoot\"
+
       - name: Build zlib (Windows)
-        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.zlib_needs_refresh == 'true'
         shell: pwsh
         run: |
           $url = "https://github.com/madler/zlib/releases/download/v$env:ZLIB_VERSION/zlib-$env:ZLIB_VERSION.tar.gz"
@@ -307,8 +351,16 @@ jobs:
           Pop-Location
           Pop-Location
 
+      - name: Persist zlib to local state (Windows)
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.zlib_needs_refresh == 'true'
+        shell: pwsh
+        run: |
+          $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
+          New-Item -ItemType Directory -Force -Path $localRoot | Out-Null
+          Copy-Item -Recurse -Force "$env:DEPS_DIR\zlib" "$localRoot\"
+
       - name: Build PCRE2 (Windows)
-        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.pcre2_needs_refresh == 'true'
         shell: pwsh
         run: |
           $url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$env:PCRE2_VERSION/pcre2-$env:PCRE2_VERSION.tar.gz"
@@ -323,29 +375,37 @@ jobs:
           Pop-Location
           Pop-Location
 
-      - name: Build libyaml (Windows)
-        if: runner.os == 'Windows' && ((steps.local-deps-windows.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true') || steps.libyaml-refresh-windows.outputs.needs_refresh == 'true')
+      - name: Persist pcre2 to local state (Windows)
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.pcre2_needs_refresh == 'true'
         shell: pwsh
         run: |
-          # Build libyaml from source to avoid vcpkg manifest-mode failures on self-hosted runners.
-          # 直接源码编译 libyaml，以规避 self-hosted runner 上 vcpkg manifest 模式导致的失败。
-          $url = "https://github.com/yaml/libyaml/releases/download/$env:LIBYAML_VERSION/yaml-$env:LIBYAML_VERSION.tar.gz"
+          $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
+          New-Item -ItemType Directory -Force -Path $localRoot | Out-Null
+          Copy-Item -Recurse -Force "$env:DEPS_DIR\pcre2" "$localRoot\"
+
+      - name: Build libyaml (Windows)
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.libyaml_needs_refresh == 'true'
+        shell: pwsh
+        run: |
+          # Build libyaml from the Git tag archive because the release asset omits CMake support files.
+          # 使用 Git tag 源码归档构建 libyaml，因为 release 附件缺少 CMake 所需的辅助文件。
+          $url = "https://github.com/yaml/libyaml/archive/refs/tags/$env:LIBYAML_VERSION.tar.gz"
           curl -fSL $url -o libyaml.tar.gz
           tar -xzf libyaml.tar.gz
-          Push-Location "yaml-$env:LIBYAML_VERSION"
+          Push-Location "libyaml-$env:LIBYAML_VERSION"
 
           $buildDir = "build"
           New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
           Push-Location $buildDir
-          # Newer CMake releases reject libyaml 0.2.5's legacy minimum policy unless we set it explicitly.
-          # 新版 CMake 会拒绝 libyaml 0.2.5 的旧最小策略，需要显式指定兼容策略下限。
-          cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:DEPS_DIR\libyaml" -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          # PowerShell can split unquoted dotted values, so every -D flag is passed as a single string.
+          # PowerShell 会拆分未加引号的小数值，因此每个 -D 参数都显式作为单个字符串传入。
+          cmake .. -G Ninja "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_INSTALL_PREFIX=$env:DEPS_DIR\libyaml" "-DBUILD_SHARED_LIBS=OFF" "-DBUILD_TESTING=OFF" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
           ninja install
           Pop-Location
           Pop-Location
 
       - name: Write libyaml build marker (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.libyaml_needs_refresh == 'true'
         shell: pwsh
         run: |
           # The marker records the Windows libyaml fix level so future runs can refresh only this component.
@@ -354,6 +414,14 @@ jobs:
           $markerPath = Join-Path $libyamlDir ".build-version"
           New-Item -ItemType Directory -Force -Path $libyamlDir | Out-Null
           Set-Content -Path $markerPath -Value $env:WINDOWS_LIBYAML_BUILD_VERSION -NoNewline
+
+      - name: Persist libyaml to local state (Windows)
+        if: runner.os == 'Windows' && steps.windows-refresh.outputs.libyaml_needs_refresh == 'true'
+        shell: pwsh
+        run: |
+          $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
+          New-Item -ItemType Directory -Force -Path $localRoot | Out-Null
+          Copy-Item -Recurse -Force "$env:DEPS_DIR\libyaml" "$localRoot\"
 
       - name: Install build tools (Linux)
         if: runner.os == 'Linux' && steps.local-deps-unix.outputs.hit != 'true' && steps.cache-deps.outputs.cache-hit != 'true'
@@ -502,7 +570,7 @@ jobs:
           done
 
       - name: Persist deps to local state (Windows)
-        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.hit != 'true'
+        if: runner.os == 'Windows' && steps.local-deps-windows.outputs.complete != 'true'
         shell: pwsh
         run: |
           $localRoot = Join-Path $env:USERPROFILE ".cache\vulcan-mcp\lua-deps\${{ matrix.platform }}\${{ matrix.runner }}\$env:DEPS_STATE_KEY"
@@ -511,7 +579,7 @@ jobs:
           New-Item -ItemType File -Force -Path (Join-Path $localRoot ".complete") | Out-Null
 
       - name: Persist deps to local state (Unix)
-        if: runner.os != 'Windows' && steps.local-deps-unix.outputs.hit != 'true'
+        if: runner.os != 'Windows' && steps.local-deps-unix.outputs.complete != 'true'
         shell: bash
         run: |
           set -euo pipefail
