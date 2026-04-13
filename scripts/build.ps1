@@ -79,13 +79,25 @@ if (Test-Path "runtime\lua_skills") {
 }
 
 # Sync third-party Lua packages to output/lua_packages
+# Only copy runtime-relevant directories: lib/lua/, share/lua/, bin/
 $ThirdPartyPackages = "third_party\lua_packages"
+$PkgOut = "$BaseOutDir\lua_packages"
 if (Test-Path $ThirdPartyPackages) {
-    $PkgOut = "$BaseOutDir\lua_packages"
-    if (-not (Test-Path $PkgOut)) {
-        New-Item -ItemType Directory -Path $PkgOut -Force | Out-Null
+    $pkgSrcDirs = @(
+        "lib\lua",
+        "share\lua",
+        "bin"
+    )
+    foreach ($dir in $pkgSrcDirs) {
+        $src = Join-Path $ThirdPartyPackages $dir
+        $dst = Join-Path $PkgOut $dir
+        if (Test-Path $src) {
+            if (-not (Test-Path $dst)) {
+                New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+            }
+            Copy-Item -Force -Recurse "$src\*" $dst
+        }
     }
-    Copy-Item -Force -Recurse "$ThirdPartyPackages\*" "$PkgOut\"
     Write-Host "==> Third-party Lua packages synced to $PkgOut\"
 } else {
     Write-Host "==> No third_party/lua_packages found (run scripts/install_lua_deps.ps1 first)"

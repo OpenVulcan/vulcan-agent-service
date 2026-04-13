@@ -54,11 +54,16 @@ else
 fi
 
 # Sync third-party Lua packages to output/lua_packages
+# Only copy runtime-relevant directories: lib/lua/, share/lua/, bin/
 PKG_SRC="third_party/lua_packages"
 PKG_OUT="output/lua_packages"
-mkdir -p "$PKG_OUT"
-if [ -d "$PKG_SRC" ] && [ "$(ls -A "$PKG_SRC/" 2>/dev/null)" ]; then
-    cp -rf "$PKG_SRC"/* "$PKG_OUT/"
+if [ -d "$PKG_SRC" ]; then
+    for dir in lib/lua share/lua bin; do
+        if [ -d "$PKG_SRC/$dir" ]; then
+            mkdir -p "$PKG_OUT/$dir"
+            cp -rf "$PKG_SRC/$dir"/* "$PKG_OUT/$dir/"
+        fi
+    done
     echo "==> Third-party Lua packages synced to $PKG_OUT/"
 else
     echo "==> No third_party/lua_packages found (run scripts/install_lua_deps.sh first)"
