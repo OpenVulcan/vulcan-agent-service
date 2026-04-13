@@ -31,10 +31,20 @@ if [ -f "$CARGO_TARGET.exe" ]; then
     CARGO_TARGET="${CARGO_TARGET}.exe"
 fi
 
+mkdir -p "$OUT_DIR"
 cp -f "$CARGO_TARGET" "$OUT_DIR/"
 echo "==> Binary copied to ${OUT_DIR}/"
 
-# Sync runtime config files to output/configs
+# Sync C dependency DLLs to output/libs/
+mkdir -p output/libs
+if [ -d "third_party/deps" ]; then
+    find third_party/deps -type f \( -name "*.dll" -o -name "*.so" -o -name "*.dylib" \) -exec cp -f {} output/libs/ \;
+    echo "==> C runtime libs synced to output/libs/"
+else
+    echo "==> No third_party/deps found"
+fi
+
+# Sync runtime config files to output/configs/
 mkdir -p output/configs
 if [ -d "runtime/configs" ] && [ "$(ls -A runtime/configs/ 2>/dev/null)" ]; then
     cp -rf runtime/configs/* output/configs/
@@ -43,7 +53,7 @@ else
     echo "==> No runtime/configs directory found"
 fi
 
-# Sync runtime Lua skills to output/lua_skills
+# Sync runtime Lua skills to output/lua_skills/
 SKILLS_OUT="output/lua_skills"
 mkdir -p "$SKILLS_OUT"
 if [ -d "runtime/lua_skills" ] && [ "$(ls -A runtime/lua_skills/ 2>/dev/null)" ]; then
@@ -53,12 +63,12 @@ else
     echo "==> No runtime/lua_skills directory found"
 fi
 
-# Sync third-party Lua packages to output/lua_packages
-# Only copy runtime-relevant directories: lib/lua/, share/lua/, bin/
+# Sync third-party Lua packages to output/lua_packages/
+# Only copy runtime-relevant directories: lib/lua/, share/lua/
 PKG_SRC="third_party/lua_packages"
 PKG_OUT="output/lua_packages"
 if [ -d "$PKG_SRC" ]; then
-    for dir in lib/lua share/lua bin; do
+    for dir in lib/lua share/lua; do
         if [ -d "$PKG_SRC/$dir" ]; then
             mkdir -p "$PKG_OUT/$dir"
             cp -rf "$PKG_SRC/$dir"/* "$PKG_OUT/$dir/"

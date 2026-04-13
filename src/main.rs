@@ -34,6 +34,9 @@ use server::McpServer;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
 
+    // Prepend output/libs/ to PATH so C dependency DLLs are found at runtime
+    add_libs_to_path();
+
     let mut server = McpServer::new();
 
     // Connect gRPC clients if configured
@@ -107,6 +110,30 @@ fn find_lua_skill_dirs(cfg: &config::Config) -> Option<(std::path::PathBuf, Opti
     });
 
     Some((base_dir, override_path))
+}
+
+/// Prepend output/libs/ to PATH so C dependency DLLs (zlib1.dll, etc.)
+/// are discoverable when Lua C modules load via FFI.
+fn add_libs_to_path() {
+    let Ok(exe_path) = std::env::current_exe() else { return };
+    let Some(exe_dir) = exe_path.parent() else { return };
+    let parent = exe_dir.parent().unwrap_or(exe_dir);
+    let libs_dir = parent.join("libs");
+
+    if !libs_dir.exists() {
+        return;
+    }
+
+    let libs_str = libs_dir.to_string_lossy().to_string();
+    let current_path = std::env::var("PATH").unwrap_or_default();
+
+    #[cfg(windows)]
+    let separator = ";";
+    #[cfg(not(windows))]
+    let separator = ":";
+
+    let new_path = format!("{}{}{}", libs_str, separator, current_path);
+    std::env::set_var("PATH", new_path);
 }
 
 #[cfg(target_os = "windows")]

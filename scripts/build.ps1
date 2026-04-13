@@ -39,77 +39,66 @@ if (-not (Test-Path $BinExe)) {
     exit 1
 }
 
-# Determine base output directory
+# Output directories
 $BaseOutDir = "output"
+$LibsOut = "$BaseOutDir\libs"
+$SkillsOut = "$BaseOutDir\lua_skills"
+$PkgOut = "$BaseOutDir\lua_packages"
+$ConfigOut = "$BaseOutDir\configs"
 
-# Ensure base output directory exists
-if (-not (Test-Path $BaseOutDir)) {
-    New-Item -ItemType Directory -Path $BaseOutDir -Force | Out-Null
-}
-
-# Ensure bin output directory exists
-if (-not (Test-Path $OutDir)) {
-    New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
-}
+# Ensure output directories exist
+if (-not (Test-Path $BaseOutDir)) { New-Item -ItemType Directory -Path $BaseOutDir -Force | Out-Null }
+if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
 
 # Copy binary
 Copy-Item -Force $BinExe "$OutDir\$BinName.exe"
 Write-Host "==> Binary copied to $OutDir\"
 
-# Sync runtime config files to output/configs
-if (Test-Path "runtime\configs") {
-    if (-not (Test-Path "$BaseOutDir\configs")) {
-        New-Item -ItemType Directory -Path "$BaseOutDir\configs" -Force | Out-Null
+# Sync C dependency DLLs to output/libs/
+if (Test-Path "third_party\deps") {
+    if (-not (Test-Path $LibsOut)) { New-Item -ItemType Directory -Path $LibsOut -Force | Out-Null }
+    Get-ChildItem -Recurse -Path "third_party\deps" -Include "*.dll","*.so","*.dylib" -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item -Force $_.FullName "$LibsOut\$($_.Name)"
     }
-    Copy-Item -Force -Recurse "runtime\configs\*" "$BaseOutDir\configs\"
-    Write-Host "==> Runtime configs synced to $BaseOutDir\configs\"
+    Write-Host "==> C runtime DLLs synced to $LibsOut\"
+} else {
+    Write-Host "==> No third_party/deps found"
+}
+
+# Sync runtime config files to output/configs/
+if (Test-Path "runtime\configs") {
+    if (-not (Test-Path $ConfigOut)) { New-Item -ItemType Directory -Path $ConfigOut -Force | Out-Null }
+    Copy-Item -Force -Recurse "runtime\configs\*" "$ConfigOut\"
+    Write-Host "==> Runtime configs synced to $ConfigOut\"
 } else {
     Write-Host "==> No runtime/configs directory found"
 }
 
-# Sync runtime Lua skills to output/lua_skills
+# Sync runtime Lua skills to output/lua_skills/
 if (Test-Path "runtime\lua_skills") {
-    if (-not (Test-Path "$BaseOutDir\lua_skills")) {
-        New-Item -ItemType Directory -Path "$BaseOutDir\lua_skills" -Force | Out-Null
-    }
-    Copy-Item -Force -Recurse "runtime\lua_skills\*" "$BaseOutDir\lua_skills\"
-    Write-Host "==> Runtime Lua skills synced to $BaseOutDir\lua_skills\"
+    if (-not (Test-Path $SkillsOut)) { New-Item -ItemType Directory -Path $SkillsOut -Force | Out-Null }
+    Copy-Item -Force -Recurse "runtime\lua_skills\*" "$SkillsOut\"
+    Write-Host "==> Runtime Lua skills synced to $SkillsOut\"
 } else {
     Write-Host "==> No runtime/lua_skills directory found"
 }
 
-# Sync third-party Lua packages to output/lua_packages
-# Only copy runtime-relevant directories: lib/lua/, share/lua/, bin/
+# Sync third-party Lua packages to output/lua_packages/
+# Only copy runtime-relevant directories: lib/lua/, share/lua/
 $ThirdPartyPackages = "third_party\lua_packages"
-$PkgOut = "$BaseOutDir\lua_packages"
 if (Test-Path $ThirdPartyPackages) {
-    $pkgSrcDirs = @(
-        "lib\lua",
-        "share\lua",
-        "bin"
-    )
+    $pkgSrcDirs = @("lib\lua", "share\lua")
     foreach ($dir in $pkgSrcDirs) {
         $src = Join-Path $ThirdPartyPackages $dir
         $dst = Join-Path $PkgOut $dir
         if (Test-Path $src) {
-            if (-not (Test-Path $dst)) {
-                New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
-            }
+            New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
             Copy-Item -Force -Recurse "$src\*" $dst
         }
     }
     Write-Host "==> Third-party Lua packages synced to $PkgOut\"
 } else {
     Write-Host "==> No third_party/lua_packages found (run scripts/install_lua_deps.ps1 first)"
-}
-
-# Sync C dependency DLLs (runtime deps for C modules, e.g. zlib1.dll)
-$ThirdPartyDeps = "third_party\deps"
-if (Test-Path $ThirdPartyDeps) {
-    Get-ChildItem -Recurse -Path $ThirdPartyDeps -Include "*.dll","*.so","*.dylib" -ErrorAction SilentlyContinue | ForEach-Object {
-        Copy-Item -Force $_.FullName "$OutDir\$($_.Name)"
-    }
-    Write-Host "==> C runtime DLLs synced to $OutDir\"
 }
 
 Write-Host "==> Done. Binary: $OutDir\$BinName.exe"
