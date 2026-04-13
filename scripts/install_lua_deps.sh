@@ -573,6 +573,16 @@ done
 FAILED_PKGS=()
 OK_PKGS=()
 
+add_dep_vars() {
+    local dep_name="$1" dep_dir="$2"
+    case "$dep_name" in
+        openssl)  echo "--variable=OPENSSL_LIBDIR=$dep_dir/lib --variable=OPENSSL_INCDIR=$dep_dir/include" ;;
+        zlib)     echo "--variable=ZLIB_LIBDIR=$dep_dir/lib --variable=ZLIB_INCDIR=$dep_dir/include" ;;
+        pcre2)    echo "--variable=PCRE_LIBDIR=$dep_dir/lib --variable=PCRE_INCDIR=$dep_dir/include" ;;
+        libyaml)  echo "--variable=YAML_LIBDIR=$dep_dir/lib --variable=YAML_INCDIR=$dep_dir/include" ;;
+    esac
+}
+
 for pkg in "${PACKAGES[@]}"; do
     echo "==> Installing $pkg..."
     extra_args=""
@@ -580,9 +590,14 @@ for pkg in "${PACKAGES[@]}"; do
     for dep_name in "${!DEP_INSTALLS[@]}"; do
         d="${DEP_INSTALLS[$dep_name]}"
         if [ -n "$d" ]; then
-            extra_args="$extra_args --with-${dep_name}-libdir=$d/lib --with-${dep_name}-incdir=$d/include"
+            extra_args="$extra_args $(add_dep_vars "$dep_name" "$d")"
         fi
     done
+
+    # lua-zlib uses CMake — needs CMAKE_PREFIX_PATH
+    if [ "$pkg" = "lua-zlib" ] && [ -n "${DEP_INSTALLS[zlib]:-}" ]; then
+        export CMAKE_PREFIX_PATH="${DEP_INSTALLS[zlib]}"
+    fi
 
     if $LUAROCKS_BIN install "$pkg" --tree="$LUA_PACKAGES" --lua-dir="$LUAJIT_DIR" $extra_args; then
         OK_PKGS+=("$pkg")

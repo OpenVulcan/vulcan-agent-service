@@ -1009,28 +1009,51 @@ foreach ($pkg in $Packages) {
     Write-Host "==> Installing $pkg..."
     $ExtraArgs = @()
 
+    # luarocks 3.x uses --variable=NAME=value instead of --with-xxx-libdir
+    $VarMap = @{
+        "openssl" = @{ lib = "OPENSSL_LIBDIR"; inc = "OPENSSL_INCDIR" }
+        "zlib"    = @{ lib = "ZLIB_LIBDIR";     inc = "ZLIB_INCDIR" }
+        "pcre2"   = @{ lib = "PCRE_LIBDIR";      inc = "PCRE_INCDIR" }
+        "libyaml" = @{ lib = "YAML_LIBDIR";     inc = "YAML_INCDIR" }
+    }
+
     $pkgDeps = $Deps[$pkg]
     if ($pkgDeps) {
         foreach ($dep in $pkgDeps) {
             $depName = $dep.name
-            if ($DepPaths.ContainsKey($depName) -and $DepPaths[$depName]) {
+            if ($DepPaths.ContainsKey($depName) -and $DepPaths[$depName] -and $VarMap.ContainsKey($depName)) {
                 $depDir = $DepPaths[$depName]
-                $ExtraArgs += "--with-$($depName)-libdir=$(Join-Path $depDir 'lib')"
-                $ExtraArgs += "--with-$($depName)-incdir=$(Join-Path $depDir 'include')"
+                $vm = $VarMap[$depName]
+                $ExtraArgs += "--variable=$($vm.lib)=$(Join-Path $depDir 'lib')"
+                $ExtraArgs += "--variable=$($vm.inc)=$(Join-Path $depDir 'include')"
             }
         }
     }
 
-    # Run luarocks with project-local PATH
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $LuarocksExe
-    $psi.Arguments = "install $pkg --tree=`"$LuaPackages`" --lua-dir=`"$LuaJITDir`" $($ExtraArgs -join ' ')"
-    $psi.EnvironmentVariables["PATH"] = $pkgPath
-    $psi.WorkingDirectory = $LuarocksDir
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $false  # Show luarocks output
+    # lua-zlib uses CMake builtin build — needs CMAKE_PREFIX_PATH to find zlib
+    if ($pkg -eq "lua-zlib" -and $DepPaths.ContainsKey("zlib") -and $DepPaths["zlib"]) {
+        $zlibDir = $DepPaths["zlib"]
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $LuarocksExe
+        $psi.Arguments = "install $pkg --tree=`"$LuaPackages`" --lua-dir=`"$LuaJITDir`" $($ExtraArgs -join ' ')"
+        $psi.EnvironmentVariables["PATH"] = $pkgPath
+        $psi.EnvironmentVariables["CMAKE_PREFIX_PATH"] = $zlibDir
+        $psi.WorkingDirectory = $LuarocksDir
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $false
+    } else {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $LuarocksExe
+        $psi.Arguments = "install $pkg --tree=`"$LuaPackages`" --lua-dir=`"$LuaJITDir`" $($ExtraArgs -join ' ')"
+        $psi.EnvironmentVariables["PATH"] = $pkgPath
+        $psi.WorkingDirectory = $LuarocksDir
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $false
+    }
 
     $proc = [System.Diagnostics.Process]::Start($psi)
     $outTask = $proc.StandardOutput.ReadToEndAsync()
