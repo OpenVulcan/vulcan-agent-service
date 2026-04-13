@@ -59,4 +59,38 @@ if (Test-Path "configs") {
     Write-Host "==> No config directory found"
 }
 
+# Sync Lua skills
+if (Test-Path "lua_skills") {
+    if (-not (Test-Path "$OutDir\lua_skills")) {
+        New-Item -ItemType Directory -Path "$OutDir\lua_skills" -Force | Out-Null
+    }
+    Copy-Item -Force -Recurse "lua_skills\*" "$OutDir\lua_skills\"
+    Write-Host "==> Lua skills synced to $OutDir\lua_skills\"
+} else {
+    Write-Host "==> No lua_skills directory found"
+}
+
+# Sync third-party Lua packages (luarocks-installed C modules)
+$ThirdPartyPackages = "third_party\lua_packages"
+if (Test-Path $ThirdPartyPackages) {
+    $PkgOut = "$OutDir\lua_packages"
+    if (-not (Test-Path $PkgOut)) {
+        New-Item -ItemType Directory -Path $PkgOut -Force | Out-Null
+    }
+    Copy-Item -Force -Recurse "$ThirdPartyPackages\*" "$PkgOut\"
+    Write-Host "==> Third-party Lua packages synced to $PkgOut\"
+} else {
+    Write-Host "==> No third_party/lua_packages found (run scripts/install_lua_deps.ps1 first)"
+}
+
+# Sync C dependency DLLs (runtime deps for C modules, e.g. zlib1.dll)
+$ThirdPartyDeps = "third_party\deps"
+if (Test-Path $ThirdPartyDeps) {
+    # Copy runtime DLLs to output root so C modules can find them at runtime
+    Get-ChildItem -Recurse -Path $ThirdPartyDeps -Include "*.dll","*.so","*.dylib" -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item -Force $_.FullName "$OutDir\$($_.Name)"
+    }
+    Write-Host "==> C runtime DLLs synced to $OutDir\"
+}
+
 Write-Host "==> Done. Binary: $OutDir\$BinName.exe"
