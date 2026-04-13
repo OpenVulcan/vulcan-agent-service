@@ -133,7 +133,7 @@ fn add_libs_to_path() {
     let separator = ":";
 
     let new_path = format!("{}{}{}", libs_str, separator, current_path);
-    std::env::set_var("PATH", new_path);
+    unsafe { std::env::set_var("PATH", new_path); }
 }
 
 #[cfg(target_os = "windows")]
