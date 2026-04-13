@@ -39,7 +39,15 @@ if (-not (Test-Path $BinExe)) {
     exit 1
 }
 
-# Ensure output directory exists
+# Determine base output directory
+$BaseOutDir = "output"
+
+# Ensure base output directory exists
+if (-not (Test-Path $BaseOutDir)) {
+    New-Item -ItemType Directory -Path $BaseOutDir -Force | Out-Null
+}
+
+# Ensure bin output directory exists
 if (-not (Test-Path $OutDir)) {
     New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 }
@@ -48,32 +56,32 @@ if (-not (Test-Path $OutDir)) {
 Copy-Item -Force $BinExe "$OutDir\$BinName.exe"
 Write-Host "==> Binary copied to $OutDir\"
 
-# Sync config files
+# Sync config files to output/configs
 if (Test-Path "configs") {
-    if (-not (Test-Path "output\configs")) {
-        New-Item -ItemType Directory -Path "output\configs" -Force | Out-Null
+    if (-not (Test-Path "$BaseOutDir\configs")) {
+        New-Item -ItemType Directory -Path "$BaseOutDir\configs" -Force | Out-Null
     }
-    Copy-Item -Force -Recurse "configs\*" "output\configs\"
-    Write-Host "==> Config files synced to output\configs\"
+    Copy-Item -Force -Recurse "configs\*" "$BaseOutDir\configs\"
+    Write-Host "==> Config files synced to $BaseOutDir\configs\"
 } else {
     Write-Host "==> No config directory found"
 }
 
-# Sync Lua skills
+# Sync Lua skills to output/lua_skills
 if (Test-Path "lua_skills") {
-    if (-not (Test-Path "$OutDir\lua_skills")) {
-        New-Item -ItemType Directory -Path "$OutDir\lua_skills" -Force | Out-Null
+    if (-not (Test-Path "$BaseOutDir\lua_skills")) {
+        New-Item -ItemType Directory -Path "$BaseOutDir\lua_skills" -Force | Out-Null
     }
-    Copy-Item -Force -Recurse "lua_skills\*" "$OutDir\lua_skills\"
-    Write-Host "==> Lua skills synced to $OutDir\lua_skills\"
+    Copy-Item -Force -Recurse "lua_skills\*" "$BaseOutDir\lua_skills\"
+    Write-Host "==> Lua skills synced to $BaseOutDir\lua_skills\"
 } else {
     Write-Host "==> No lua_skills directory found"
 }
 
-# Sync third-party Lua packages (luarocks-installed C modules)
+# Sync third-party Lua packages to output/lua_packages
 $ThirdPartyPackages = "third_party\lua_packages"
 if (Test-Path $ThirdPartyPackages) {
-    $PkgOut = "$OutDir\lua_packages"
+    $PkgOut = "$BaseOutDir\lua_packages"
     if (-not (Test-Path $PkgOut)) {
         New-Item -ItemType Directory -Path $PkgOut -Force | Out-Null
     }
@@ -86,7 +94,6 @@ if (Test-Path $ThirdPartyPackages) {
 # Sync C dependency DLLs (runtime deps for C modules, e.g. zlib1.dll)
 $ThirdPartyDeps = "third_party\deps"
 if (Test-Path $ThirdPartyDeps) {
-    # Copy runtime DLLs to output root so C modules can find them at runtime
     Get-ChildItem -Recurse -Path $ThirdPartyDeps -Include "*.dll","*.so","*.dylib" -ErrorAction SilentlyContinue | ForEach-Object {
         Copy-Item -Force $_.FullName "$OutDir\$($_.Name)"
     }
