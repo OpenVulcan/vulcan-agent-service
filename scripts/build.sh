@@ -34,23 +34,23 @@ fi
 cp -f "$CARGO_TARGET" "$OUT_DIR/"
 echo "==> Binary copied to ${OUT_DIR}/"
 
-# Sync config files to output/configs
+# Sync runtime config files to output/configs
 mkdir -p output/configs
-if [ -d "configs" ] && [ "$(ls -A configs/ 2>/dev/null)" ]; then
-    cp -rf configs/* output/configs/
-    echo "==> Config files synced to output/configs/"
+if [ -d "runtime/configs" ] && [ "$(ls -A runtime/configs/ 2>/dev/null)" ]; then
+    cp -rf runtime/configs/* output/configs/
+    echo "==> Runtime configs synced to output/configs/"
 else
-    echo "==> No config files to sync"
+    echo "==> No runtime/configs directory found"
 fi
 
-# Sync Lua skills to output/lua_skills
+# Sync runtime Lua skills to output/lua_skills
 SKILLS_OUT="output/lua_skills"
 mkdir -p "$SKILLS_OUT"
-if [ -d "lua_skills" ] && [ "$(ls -A lua_skills/ 2>/dev/null)" ]; then
-    cp -rf lua_skills/* "$SKILLS_OUT/"
-    echo "==> Lua skills synced to $SKILLS_OUT/"
+if [ -d "runtime/lua_skills" ] && [ "$(ls -A runtime/lua_skills/ 2>/dev/null)" ]; then
+    cp -rf runtime/lua_skills/* "$SKILLS_OUT/"
+    echo "==> Runtime Lua skills synced to $SKILLS_OUT/"
 else
-    echo "==> No lua_skills directory found"
+    echo "==> No runtime/lua_skills directory found"
 fi
 
 # Sync third-party Lua packages to output/lua_packages

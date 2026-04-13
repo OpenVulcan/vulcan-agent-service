@@ -56,26 +56,26 @@ if (-not (Test-Path $OutDir)) {
 Copy-Item -Force $BinExe "$OutDir\$BinName.exe"
 Write-Host "==> Binary copied to $OutDir\"
 
-# Sync config files to output/configs
-if (Test-Path "configs") {
+# Sync runtime config files to output/configs
+if (Test-Path "runtime\configs") {
     if (-not (Test-Path "$BaseOutDir\configs")) {
         New-Item -ItemType Directory -Path "$BaseOutDir\configs" -Force | Out-Null
     }
-    Copy-Item -Force -Recurse "configs\*" "$BaseOutDir\configs\"
-    Write-Host "==> Config files synced to $BaseOutDir\configs\"
+    Copy-Item -Force -Recurse "runtime\configs\*" "$BaseOutDir\configs\"
+    Write-Host "==> Runtime configs synced to $BaseOutDir\configs\"
 } else {
-    Write-Host "==> No config directory found"
+    Write-Host "==> No runtime/configs directory found"
 }
 
-# Sync Lua skills to output/lua_skills
-if (Test-Path "lua_skills") {
+# Sync runtime Lua skills to output/lua_skills
+if (Test-Path "runtime\lua_skills") {
     if (-not (Test-Path "$BaseOutDir\lua_skills")) {
         New-Item -ItemType Directory -Path "$BaseOutDir\lua_skills" -Force | Out-Null
     }
-    Copy-Item -Force -Recurse "lua_skills\*" "$BaseOutDir\lua_skills\"
-    Write-Host "==> Lua skills synced to $BaseOutDir\lua_skills\"
+    Copy-Item -Force -Recurse "runtime\lua_skills\*" "$BaseOutDir\lua_skills\"
+    Write-Host "==> Runtime Lua skills synced to $BaseOutDir\lua_skills\"
 } else {
-    Write-Host "==> No lua_skills directory found"
+    Write-Host "==> No runtime/lua_skills directory found"
 }
 
 # Sync third-party Lua packages to output/lua_packages

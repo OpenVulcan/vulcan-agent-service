@@ -1,0 +1,23 @@
+{
+  "name": "codeview_ts",
+  "tool_name": "codeview_ts",
+  "description": "Scan a directory for TypeScript files and extract function names, line numbers, and signatures",
+  "lua_entry": "main.lua",
+  "lua_module": "codeview_ts",
+  "parameters": [
+    {
+      "name": "dir",
+      "type": "string",
+      "description": "Directory to scan for TypeScript files",
+      "required": true
+    },
+    {
+      "name": "recursive",
+      "type": "boolean",
+      "description": "Recursively scan subdirectories (default: false)",
+      "required": false
+    }
+  ],
+  "return_type": "table",
+  "prompt": "Use this to analyze TypeScript/JavaScript code structure. Returns a list of functions with file paths and line numbers for quick code navigation."
+}
