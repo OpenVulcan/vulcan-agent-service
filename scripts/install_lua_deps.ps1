@@ -9,6 +9,12 @@ $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path $PSScriptRoot -Parent
 Set-Location $ProjectDir
 
+# 统一使用 RuntimeInformation 做平台探测，兼容 Windows PowerShell 5.1 与 PowerShell 7+。
+# Use RuntimeInformation for platform detection so the script behaves consistently on Windows PowerShell 5.1 and PowerShell 7+.
+$script:IsWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+$script:IsMacOSPlatform   = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+$script:IsLinuxPlatform   = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
+
 # ============================================================
 # Configuration
 # ============================================================
@@ -184,7 +190,7 @@ $VcpkgExePath = Join-Path $VcpkgDir "vcpkg.exe"
 $UserVcpkgDir = Join-Path $env:USERPROFILE ".vcpkg"
 
 function Check-Vcpkg {
-    $localBinName = if ($IsWindows) { "vcpkg.exe" } else { "vcpkg" }
+    $localBinName = if ($script:IsWindowsPlatform) { "vcpkg.exe" } else { "vcpkg" }
 
     # 1. From user's ~/.vcpkg (installed via vcpkg-init.ps1) — use directly, no copy needed
     $userExe = Join-Path $UserVcpkgDir $localBinName
@@ -405,6 +411,158 @@ function Activate-LocalTools {
     }
 }
 
+function Get-CurrentPlatformKey {
+    <#
+    .SYNOPSIS
+    获取当前平台标识 / Get the current platform key.
+
+    .DESCRIPTION
+    将当前运行环境规范化为 `windows`、`linux`、`macos` 三种配置键，
+    供 `lua_packages.txt` 的平台过滤逻辑复用。
+    Normalize the current runtime into one of the configuration keys:
+    `windows`, `linux`, or `macos`, so the same filtering logic can be reused by `lua_packages.txt`.
+    #>
+    if ($script:IsWindowsPlatform) { return "windows" }
+    if ($script:IsMacOSPlatform) { return "macos" }
+    return "linux"
+}
+
+function Test-ConfigOsMatch {
+    <#
+    .SYNOPSIS
+    判断配置行是否适用于当前平台 / Check whether a config line applies to the current platform.
+
+    .PARAMETER ConfigOs
+    配置文件中声明的平台键。
+    Platform key declared in the configuration file.
+    #>
+    param([string]$ConfigOs)
+
+    $CurrentPlatformKey = Get-CurrentPlatformKey
+    return ($ConfigOs -eq "any" -or $ConfigOs -eq $CurrentPlatformKey)
+}
+
+function Join-BaseWithRelativePath {
+    <#
+    .SYNOPSIS
+    以平台无关方式拼接相对路径 / Join a relative path in a platform-neutral way.
+
+    .PARAMETER BasePath
+    起始目录。
+    Base directory.
+
+    .PARAMETER RelativePath
+    使用 `/` 或 `\` 分隔的相对路径。
+    Relative path that may use `/` or `\` separators.
+    #>
+    param(
+        [string]$BasePath,
+        [string]$RelativePath
+    )
+
+    $ResolvedPath = $BasePath
+    foreach ($Segment in ($RelativePath -split '[\\/]')) {
+        if (-not $Segment) { continue }
+        $ResolvedPath = Join-Path $ResolvedPath $Segment
+    }
+    return $ResolvedPath
+}
+
+function Resolve-ConfigReference {
+    <#
+    .SYNOPSIS
+    解析配置引用值 / Resolve a config reference value.
+
+    .DESCRIPTION
+    支持三类引用：
+    1. `dep:<name>[/subpath]`：依赖安装根目录及其子路径
+    2. `tool:<subpath>`：`third_party/tools` 下的工具路径
+    3. `path:<subpath>`：项目根目录下的相对路径
+    未命中前缀时按字面量返回。
+    Supports three reference kinds:
+    1. `dep:<name>[/subpath]`: dependency install root and optional child path
+    2. `tool:<subpath>`: tool path under `third_party/tools`
+    3. `path:<subpath>`: project-relative path
+    Any other value is returned as a literal string.
+    #>
+    param(
+        [string]$Reference,
+        [hashtable]$DepPaths
+    )
+
+    if (-not $Reference) {
+        return $Reference
+    }
+
+    if ($Reference -match '^dep:([^\\/]+)(?:[\\/](.+))?$') {
+        $DepName = $Matches[1]
+        $RelativePath = $Matches[2]
+        if (-not $DepPaths.ContainsKey($DepName) -or -not $DepPaths[$DepName]) {
+            throw "Dependency path not resolved for config reference '$Reference'"
+        }
+        if ($RelativePath) {
+            return Join-BaseWithRelativePath -BasePath $DepPaths[$DepName] -RelativePath $RelativePath
+        }
+        return $DepPaths[$DepName]
+    }
+
+    if ($Reference -match '^tool:(.+)$') {
+        return Join-BaseWithRelativePath -BasePath $ToolsDir -RelativePath $Matches[1]
+    }
+
+    if ($Reference -match '^path:(.+)$') {
+        return Join-BaseWithRelativePath -BasePath $ProjectDir -RelativePath $Matches[1]
+    }
+
+    return $Reference
+}
+
+function Ensure-UnameStub {
+    <#
+    .SYNOPSIS
+    为依赖类 Unix 小工具的 Lua 构建脚本创建最小兼容桩 / Create minimal shims for Lua build scripts that expect Unix-style helper commands.
+
+    .DESCRIPTION
+    某些 Lua rock（例如 lyaml）在 Windows 上仍会执行 `uname -s` 来判断平台，
+    也会把 `true` 当成可选的文档生成占位命令。
+    Windows PowerShell 默认不提供这些命令，因此这里在项目内创建一组只返回必要结果的轻量脚本。
+    Some Lua rocks (for example lyaml) still call `uname -s` to detect the platform on Windows,
+    and also expect `true` to exist as an optional doc-generation placeholder command.
+    Windows PowerShell does not provide these commands by default, so we create lightweight project-local shims that return only the values these builds need.
+
+    .OUTPUTS
+    [string] uname 桩脚本所在目录。
+    [string] Directory containing the uname shim.
+    #>
+    $UnameDir = Join-Path $ToolsDir "uname"
+    $UnameScript = Join-Path $UnameDir "uname.cmd"
+    $TrueScript = Join-Path $UnameDir "true.cmd"
+
+    Ensure-Dir $UnameDir
+
+    $UnameContent = @"
+@echo off
+if /I "%~1"=="-m" (
+  echo x86_64
+  exit /b 0
+)
+if /I "%~1"=="-s" (
+  echo Windows_NT
+  exit /b 0
+)
+echo Windows_NT
+"@
+
+    Set-Content -Path $UnameScript -Value $UnameContent -Encoding ASCII
+    Set-Content -Path $TrueScript -Value "@echo off`r`nexit /b 0`r`n" -Encoding ASCII
+
+    if ($script:ToolDirs -notcontains $UnameDir) {
+        $script:ToolDirs += $UnameDir
+    }
+
+    return $UnameDir
+}
+
 function Run-With-LocalPath {
     param([string]$Cmd, [string[]]$Args)
     $allArgs = @($Cmd) + $Args
@@ -434,8 +592,8 @@ function Run-With-LocalPath {
 $ReleaseTag = "deps-v1"  # matches the workflow release tag
 
 function Download-Prebuilt-Deps {
-    $Platform = if ($IsWindows) { "windows-x64" }
-                elseif ($IsMacOS) { "macos-x64" }
+    $Platform = if ($script:IsWindowsPlatform) { "windows-x64" }
+                elseif ($script:IsMacOSPlatform) { "macos-x64" }
                 else { "linux-x64" }
 
     $assetName = "lua-deps-${Platform}.tar.gz"
@@ -524,6 +682,7 @@ Activate-LocalTools
 $PackagesFile = Join-Path $ProjectDir "scripts\lua_packages.txt"
 $Packages = @()
 $Deps = @{}
+$PackageConfigs = @{}
 $CurrentPkg = $null
 
 if (Test-Path $PackagesFile) {
@@ -532,17 +691,45 @@ if (Test-Path $PackagesFile) {
         if (-not $line -or $line.StartsWith('#')) { continue }
 
         if ($line -match '^pkg\s+(\S+)(?:\s+(\S+))?') {
-            $Packages += $Matches[1]
-            $CurrentPkg = $Matches[1]
+            $PkgName = $Matches[1]
+            $Packages += $PkgName
+            $CurrentPkg = $PkgName
             if (-not $Deps.ContainsKey($CurrentPkg)) {
                 $Deps[$CurrentPkg] = @()
+            }
+            $PackageConfigs[$CurrentPkg] = @{
+                name = $PkgName
+                version = $Matches[2]
+                install_target = $PkgName
+                install_args = @()
+                env_vars = @{}
+                dep_var_rules = @()
+            }
+        } elseif ($line -match '^install\s+(\S+)\s+(.+)$') {
+            $os = $Matches[1]
+            $target = $Matches[2]
+            if ($CurrentPkg -and (Test-ConfigOsMatch -ConfigOs $os)) {
+                $PackageConfigs[$CurrentPkg].install_target = $target
+            }
+        } elseif ($line -match '^arg\s+(\S+)\s+(.+)$') {
+            $os = $Matches[1]
+            $argValue = $Matches[2]
+            if ($CurrentPkg -and (Test-ConfigOsMatch -ConfigOs $os)) {
+                $PackageConfigs[$CurrentPkg].install_args += $argValue
+            }
+        } elseif ($line -match '^env\s+(\S+)\s+(\S+)\s+(.+)$') {
+            $os = $Matches[1]
+            $envName = $Matches[2]
+            $envValue = $Matches[3]
+            if ($CurrentPkg -and (Test-ConfigOsMatch -ConfigOs $os)) {
+                $PackageConfigs[$CurrentPkg].env_vars[$envName] = $envValue
             }
         } elseif ($line -match '^dep\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)') {
             $depName = $Matches[1]
             $os = $Matches[2]
             $method = $Matches[3]
             $url = $Matches[4]
-            if ($os -eq 'windows' -or $os -eq 'any') {
+            if ($CurrentPkg -and (Test-ConfigOsMatch -ConfigOs $os)) {
                 $Deps[$CurrentPkg] += @{
                     name = $depName
                     os = $os
@@ -550,13 +737,27 @@ if (Test-Path $PackagesFile) {
                     url = $url
                 }
             }
+        } elseif ($line -match '^depvar\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)$') {
+            $depName = $Matches[1]
+            $os = $Matches[2]
+            $varName = $Matches[3]
+            $valueRef = $Matches[4]
+            if ($CurrentPkg -and (Test-ConfigOsMatch -ConfigOs $os)) {
+                $PackageConfigs[$CurrentPkg].dep_var_rules += @{
+                    dep_name = $depName
+                    var_name = $varName
+                    value_ref = $valueRef
+                }
+            }
         }
     }
     Write-Host "`n==> Packages from $PackagesFile"
     foreach ($pkg in $Packages) {
         $depList = $Deps[$pkg]
+        $pkgConfig = $PackageConfigs[$pkg]
         $depStr = if ($depList -and $depList.Count -gt 0) { " [deps: $($depList.name -join ', ')]" } else { " [pure lua]" }
-        Write-Host "    - $pkg$depStr"
+        $targetStr = if ($pkgConfig.install_target -ne $pkg) { " [target: $($pkgConfig.install_target)]" } else { "" }
+        Write-Host "    - $pkg$depStr$targetStr"
     }
 } else {
     throw "$PackagesFile not found"
@@ -984,19 +1185,27 @@ if ($AllDepNames.Count -eq 0) {
 # ============================================================
 Write-Host "`n=== Step 4: Installing Lua packages ==="
 
+if ($script:IsWindowsPlatform) {
+    # 让 LuaRocks 在运行期感知 VS 开发环境，从而自动切换到 windows/MSVC 平台配置。
+    # Expose the VS developer environment so LuaRocks picks the windows/MSVC platform instead of MinGW defaults.
+    Ensure-UnameStub | Out-Null
+    $vsResult = Detect-Tool "vs" { Check-VsTools } { Install-VsTools } "VS BuildTools (LuaRocks C module builds)"
+    if (-not $vsResult) {
+        throw "VS BuildTools is required for LuaRocks C module builds. Install it and re-run this script."
+    }
+    Activate-LocalTools
+}
+
 # Build script-local PATH with project-local tools + deps
 $pkgPath = "$LuaJITDir"
 foreach ($dir in ($script:ToolDirs | Sort-Object -Unique)) {
     if ($dir -and (Test-Path $dir)) { $pkgPath = "$dir;$pkgPath" }
 }
-if ($DepPaths.ContainsKey("openssl") -and $DepPaths["openssl"]) {
-    $pkgPath = "$(Join-Path $DepPaths['openssl'] 'bin');$pkgPath"
-}
-if ($DepPaths.ContainsKey("zlib") -and $DepPaths["zlib"]) {
-    $pkgPath = "$(Join-Path $DepPaths['zlib'] 'bin');$pkgPath"
-}
-if ($DepPaths.ContainsKey("pcre2") -and $DepPaths["pcre2"]) {
-    $pkgPath = "$(Join-Path $DepPaths['pcre2'] 'bin');$pkgPath"
+foreach ($depName in $DepPaths.Keys) {
+    $depBinDir = Join-Path $DepPaths[$depName] "bin"
+    if (Test-Path $depBinDir) {
+        $pkgPath = "$depBinDir;$pkgPath"
+    }
 }
 # Original system PATH at end
 $pkgPath = "$pkgPath;$env:Path"
@@ -1007,53 +1216,43 @@ $InstallResults = @{}
 
 foreach ($pkg in $Packages) {
     Write-Host "==> Installing $pkg..."
+    $pkgConfig = $PackageConfigs[$pkg]
     $ExtraArgs = @()
+    $InstallTarget = Resolve-ConfigReference -Reference $pkgConfig.install_target -DepPaths $DepPaths
 
-    # luarocks 3.x uses --variable=NAME=value instead of --with-xxx-libdir
-    $VarMap = @{
-        "openssl" = @{ lib = "OPENSSL_LIBDIR"; inc = "OPENSSL_INCDIR" }
-        "zlib"    = @{ lib = "ZLIB_LIBDIR";     inc = "ZLIB_INCDIR" }
-        "pcre2"   = @{ lib = "PCRE_LIBDIR";      inc = "PCRE_INCDIR" }
-        "libyaml" = @{ lib = "YAML_LIBDIR";     inc = "YAML_INCDIR" }
-    }
-
-    $pkgDeps = $Deps[$pkg]
-    if ($pkgDeps) {
-        foreach ($dep in $pkgDeps) {
-            $depName = $dep.name
-            if ($DepPaths.ContainsKey($depName) -and $DepPaths[$depName] -and $VarMap.ContainsKey($depName)) {
-                $depDir = $DepPaths[$depName]
-                $vm = $VarMap[$depName]
-                $ExtraArgs += "--variable=$($vm.lib)=$(Join-Path $depDir 'lib')"
-                $ExtraArgs += "--variable=$($vm.inc)=$(Join-Path $depDir 'include')"
-            }
+    foreach ($depVarRule in $pkgConfig.dep_var_rules) {
+        $depName = $depVarRule.dep_name
+        if ($DepPaths.ContainsKey($depName) -and $DepPaths[$depName]) {
+            $ResolvedValue = Resolve-ConfigReference -Reference $depVarRule.value_ref -DepPaths $DepPaths
+            $ExtraArgs += "$($depVarRule.var_name)=$ResolvedValue"
         }
     }
 
-    # lua-zlib uses CMake builtin build — needs CMAKE_PREFIX_PATH to find zlib
-    if ($pkg -eq "lua-zlib" -and $DepPaths.ContainsKey("zlib") -and $DepPaths["zlib"]) {
-        $zlibDir = $DepPaths["zlib"]
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $LuarocksExe
-        $psi.Arguments = "install $pkg --tree=`"$LuaPackages`" --lua-dir=`"$LuaJITDir`" $($ExtraArgs -join ' ')"
-        $psi.EnvironmentVariables["PATH"] = $pkgPath
-        $psi.EnvironmentVariables["CMAKE_PREFIX_PATH"] = $zlibDir
-        $psi.WorkingDirectory = $LuarocksDir
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.CreateNoWindow = $false
-    } else {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $LuarocksExe
-        $psi.Arguments = "install $pkg --tree=`"$LuaPackages`" --lua-dir=`"$LuaJITDir`" $($ExtraArgs -join ' ')"
-        $psi.EnvironmentVariables["PATH"] = $pkgPath
-        $psi.WorkingDirectory = $LuarocksDir
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.CreateNoWindow = $false
+    $ExtraEnv = @{}
+    foreach ($envName in $pkgConfig.env_vars.Keys) {
+        $ExtraEnv[$envName] = Resolve-ConfigReference -Reference $pkgConfig.env_vars[$envName] -DepPaths $DepPaths
     }
+
+    $InstallArgs = @(
+        "install"
+        $InstallTarget
+        "--no-doc"
+        "--tree=`"$LuaPackages`""
+        "--lua-dir=`"$LuaJITDir`""
+    ) + $pkgConfig.install_args + $ExtraArgs
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $LuarocksExe
+    $psi.Arguments = $InstallArgs -join " "
+    $psi.EnvironmentVariables["PATH"] = $pkgPath
+    foreach ($envName in $ExtraEnv.Keys) {
+        $psi.EnvironmentVariables[$envName] = $ExtraEnv[$envName]
+    }
+    $psi.WorkingDirectory = $LuarocksDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $false
 
     $proc = [System.Diagnostics.Process]::Start($psi)
     $outTask = $proc.StandardOutput.ReadToEndAsync()

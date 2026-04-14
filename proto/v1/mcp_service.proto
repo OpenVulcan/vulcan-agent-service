@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package vulcan.mcp.v1;
+
+option go_package = "github.com/openvulcan/vulcan-mcp/proto/v1;mcpv1";
+
+import "google/protobuf/empty.proto";
+
+// McpService exposes the MCP server surface over gRPC.
+// Supports unary calls for direct requests and long-lived streaming connections with heartbeat.
+// McpService 通过 gRPC 暴露 MCP 服务表面，支持一元调用和带心跳的长连接。
+service McpService {
+  // Healthz reports whether the MCP server is alive.
+  rpc Healthz(google.protobuf.Empty) returns (HealthzResponse);
+
+  // Call invokes one MCP method (tool, resource, prompt, etc.) and returns the result.
+  // Call 用于调用一个 MCP 方法（工具、资源、提示词等）并返回结果。
+  rpc Call(McpCallRequest) returns (McpCallResponse);
+
+  // Connect establishes a long-lived streaming connection.
+  // The server pushes heartbeat events and call responses.
+  // Connect 用于建立长连接，服务端推送心跳事件和调用响应。
+  rpc Connect(ConnectRequest) returns (stream ConnectEvent);
+}
+
+// ============================================================
+// Health check
+// ============================================================
+
+message HealthzResponse {
+  string status = 1;
+  string version = 2;
+  string protocol_version = 3;
+}
+
+// ============================================================
+// Unary call
+// ============================================================
+
+message McpCallRequest {
+  string method = 1;       // e.g. "tools/call", "tools/list", "resources/list"
+  string arguments = 2;    // JSON string of tool/method arguments
+  uint64 project_id = 3;
+  uint64 user_id = 4;
+  string session_id = 5;
+}
+
+message McpCallResponse {
+  string result = 1;       // JSON string of the result
+  bool is_error = 2;
+  string message = 3;
+}
+
+// ============================================================
+// Long-lived streaming connection
+// ============================================================
+
+message ConnectRequest {
+  uint64 project_id = 1;
+  uint64 user_id = 2;
+  string client_name = 3;           // e.g. "vscode-plugin", "custom-cli"
+  int32 heartbeat_interval_ms = 4;  // heartbeat interval in ms (default 30000)
+  int64 connection_timeout_sec = 5; // max connection lifetime in sec (default 86400)
+}
+
+// ConnectEvent is the union of all possible server→client stream events.
+message ConnectEvent {
+  oneof event {
+    WelcomeEvent welcome = 1;
+    HeartbeatEvent heartbeat = 2;
+    CallResponseEvent call_response = 3;
+    NotificationEvent notification = 4;
+  }
+}
+
+message WelcomeEvent {
+  string server_version = 1;
+  string session_id = 2;
+  string protocol_version = 3;
+}
+
+message HeartbeatEvent {
+  int64 timestamp_ms = 1;  // unix epoch milliseconds
+  int64 uptime_sec = 2;     // server uptime in seconds
+}
+
+message CallResponseEvent {
+  string request_id = 1;    // client-provided correlation id
+  string method = 2;
+  string result = 3;        // JSON string
+  bool is_error = 4;
+  string message = 5;
+}
+
+message NotificationEvent {
+  string type = 1;    // e.g. "tools_changed", "resources_changed"
+  string payload = 2; // JSON string
+}

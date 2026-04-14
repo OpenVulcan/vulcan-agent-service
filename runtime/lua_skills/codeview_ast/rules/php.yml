@@ -1,0 +1,60 @@
+# PHP 结构规则 / PHP structural rules
+id: php-class
+language: PHP
+severity: info
+rule:
+  kind: class_declaration
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: php-interface
+language: PHP
+severity: info
+rule:
+  kind: interface_declaration
+metadata:
+  symbol_kind: interface
+  container: true
+message: "interface"
+---
+id: php-trait
+language: PHP
+severity: info
+rule:
+  kind: trait_declaration
+metadata:
+  symbol_kind: trait
+  container: true
+message: "trait"
+---
+id: php-enum
+language: PHP
+severity: info
+rule:
+  kind: enum_declaration
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"
+---
+id: php-function
+language: PHP
+severity: info
+rule:
+  kind: function_definition
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
+---
+id: php-method
+language: PHP
+severity: info
+rule:
+  kind: method_declaration
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"

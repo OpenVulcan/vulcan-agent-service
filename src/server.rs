@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::grpc_client::{LanceDbClient, SqliteClient, ScratchpadItem, ScratchpadStore, VmmClient};
+use crate::lua_engine::{LuaEngine, LuaVmPoolConfig};
 use crate::protocol::*;
 
 // ============================================================
@@ -58,6 +59,15 @@ fn utc_now() -> String {
 #[derive(Clone)]
 pub struct McpServer {
     inner: Arc<Mutex<ServerInner>>,
+    // gRPC clients stored outside the mutex — they are Clone and do not
+    // require exclusive access, so extracting them for tool calls no longer
+    // blocks on other concurrent operations (tools/list, initialize, etc).
+    lancedb: Option<LanceDbClient>,
+    sqlite: Option<SqliteClient>,
+    #[allow(dead_code)] // reserved for VMM forwarding mode
+    vmm: Option<VmmClient>,
+    scratchpad: Option<ScratchpadStore>,
+    lua_engine: Option<Arc<LuaEngine>>,
 }
 
 struct ServerInner {
@@ -71,12 +81,6 @@ struct ServerInner {
     client_capabilities: ClientCapabilities,
     roots: Vec<Root>,
     log_level: String,
-    // gRPC clients (optional, set via builder)
-    lancedb: Option<LanceDbClient>,
-    sqlite: Option<SqliteClient>,
-    vmm: Option<VmmClient>,
-    // Scratchpad store backed by vldb_sqlite (vmcp_ prefixed tables)
-    scratchpad: Option<ScratchpadStore>,
 }
 
 impl McpServer {
@@ -92,13 +96,14 @@ impl McpServer {
             client_capabilities: ClientCapabilities::default(),
             roots: Vec::new(),
             log_level: "info".to_string(),
+        };
+        let mut server = Self {
+            inner: Arc::new(Mutex::new(inner)),
             lancedb: None,
             sqlite: None,
             vmm: None,
             scratchpad: None,
-        };
-        let mut server = Self {
-            inner: Arc::new(Mutex::new(inner)),
+            lua_engine: None,
         };
         server.register_defaults();
         server
@@ -107,37 +112,61 @@ impl McpServer {
     /// Configure the LanceDb gRPC client endpoint.
     pub async fn with_lancedb(self, endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = LanceDbClient::connect(endpoint).await?;
-        self.inner.lock().await.lancedb = Some(client);
         eprintln!("[MCP] LanceDb client connected: {}", endpoint);
-        Ok(self)
+        Ok(Self { lancedb: Some(client), ..self })
     }
 
     /// Configure the Sqlite gRPC client endpoint.
     pub async fn with_sqlite(self, endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = SqliteClient::connect(endpoint).await?;
-        self.inner.lock().await.sqlite = Some(client);
         eprintln!("[MCP] Sqlite client connected: {}", endpoint);
-        Ok(self)
+        Ok(Self { sqlite: Some(client), ..self })
     }
 
     /// Configure the VMM (VulcanMemoryMesh) gRPC client endpoint.
     /// VMM is connected but NOT exposed as MCP tools — it will be invoked through a separate mechanism.
     pub async fn with_vmm(self, endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = VmmClient::connect(endpoint).await?;
-        self.inner.lock().await.vmm = Some(client);
         eprintln!("[MCP] VMM client connected: {}", endpoint);
-        Ok(self)
+        Ok(Self { vmm: Some(client), ..self })
     }
 
     /// Configure the scratchpad store using the vldb_sqlite gRPC endpoint.
     /// Requires --sqlite to be set (scratchpad stores data in SQLite with vmcp_ prefix).
     pub async fn with_scratchpad_from_sqlite(self) -> Result<Self, Box<dyn std::error::Error>> {
-        let inner = self.inner.lock().await;
-        let sqlite = inner.sqlite.clone().ok_or("Scratchpad requires --sqlite endpoint to be set")?;
-        let store = ScratchpadStore::new(sqlite);
-        drop(inner);
-        self.inner.lock().await.scratchpad = Some(store);
+        let sqlite = self.sqlite.clone().ok_or("Scratchpad requires --sqlite endpoint to be set")?;
+        let store = ScratchpadStore::create(sqlite).await?;
         eprintln!("[MCP] Scratchpad store initialized (vmcp_ tables via SQLite)");
+        Ok(Self { scratchpad: Some(store), ..self })
+    }
+
+    /// Configure Lua skills from system and override directories.
+    pub fn with_lua_skills(
+        mut self,
+        base_dir: &std::path::Path,
+        override_dir: Option<&std::path::Path>,
+        pool_config: LuaVmPoolConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut engine = LuaEngine::new(pool_config)?;
+        engine.load_from_dirs(base_dir, override_dir)?;
+        let skills = engine.list_skills();
+        let resources = engine.list_resources();
+        let resource_templates = engine.list_resource_templates();
+        let prompts = engine.list_prompts();
+        eprintln!("[MCP] {} Lua skills loaded", skills.len());
+        self.lua_engine = Some(Arc::new(engine));
+
+        // Register Lua skills as MCP tools/resources/prompts.
+        {
+            let mut inner = self.inner.try_lock().unwrap();
+            for tool in skills {
+                inner.tools.insert(tool.name.clone(), tool);
+            }
+            inner.resources.extend(resources);
+            inner.resource_templates.extend(resource_templates);
+            inner.prompts.extend(prompts);
+        }
+
         Ok(self)
     }
 
@@ -198,7 +227,7 @@ impl McpServer {
         inner.resource_data.insert(
             "info://server".to_string(),
             "Minimal MCP server supporting protocol versions 2025-11-25 (primary), \
-             2025-03-26, and 2024-11-05."
+             2025-06-18, 2025-03-26, and 2024-11-05."
                 .to_string(),
         );
 
@@ -211,7 +240,7 @@ impl McpServer {
         });
         inner.resource_data.insert(
             "info://protocol".to_string(),
-            "Latest: 2025-11-25. Compatible: 2025-03-26, 2024-11-05".to_string(),
+            "Latest: 2025-11-25. Compatible: 2025-06-18, 2025-03-26, 2024-11-05".to_string(),
         );
 
         // --- Resource Templates (2025-03-26+) ---
@@ -460,6 +489,26 @@ impl McpServer {
                 sp_annotations,
             ),
         );
+
+        // --- runlua: execute arbitrary Lua code ---
+        inner.tools.insert(
+            "runlua".to_string(),
+            Tool::with_annotations(
+                "runlua",
+                "Execute arbitrary Lua (LuaJIT) code. Pass 'code' as a Lua script string and optional 'args' as a JSON object. The script has access to vulcan module (fs_list, fs_read, fs_write, fs_exists, fs_is_dir, path_join, cwd, exec, osinfo, json_encode, json_decode, cache_put, cache_get, cache_delete, call, log).",
+                json!({
+                    "code": {"type": "string", "description": "Lua code to execute. Use 'return <value>' to return results. Available: vulcan.fs_list(dir), vulcan.fs_read(path), vulcan.fs_write(path,content), vulcan.fs_exists(path), vulcan.fs_is_dir(path), vulcan.path_join(...), vulcan.cwd(), vulcan.exec(spec), vulcan.osinfo(), vulcan.json_encode(t), vulcan.json_decode(s), vulcan.cache_put(tool,value,ttl_sec), vulcan.cache_get(tool,cache_id), vulcan.cache_delete(tool,cache_id), vulcan.call(skill,args), vulcan.log(level,msg)"},
+                    "args": {"type": "object", "description": "Arguments passed to the Lua code as 'args' variable"}
+                }),
+                vec!["code".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(true),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(false),
+                },
+            ),
+        );
     }
 
     /// Handle a single JSON-RPC message and return the JSON response (if any).
@@ -644,7 +693,7 @@ impl McpServer {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
             instructions: Some(
-                "Minimal MCP server supporting 2025-11-25, 2025-03-26, 2024-11-05. \
+                "Minimal MCP server supporting 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05. \
                  Features: tools (add, greet, current_time), resources, prompts, \
                  completions, roots, sampling, elicitation, structured logging."
                     .to_string(),
@@ -670,9 +719,6 @@ impl McpServer {
             .get(&req.name)
             .ok_or_else(|| (-32602, format!("Unknown tool: {}", req.name)))?
             .clone();
-        let lancedb = inner.lancedb.clone();
-        let sqlite = inner.sqlite.clone();
-        let scratchpad = inner.scratchpad.clone();
         drop(inner);
 
         let args = req.arguments.unwrap_or_default();
@@ -683,7 +729,7 @@ impl McpServer {
 
             // --- LanceDb gRPC tools ---
             "lancedb_create_table" => {
-                let client = lancedb.ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let client = self.lancedb.as_ref().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?.clone();
                 let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
                 let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
                 let columns = parse_column_defs(&args)
@@ -694,7 +740,7 @@ impl McpServer {
                 }
             }
             "lancedb_upsert" => {
-                let client = lancedb.ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
                 let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
                 let format_str = args.get("input_format").and_then(|v| v.as_str()).unwrap_or("json_rows");
                 let input_format = match format_str {
@@ -717,7 +763,7 @@ impl McpServer {
                 }
             }
             "lancedb_search" => {
-                let client = lancedb.ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
                 let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
                 let vector: Vec<f32> = args.get("vector")
                     .and_then(|v| v.as_array())
@@ -744,7 +790,7 @@ impl McpServer {
                 }
             }
             "lancedb_delete" => {
-                let client = lancedb.ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
                 let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
                 let condition = args.get("condition").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 match client.delete(table_name, condition).await {
@@ -753,7 +799,7 @@ impl McpServer {
                 }
             }
             "lancedb_drop_table" => {
-                let client = lancedb.ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
                 let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
                 match client.drop_table(table_name).await {
                     Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
@@ -763,7 +809,7 @@ impl McpServer {
 
             // --- Sqlite gRPC tools ---
             "sqlite_execute" => {
-                let client = sqlite.ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
+                let client = self.sqlite.clone().ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
                 let sql = args.get("sql").and_then(|v| v.as_str()).unwrap_or("");
                 let params = parse_sqlite_params(&args);
                 match client.execute_script(sql, params).await {
@@ -772,7 +818,7 @@ impl McpServer {
                 }
             }
             "sqlite_execute_batch" => {
-                let client = sqlite.ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
+                let client = self.sqlite.clone().ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
                 let sql = args.get("sql").and_then(|v| v.as_str()).unwrap_or("");
                 let params: Vec<Vec<crate::pb_sqlite::SqliteValue>> = args.get("items")
                     .and_then(|v| v.as_array())
@@ -788,7 +834,7 @@ impl McpServer {
                 }
             }
             "sqlite_query" => {
-                let client = sqlite.ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
+                let client = self.sqlite.clone().ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
                 let sql = args.get("sql").and_then(|v| v.as_str()).unwrap_or("");
                 let output = args.get("output").and_then(|v| v.as_str()).unwrap_or("json");
                 let params = parse_sqlite_params(&args);
@@ -807,7 +853,7 @@ impl McpServer {
 
             // --- Scratchpad (DWM working memory via SQLite, vmcp_ tables) ---
             "vmcp_scratchpad_upsert" => {
-                let store = scratchpad.ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -834,7 +880,7 @@ impl McpServer {
                 }
             }
             "vmcp_scratchpad_delete" => {
-                let store = scratchpad.ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -856,7 +902,7 @@ impl McpServer {
                 }
             }
             "vmcp_scratchpad_get" => {
-                let store = scratchpad.ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -870,7 +916,7 @@ impl McpServer {
                 }
             }
             "vmcp_scratchpad_list_keys" => {
-                let store = scratchpad.ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -880,7 +926,7 @@ impl McpServer {
                 }
             }
             "vmcp_scratchpad_clean" => {
-                let store = scratchpad.ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -890,7 +936,43 @@ impl McpServer {
                 }
             }
 
-            _ => return Err((-32603, format!("Tool not implemented: {}", tool.name))),
+            // --- runlua: execute arbitrary Lua code ---
+            "runlua" => {
+                let engine = self.lua_engine.as_ref().ok_or_else(|| (-32603, "Lua engine not configured. Add lua_skills directory.".to_string()))?;
+                let code = args.get("code").and_then(|v| v.as_str()).ok_or_else(|| (-32602, "Missing required parameter: code".to_string()))?;
+                let code = code.to_string();
+                let call_args = args.get("args").cloned().unwrap_or(json!({}));
+                let engine_clone = engine.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    engine_clone.run_lua(&code, &call_args)
+                }).await.map_err(|e| (-32603, format!("runlua spawn error: {}", e)))?;
+                match result {
+                    Ok(val) => ToolCallResult { content: vec![TextContent::text(&serde_json::to_string(&val).unwrap_or_default())], is_error: None },
+                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                }
+            }
+
+            _ => {
+                // Check if this is a Lua skill
+                if let Some(engine) = &self.lua_engine {
+                    if engine.is_skill(&tool.name) {
+                        let engine_clone = engine.clone();
+                        let tool_name = tool.name.clone();
+                        let args_clone = args.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            engine_clone.call_skill(&tool_name, &args_clone)
+                        }).await.map_err(|e| (-32603, format!("Lua skill spawn error: {}", e)))?;
+                        match result {
+                            Ok(val) => ToolCallResult { content: vec![TextContent::text(&serde_json::to_string(&val).unwrap_or_default())], is_error: None },
+                            Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                        }
+                    } else {
+                        return Err((-32603, format!("Tool not implemented: {}", tool.name)));
+                    }
+                } else {
+                    return Err((-32603, format!("Tool not implemented: {}", tool.name)));
+                }
+            }
         };
 
         serde_json::to_value(result).map_err(|e| (-32603, format!("Serialization error: {}", e)))
@@ -907,33 +989,45 @@ impl McpServer {
             .and_then(|v| v.as_str().map(String::from))
             .ok_or_else(|| (-32602, "Missing required parameter: uri".to_string()))?;
 
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        {
+            let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
 
-        if let Some(content) = inner.resource_data.get(&uri) {
-            let mime = inner
-                .resources
-                .iter()
-                .find(|r| r.uri == uri)
-                .and_then(|r| r.mime_type.clone());
-            let result = ResourceReadResult {
-                contents: vec![ResourceContents::text(&uri, content, mime)],
-            };
-            return serde_json::to_value(result)
-                .map_err(|e| (-32603, format!("Serialization error: {}", e)));
+            if let Some(content) = inner.resource_data.get(&uri) {
+                let mime = inner
+                    .resources
+                    .iter()
+                    .find(|r| r.uri == uri)
+                    .and_then(|r| r.mime_type.clone());
+                let result = ResourceReadResult {
+                    contents: vec![ResourceContents::text(&uri, content, mime)],
+                };
+                return serde_json::to_value(result)
+                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
+            }
+
+            // Check resource templates (echo://{message})
+            if uri.starts_with("echo://") {
+                let message = uri.strip_prefix("echo://").unwrap_or("");
+                let result = ResourceReadResult {
+                    contents: vec![ResourceContents::text(
+                        &uri,
+                        &format!("Echo: {}", message),
+                        Some("text/plain".to_string()),
+                    )],
+                };
+                return serde_json::to_value(result)
+                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
+            }
         }
 
-        // Check resource templates (echo://{message})
-        if uri.starts_with("echo://") {
-            let message = uri.strip_prefix("echo://").unwrap_or("");
-            let result = ResourceReadResult {
-                contents: vec![ResourceContents::text(
-                    &uri,
-                    &format!("Echo: {}", message),
-                    Some("text/plain".to_string()),
-                )],
-            };
-            return serde_json::to_value(result)
-                .map_err(|e| (-32603, format!("Serialization error: {}", e)));
+        if let Some(engine) = &self.lua_engine {
+            if let Some(result) = engine
+                .read_resource(&uri)
+                .map_err(|e| (-32603, format!("Lua skill resource error: {}", e)))?
+            {
+                return serde_json::to_value(result)
+                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
+            }
         }
 
         Err((-32602, format!("Resource not found: {}", uri)))
@@ -956,61 +1050,66 @@ impl McpServer {
             .and_then(|v| v.as_str().map(String::from))
             .ok_or_else(|| (-32602, "Missing required parameter: name".to_string()))?;
 
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
-        let _prompt = inner
-            .prompts
-            .iter()
-            .find(|p| p.name == name)
-            .ok_or_else(|| (-32602, format!("Prompt not found: {}", name)))?;
-
         let language = params
             .get("arguments")
             .and_then(|a| a.get("language"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        let (desc, messages) = match name.as_str() {
-            "code_review" => (
-                Some("Code review prompt".to_string()),
-                vec![
-                    PromptMessage {
-                        role: "user".to_string(),
-                        content: TextContent::text(&format!(
-                            "Please review the following {} code for correctness, performance, and best practices:",
-                            language
-                        )),
-                    },
-                    PromptMessage {
-                        role: "user".to_string(),
-                        content: TextContent::text("<code goes here>"),
-                    },
-                ],
-            ),
-            "explain_code" => (
-                Some("Code explanation prompt".to_string()),
-                vec![
-                    PromptMessage {
-                        role: "user".to_string(),
-                        content: TextContent::text(&format!(
-                            "Please explain the following {} code in detail:",
-                            language
-                        )),
-                    },
-                    PromptMessage {
-                        role: "user".to_string(),
-                        content: TextContent::text("<code goes here>"),
-                    },
-                ],
-            ),
-            _ => return Err((-32602, format!("Prompt not implemented: {}", name))),
-        };
-
-        let result = PromptGetResult {
-            description: desc,
-            messages,
-        };
-
-        serde_json::to_value(result).map_err(|e| (-32603, format!("Serialization error: {}", e)))
+        match name.as_str() {
+            "code_review" => {
+                let result = PromptGetResult {
+                    description: Some("Code review prompt".to_string()),
+                    messages: vec![
+                        PromptMessage {
+                            role: "user".to_string(),
+                            content: TextContent::text(&format!(
+                                "Please review the following {} code for correctness, performance, and best practices:",
+                                language
+                            )),
+                        },
+                        PromptMessage {
+                            role: "user".to_string(),
+                            content: TextContent::text("<code goes here>"),
+                        },
+                    ],
+                };
+                serde_json::to_value(result)
+                    .map_err(|e| (-32603, format!("Serialization error: {}", e)))
+            }
+            "explain_code" => {
+                let result = PromptGetResult {
+                    description: Some("Code explanation prompt".to_string()),
+                    messages: vec![
+                        PromptMessage {
+                            role: "user".to_string(),
+                            content: TextContent::text(&format!(
+                                "Please explain the following {} code in detail:",
+                                language
+                            )),
+                        },
+                        PromptMessage {
+                            role: "user".to_string(),
+                            content: TextContent::text("<code goes here>"),
+                        },
+                    ],
+                };
+                serde_json::to_value(result)
+                    .map_err(|e| (-32603, format!("Serialization error: {}", e)))
+            }
+            _ => {
+                if let Some(engine) = &self.lua_engine {
+                    if let Some(result) = engine
+                        .get_prompt(&name, params.get("arguments").unwrap_or(&Value::Null))
+                        .map_err(|e| (-32603, format!("Lua skill prompt error: {}", e)))?
+                    {
+                        return serde_json::to_value(result)
+                            .map_err(|e| (-32603, format!("Serialization error: {}", e)));
+                    }
+                }
+                Err((-32602, format!("Prompt not found: {}", name)))
+            }
+        }
     }
 
     fn handle_roots_list(&self) -> Result<Value, (i64, String)> {

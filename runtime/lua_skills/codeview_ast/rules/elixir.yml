@@ -1,0 +1,56 @@
+# Elixir 结构规则 / Elixir structural rules
+id: elixir-module
+language: Elixir
+severity: info
+rule:
+  kind: call
+  has:
+    field: target
+    kind: identifier
+    regex: "^defmodule$"
+metadata:
+  symbol_kind: module
+  container: true
+message: "module"
+---
+id: elixir-protocol
+language: Elixir
+severity: info
+rule:
+  kind: call
+  has:
+    field: target
+    kind: identifier
+    regex: "^defprotocol$"
+metadata:
+  symbol_kind: protocol
+  container: true
+message: "protocol"
+---
+id: elixir-impl
+language: Elixir
+severity: info
+rule:
+  kind: call
+  has:
+    field: target
+    kind: identifier
+    regex: "^defimpl$"
+metadata:
+  symbol_kind: impl
+  container: true
+message: "impl"
+---
+id: elixir-function
+language: Elixir
+severity: info
+rule:
+  kind: call
+  has:
+    field: target
+    kind: identifier
+    regex: "^defp?$"
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

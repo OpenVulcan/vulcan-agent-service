@@ -1,0 +1,10 @@
+# Nix 结构规则 / Nix structural rules
+id: nix-binding
+language: Nix
+severity: info
+rule:
+  kind: binding
+metadata:
+  symbol_kind: attribute
+  container: false
+message: "binding"

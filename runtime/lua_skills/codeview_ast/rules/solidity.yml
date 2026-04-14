@@ -1,0 +1,60 @@
+# Solidity 结构规则 / Solidity structural rules
+id: solidity-contract
+language: Solidity
+severity: info
+rule:
+  kind: contract_declaration
+metadata:
+  symbol_kind: contract
+  container: true
+message: "contract"
+---
+id: solidity-interface
+language: Solidity
+severity: info
+rule:
+  kind: interface_declaration
+metadata:
+  symbol_kind: interface
+  container: true
+message: "interface"
+---
+id: solidity-library
+language: Solidity
+severity: info
+rule:
+  kind: library_declaration
+metadata:
+  symbol_kind: library
+  container: true
+message: "library"
+---
+id: solidity-struct
+language: Solidity
+severity: info
+rule:
+  kind: struct_declaration
+metadata:
+  symbol_kind: struct
+  container: true
+message: "struct"
+---
+id: solidity-enum
+language: Solidity
+severity: info
+rule:
+  kind: enum_declaration
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"
+---
+id: solidity-function
+language: Solidity
+severity: info
+rule:
+  kind: function_definition
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

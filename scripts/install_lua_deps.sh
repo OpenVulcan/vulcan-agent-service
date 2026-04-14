@@ -17,8 +17,77 @@ LUAJIT_DIR="$THIRD_PARTY/luajit"
 LUA_PACKAGES="$THIRD_PARTY/lua_packages"
 LUAROCKS_DIR="$THIRD_PARTY/luarocks"
 DEPS_DIR="$THIRD_PARTY/deps"
+LIST_SEP=$'\036'
 
 ensure_dir() { mkdir -p "$1"; }
+
+get_current_platform() {
+    # 将当前系统规范化为配置文件使用的 os 键。
+    # Normalize the current system to the os key used by the config file.
+    case "$(uname -s)" in
+        Darwin) echo "macos" ;;
+        *)      echo "linux" ;;
+    esac
+}
+
+config_os_matches() {
+    # 判断配置行是否适用于当前平台。
+    # Check whether a config line applies to the current platform.
+    local config_os="$1"
+    local current_platform
+    current_platform="$(get_current_platform)"
+    [[ "$config_os" = "any" || "$config_os" = "$current_platform" ]]
+}
+
+append_assoc_list() {
+    # 以分隔符追加关联数组中的列表值。
+    # Append a list item to an associative-array entry using a stable separator.
+    local array_name="$1" key="$2" value="$3"
+    local -n arr="$array_name"
+    if [ -n "${arr[$key]:-}" ]; then
+        arr["$key"]+="$LIST_SEP$value"
+    else
+        arr["$key"]="$value"
+    fi
+}
+
+resolve_config_ref() {
+    # 解析配置引用：
+    # 1. dep:<name>[/subpath]
+    # 2. tool:<subpath>
+    # 3. path:<subpath>
+    # 其他值按字面量返回。
+    # Resolve config references:
+    # 1. dep:<name>[/subpath]
+    # 2. tool:<subpath>
+    # 3. path:<subpath>
+    # Any other value is returned literally.
+    local ref="$1"
+    if [[ "$ref" =~ ^dep:([^/]+)(/(.+))?$ ]]; then
+        local dep_name="${BASH_REMATCH[1]}"
+        local relative_path="${BASH_REMATCH[3]:-}"
+        local dep_root="${DEP_INSTALLS[$dep_name]:-}"
+        if [ -z "$dep_root" ]; then
+            echo "ERROR: dependency path not resolved for $ref" >&2
+            return 1
+        fi
+        if [ -n "$relative_path" ]; then
+            echo "$dep_root/$relative_path"
+        else
+            echo "$dep_root"
+        fi
+        return 0
+    fi
+    if [[ "$ref" =~ ^tool:(.+)$ ]]; then
+        echo "$TOOLS_DIR/${BASH_REMATCH[1]}"
+        return 0
+    fi
+    if [[ "$ref" =~ ^path:(.+)$ ]]; then
+        echo "$PROJECT_DIR/${BASH_REMATCH[1]}"
+        return 0
+    fi
+    echo "$ref"
+}
 
 # ============================================================
 # Local tool paths (populated by detect_ functions)
@@ -201,7 +270,7 @@ if [ ! -f "$PACKAGES_FILE" ]; then
     exit 1
 fi
 
-declare -A DEP_URLS DEP_METHODS
+declare -A DEP_URLS DEP_METHODS PKG_INSTALL_TARGETS PKG_ARGS PKG_ENV_REFS PKG_DEPVAR_REFS PKG_DEPS
 PACKAGES=()
 CURRENT_PKG=""
 
@@ -212,14 +281,43 @@ while IFS= read -r line; do
     if [[ "$line" =~ ^pkg[[:space:]]+([^[:space:]]+) ]]; then
         CURRENT_PKG="${BASH_REMATCH[1]}"
         PACKAGES+=("$CURRENT_PKG")
+        PKG_INSTALL_TARGETS["$CURRENT_PKG"]="$CURRENT_PKG"
+    elif [[ "$line" =~ ^install[[:space:]]+([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        config_os="${BASH_REMATCH[1]}"
+        target_ref="${BASH_REMATCH[2]}"
+        if [ -n "$CURRENT_PKG" ] && config_os_matches "$config_os"; then
+            PKG_INSTALL_TARGETS["$CURRENT_PKG"]="$target_ref"
+        fi
+    elif [[ "$line" =~ ^arg[[:space:]]+([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        config_os="${BASH_REMATCH[1]}"
+        arg_value="${BASH_REMATCH[2]}"
+        if [ -n "$CURRENT_PKG" ] && config_os_matches "$config_os"; then
+            append_assoc_list PKG_ARGS "$CURRENT_PKG" "$arg_value"
+        fi
+    elif [[ "$line" =~ ^env[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        config_os="${BASH_REMATCH[1]}"
+        env_name="${BASH_REMATCH[2]}"
+        env_value="${BASH_REMATCH[3]}"
+        if [ -n "$CURRENT_PKG" ] && config_os_matches "$config_os"; then
+            PKG_ENV_REFS["$CURRENT_PKG|$env_name"]="$env_value"
+        fi
     elif [[ "$line" =~ ^dep[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+) ]]; then
         dep_name="${BASH_REMATCH[1]}"
         dep_os="${BASH_REMATCH[2]}"
         dep_method="${BASH_REMATCH[3]}"
         dep_url="${BASH_REMATCH[4]}"
-        if [ "$dep_os" = "linux" ] || [ "$dep_os" = "any" ] || [ "$dep_os" = "macos" ]; then
+        if [ -n "$CURRENT_PKG" ] && config_os_matches "$dep_os"; then
             DEP_URLS["$dep_name"]="$dep_url"
             DEP_METHODS["$dep_name"]="$dep_method"
+            append_assoc_list PKG_DEPS "$CURRENT_PKG" "$dep_name"
+        fi
+    elif [[ "$line" =~ ^depvar[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        dep_name="${BASH_REMATCH[1]}"
+        dep_os="${BASH_REMATCH[2]}"
+        var_name="${BASH_REMATCH[3]}"
+        value_ref="${BASH_REMATCH[4]}"
+        if [ -n "$CURRENT_PKG" ] && config_os_matches "$dep_os"; then
+            PKG_DEPVAR_REFS["$CURRENT_PKG|$dep_name|$var_name"]="$value_ref"
         fi
     fi
 done < "$PACKAGES_FILE"
@@ -227,19 +325,35 @@ done < "$PACKAGES_FILE"
 echo ""
 echo "==> Packages from $PACKAGES_FILE:"
 for pkg in "${PACKAGES[@]}"; do
-    dep_list=""
-    for dep_name in "${!DEP_URLS[@]}"; do
-        for p in "${PACKAGES[@]}"; do
-            if [ "$p" = "$pkg" ]; then
-                dep_list="$dep_list $dep_name"
-            fi
-        done
-    done
+    dep_list="${PKG_DEPS[$pkg]:-}"
     if [ -n "$dep_list" ]; then
-        echo "  - $pkg [deps:$dep_list]"
+        dep_display="${dep_list//$LIST_SEP/, }"
+        dep_segment=" [deps: $dep_display]"
     else
-        echo "  - $pkg [pure lua]"
+        dep_segment=" [pure lua]"
     fi
+    target_display="${PKG_INSTALL_TARGETS[$pkg]:-$pkg}"
+    if [ "$target_display" != "$pkg" ]; then
+        target_segment=" [target: $target_display]"
+    else
+        target_segment=""
+    fi
+    echo "  - $pkg$dep_segment$target_segment"
+done
+
+declare -A REQUIRED_DEP_SET
+REQUIRED_DEPS=()
+for pkg in "${PACKAGES[@]}"; do
+    dep_list="${PKG_DEPS[$pkg]:-}"
+    [ -z "$dep_list" ] && continue
+    IFS="$LIST_SEP" read -r -a pkg_dep_items <<< "$dep_list"
+    for dep_name in "${pkg_dep_items[@]}"; do
+        [ -z "$dep_name" ] && continue
+        if [ -z "${REQUIRED_DEP_SET[$dep_name]:-}" ]; then
+            REQUIRED_DEP_SET["$dep_name"]=1
+            REQUIRED_DEPS+=( "$dep_name" )
+        fi
+    done
 done
 
 # ============================================================
@@ -517,7 +631,7 @@ declare -A DEP_INSTALLS BUILT_DEPS
 PREBUILT_OK=false
 if [ "$GITHUB_REPO" != "{{GITHUB_USER}}/{{GITHUB_REPO}}" ]; then
     if download_prebuilt_deps; then
-        for dep_name in openssl zlib pcre2 libyaml; do
+        for dep_name in "${REQUIRED_DEPS[@]}"; do
             dep_dir="$DEPS_DIR/$dep_name"
             if [ -d "$dep_dir" ]; then
                 DEP_INSTALLS["$dep_name"]="$dep_dir"
@@ -532,7 +646,7 @@ if [ "$GITHUB_REPO" != "{{GITHUB_USER}}/{{GITHUB_REPO}}" ]; then
 fi
 
 # Priority 2: Source compile (skip deps already satisfied by pre-built)
-for dep_name in openssl zlib pcre2 libyaml; do
+for dep_name in "${REQUIRED_DEPS[@]}"; do
     [ "${BUILT_DEPS[$dep_name]:-}" = "1" ] && continue
     method="${DEP_METHODS[$dep_name]:-none}"
     url="${DEP_URLS[$dep_name]:-}"
@@ -573,33 +687,41 @@ done
 FAILED_PKGS=()
 OK_PKGS=()
 
-add_dep_vars() {
-    local dep_name="$1" dep_dir="$2"
-    case "$dep_name" in
-        openssl)  echo "--variable=OPENSSL_LIBDIR=$dep_dir/lib --variable=OPENSSL_INCDIR=$dep_dir/include" ;;
-        zlib)     echo "--variable=ZLIB_LIBDIR=$dep_dir/lib --variable=ZLIB_INCDIR=$dep_dir/include" ;;
-        pcre2)    echo "--variable=PCRE_LIBDIR=$dep_dir/lib --variable=PCRE_INCDIR=$dep_dir/include" ;;
-        libyaml)  echo "--variable=YAML_LIBDIR=$dep_dir/lib --variable=YAML_INCDIR=$dep_dir/include" ;;
-    esac
-}
-
 for pkg in "${PACKAGES[@]}"; do
     echo "==> Installing $pkg..."
-    extra_args=""
+    install_target="$(resolve_config_ref "${PKG_INSTALL_TARGETS[$pkg]:-$pkg}")"
+    install_cmd=( "$LUAROCKS_BIN" install "$install_target" "--no-doc" "--tree=$LUA_PACKAGES" "--lua-dir=$LUAJIT_DIR" )
+    cmd_env=()
+    dep_args=()
 
-    for dep_name in "${!DEP_INSTALLS[@]}"; do
-        d="${DEP_INSTALLS[$dep_name]}"
-        if [ -n "$d" ]; then
-            extra_args="$extra_args $(add_dep_vars "$dep_name" "$d")"
+    if [ -n "${PKG_ARGS[$pkg]:-}" ]; then
+        IFS="$LIST_SEP" read -r -a pkg_args <<< "${PKG_ARGS[$pkg]}"
+        for arg in "${pkg_args[@]}"; do
+            [ -n "$arg" ] && install_cmd+=( "$arg" )
+        done
+    fi
+
+    for env_key in "${!PKG_ENV_REFS[@]}"; do
+        if [[ "$env_key" == "$pkg|"* ]]; then
+            env_name="${env_key#"$pkg|"}"
+            env_value="$(resolve_config_ref "${PKG_ENV_REFS[$env_key]}")"
+            cmd_env+=( "$env_name=$env_value" )
         fi
     done
 
-    # lua-zlib uses CMake — needs CMAKE_PREFIX_PATH
-    if [ "$pkg" = "lua-zlib" ] && [ -n "${DEP_INSTALLS[zlib]:-}" ]; then
-        export CMAKE_PREFIX_PATH="${DEP_INSTALLS[zlib]}"
-    fi
+    for depvar_key in "${!PKG_DEPVAR_REFS[@]}"; do
+        if [[ "$depvar_key" == "$pkg|"* ]]; then
+            rest="${depvar_key#"$pkg|"}"
+            dep_name="${rest%%|*}"
+            var_name="${rest##*|}"
+            if [ -n "${DEP_INSTALLS[$dep_name]:-}" ]; then
+                resolved_value="$(resolve_config_ref "${PKG_DEPVAR_REFS[$depvar_key]}")"
+                dep_args+=( "$var_name=$resolved_value" )
+            fi
+        fi
+    done
 
-    if $LUAROCKS_BIN install "$pkg" --tree="$LUA_PACKAGES" --lua-dir="$LUAJIT_DIR" $extra_args; then
+    if env "${cmd_env[@]}" "${install_cmd[@]}" "${dep_args[@]}"; then
         OK_PKGS+=("$pkg")
     else
         FAILED_PKGS+=("$pkg")

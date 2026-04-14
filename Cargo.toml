@@ -8,6 +8,7 @@ build = "build.rs"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+async-stream = "0.3"
 axum = { version = "0.8", features = ["http2", "macros"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
@@ -22,6 +23,7 @@ tonic-prost = "0.14"
 prost = "0.14"
 arrow-ipc = "57"
 arrow-schema = "57"
+mlua = { git = "https://github.com/mlua-rs/mlua", features = ["luajit52", "vendored", "serialize", "send"] }
 bytes = "1"
 
 [build-dependencies]

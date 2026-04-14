@@ -1,0 +1,69 @@
+# CSharp 结构规则 / CSharp structural rules
+id: csharp-class
+language: CSharp
+severity: info
+rule:
+  kind: class_declaration
+  has:
+    field: name
+    kind: identifier
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: csharp-interface
+language: CSharp
+severity: info
+rule:
+  kind: interface_declaration
+  has:
+    field: name
+    kind: identifier
+metadata:
+  symbol_kind: interface
+  container: true
+message: "interface"
+---
+id: csharp-struct
+language: CSharp
+severity: info
+rule:
+  kind: struct_declaration
+  has:
+    field: name
+    kind: identifier
+metadata:
+  symbol_kind: struct
+  container: true
+message: "struct"
+---
+id: csharp-enum
+language: CSharp
+severity: info
+rule:
+  kind: enum_declaration
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"
+---
+id: csharp-constructor
+language: CSharp
+severity: info
+rule:
+  kind: constructor_declaration
+metadata:
+  symbol_kind: method
+  container: false
+message: "constructor"
+---
+id: csharp-method
+language: CSharp
+severity: info
+rule:
+  kind: method_declaration
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"

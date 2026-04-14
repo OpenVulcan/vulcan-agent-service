@@ -55,14 +55,20 @@ Copy-Item -Force $BinExe "$OutDir\$BinName.exe"
 Write-Host "==> Binary copied to $OutDir\"
 
 # Sync C dependency DLLs to output/libs/
+if (-not (Test-Path $LibsOut)) { New-Item -ItemType Directory -Path $LibsOut -Force | Out-Null }
 if (Test-Path "third_party\deps") {
-    if (-not (Test-Path $LibsOut)) { New-Item -ItemType Directory -Path $LibsOut -Force | Out-Null }
     Get-ChildItem -Recurse -Path "third_party\deps" -Include "*.dll","*.so","*.dylib" -ErrorAction SilentlyContinue | ForEach-Object {
         Copy-Item -Force $_.FullName "$LibsOut\$($_.Name)"
     }
     Write-Host "==> C runtime DLLs synced to $LibsOut\"
 } else {
     Write-Host "==> No third_party/deps found"
+}
+
+# Copy LuaJIT runtime DLL (lua51.dll) — required by luarocks-built C modules like lfs.dll
+if (Test-Path "third_party\luajit\lua51.dll") {
+    Copy-Item -Force "third_party\luajit\lua51.dll" "$LibsOut\"
+    Write-Host "==> LuaJIT lua51.dll synced to $LibsOut\"
 }
 
 # Sync runtime config files to output/configs/

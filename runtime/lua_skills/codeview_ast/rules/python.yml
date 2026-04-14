@@ -1,0 +1,20 @@
+# Python 结构规则 / Python structural rules
+id: python-class
+language: Python
+severity: info
+rule:
+  kind: class_definition
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: python-function
+language: Python
+severity: info
+rule:
+  kind: function_definition
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

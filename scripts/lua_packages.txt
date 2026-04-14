@@ -1,0 +1,69 @@
+# Lua packages configuration for install_lua_deps.
+# Lines starting with # are comments.
+#
+# Package line: pkg <rock_name> [version]
+# Install target line: install <os> <target_ref>
+# Install arg line: arg <os> <single_arg>
+# Env line: env <os> <name> <value_ref>
+# Dependency line: dep <name> <os> <method> <url_or_hint>
+# Dependency variable line: depvar <dep_name> <os> <var_name> <value_ref>
+#
+# OS values: windows, linux, macos, any
+# Method values: none (pure lua), vcpkg, pkg-config, bundled, cmake
+# target_ref / value_ref supports:
+#   dep:<name>[/subpath]
+#   tool:<subpath>
+#   path:<project-relative-path>
+#   literal text (returned as-is)
+#
+# ---------------------------------------------------------------
+# Core
+pkg lua-cjson
+pkg luafilesystem
+
+# Network
+pkg luasocket
+pkg luasec
+  install windows path:scripts/luarocks_overrides/windows/luasec-1.3.2-1.rockspec
+  dep openssl windows vcpkg https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz
+  depvar openssl windows OPENSSL_LIBDIR dep:openssl/lib
+  depvar openssl windows OPENSSL_INCDIR dep:openssl/include
+  depvar openssl windows OPENSSL_BINDIR dep:openssl/bin
+  depvar openssl windows CRYPTO_LIBDIR dep:openssl/lib
+  depvar openssl windows CRYPTO_INCDIR dep:openssl/include
+
+# Regex
+pkg lrexlib-pcre2
+  install windows path:scripts/luarocks_overrides/windows/lrexlib-pcre2-2.9.2-1.rockspec
+  dep pcre2 windows vcpkg https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz
+  depvar pcre2 windows PCRE2_LIBDIR dep:pcre2/lib
+  depvar pcre2 windows PCRE2_INCDIR dep:pcre2/include
+
+# Crypto
+pkg luaossl
+  install windows path:scripts/luarocks_overrides/windows/luaossl-20250929-0.rockspec
+  dep openssl windows vcpkg https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz
+  depvar openssl windows OPENSSL_LIBDIR dep:openssl/lib
+  depvar openssl windows OPENSSL_INCDIR dep:openssl/include
+  depvar openssl windows CRYPTO_LIBDIR dep:openssl/lib
+  depvar openssl windows CRYPTO_INCDIR dep:openssl/include
+
+# Data formats
+pkg lyaml
+  install windows path:scripts/luarocks_overrides/windows/lyaml-6.2.8-1.rockspec
+  env windows LDOC tool:uname/true.cmd
+  dep libyaml windows bundled https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz
+  depvar libyaml windows YAML_DIR dep:libyaml
+  depvar libyaml windows YAML_LIBDIR dep:libyaml/lib
+  depvar libyaml windows YAML_INCDIR dep:libyaml/include
+pkg lua-toml
+
+# Utility
+pkg serpent
+
+# Compression
+pkg lua-zlib
+  env windows CMAKE_PREFIX_PATH dep:zlib
+  dep zlib windows bundled https://zlib.net/zlib131.zip
+  depvar zlib windows ZLIB_LIBDIR dep:zlib/lib
+  depvar zlib windows ZLIB_INCDIR dep:zlib/include

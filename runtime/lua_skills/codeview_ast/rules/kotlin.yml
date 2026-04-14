@@ -1,0 +1,52 @@
+# Kotlin 结构规则 / Kotlin structural rules
+id: kotlin-class
+language: Kotlin
+severity: info
+rule:
+  pattern:
+    context: |
+      class $NAME {
+        $$$BODY
+      }
+    selector: class_declaration
+metadata:
+  symbol_kind: class
+  container: true
+  name_capture: NAME
+message: "class:$NAME"
+---
+id: kotlin-interface
+language: Kotlin
+severity: info
+rule:
+  pattern:
+    context: |
+      interface $NAME {
+        $$$BODY
+      }
+    selector: class_declaration
+metadata:
+  symbol_kind: interface
+  container: true
+  name_capture: NAME
+message: "interface:$NAME"
+---
+id: kotlin-object
+language: Kotlin
+severity: info
+rule:
+  kind: object_declaration
+metadata:
+  symbol_kind: object
+  container: true
+message: "object"
+---
+id: kotlin-function
+language: Kotlin
+severity: info
+rule:
+  kind: function_declaration
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

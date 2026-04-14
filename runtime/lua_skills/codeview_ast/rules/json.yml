@@ -1,0 +1,10 @@
+# JSON 结构规则 / JSON structural rules
+id: json-pair
+language: Json
+severity: info
+rule:
+  kind: pair
+metadata:
+  symbol_kind: property
+  container: false
+message: "pair"

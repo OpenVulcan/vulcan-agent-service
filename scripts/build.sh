@@ -44,6 +44,12 @@ else
     echo "==> No third_party/deps found"
 fi
 
+# Copy LuaJIT runtime DLL (lua51.dll) — required by luarocks-built C modules like lfs.dll
+if [ -f "third_party/luajit/lua51.dll" ]; then
+    cp -f third_party/luajit/lua51.dll output/libs/
+    echo "==> LuaJIT lua51.dll synced to output/libs/"
+fi
+
 # Sync runtime config files to output/configs/
 mkdir -p output/configs
 if [ -d "runtime/configs" ] && [ "$(ls -A runtime/configs/ 2>/dev/null)" ]; then

@@ -1,0 +1,89 @@
+{
+  "name": "__demo",
+  "tool_name": "demo_template_tool",
+  "description": "Demo skill template that shows how to define a tool, resources, resource templates, prompts, and Lua generator files.",
+  "lua_entry": "main.lua",
+  "lua_module": "demo_template",
+  "debug": true,
+  "parameters": [
+    {
+      "name": "name",
+      "type": "string",
+      "description": "Display name used by the demo tool response.",
+      "required": false
+    },
+    {
+      "name": "emphasis",
+      "type": "string",
+      "description": "Optional emphasis string appended to the demo response.",
+      "required": false
+    }
+  ],
+  "return_type": "table",
+  "prompt": "Demo-only tool prompt hint. Copy this directory, rename the skill, and then replace each file with your real logic.",
+  "resources": [
+    {
+      "uri": "skill://demo/guide",
+      "name": "Demo Guide",
+      "description": "Static resource example for a skill template.",
+      "mime_type": "text/markdown",
+      "file": "resources/guide.md"
+    },
+    {
+      "uri": "skill://demo/dynamic-guide",
+      "name": "Dynamic Demo Guide",
+      "description": "Lua-generated resource example for a skill template.",
+      "mime_type": "text/markdown",
+      "file": "resources/dynamic_guide.lua"
+    }
+  ],
+  "resource_templates": [
+    {
+      "uri_template": "skill://demo/example/{topic}",
+      "name": "Static Demo Example",
+      "description": "Static template example that uses URI placeholders.",
+      "mime_type": "text/markdown",
+      "file": "templates/example.md"
+    },
+    {
+      "uri_template": "skill://demo/dynamic-example/{topic}",
+      "name": "Dynamic Demo Example",
+      "description": "Lua-generated template example.",
+      "mime_type": "text/markdown",
+      "file": "templates/example_generator.lua"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "demo_static_prompt",
+      "description": "Static prompt example for a copied skill template.",
+      "file": "prompts/static_prompt.md",
+      "role": "user",
+      "arguments": [
+        {
+          "name": "target",
+          "description": "Target that the copied skill should focus on.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "demo_dynamic_prompt",
+      "description": "Lua-generated prompt example for a copied skill template.",
+      "file": "prompts/dynamic_prompt.lua",
+      "role": "user",
+      "arguments": [
+        {
+          "name": "target",
+          "description": "Target that the copied skill should focus on.",
+          "required": false
+        },
+        {
+          "name": "goal",
+          "description": "Goal that the copied skill should solve.",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

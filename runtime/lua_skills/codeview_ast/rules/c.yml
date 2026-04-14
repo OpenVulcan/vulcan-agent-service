@@ -1,0 +1,36 @@
+# C 结构规则 / C structural rules
+id: c-function
+language: C
+severity: info
+rule:
+  kind: function_definition
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
+---
+id: c-struct
+language: C
+severity: info
+rule:
+  kind: struct_specifier
+  has:
+    field: name
+    kind: type_identifier
+metadata:
+  symbol_kind: struct
+  container: true
+message: "struct"
+---
+id: c-enum
+language: C
+severity: info
+rule:
+  kind: enum_specifier
+  has:
+    field: name
+    kind: type_identifier
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"

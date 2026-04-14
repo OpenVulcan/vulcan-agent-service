@@ -1,0 +1,74 @@
+# Swift 结构规则 / Swift structural rules
+id: swift-class
+language: Swift
+severity: info
+rule:
+  pattern:
+    context: |
+      class $NAME {
+        $$$BODY
+      }
+    selector: class_declaration
+metadata:
+  symbol_kind: class
+  container: true
+  name_capture: NAME
+message: "class:$NAME"
+---
+id: swift-struct
+language: Swift
+severity: info
+rule:
+  pattern:
+    context: |
+      struct $NAME {
+        $$$BODY
+      }
+    selector: class_declaration
+metadata:
+  symbol_kind: struct
+  container: true
+  name_capture: NAME
+message: "struct:$NAME"
+---
+id: swift-protocol
+language: Swift
+severity: info
+rule:
+  pattern:
+    context: |
+      protocol $NAME {
+        $$$BODY
+      }
+    selector: protocol_declaration
+metadata:
+  symbol_kind: protocol
+  container: true
+  name_capture: NAME
+message: "protocol:$NAME"
+---
+id: swift-enum
+language: Swift
+severity: info
+rule:
+  pattern:
+    context: |
+      enum $NAME {
+        $$$BODY
+      }
+    selector: class_declaration
+metadata:
+  symbol_kind: enum
+  container: true
+  name_capture: NAME
+message: "enum:$NAME"
+---
+id: swift-function
+language: Swift
+severity: info
+rule:
+  kind: function_declaration
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

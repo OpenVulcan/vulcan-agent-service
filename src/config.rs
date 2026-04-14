@@ -11,6 +11,10 @@ pub struct Config {
     #[serde(default = "default_http_addr")]
     pub http: Option<String>,
 
+    /// gRPC service address for plugin/management, e.g. "127.0.0.1:19202"
+    #[serde(default = "default_grpc_addr")]
+    pub grpc: Option<String>,
+
     /// LanceDb gRPC service endpoint, e.g. "http://localhost:50051"
     pub lancedb: Option<String>,
 
@@ -19,10 +23,42 @@ pub struct Config {
 
     /// VMM (VulcanMemoryMesh) gRPC service endpoint, e.g. "http://localhost:50053"
     pub vmm: Option<String>,
+
+    /// Custom Lua skill override directory, e.g. "~/.vulcan/vulcan-mcp/lua_skills/"
+    /// When set, skills in this directory override or disable system skills.
+    pub lua_skills_override: Option<String>,
+
+    /// 中文：共享工具缓存最大条目数，默认 1000。
+    /// English: Maximum number of entries in the shared tool cache. Defaults to 1000.
+    pub tool_cache_max_entries: Option<usize>,
+
+    /// 中文：共享工具缓存默认 TTL（秒），默认 1800 秒。
+    /// English: Default TTL in seconds for the shared tool cache. Defaults to 1800 seconds.
+    pub tool_cache_default_ttl_secs: Option<u64>,
+
+    /// 中文：共享工具缓存允许的最大 TTL（秒），默认 1800 秒。
+    /// English: Maximum allowed TTL in seconds for the shared tool cache. Defaults to 1800 seconds.
+    pub tool_cache_max_ttl_secs: Option<u64>,
+
+    /// 中文：Lua 虚拟机池最小实例数，默认 1。
+    /// English: Minimum number of Lua VM instances kept warm in the pool. Defaults to 1.
+    pub lua_vm_pool_min_size: Option<usize>,
+
+    /// 中文：Lua 虚拟机池最大实例数，默认 4。
+    /// English: Maximum number of Lua VM instances allowed in the pool. Defaults to 4.
+    pub lua_vm_pool_max_size: Option<usize>,
+
+    /// 中文：Lua 虚拟机空闲多久后允许销毁（秒），默认 300 秒。
+    /// English: Idle lifetime in seconds before an excess Lua VM can be destroyed. Defaults to 300 seconds.
+    pub lua_vm_pool_idle_ttl_secs: Option<u64>,
 }
 
 fn default_http_addr() -> Option<String> {
     Some("127.0.0.1:19201".to_string())
+}
+
+fn default_grpc_addr() -> Option<String> {
+    Some("127.0.0.1:19202".to_string())
 }
 
 impl Config {

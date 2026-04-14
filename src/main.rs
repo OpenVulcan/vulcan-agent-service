@@ -10,6 +10,7 @@ mod server;
 #[allow(dead_code)]
 mod session;
 mod config;
+mod tool_cache;
 
 pub mod pb_lancedb {
     tonic::include_proto!("vldb.lancedb.v1");
@@ -28,11 +29,20 @@ pub mod pb_mcp {
 }
 
 use config::Config;
+use lua_engine::LuaVmPoolConfig;
 use server::McpServer;
+use tool_cache::ToolCacheConfig;
+use tool_cache::configure_global_tool_cache;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
+
+    configure_global_tool_cache(ToolCacheConfig {
+        max_entries: cfg.tool_cache_max_entries.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
+        default_ttl_secs: cfg.tool_cache_default_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
+        max_ttl_secs: cfg.tool_cache_max_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
+    });
 
     // Prepend output/libs/ to PATH so C dependency DLLs are found at runtime
     add_libs_to_path();
@@ -55,7 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load Lua skills from system directory, with optional user override
     let lua_skills_loaded = find_lua_skill_dirs(&cfg);
     if let Some((base_dir, override_dir)) = lua_skills_loaded {
-        server = server.with_lua_skills(&base_dir, override_dir.as_deref())?;
+        server = server.with_lua_skills(
+            &base_dir,
+            override_dir.as_deref(),
+            LuaVmPoolConfig {
+                min_size: cfg.lua_vm_pool_min_size.unwrap_or(1),
+                max_size: cfg.lua_vm_pool_max_size.unwrap_or(4),
+                idle_ttl_secs: cfg.lua_vm_pool_idle_ttl_secs.unwrap_or(300),
+            },
+        )?;
     }
 
     let http_addr = cfg.http.unwrap_or_else(|| "127.0.0.1:19201".to_string());

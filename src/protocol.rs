@@ -8,10 +8,10 @@ use serde_json::Value;
 /// Latest supported protocol version (primary)
 pub const PROTOCOL_VERSION_LATEST: &str = "2025-11-25";
 /// Compatible older versions
-pub const PROTOCOL_VERSION_COMPATIBLE: &[&str] = &["2025-03-26", "2024-11-05"];
+pub const PROTOCOL_VERSION_COMPATIBLE: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Negotiate protocol version: pick the highest version that both sides support.
-/// The server supports: 2025-11-25, 2025-03-26, 2024-11-05
+/// The server supports: 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05
 pub fn negotiate_version(client_version: &str) -> Option<&'static str> {
     if client_version == PROTOCOL_VERSION_LATEST {
         return Some(PROTOCOL_VERSION_LATEST);
@@ -39,14 +39,14 @@ pub fn has_feature(version: &str, feature: FeatureFlag) -> bool {
         | FeatureFlag::Completions
         | FeatureFlag::Elicitation
         | FeatureFlag::ProgressToken
-        | FeatureFlag::Cancellation => version == "2025-03-26" || version == "2025-11-25",
+        | FeatureFlag::Cancellation => version == "2025-03-26" || version == "2025-06-18" || version == "2025-11-25",
 
         // Features added in 2025-11-25
         FeatureFlag::Streaming
         | FeatureFlag::StructuredLogging
         | FeatureFlag::ToolAnnotations
         | FeatureFlag::AudioContent
-        | FeatureFlag::EmbeddedResource => version == "2025-11-25",
+        | FeatureFlag::EmbeddedResource => version == "2025-06-18" || version == "2025-11-25",
     }
 }
 
@@ -251,6 +251,8 @@ pub enum ContentBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextContent {
+    #[serde(default = "text_type_default")]
+    pub r#type: String,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
@@ -628,10 +630,15 @@ impl Tool {
 impl TextContent {
     pub fn text(text: &str) -> Self {
         Self {
+            r#type: "text".to_string(),
             text: text.to_string(),
             annotations: None,
         }
     }
+}
+
+fn text_type_default() -> String {
+    "text".to_string()
 }
 
 impl ResourceContents {

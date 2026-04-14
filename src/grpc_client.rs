@@ -342,8 +342,16 @@ fn now_unix_millis() -> i64 {
         .as_millis() as i64
 }
 
-fn sql_escape(s: &str) -> String {
-    format!("'{}'", s.replace("'", "''"))
+/// Format a u64 as a SQL-safe integer literal (no quotes needed).
+fn sql_int(n: i64) -> String {
+    n.to_string()
+}
+
+/// Format a string as a SQL-safe hex literal using X'...' syntax.
+/// This is injection-proof because hex encoding cannot contain SQL metacharacters.
+fn sql_hex(s: &str) -> String {
+    let hex: String = s.bytes().map(|b| format!("{:02x}", b)).collect();
+    format!("X'{}'", hex)
 }
 
 fn validate_scope(project_id: u64, user_id: u64, session_id: &str) -> Result<(), String> {
@@ -425,12 +433,94 @@ fn normalize_keys(keys: &[String]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Ensure scratchpad tables exist (idempotent, called before every operation)
-async fn ensure_tables(client: &SqliteClient) -> Result<(), String> {
+// ============================================================
+// Database migration system
+// ============================================================
+
+const SCHEMA_VERSION_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS vmcp_schema_version (
+  version INTEGER NOT NULL,
+  applied_at INTEGER NOT NULL,
+  description TEXT NOT NULL
+)"#;
+
+const LATEST_SCHEMA_VERSION: i64 = 1;
+
+/// Run all pending migrations in order. Returns the final version.
+async fn run_migrations(client: &SqliteClient) -> Result<i64, Box<dyn std::error::Error>> {
+    // Ensure version table exists
+    client.execute_script(SCHEMA_VERSION_DDL, vec![])
+        .await
+        .map_err(|e| format!("Failed to create version table: {}", e))?;
+
+    // Read current version
+    let current = match client.query_json("SELECT version FROM vmcp_schema_version ORDER BY version DESC LIMIT 1", vec![]).await {
+        Ok(json_str) => {
+            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+            rows.first().and_then(|v| v.get("version")).and_then(|v| v.as_i64()).unwrap_or(0)
+        }
+        Err(_) => 0,
+    };
+
+    // Backward compat: if no version table row but tables exist, infer version 1
+    if current == 0 {
+        let plans_exist = table_exists(client, "vmcp_scratchpad_plans").await?;
+        let nodes_exist = table_exists(client, "vmcp_scratchpad_nodes").await?;
+        if plans_exist && nodes_exist {
+            eprintln!("[MCP] Detected existing scratchpad tables without version record, setting version to 1");
+            let now = now_unix_millis();
+            client.execute_script(
+                &format!("INSERT INTO vmcp_schema_version (version, applied_at, description) VALUES (1, {}, 'auto-detected existing tables')", now),
+                vec![],
+            ).await.map_err(|e| format!("Failed to write version record: {}", e))?;
+            eprintln!("[MCP] SQLite schema at version 1");
+            return Ok(1);
+        }
+    }
+
+    if current >= LATEST_SCHEMA_VERSION {
+        eprintln!("[MCP] SQLite schema at version {}", current);
+        return Ok(current);
+    }
+
+    // Run pending migrations in order
+    if current < 1 {
+        eprintln!("[MCP] Migrating SQLite schema: v{} -> v1 (initial schema: plans + nodes tables)", current);
+        migrate_v1(client).await.map_err(|e| format!("Migration v1 failed: {}", e))?;
+        let now = now_unix_millis();
+        client.execute_script(
+            &format!("INSERT OR REPLACE INTO vmcp_schema_version (version, applied_at, description) VALUES (1, {}, 'initial schema: plans + nodes tables')", now),
+            vec![],
+        ).await.map_err(|e| format!("Failed to update version record: {}", e))?;
+        eprintln!("[MCP] SQLite schema migrated to version 1");
+    }
+
+    // Future migrations:
+    // if current < 2 { migrate_v2(client).await?; ... }
+
+    Ok(LATEST_SCHEMA_VERSION)
+}
+
+async fn table_exists(client: &SqliteClient, table: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let sql = format!("SELECT name FROM sqlite_master WHERE type='table' AND name='{}'", table);
+    match client.query_json(&sql, vec![]).await {
+        Ok(json_str) => {
+            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+            Ok(!rows.is_empty())
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+async fn migrate_v1(client: &SqliteClient) -> Result<(), String> {
     client.execute_script(SCRATCHPAD_PLAN_DDL, vec![]).await?;
     client.execute_script(SCRATCHPAD_NODE_DDL, vec![]).await?;
     Ok(())
 }
+
+// ============================================================
+// Scratchpad Store
+// ============================================================
 
 #[derive(Clone)]
 pub struct ScratchpadStore {
@@ -438,8 +528,9 @@ pub struct ScratchpadStore {
 }
 
 impl ScratchpadStore {
-    pub fn new(sqlite: SqliteClient) -> Self {
-        Self { sqlite }
+    pub async fn create(sqlite: SqliteClient) -> Result<Self, Box<dyn std::error::Error>> {
+        run_migrations(&sqlite).await?;
+        Ok(Self { sqlite })
     }
 
     pub fn sqlite_client(&self) -> &SqliteClient {
@@ -466,8 +557,8 @@ impl ScratchpadStore {
         let plan_name_trimmed = plan_name.trim();
         let sql = format!(
             "INSERT INTO vmcp_scratchpad_plans (id, project_id, user_id, session_key, plan_name, plan_name_norm, created_timestamp, updated_timestamp) VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
-            next_id, project_id, user_id, sql_escape(session_key.trim()), sql_escape(plan_name_trimmed),
-            sql_escape(&plan_name_trimmed.to_lowercase()), now_ms, now_ms
+            next_id, project_id, user_id, sql_hex(session_key.trim()), sql_hex(plan_name_trimmed),
+            sql_hex(&plan_name_trimmed.to_lowercase()), now_ms, now_ms
         );
         self.sqlite.execute_script(&sql, vec![]).await?;
         Ok(json!({
@@ -494,7 +585,6 @@ impl ScratchpadStore {
         validate_scope(project_id, user_id, session_id)?;
         validate_plan_name(plan_name)?;
         let items = normalize_items(&items)?;
-        ensure_tables(&self.sqlite).await?;
 
         let plan = self.load_plan(project_id, user_id, session_id).await?;
         if let Some(ref p) = plan {
@@ -517,7 +607,7 @@ impl ScratchpadStore {
         // Load existing nodes for insert/update counting
         let existing_keys: Vec<String> = items.iter().map(|i| i.key.clone()).collect();
         let existing_json = if !existing_keys.is_empty() {
-            let placeholders = existing_keys.iter().map(|k| sql_escape(k)).collect::<Vec<_>>().join(", ");
+            let placeholders = existing_keys.iter().map(|k| sql_hex(k)).collect::<Vec<_>>().join(", ");
             let sql = format!("SELECT item_key FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({})", plan_id, placeholders);
             let j = self.sqlite.query_json(&sql, vec![]).await?;
             serde_json::from_str::<Vec<serde_json::Value>>(&j).unwrap_or_default()
@@ -536,13 +626,13 @@ impl ScratchpadStore {
                 updated += 1;
                 statements.push_str(&format!(
                     "INSERT INTO vmcp_scratchpad_nodes (plan_id, item_key, item_value, created_timestamp, updated_timestamp) VALUES ({}, {}, {}, {}, {}) ON CONFLICT(plan_id, item_key) DO UPDATE SET item_value = excluded.item_value, updated_timestamp = excluded.updated_timestamp;\n",
-                    plan_id, sql_escape(&item.key), sql_escape(&item.value), now_ms, now_ms
+                    plan_id, sql_hex(&item.key), sql_hex(&item.value), now_ms, now_ms
                 ));
             } else {
                 inserted += 1;
                 statements.push_str(&format!(
                     "INSERT INTO vmcp_scratchpad_nodes (plan_id, item_key, item_value, created_timestamp, updated_timestamp) VALUES ({}, {}, {}, {}, {});\n",
-                    plan_id, sql_escape(&item.key), sql_escape(&item.value), now_ms, now_ms
+                    plan_id, sql_hex(&item.key), sql_hex(&item.value), now_ms, now_ms
                 ));
             }
         }
@@ -567,7 +657,6 @@ impl ScratchpadStore {
         validate_scope(project_id, user_id, session_id)?;
         validate_plan_name(plan_name)?;
         let keys = normalize_keys(&keys)?;
-        ensure_tables(&self.sqlite).await?;
 
         let plan = self.load_plan(project_id, user_id, session_id).await?;
         let Some(p) = plan else {
@@ -582,7 +671,7 @@ impl ScratchpadStore {
         }
 
         let now_ms = now_unix_millis();
-        let key_list = keys.iter().map(|k| sql_escape(k)).collect::<Vec<_>>().join(", ");
+        let key_list = keys.iter().map(|k| sql_hex(k)).collect::<Vec<_>>().join(", ");
         let delete_sql = format!(
             "BEGIN IMMEDIATE;\nDELETE FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({});\nUPDATE vmcp_scratchpad_plans SET updated_timestamp = {} WHERE id = {};\nCOMMIT;\n",
             plan_id, key_list, now_ms, plan_id
@@ -602,7 +691,6 @@ impl ScratchpadStore {
         keys: Vec<String>,
     ) -> Result<String, String> {
         validate_scope(project_id, user_id, session_id)?;
-        ensure_tables(&self.sqlite).await?;
 
         let plan = self.load_plan(project_id, user_id, session_id).await?;
         let Some(p) = plan else {
@@ -618,7 +706,7 @@ impl ScratchpadStore {
             self.sqlite.query_json(&sql, vec![]).await.unwrap_or_else(|_| "[]".into())
         } else {
             let validated_keys = normalize_keys(&keys)?;
-            let key_list = validated_keys.iter().map(|k| sql_escape(k)).collect::<Vec<_>>().join(", ");
+            let key_list = validated_keys.iter().map(|k| sql_hex(k)).collect::<Vec<_>>().join(", ");
             let sql = format!("SELECT item_key, item_value FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({}) ORDER BY item_key ASC, id ASC", plan_id, key_list);
             self.sqlite.query_json(&sql, vec![]).await.unwrap_or_else(|_| "[]".into())
         };
@@ -642,7 +730,6 @@ impl ScratchpadStore {
         session_id: &str,
     ) -> Result<String, String> {
         validate_scope(project_id, user_id, session_id)?;
-        ensure_tables(&self.sqlite).await?;
 
         let plan = self.load_plan(project_id, user_id, session_id).await?;
         let Some(p) = plan else {
@@ -680,7 +767,6 @@ impl ScratchpadStore {
         session_id: &str,
     ) -> Result<String, String> {
         validate_scope(project_id, user_id, session_id)?;
-        ensure_tables(&self.sqlite).await?;
 
         let plan = self.load_plan(project_id, user_id, session_id).await?;
         let Some(p) = plan else {
