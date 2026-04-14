@@ -25,6 +25,11 @@ arrow-ipc = "57"
 arrow-schema = "57"
 mlua = { git = "https://github.com/mlua-rs/mlua", features = ["luajit52", "vendored", "serialize", "send"] }
 bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+indicatif = "0.17"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
 
 [build-dependencies]
 tonic-prost-build = "0.14"

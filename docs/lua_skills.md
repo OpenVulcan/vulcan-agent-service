@@ -4,7 +4,7 @@
 
 - **引擎**: LuaJIT 2.1 (兼容 Lua 5.2)
 - **模式**: `unsafe`（允许 C 模块加载，可使用 FFI）
-- **入口**: 每个 skill 的 `main.lua` 返回 `function(args)` 作为入口
+- **入口**: 每个 tool 入口的 `lua_entry` 文件返回 `function(args)`，附属能力入口通过各自的 `file` 字段绑定静态文件或 `.lua` 生成器
 
 ## skill.json 关键约定
 
@@ -14,11 +14,43 @@
 - 这类目录适合存放内部模板、演示 skill、复制样板
 - 推荐保留一个 `__demo` 目录，方便一键复制后改名投入使用
 
-### 初始化脚本
+### 依赖声明文件
 
-- 仅支持：`init_scripts.ps1` / `init_scripts.sh`
-- 宿主会根据当前系统选择对应脚本
-- 不再支持旧版单字段 `init_script`
+- 固定文件名：`dependencies.yaml`
+- 宿主在加载 skill 前会自动检查该文件是否存在
+- 若存在，会由 Rust 统一完成依赖下载，不再执行脚本初始化
+- 若不存在，则表示当前 skill 无需外部工具依赖初始化
+
+`dependencies.yaml` 的目标是声明：
+
+- GitHub 仓库地址
+- 最新 tag 解析地址
+- 当前系统对应的资源文件名
+- 本地落库名称（已存在则直接跳过）
+- 压缩包内部需要提取的文件路径
+
+当前至少推荐显式覆盖这几类系统目标：
+
+- `windows` + `x86_64`
+- `linux` + `x86_64`
+- `linux` + `aarch64`
+- `macos` + `aarch64`
+
+### 分组与多入口
+
+`skill.json` 顶层使用 `groups` 数组组织入口：
+
+- 每个 group 都可以独立声明多个 `tools`
+- 每个 group 都可以独立声明多个 `prompts`
+- 每个 group 都可以独立声明多个 `resources`
+- 每个 group 都可以独立声明多个 `resource_templates`
+- 不同入口可以各自拥有不同名称、参数、Lua 入口文件与描述
+
+推荐分层理解：
+
+- `skill`：目录级封装，负责依赖声明、调试模式与文件归属
+- `group`：逻辑分组，便于把相关入口组织在一起
+- `tool/resource/prompt/template`：真正暴露给 MCP 的具体入口
 
 ### 附属能力提供器
 
@@ -37,7 +69,9 @@
 推荐模板目录至少包含：
 
 - `main.lua`：工具入口示例
+- `main_summary.lua`：第二个工具入口示例（演示多 tool 拆分）
 - `skill.json`：最小完整配置
+- `dependencies.yaml`：外部依赖声明模板
 - `resources/`：静态与动态资源示例
 - `templates/`：静态与动态资源模板示例
 - `prompts/`：静态与动态提示词示例
@@ -175,7 +209,7 @@ vulcan.print(t.name)  -- test
 在 Lua 内调用其他已加载 skill。
 
 ```lua
-local result = vulcan.call("codeview_ts", { dir = "src/", recursive = true })
+local result = vulcan.call("vmcp-ast", { path = "src/", recursive = true })
 vulcan.print("found", result.items_found, "items")
 ```
 
@@ -346,37 +380,59 @@ local toml = require "toml"
 local t = toml.parse("key = \"value\"\n[section]\nnum = 42")
 ```
 
-## Skill 初始化脚本
+## Skill 依赖下载
 
-在 `skill.json` 中设置 `"init_scripts"`，skill 加载前会按当前系统选择脚本执行。
+如果 skill 目录下存在 `dependencies.yaml`，宿主会在加载前自动处理依赖下载。
 
-```json
-{
-  "name": "codeview_ast",
-  "init_scripts": {
-    "ps1": "init.ps1",
-    "sh": "init.sh"
-  },
-  ...
-}
+```yaml
+dependencies:
+  - name: "ast-grep"
+    install_as: "ast-grep.exe"
+    github:
+      repo: "https://github.com/ast-grep/ast-grep"
+      tag_api: "https://api.github.com/repos/ast-grep/ast-grep/releases/latest"
+    targets:
+      - os: "windows"
+        arch: "x86_64"
+        asset_name: "app-x86_64-pc-windows-msvc.zip"
+        install_as: "ast-grep.exe"
+        archive_path: "ast-grep.exe"
+        executable: false
+      - os: "linux"
+        arch: "x86_64"
+        asset_name: "app-x86_64-unknown-linux-gnu.zip"
+        install_as: "ast-grep"
+        archive_path: "ast-grep"
+        executable: true
+      - os: "linux"
+        arch: "aarch64"
+        asset_name: "app-aarch64-unknown-linux-gnu.zip"
+        install_as: "ast-grep"
+        archive_path: "ast-grep"
+        executable: true
+      - os: "macos"
+        arch: "aarch64"
+        asset_name: "app-aarch64-apple-darwin.zip"
+        install_as: "ast-grep"
+        archive_path: "ast-grep"
+        executable: true
 ```
 
-- Windows 使用 `powershell.exe -File` 执行，Unix 使用 `sh` 执行
-- 环境变量：
-  - `SKILL_DIR` — skill 目录路径
-  - `TOOLS_DIR` — `<exe_parent>/tools/` 目录，用于存放通用工具（如 unzip、7z）
-- 脚本 stdout/stderr 通过 `[LuaSkill:init]` 日志输出
-- 脚本返回非零 → 跳过该 skill
+运行规则：
 
-典型用途：从 GitHub 下载最新依赖二进制。
+- 下载目标目录固定为 `lua_skills/__tools/bin/`
+- 会先检查 `install_as` 对应文件是否已存在，存在则直接跳过
+- 支持 `asset_name`、`install_as`、`archive_path` 中使用 `{tag}` 与 `{version}` 占位符
+- 当前支持直接文件、`.zip`、`.tar.gz` / `.tgz` 安装
+- 下载过程由 Rust 统一显示进度条
 
 ## Skill 调试模式
 
-在 `skill.json` 中设置 `"debug": true`，每次调用时自动从磁盘重新加载 `main.lua`。
+在 `skill.json` 中设置 `"debug": true`，每次调用时自动从磁盘重新加载对应 tool 的 `lua_entry` 文件。
 
 ```json
 {
-  "name": "codeview_ts",
+  "name": "ast-grep",
   "debug": true,
   ...
 }
@@ -384,7 +440,7 @@ local t = toml.parse("key = \"value\"\n[section]\nnum = 42")
 
 源码变化时输出日志：
 ```
-[LuaSkill] Hot reload codeview_ts: D:\projects\vulcan-mcp-client\output\lua_skills\codeview_ts\main.lua
+[LuaSkill] Hot reload ast_grep: D:\projects\vulcan-mcp-client\output\lua_skills\ast-grep\main.lua
 ```
 
 ## Skill 模板
@@ -411,24 +467,84 @@ end
 // my_skill/skill.json
 {
   "name": "my_skill",
-  "tool_name": "my_skill",
-  "description": "Tool description for tools/list",
-  "lua_entry": "main.lua",
-  "lua_module": "my_skill",
-  "init_scripts": {
-    "ps1": "init.ps1",
-    "sh": "init.sh"
-  },
   "debug": false,
-  "parameters": [
+  "groups": [
     {
-      "name": "dir",
-      "type": "string",
-      "description": "Target directory",
-      "required": true
+      "name": "core",
+      "description": "Primary entries for the skill",
+      "tools": [
+        {
+          "name": "my_skill",
+          "description": "Tool description for tools/list",
+          "lua_entry": "main.lua",
+          "lua_module": "my_skill",
+          "parameters": [
+            {
+              "name": "dir",
+              "type": "string",
+              "description": "Target directory",
+              "required": true
+            }
+          ],
+          "return_type": "table",
+          "prompt": "AI usage hint for the tool"
+        },
+        {
+          "name": "my_skill_summary",
+          "description": "Second tool entry example in the same skill",
+          "lua_entry": "main.lua",
+          "lua_module": "my_skill_summary",
+          "parameters": [],
+          "return_type": "table",
+          "prompt": "Optional hint for another grouped tool"
+        }
+      ],
+      "resources": [
+        {
+          "uri": "skill://my-skill/guide",
+          "name": "My Skill Guide",
+          "description": "Static resource example",
+          "mime_type": "text/markdown",
+          "file": "resources/guide.md"
+        }
+      ],
+      "resource_templates": [
+        {
+          "uri_template": "skill://my-skill/example/{topic}",
+          "name": "My Skill Example",
+          "description": "Template example",
+          "mime_type": "text/markdown",
+          "file": "templates/example.md"
+        }
+      ],
+      "prompts": [
+        {
+          "name": "my_skill_first_pass",
+          "description": "Prompt example",
+          "file": "prompts/first_pass.md",
+          "role": "user",
+          "arguments": [
+            {
+              "name": "target",
+              "description": "Target path",
+              "required": false
+            }
+          ]
+        }
+      ]
     }
-  ],
-  "return_type": "table",
-  "prompt": "AI usage hint for the tool"
+  ]
 }
 ```
+
+```yaml
+# my_skill/dependencies.yaml
+dependencies: []
+```
+
+### 设计建议
+
+- 一个 skill 可以只有 `prompts/resources/templates`，不一定必须声明 `tools`
+- 一个 skill 也可以声明多个 tool 入口，共享同一个目录与依赖声明文件
+- 如果多个 tool 复用同一个 Lua 文件，请确保它们的 `lua_module` 唯一
+- 建议始终保留 `__demo` 目录作为“多 group、多入口”的复制模板

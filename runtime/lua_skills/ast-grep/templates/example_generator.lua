@@ -23,10 +23,10 @@ return function(args)
   end
 
   local text = table.concat({
-    "# codeview_ast Example: " .. topic,
+    "# ast-grep Example: " .. topic,
     "",
     "Recommended call:",
-    string.format("`codeview_ast(path=\"%s\", recursive=%s, ignore=%s, ext=\"%s\")`", path, tostring(recursive), tostring(ignore), ext),
+    string.format("`vmcp-ast(path=\"%s\", recursive=%s, ignore=%s, ext=\"%s\")`", path, tostring(recursive), tostring(ignore), ext),
     "",
     "Why this shape:",
     reason,
@@ -38,7 +38,7 @@ return function(args)
   return {
     contents = {
       {
-        uri = tostring((args and args.uri) or "skill://codeview_ast/example/" .. topic),
+        uri = tostring((args and args.uri) or "skill://ast-grep/example/" .. topic),
         mimeType = "text/markdown",
         text = text,
       }

@@ -1,5 +1,5 @@
 --[[
-codeview_ast
+ast-grep
 中文：基于 ast-grep 的结构视图工具，输出按文件聚合、可直接阅读的轻量结构摘要。
 English: AST structure viewer powered by ast-grep. It returns file-grouped, human-readable structure summaries.
 ]]
@@ -48,7 +48,7 @@ local FILE_CACHE = {}
 local IGNORE_RULE_CACHE = {}
 local LANGUAGE_ALIAS_MAP = {}
 local EXTENSION_MAP = {}
-local TOOL_CACHE_NAMESPACE = "codeview_ast"
+local TOOL_CACHE_NAMESPACE = "vmcp-ast"
 local MAX_AST_GREP_BATCH_FILES = 50
 local FALLBACK_AST_GREP_BATCH_FILES = 24
 local MAX_MATCHED_FILES = 5000
@@ -387,7 +387,7 @@ end
 
 -- 路径与语言解析 / Resolve skill-relative paths and normalize language keys.
 local function get_skill_dir()
-    return __skill_dir_codeview_ast or "."
+    return __skill_dir_ast_grep or "."
 end
 
 --[[
@@ -505,7 +505,8 @@ end
 local function find_binary()
     local info = vulcan.osinfo()
     local executable_name = info.os == "windows" and "ast-grep.exe" or "ast-grep"
-    local binary_directory = vulcan.path_join(get_skill_dir(), "bin")
+    local skills_root = vulcan.path_join(get_skill_dir(), "..")
+    local binary_directory = vulcan.path_join(skills_root, "__tools", "bin")
     local binary_path = vulcan.path_join(binary_directory, executable_name)
     if vulcan.fs_exists(binary_path) then
         return binary_path, binary_directory, executable_name
@@ -2013,7 +2014,7 @@ return function(args)
     if not binary_path then
         return {
             error = "ast_grep_binary_not_found",
-            expected_path = vulcan.path_join(get_skill_dir(), "bin", executable_name),
+            expected_path = vulcan.path_join(vulcan.path_join(get_skill_dir(), ".."), "__tools", "bin", executable_name),
         }
     end
 

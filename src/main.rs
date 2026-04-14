@@ -4,6 +4,7 @@ mod grpc_server;
 mod http_server;
 mod lua_engine;
 mod lua_skill;
+mod skill_dependency;
 #[allow(dead_code)]
 mod protocol;
 mod server;

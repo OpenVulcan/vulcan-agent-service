@@ -13,6 +13,7 @@ use crate::protocol::{
     Prompt, PromptArgument, PromptGetResult, PromptMessage, Resource, ResourceContents,
     ResourceReadResult, ResourceTemplate, TextContent, Tool, ToolAnnotations,
 };
+use crate::skill_dependency::ensure_skill_dependencies;
 use crate::tool_cache::global_tool_cache;
 
 // ============================================================
@@ -1152,24 +1153,28 @@ impl LuaEngine {
         let json_str = std::fs::read_to_string(&skill_json)?;
         let meta: SkillMeta = serde_json::from_str(&json_str)?;
 
-        // Run init script if configured.
-        if let Some(script_name) = Self::select_init_script(&meta) {
-            Self::run_init_script(dir, script_name)?;
+        if meta.groups.is_empty() {
+            return Err(format!("skill {} must declare at least one group", meta.name).into());
         }
 
-        if meta.has_tool() {
-            if meta.lua_entry.trim().is_empty() || meta.lua_module.trim().is_empty() {
+        // Ensure declared external dependencies are installed before Lua entry validation.
+        // 在校验 Lua 入口之前，先确保 skill 声明的外部依赖已经安装完成。
+        ensure_skill_dependencies(dir)?;
+
+        for tool in meta.tools() {
+            if tool.lua_entry.trim().is_empty() || tool.lua_module.trim().is_empty() {
                 return Err(format!(
-                    "skill {} declares a tool but lua_entry/lua_module is missing",
-                    meta.name
+                    "skill {} declares tool {} but lua_entry/lua_module is missing",
+                    meta.name,
+                    tool.name
                 )
                 .into());
             }
 
-            let lua_path = dir.join(&meta.lua_entry);
+            let lua_path = dir.join(&tool.lua_entry);
             if !lua_path.exists() {
                 return Err(
-                    format!("Lua entry {} not found in {}", meta.lua_entry, dir.display()).into(),
+                    format!("Lua entry {} not found in {}", tool.lua_entry, dir.display()).into(),
                 );
             }
         }
@@ -1202,150 +1207,96 @@ impl LuaEngine {
         self.pool.acquire(|| self.create_vm())
     }
 
-    /// Register all tool-bearing skills into a specific Lua VM.
-    /// 将所有携带工具入口的技能注册到指定 Lua 虚拟机中。
+    /// Register all tool-bearing skill entries into a specific Lua VM.
+    /// 将所有声明了工具入口的 skill 条目注册到指定 Lua 虚拟机中。
     fn register_skill_functions(lua: &Lua, skills: &HashMap<String, LoadedSkill>) -> Result<(), String> {
         for skill in skills.values() {
-            if !skill.meta.has_tool() {
-                continue;
+            for tool in skill.meta.tools() {
+                Self::compile_skill_into_lua(lua, skill, tool, false)?;
             }
-            Self::compile_skill_into_lua(lua, skill, false)?;
         }
         Ok(())
     }
 
-    /// Compile one skill into the target Lua VM.
-    /// 将单个技能编译并注册到目标 Lua 虚拟机中。
-    fn compile_skill_into_lua(lua: &Lua, skill: &LoadedSkill, always_reload: bool) -> Result<(), String> {
-        let lua_path = skill.dir.join(&skill.meta.lua_entry);
+    /// Compile one tool entry into the target Lua VM.
+    /// 将单个工具入口编译并注册到目标 Lua 虚拟机中。
+    fn compile_skill_into_lua(
+        lua: &Lua,
+        skill: &LoadedSkill,
+        tool: &crate::lua_skill::SkillToolMeta,
+        always_reload: bool,
+    ) -> Result<(), String> {
+        let lua_path = skill.dir.join(&tool.lua_entry);
         let source = std::fs::read_to_string(&lua_path)
             .map_err(|error| format!("Failed to read {}: {}", lua_path.display(), error))?;
         if always_reload {
-            eprintln!("[LuaSkill] Hot reload {}: {}", skill.meta.lua_module, lua_path.display());
+            eprintln!("[LuaSkill] Hot reload {}: {}", tool.lua_module, lua_path.display());
         }
 
         lua.globals()
             .set(
-                format!("__skill_dir_{}", skill.meta.lua_module),
+                format!("__skill_dir_{}", tool.lua_module),
                 skill.dir.to_string_lossy().to_string(),
             )
-            .map_err(|error| format!("Failed to set skill dir for {}: {}", skill.meta.name, error))?;
+            .map_err(|error| format!("Failed to set skill dir for {}::{}: {}", skill.meta.name, tool.name, error))?;
 
-        let chunk = lua.load(&source).set_name(&skill.meta.lua_module);
+        let chunk = lua.load(&source).set_name(&tool.lua_module);
         let outer: Function = chunk
             .into_function()
-            .map_err(|error| format!("Failed to compile skill '{}': {}", skill.meta.lua_module, error))?;
+            .map_err(|error| format!("Failed to compile skill '{}::{}': {}", skill.meta.name, tool.lua_module, error))?;
         let handler: Function = outer
             .call(())
-            .map_err(|error| format!("Failed to initialize skill '{}': {}", skill.meta.lua_module, error))?;
+            .map_err(|error| format!("Failed to initialize skill '{}::{}': {}", skill.meta.name, tool.lua_module, error))?;
         lua.globals()
-            .set(format!("__skill_{}", skill.meta.lua_module), handler)
-            .map_err(|error| format!("Failed to register skill '{}': {}", skill.meta.lua_module, error))?;
-        Ok(())
-    }
-
-    /// Select the OS-specific init script declared by the skill.
-    /// 选择 skill 声明的当前系统初始化脚本。
-    fn select_init_script(meta: &SkillMeta) -> Option<&str> {
-        #[cfg(windows)]
-        if !meta.init_scripts.ps1.trim().is_empty() {
-            return Some(meta.init_scripts.ps1.trim());
-        }
-
-        #[cfg(not(windows))]
-        if !meta.init_scripts.sh.trim().is_empty() {
-            return Some(meta.init_scripts.sh.trim());
-        }
-
-        None
-    }
-
-    /// Run a skill's init script (.ps1 or .sh) before loading Lua.
-    fn run_init_script(skill_dir: &Path, script_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let script_path = skill_dir.join(script_name);
-        if !script_path.exists() {
-            return Err(format!("Init script {} not found in {}", script_name, skill_dir.display()).into());
-        }
-
-        // Compute TOOLS_DIR = <exe_parent>/tools/
-        let tools_dir = std::env::current_exe().ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .and_then(|p| p.parent().map(|d| d.join("tools")))
-            .unwrap_or_else(|| std::env::temp_dir().join("vulcan-tools"));
-        std::fs::create_dir_all(&tools_dir).ok();
-
-        #[cfg(windows)]
-        let (shell, arg) = ("powershell.exe", "-File");
-        #[cfg(not(windows))]
-        let (shell, arg) = ("sh", "");
-
-        eprintln!("[LuaSkill] Running init: {}", script_path.display());
-
-        let mut cmd = std::process::Command::new(shell);
-        if !arg.is_empty() {
-            cmd.arg(arg);
-        }
-        cmd.arg(&script_path);
-        cmd.env("SKILL_DIR", skill_dir.to_string_lossy().to_string());
-        cmd.env("TOOLS_DIR", tools_dir.to_string_lossy().to_string());
-
-        let output = cmd.output()?;
-
-        if !output.stdout.is_empty() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                eprintln!("[LuaSkill:init] {}", line);
-            }
-        }
-        if !output.stderr.is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            for line in stderr.lines() {
-                eprintln!("[LuaSkill:init-err] {}", line);
-            }
-        }
-
-        if !output.status.success() {
-            return Err(format!("Init script exited with code {:?}", output.status.code()).into());
-        }
-
-        eprintln!("[LuaSkill] Init complete: {}", script_name);
+            .set(format!("__skill_{}", tool.lua_module), handler)
+            .map_err(|error| format!("Failed to register skill '{}::{}': {}", skill.meta.name, tool.lua_module, error))?;
         Ok(())
     }
 
     /// Return MCP Tool definitions for all loaded skills.
     pub fn list_skills(&self) -> Vec<Tool> {
-        self.skills.values().filter(|s| s.meta.has_tool()).map(|s| {
-            let mut desc = s.meta.description.clone();
-            if !s.meta.prompt.is_empty() {
-                desc.push_str("\n\n");
-                desc.push_str(&s.meta.prompt);
-            }
+        self.skills
+            .values()
+            .flat_map(|skill| {
+                skill.meta.tools().map(|tool| {
+                    let mut desc = tool.description.clone();
+                    if !tool.prompt.is_empty() {
+                        if !desc.is_empty() {
+                            desc.push_str("\n\n");
+                        }
+                        desc.push_str(&tool.prompt);
+                    }
 
-            let mut props = serde_json::Map::new();
-            let mut required = Vec::new();
-            for p in &s.meta.parameters {
-                let mut prop = serde_json::Map::new();
-                prop.insert("type".to_string(), Value::String(p.param_type.clone()));
-                prop.insert("description".to_string(), Value::String(p.description.clone()));
-                props.insert(p.name.clone(), Value::Object(prop));
-                if p.required {
-                    required.push(p.name.clone());
-                }
-            }
+                    let mut props = serde_json::Map::new();
+                    let mut required = Vec::new();
+                    for parameter in &tool.parameters {
+                        let mut prop = serde_json::Map::new();
+                        prop.insert("type".to_string(), Value::String(parameter.param_type.clone()));
+                        prop.insert(
+                            "description".to_string(),
+                            Value::String(parameter.description.clone()),
+                        );
+                        props.insert(parameter.name.clone(), Value::Object(prop));
+                        if parameter.required {
+                            required.push(parameter.name.clone());
+                        }
+                    }
 
-            Tool::with_annotations(
-                &s.meta.tool_name,
-                &desc,
-                Value::Object(props),
-                required,
-                ToolAnnotations {
-                    read_only_hint: Some(true),
-                    destructive_hint: Some(false),
-                    user_confirmation_required: Some(false),
-                    idempotent_hint: Some(true),
-                },
-            )
-        }).collect()
+                    Tool::with_annotations(
+                        &tool.name,
+                        &desc,
+                        Value::Object(props),
+                        required,
+                        ToolAnnotations {
+                            read_only_hint: Some(true),
+                            destructive_hint: Some(false),
+                            user_confirmation_required: Some(false),
+                            idempotent_hint: Some(true),
+                        },
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Return MCP Resource definitions declared by all loaded skills.
@@ -1354,7 +1305,7 @@ impl LuaEngine {
         self.skills
             .values()
             .flat_map(|skill| {
-                skill.meta.resources.iter().map(|resource| Resource {
+                skill.meta.resources().map(|resource| Resource {
                     uri: resource.uri.clone(),
                     name: resource.name.clone(),
                     description: resource.description.clone(),
@@ -1372,8 +1323,7 @@ impl LuaEngine {
             .values()
             .flat_map(|skill| {
                 skill.meta
-                    .resource_templates
-                    .iter()
+                    .resource_templates()
                     .map(|template| ResourceTemplate {
                         uri_template: template.uri_template.clone(),
                         name: template.name.clone(),
@@ -1390,7 +1340,7 @@ impl LuaEngine {
         self.skills
             .values()
             .flat_map(|skill| {
-                skill.meta.prompts.iter().map(|prompt| Prompt {
+                skill.meta.prompts().map(|prompt| Prompt {
                     name: prompt.name.clone(),
                     description: prompt.description.clone(),
                     arguments: Some(
@@ -1413,7 +1363,7 @@ impl LuaEngine {
     pub fn is_skill(&self, name: &str) -> bool {
         self.skills
             .values()
-            .any(|skill| skill.meta.has_tool() && skill.meta.tool_name == name)
+            .any(|skill| skill.meta.find_tool(name).is_some())
     }
 
     /// Call a loaded Lua skill with the given JSON arguments.
@@ -1422,17 +1372,21 @@ impl LuaEngine {
         let skill = self
             .skills
             .values()
-            .find(|skill| skill.meta.has_tool() && skill.meta.tool_name == tool_name)
+            .find(|skill| skill.meta.find_tool(tool_name).is_some())
+            .ok_or_else(|| format!("Lua skill '{}' not found", tool_name))?;
+        let (group, tool) = skill
+            .meta
+            .find_tool_with_group(tool_name)
             .ok_or_else(|| format!("Lua skill '{}' not found", tool_name))?;
 
-        let module_name = skill.meta.lua_module.clone();
+        let module_name = tool.lua_module.clone();
         let func_name = format!("__skill_{}", module_name);
 
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
 
         if skill.meta.debug {
-            Self::compile_skill_into_lua(lua, skill, true)?;
+            Self::compile_skill_into_lua(lua, skill, tool, true)?;
         }
 
         let handler: Function = lua
@@ -1445,14 +1399,14 @@ impl LuaEngine {
 
         // Call the function
         let result: LuaValue = handler.call(args_table).map_err(|e| {
-            let msg = format!("Lua skill '{}' error: {}", module_name, e);
+            let msg = format!("Lua skill '{}::{}' error: {}", skill.meta.name, group.name, e);
             eprintln!("[LuaSkill:error] {}", msg);
             msg
         })?;
 
         // Convert result back to JSON
         let json_result = lua_value_to_json(&result).map_err(|e| {
-            let msg = format!("Lua skill '{}' JSON conversion error: {}", module_name, e);
+            let msg = format!("Lua skill '{}::{}' JSON conversion error: {}", skill.meta.name, group.name, e);
             eprintln!("[LuaSkill:error] {}", msg);
             msg
         })?;
@@ -1486,7 +1440,7 @@ impl LuaEngine {
     /// 根据 URI 读取技能提供的资源，或展开技能的资源模板。
     pub fn read_resource(&self, uri: &str) -> Result<Option<ResourceReadResult>, String> {
         for skill in self.skills.values() {
-            if let Some(resource) = skill.meta.resources.iter().find(|resource| resource.uri == uri) {
+            if let Some((group, resource)) = skill.meta.find_resource_with_group(uri) {
                 if is_lua_provider_file(&resource.file) {
                     let generated = self.run_skill_helper(
                         skill,
@@ -1494,6 +1448,7 @@ impl LuaEngine {
                         &json!({
                             "uri": uri,
                             "skill_name": skill.meta.name,
+                            "group_name": group.name,
                             "resource_name": resource.name,
                         }),
                     )?;
@@ -1510,7 +1465,7 @@ impl LuaEngine {
                 }));
             }
 
-            for template in &skill.meta.resource_templates {
+            for template in skill.meta.resource_templates() {
                 if let Some(raw_params) = match_uri_template(&template.uri_template, uri) {
                     if is_lua_provider_file(&template.file) {
                         let generated = self.run_skill_helper(
@@ -1548,7 +1503,7 @@ impl LuaEngine {
     /// 将技能提供的提示词解析为 MCP PromptGetResult。
     pub fn get_prompt(&self, name: &str, arguments: &Value) -> Result<Option<PromptGetResult>, String> {
         for skill in self.skills.values() {
-            if let Some(prompt) = skill.meta.prompts.iter().find(|prompt| prompt.name == name) {
+            if let Some((group, prompt)) = skill.meta.find_prompt_with_group(name) {
                 if is_lua_provider_file(&prompt.file) {
                     let generated = self.run_skill_helper(
                         skill,
@@ -1557,6 +1512,7 @@ impl LuaEngine {
                             "name": prompt.name,
                             "arguments": arguments.clone(),
                             "skill_name": skill.meta.name,
+                            "group_name": group.name,
                         }),
                     )?;
                     return Ok(Some(normalize_prompt_result(generated, &prompt.role)?));
@@ -1611,8 +1567,13 @@ impl LuaEngine {
 
         // Create the call dispatcher
         let skills: Vec<(String, String)> = skills_map.iter()
-            .filter(|(_, skill)| skill.meta.has_tool())
-            .map(|(_, skill)| (skill.meta.tool_name.clone(), skill.meta.lua_module.clone()))
+            .flat_map(|(_, skill)| {
+                skill
+                    .meta
+                    .tools()
+                    .map(|tool| (tool.name.clone(), tool.lua_module.clone()))
+                    .collect::<Vec<(String, String)>>()
+            })
             .collect();
 
         let skill_names: Vec<String> = skills.iter().map(|(n, _)| n.clone()).collect();

@@ -7,24 +7,31 @@ use std::fs;
 
 #[derive(Deserialize, Debug, Default)]
 pub struct Config {
-    /// HTTP transport address, e.g. "127.0.0.1:19201"
+    /// 中文：HTTP 传输监听地址，例如 "127.0.0.1:19201"。
+    /// English: HTTP transport listen address, for example "127.0.0.1:19201".
     #[serde(default = "default_http_addr")]
     pub http: Option<String>,
 
-    /// gRPC service address for plugin/management, e.g. "127.0.0.1:19202"
+    /// 中文：gRPC 管理/插件服务监听地址，例如 "127.0.0.1:19202"。
+    /// English: gRPC service listen address for plugin/management, for example "127.0.0.1:19202".
     #[serde(default = "default_grpc_addr")]
     pub grpc: Option<String>,
 
-    /// LanceDb gRPC service endpoint, e.g. "http://localhost:50051"
+    /// 中文：LanceDb gRPC 服务地址，例如 "http://localhost:50051"。
+    /// English: LanceDb gRPC service endpoint, for example "http://localhost:50051".
     pub lancedb: Option<String>,
 
-    /// Sqlite gRPC service endpoint, e.g. "http://localhost:50052"
+    /// 中文：Sqlite gRPC 服务地址，例如 "http://localhost:50052"。
+    /// English: Sqlite gRPC service endpoint, for example "http://localhost:50052".
     pub sqlite: Option<String>,
 
-    /// VMM (VulcanMemoryMesh) gRPC service endpoint, e.g. "http://localhost:50053"
+    /// 中文：VMM（VulcanMemoryMesh）gRPC 服务地址，例如 "http://localhost:50053"。
+    /// English: VMM (VulcanMemoryMesh) gRPC service endpoint, for example "http://localhost:50053".
     pub vmm: Option<String>,
 
-    /// Custom Lua skill override directory, e.g. "~/.vulcan/vulcan-mcp/lua_skills/"
+    /// 中文：自定义 Lua Skill 覆盖目录，例如 "~/.vulcan/vulcan-mcp/lua_skills/"；
+    /// 设置后，该目录中的技能可覆盖或禁用系统内置技能。
+    /// English: Custom Lua skill override directory, for example "~/.vulcan/vulcan-mcp/lua_skills/".
     /// When set, skills in this directory override or disable system skills.
     pub lua_skills_override: Option<String>,
 
@@ -62,17 +69,24 @@ fn default_grpc_addr() -> Option<String> {
 }
 
 impl Config {
-    /// Load configuration from the given path.
+    /// 中文：从指定 YAML 文件路径加载配置。
+    /// English: Load configuration from the given YAML file path.
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
         let config: Config = serde_yaml::from_str(&content)?;
         Ok(config)
     }
 
-    /// Load configuration with priority:
-    /// 1. `-config` / `--config` CLI argument
-    /// 2. `<exe_parent>/configs/config.yaml`
-    /// If none found, exits with error.
+    /// 中文：按优先级加载配置：
+    /// 1. `-config` / `--config` 命令行参数；
+    /// 2. `<exe_parent>/configs/config.yaml` 运行时输出目录配置。
+    /// 仓库内默认模板文件位于 `runtime/configs/config.yaml`，构建时会同步到输出目录。
+    /// 如果未找到配置，则直接退出。
+    /// English: Load configuration with the following priority:
+    /// 1. `-config` / `--config` CLI argument;
+    /// 2. `<exe_parent>/configs/config.yaml` in the runtime output directory.
+    /// The repository template lives at `runtime/configs/config.yaml` and is synced during build.
+    /// Exit immediately if no config file is found.
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let config_path = find_config_arg().or_else(find_exe_parent_config);
 
@@ -87,14 +101,16 @@ impl Config {
                 eprintln!("[Config] Searched:");
                 eprintln!("[Config]   - -config flag");
                 eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
-                eprintln!("[Config] Provide config via -config flag or place configs/config.yaml in the expected location.");
+                eprintln!("[Config] Template source in repository: runtime/configs/config.yaml");
+                eprintln!("[Config] Provide config via -config flag or place the built config file at <exe_parent>/configs/config.yaml.");
                 std::process::exit(1);
             }
         }
     }
 }
 
-/// Look for -config or --config in argv.
+/// 中文：在命令行参数中查找 -config 或 --config。
+/// English: Look for -config or --config in argv.
 fn find_config_arg() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     for i in 0..args.len() {
@@ -107,7 +123,10 @@ fn find_config_arg() -> Option<String> {
     None
 }
 
-/// Find configs/config.yaml in the parent directory of the running executable.
+/// 中文：在运行中可执行文件的上级输出目录中查找 configs/config.yaml。
+/// 仓库模板文件位于 runtime/configs/config.yaml，构建后会复制到这里。
+/// English: Find configs/config.yaml in the parent output directory of the running executable.
+/// The repository template lives in runtime/configs/config.yaml and is copied here during build.
 fn find_exe_parent_config() -> Option<String> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;

@@ -1,0 +1,36 @@
+dependencies: []
+
+# 中文：复制该模板后，可将 dependencies 改为真正的依赖列表。
+# English: After copying this template, replace dependencies with your real dependency entries.
+#
+# dependencies:
+#   - name: "example-tool"
+#     install_as: "example-tool"
+#     github:
+#       repo: "https://github.com/owner/example-tool"
+#       tag_api: "https://api.github.com/repos/owner/example-tool/releases/latest"
+#     targets:
+#       - os: "windows"
+#         arch: "x86_64"
+#         asset_name: "example-tool-x86_64-pc-windows-msvc.zip"
+#         install_as: "example-tool.exe"
+#         archive_path: "example-tool.exe"
+#         executable: false
+#       - os: "linux"
+#         arch: "x86_64"
+#         asset_name: "example-tool-{version}-x86_64-unknown-linux-gnu.tar.gz"
+#         install_as: "example-tool"
+#         archive_path: "example-tool-{version}-x86_64-unknown-linux-gnu/example-tool"
+#         executable: true
+#       - os: "linux"
+#         arch: "aarch64"
+#         asset_name: "example-tool-{version}-aarch64-unknown-linux-gnu.tar.gz"
+#         install_as: "example-tool"
+#         archive_path: "example-tool-{version}-aarch64-unknown-linux-gnu/example-tool"
+#         executable: true
+#       - os: "macos"
+#         arch: "aarch64"
+#         asset_name: "example-tool-{version}-aarch64-apple-darwin.zip"
+#         install_as: "example-tool"
+#         archive_path: "example-tool-{version}-aarch64-apple-darwin/example-tool"
+#         executable: true

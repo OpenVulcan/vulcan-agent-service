@@ -1,6 +1,6 @@
-# codeview_ast Guide
+# ast-grep Guide
 
-`codeview_ast` should be the first inspection step when you need structural code context.
+`vmcp-ast` should be the first inspection step when you need structural code context.
 
 Recommended workflow:
 1. Start with the narrowest path that still covers the task.
