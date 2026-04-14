@@ -69,6 +69,80 @@
           ],
           "return_type": "table",
           "prompt": "[OPERATION PROTOCOL] 1. EXPLORE FIRST: ALWAYS invoke this tool before executing file reads (read_file) or text searches (grep/rg). Use the precise line numbers and AST signatures as anchors for your next steps. 2. ANTI-EXPLOSION: This tool has a strict 5000-file circuit breaker limit for matched files and allows at most 20 explicitly listed files in one call; do not mix file paths and directory paths. 3. PAGINATION: Large results may be paginated with cache_id + page. 4. BUDGET CONTROL: truncate_chars defaults to 20000 and should not be overridden unless the user explicitly asks for a different budget or the prompt requires it."
+        },
+        {
+          "name": "vmcp-rg",
+          "description": "[TEXT-TO-STRUCTURE BRIDGE] Run ripgrep first, then map matched lines back to the most relevant AST structures. Use this when vmcp-ast alone is too broad and you need only the class/function context that directly contains a regex hit.",
+          "lua_entry": "main_rg.lua",
+          "lua_module": "vmcp_rg",
+          "parameters": [
+            {
+              "name": "dir",
+              "type": "string",
+              "description": "Target directory to search recursively. This parameter is required for a fresh search and must point to an existing directory.",
+              "required": false
+            },
+            {
+              "name": "ext",
+              "type": "string",
+              "description": "Optional extension filter, comma-separated (e.g., lua,rs,ts). When omitted, rg searches all files and vmcp-rg keeps only files that vmcp-ast can structurally analyze.",
+              "required": false
+            },
+            {
+              "name": "rg_pattern",
+              "type": "string",
+              "description": "Ripgrep regex used for the first-pass text search. This parameter is required for a fresh search.",
+              "required": false
+            },
+            {
+              "name": "cache_id",
+              "type": "string",
+              "description": "Pagination cache identifier returned by a previous truncated vmcp-rg search. Use this instead of dir/ext/rg_pattern when requesting another page.",
+              "required": false
+            },
+            {
+              "name": "page",
+              "type": "number",
+              "description": "Page number to fetch from a cached paginated result (default: 1).",
+              "required": false
+            },
+            {
+              "name": "truncate_chars",
+              "type": "number",
+              "description": "Character budget per page (default: 20000). Increase only when the user explicitly asks for a larger structural window.",
+              "required": false
+            }
+          ],
+          "return_type": "table",
+          "prompt": "[OPERATION PROTOCOL] 1. USE THIS AFTER YOU KNOW THE TEXT SIGNAL: vmcp-rg is for regex-to-structure narrowing, not for first-pass repository exploration. 2. SEARCH FLOW: it runs rg first and then only scans matched files with vmcp-ast internals. 3. OUTPUT RULE: only structures directly related to the matched lines are returned. Declaration hits expand that declaration structure; body hits collapse to the nearest relevant function/method context. 4. PAGINATION: large results may be paginated with cache_id + page."
+        },
+        {
+          "name": "vmcp-patch",
+          "description": "[FUNCTION-LEVEL AST PATCHER] Re-locate a function or method by structural selector and replace the full function source. Use this when line numbers are stale and you need AST-based function replacement instead of raw text patching.",
+          "lua_entry": "main_patch.lua",
+          "lua_module": "vmcp_patch",
+          "parameters": [
+            {
+              "name": "file",
+              "type": "string",
+              "description": "Target file that contains the function to patch. This parameter is required and must point to a regular file.",
+              "required": true
+            },
+            {
+              "name": "selector",
+              "type": "string",
+              "description": "Flexible structural selector for a function or method, for example with_vmm, McpServer/with_vmm, or impl McpServer/with_vmm. If multiple nodes match, the tool returns more specific candidates instead of patching blindly.",
+              "required": true
+            },
+            {
+              "name": "replacement",
+              "type": "string",
+              "description": "Replacement source text. It must be the complete function source, starting from the declaration line. Body-only fragments are rejected.",
+              "required": true
+            }
+          ],
+          "return_type": "table",
+          "prompt": "[OPERATION PROTOCOL] 1. PATCH FUNCTIONS ONLY: this tool only replaces function or method nodes, never type names or field identifiers. 2. STRICT INPUT RULE: always pass the complete function source starting from the declaration line; do not pass mode and do not pass body-only fragments. Requests that do not follow this rule are rejected. 3. SELECTOR FLOW: pass the loosest selector first; if multiple nodes match, the tool will return more specific structural candidates. 4. SAFETY: patches are written through a temp-file + rollback flow, validated by generic AST re-scan, ast-grep ERROR-node detection, and target identity re-location before the write is accepted."
         }
       ],
       "resources": [

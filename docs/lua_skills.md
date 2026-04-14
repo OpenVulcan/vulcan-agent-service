@@ -6,6 +6,31 @@
 - **模式**: `unsafe`（允许 C 模块加载，可使用 FFI）
 - **入口**: 每个 tool 入口的 `lua_entry` 文件返回 `function(args)`，附属能力入口通过各自的 `file` 字段绑定静态文件或 `.lua` 生成器
 
+## 调试文档
+
+- 中文调试文档：`docs/skill_debugging_cn.md`
+- English debugging guide: `docs/skill_debugging_en.md`
+- `vmcp-patch` 中文使用说明：`docs/vmcp_patch_usage_cn.md`
+
+当前仓库已支持 `--call-tools <tool_name> [json_arguments]` 本地调试模式，可在不启动 HTTP / gRPC 服务的情况下直接初始化 Lua skill 并执行目标 tool。
+
+`vmcp-rg` 这类“文本命中回映结构”的工具，建议输出为树结构文本，即：
+
+- 文件仍通过 JSON 字段返回
+- `files[].content` 内仅保留结构树
+- 结构节点统一显示为 `signature [Lx-y]`
+- 命中行统一作为子节点显示为 `Lx | text`
+- 命中函数声明或函数体时，应展开该函数的完整源码片段
+- 命中类型/结构声明时，应只显示结构头与行号范围，不额外展开无关子树
+
+`vmcp-patch` 这类“结构重定位替换”的工具，建议遵循以下规则：
+
+- 只允许 patch function / method 这类完整代码节点
+- selector 优先采用宽松的结构路径，例如 `with_vmm`、`McpServer/with_vmm`、`impl McpServer/with_vmm`
+- 唯一命中时直接替换；多命中时返回更完整的候选结构路径，让调用方重试
+- `replacement` 必须是完整函数源码，且必须从声明行开始传入
+- 不做 `body/auto` 兼容推断；不符合规则时应直接返回结构化错误
+
 ## skill.json 关键约定
 
 ### 内部模板目录

@@ -30,13 +30,28 @@ pub mod pb_mcp {
 }
 
 use config::Config;
-use lua_engine::LuaVmPoolConfig;
+use lua_engine::{LuaEngine, LuaVmPoolConfig};
+use serde_json::{Value, json};
 use server::McpServer;
 use tool_cache::ToolCacheConfig;
 use tool_cache::configure_global_tool_cache;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime_mode = parse_runtime_mode()?;
+    match runtime_mode {
+        RuntimeMode::CallTool { tool_name, arguments } => run_call_tool_mode(&tool_name, arguments),
+        RuntimeMode::Serve => {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async_main())
+        }
+    }
+}
+
+/// 中文：异步主流程，根据运行模式决定是启动网络服务还是直接进入 tools 调试。
+/// English: Async main flow that decides between starting network services and entering direct tool-debug mode.
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
 
     configure_global_tool_cache(ToolCacheConfig {
@@ -48,6 +63,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Prepend output/libs/ to PATH so C dependency DLLs are found at runtime
     add_libs_to_path();
 
+    let server = build_server(&cfg).await?;
+
+    run_network_transports(server, &cfg).await?;
+
+    Ok(())
+}
+
+/// 中文：命令行运行模式。
+/// English: Command-line runtime mode.
+enum RuntimeMode {
+    /// 中文：正常启动 HTTP/gRPC 服务。
+    /// English: Start the regular HTTP/gRPC services.
+    Serve,
+    /// 中文：仅初始化工具运行环境，并直接调用单个 tool 做本地调试。
+    /// English: Initialize the tool runtime only and directly invoke a single tool for local debugging.
+    CallTool {
+        tool_name: String,
+        arguments: Value,
+    },
+}
+
+/// 中文：根据命令行参数解析运行模式。
+/// 支持 `--call-tools <tool_name> [json_arguments]`。
+/// English: Parse the runtime mode from CLI arguments.
+/// Supports `--call-tools <tool_name> [json_arguments]`.
+fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    for index in 0..args.len() {
+        if args[index] == "--call-tools" {
+            let tool_name = args
+                .get(index + 1)
+                .ok_or("--call-tools requires a tool name")?
+                .clone();
+
+            let raw_arguments = args
+                .get(index + 2)
+                .filter(|value| !is_reserved_cli_flag(value))
+                .cloned();
+
+            let arguments = match raw_arguments {
+                Some(raw) => serde_json::from_str::<Value>(&raw)?,
+                None => json!({}),
+            };
+
+            return Ok(RuntimeMode::CallTool { tool_name, arguments });
+        }
+    }
+
+    Ok(RuntimeMode::Serve)
+}
+
+/// 中文：判断某个 CLI token 是否属于主程序保留参数，避免把 `-config` 误当作 tool 参数 JSON。
+/// English: Determine whether a CLI token is a reserved program-level flag so `-config` is not mistaken for tool-argument JSON.
+fn is_reserved_cli_flag(value: &str) -> bool {
+    matches!(value, "-config" | "--config" | "--call-tools")
+}
+
+/// 中文：构建并初始化 MCP Server，包括外部客户端、Lua Skills 与共享缓存。
+/// English: Build and initialize the MCP server, including external clients, Lua skills, and shared cache.
+async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Error>> {
     let mut server = McpServer::new();
 
     // Connect gRPC clients if configured
@@ -77,8 +152,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
 
-    let http_addr = cfg.http.unwrap_or_else(|| "127.0.0.1:19201".to_string());
-    let grpc_addr = cfg.grpc.unwrap_or_else(|| "127.0.0.1:19202".to_string());
+    Ok(server)
+}
+
+/// 中文：运行默认的 HTTP/gRPC 服务模式。
+/// English: Run the default HTTP/gRPC service mode.
+async fn run_network_transports(server: McpServer, cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let http_addr = cfg.http.clone().unwrap_or_else(|| "127.0.0.1:19201".to_string());
+    let grpc_addr = cfg.grpc.clone().unwrap_or_else(|| "127.0.0.1:19202".to_string());
 
     // Clone server for parallel transports
     let server_for_http = server.clone();
@@ -101,6 +182,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     http_result??;
     grpc_result??;
 
+    Ok(())
+}
+
+/// 中文：在不启动服务的情况下，直接初始化 Lua skill 并调用目标 tool，便于调试技能加载、依赖初始化与实际返回值。
+/// English: Initialize Lua skills and invoke the target tool directly without starting transports, making skill loading, dependency setup, and real return values easier to debug.
+fn run_call_tool_mode(
+    tool_name: &str,
+    arguments: Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = Config::load()?;
+
+    configure_global_tool_cache(ToolCacheConfig {
+        max_entries: cfg.tool_cache_max_entries.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
+        default_ttl_secs: cfg.tool_cache_default_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
+        max_ttl_secs: cfg.tool_cache_max_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
+    });
+
+    add_libs_to_path();
+
+    let (base_dir, override_dir) = find_lua_skill_dirs(&cfg)
+        .ok_or("Lua skill directory not found for --call-tools mode")?;
+
+    let mut engine = LuaEngine::new(LuaVmPoolConfig {
+        min_size: cfg.lua_vm_pool_min_size.unwrap_or(1),
+        max_size: cfg.lua_vm_pool_max_size.unwrap_or(4),
+        idle_ttl_secs: cfg.lua_vm_pool_idle_ttl_secs.unwrap_or(300),
+    })?;
+    engine.load_from_dirs(&base_dir, override_dir.as_deref())?;
+
+    if !engine.is_skill(tool_name) {
+        return Err(format!("Unknown Lua skill tool for --call-tools: {}", tool_name).into());
+    }
+
+    let result = engine
+        .call_skill(tool_name, &arguments)
+        .map_err(|error| format!("call-tools failed for {}: {}", tool_name, error))?;
+
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
