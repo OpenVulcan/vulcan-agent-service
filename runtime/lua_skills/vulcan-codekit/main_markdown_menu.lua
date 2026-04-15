@@ -101,7 +101,7 @@ local function load_ast_runtime_helpers()
     if not ok or type(ast_entry) ~= "function" then
         return nil, {
             error = "vmcp_ast_entry_invalid",
-            message = ok and "codekit-ast entry did not return a function" or tostring(ast_entry),
+            message = ok and "codekit-ast-detail entry did not return a function" or tostring(ast_entry),
             path = ast_entry_path,
         }
     end
@@ -116,7 +116,7 @@ local function load_ast_runtime_helpers()
         if type(helper_value) ~= "function" then
             return nil, {
                 error = "vmcp_ast_helper_missing",
-                message = "required helper missing from codekit-ast runtime",
+                message = "required helper missing from codekit-ast-detail runtime",
                 helper = helper_name,
                 path = ast_entry_path,
             }

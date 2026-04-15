@@ -1,14 +1,14 @@
 --[[
 codekit-ast-tree
-中文：对目录执行轻量级 AST 树索引，只返回按目录分组的 Markdown 文本摘要，帮助 AI 先判断文件范围，再决定后续精确读取哪些文件。
-English: Build a lightweight AST tree index for directories and return only a directory-grouped Markdown summary, helping the AI decide which files deserve detailed follow-up reads.
+中文：对单个目录执行轻量级 AST 树索引，只返回按目录分组的 Markdown 文本摘要，帮助 AI 先判断文件范围，再决定后续精确读取哪些文件。
+English: Build a lightweight AST tree index for a single directory and return only a directory-grouped Markdown summary, helping the AI decide which files deserve detailed follow-up reads.
 ]]
 
 local MAX_LISTED_CONTAINERS = 3
-local AST_RUNTIME_HELPERS = nil
 local DEFAULT_AST_CLIENT_CHAR_LIMIT = 10000
 local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete codekit-ast-tree result has already been written to %s. Open that file directly."
+local AST_RUNTIME_HELPERS = nil
 local LFS_MODULE = nil
 
 local TYPE_LIKE_KINDS = {
@@ -27,50 +27,32 @@ local TYPE_LIKE_KINDS = {
 }
 
 --[[
-中文：去除字符串首尾空白，保证目录摘要字段拼接稳定。
-English: Trim leading and trailing whitespace so summary fields remain stable during formatting.
+中文：去除字符串首尾空白，保证路径与摘要文本的拼接稳定。
+English: Trim leading and trailing whitespace so path parsing and summary formatting remain stable.
 ]]
 local function trim(text)
     return (tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
 --[[
-中文：判断字符串是否以前缀开头，供客户端名识别与路径处理复用。
-English: Check whether a string starts with a prefix so client-name detection and path handling can reuse the helper.
+中文：判断字符串是否以前缀开头，用于客户端名规则匹配与路径处理。
+English: Check whether a string starts with a prefix for client-name rule matching and path handling.
 ]]
 local function starts_with(text, prefix)
     return tostring(text or ""):sub(1, #prefix) == prefix
 end
 
 --[[
-中文：懒加载 LuaFileSystem，优先用于目录创建，降低对外部命令执行的依赖。
-English: Lazily load LuaFileSystem and prefer it for directory creation to reduce reliance on external command execution.
-]]
-local function get_lfs_module()
-    if LFS_MODULE ~= nil then
-        return LFS_MODULE or nil
-    end
-
-    local ok, lfs = pcall(require, "lfs")
-    if ok then
-        LFS_MODULE = lfs
-    else
-        LFS_MODULE = false
-    end
-    return LFS_MODULE or nil
-end
-
---[[
-中文：获取当前技能目录，优先使用宿主为新工具注入的目录变量，并兼容旧名称回退。
-English: Resolve the current skill directory, preferring the host-injected variable for this tool while keeping backward-compatible fallbacks.
+中文：获取当前技能目录，优先使用宿主注入给 `codekit-ast-tree` 的目录变量。
+English: Resolve the current skill directory, preferring the host-injected directory variable for `codekit-ast-tree`.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_ast_tree or __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_ast_tree or __skill_dir_codekit_ast_detail or __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
 end
 
 --[[
-中文：按名称提取 Lua 闭包中的 upvalue，便于从 `codekit-ast` 复用内部助手函数。
-English: Extract a closure upvalue by name so internal helpers from `codekit-ast` can be reused safely.
+中文：从主 `codekit-ast-detail` 闭包中按名称提取 upvalue，供目录型树工具复用底层能力。
+English: Extract named upvalues from the main `codekit-ast-detail` closure so the directory tree tool can reuse core helpers.
 ]]
 local function extract_upvalue_by_name(fn, name)
     local index = 1
@@ -87,8 +69,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：懒加载 `codekit-ast` 运行时助手，使树索引工具与主 AST 工具共享同一套校验、收集与扫描逻辑。
-English: Lazily load runtime helpers from `codekit-ast` so the tree index tool shares the same validation, collection, and scan behavior.
+中文：懒加载主 `codekit-ast-detail` 的运行时助手，让本工具复用二进制定位、文件收集、建树与行数统计逻辑。
+English: Lazily load runtime helpers from the main `codekit-ast-detail` tool so this tool can reuse binary lookup, file collection, tree building, and line-count logic.
 ]]
 local function load_ast_runtime_helpers()
     if AST_RUNTIME_HELPERS then
@@ -109,18 +91,17 @@ local function load_ast_runtime_helpers()
     if not ok or type(ast_entry) ~= "function" then
         return nil, {
             error = "codekit_ast_entry_invalid",
-            message = ok and "codekit-ast entry did not return a function" or tostring(ast_entry),
+            message = ok and "codekit-ast-detail entry did not return a function" or tostring(ast_entry),
             path = ast_entry_path,
         }
     end
 
     local helpers = {
-        validate_path_argument = extract_upvalue_by_name(ast_entry, "validate_path_argument"),
-        validate_noignore_argument = extract_upvalue_by_name(ast_entry, "validate_noignore_argument"),
-        validate_extension_argument = extract_upvalue_by_name(ast_entry, "validate_extension_argument"),
         classify_target_path_modes = extract_upvalue_by_name(ast_entry, "classify_target_path_modes"),
         find_binary = extract_upvalue_by_name(ast_entry, "find_binary"),
         collect_files = extract_upvalue_by_name(ast_entry, "collect_files"),
+        validate_extension_argument = extract_upvalue_by_name(ast_entry, "validate_extension_argument"),
+        validate_noignore_argument = extract_upvalue_by_name(ast_entry, "validate_noignore_argument"),
         run_language_scan = extract_upvalue_by_name(ast_entry, "run_language_scan"),
         normalize_symbol = extract_upvalue_by_name(ast_entry, "normalize_symbol"),
         deduplicate_symbols = extract_upvalue_by_name(ast_entry, "deduplicate_symbols"),
@@ -132,7 +113,7 @@ local function load_ast_runtime_helpers()
         if type(helper_value) ~= "function" then
             return nil, {
                 error = "codekit_ast_helper_missing",
-                message = "required helper missing from codekit-ast runtime",
+                message = "required helper missing from codekit-ast-detail runtime",
                 helper = helper_name,
                 path = ast_entry_path,
             }
@@ -144,8 +125,62 @@ local function load_ast_runtime_helpers()
 end
 
 --[[
-中文：从当前请求上下文中解析 MCP 客户端名称，以便沿用与主 AST 工具一致的字符预算策略。
-English: Resolve the MCP client name from the current request context so the same character-budget policy as the main AST tool can be reused.
+中文：把 `paths` 参数规范化为单个目录路径；虽然参数名为复数，但当前协议只允许一个目录值。
+English: Normalize the `paths` argument into a single directory path; although the parameter name is plural, the current contract allows exactly one directory value.
+]]
+local function validate_paths_argument(value)
+    if type(value) ~= "string" then
+        return nil, {
+            error = "invalid_paths_argument",
+            message = "paths must be a non-empty string containing exactly one directory path",
+            actual_type = type(value),
+        }
+    end
+
+    local normalized_paths = {}
+    local normalized = tostring(value or ""):gsub("\r\n", "\n")
+    for line in (normalized .. "\n"):gmatch("(.-)\n") do
+        local normalized_line = trim(line)
+        if normalized_line ~= "" then
+            table.insert(normalized_paths, normalized_line)
+        end
+    end
+
+    if #normalized_paths == 0 then
+        return nil, {
+            error = "invalid_paths_argument",
+            message = "paths must contain exactly one non-empty directory path",
+            actual_type = "string",
+        }
+    end
+    if #normalized_paths > 1 then
+        return nil, {
+            error = "multiple_directories_not_supported",
+            message = "codekit-ast-tree accepts exactly one directory path; multiple directories are not supported",
+            provided_paths = #normalized_paths,
+        }
+    end
+
+    return normalized_paths, nil
+end
+
+--[[
+中文：显式拒绝 `comment` 参数，避免调用方误以为目录树工具仍支持备注展开。
+English: Explicitly reject the `comment` argument so callers do not assume the directory tree tool still supports comment expansion.
+]]
+local function validate_comment_absence(value)
+    if value ~= nil then
+        return {
+            error = "comment_not_supported",
+            message = "codekit-ast-tree does not support the comment argument",
+        }
+    end
+    return nil
+end
+
+--[[
+中文：从当前请求上下文中提取客户端名称，以便沿用与主 AST 工具一致的字符预算规则。
+English: Resolve the current client name from request context so the same character-budget rules as the main AST tool can be reused.
 ]]
 local function resolve_current_client_name()
     local vulcan_context = type(vulcan) == "table" and vulcan or nil
@@ -169,41 +204,46 @@ local function resolve_current_client_name()
 end
 
 --[[
-中文：根据客户端名称计算 AST 文本预算，规则与主 `codekit-ast` 保持一致。
-English: Resolve the AST text budget from the client name, keeping the same rules as the main `codekit-ast` tool.
-]]
-local function resolve_ast_client_char_limit(client_name)
-    local normalized_name = trim(client_name or ""):lower()
-    if normalized_name == "" then
-        return DEFAULT_AST_CLIENT_CHAR_LIMIT
-    end
-    if starts_with(normalized_name, "qwen-code-mcp-client") or normalized_name:find("qwen", 1, true) then
-        return 25000
-    end
-    if normalized_name == "codex-mcp-client" then
-        return 10000
-    end
-    if normalized_name:find("opencode", 1, true) then
-        return 50000
-    end
-    if normalized_name:find("claude-code", 1, true) then
-        return 50000
-    end
-    return DEFAULT_AST_CLIENT_CHAR_LIMIT
-end
-
---[[
-中文：在每次工具调用开始时初始化当前客户端的 AST 字符预算。
-English: Initialize the AST character budget for the current client at the start of each tool call.
+中文：根据客户端名称初始化字符预算，规则与主 `codekit-ast-detail` 保持一致。
+English: Initialize the output character budget from the client name, keeping the same rules as the main `codekit-ast-detail` tool.
 ]]
 local function initialize_ast_client_char_limit()
-    CURRENT_AST_CLIENT_CHAR_LIMIT = resolve_ast_client_char_limit(resolve_current_client_name())
+    local client_name = trim(resolve_current_client_name() or ""):lower()
+    if client_name == "" then
+        CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
+    elseif starts_with(client_name, "qwen-code-mcp-client") or client_name:find("qwen", 1, true) then
+        CURRENT_AST_CLIENT_CHAR_LIMIT = 25000
+    elseif client_name == "codex-mcp-client" then
+        CURRENT_AST_CLIENT_CHAR_LIMIT = 10000
+    elseif client_name:find("opencode", 1, true) or client_name:find("claude-code", 1, true) then
+        CURRENT_AST_CLIENT_CHAR_LIMIT = 50000
+    else
+        CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
+    end
     return CURRENT_AST_CLIENT_CHAR_LIMIT
 end
 
 --[[
-中文：在必要时按段创建目录，供超限结果落盘复用。
-English: Create directories segment by segment when needed so oversized-result spilling can reuse the helper.
+中文：懒加载 LuaFileSystem，供超限结果落盘时创建目录使用。
+English: Lazily load LuaFileSystem so oversized-result spilling can create directories when needed.
+]]
+local function get_lfs_module()
+    if LFS_MODULE ~= nil then
+        return LFS_MODULE or nil
+    end
+
+    local ok, lfs = pcall(require, "lfs")
+    if ok then
+        LFS_MODULE = lfs
+    else
+        LFS_MODULE = false
+    end
+    return LFS_MODULE or nil
+end
+
+--[[
+中文：逐段创建目录，用于超限文本写入缓存时保证目标目录存在。
+English: Create a directory path segment by segment so spill files can be written safely when text exceeds the inline limit.
 ]]
 local function ensure_directory(directory_path)
     local normalized = trim(directory_path or "")
@@ -244,30 +284,11 @@ local function ensure_directory(directory_path)
                     }
                 end
             else
-                local command
-                if vulcan.osinfo().os == "windows" then
-                    local quoted_path = current:gsub("'", "''")
-                    command = {
-                        program = "powershell",
-                        args = { "-NoProfile", "-Command", "New-Item -ItemType Directory -LiteralPath '" .. quoted_path .. "' -Force | Out-Null" },
-                        timeout_ms = 30000,
-                    }
-                else
-                    command = {
-                        program = "mkdir",
-                        args = { "-p", current },
-                        timeout_ms = 30000,
-                    }
-                end
-
-                local ok, result = pcall(vulcan.exec, command)
-                if not ok or (result and (result.error or tonumber(result.code or 0) ~= 0)) then
-                    return nil, {
-                        error = "ensure_directory_failed",
-                        message = ok and tostring(result and (result.error or result.stderr or result.stdout or "failed to create directory")) or tostring(result),
-                        path = current,
-                    }
-                end
+                return nil, {
+                    error = "ensure_directory_failed",
+                    message = "LuaFileSystem is unavailable and fallback directory creation is disabled",
+                    path = current,
+                }
             end
         end
     end
@@ -276,58 +297,58 @@ local function ensure_directory(directory_path)
 end
 
 --[[
-中文：向文本文件写入完整结果，必要时先确保父目录已存在。
-English: Write the full result into a text file, ensuring the parent directory exists first when needed.
+中文：将文本写入指定文件，统一处理父目录创建和写入异常。
+English: Write text to a target file while consistently handling parent-directory creation and write failures.
 ]]
 local function write_text_file(file_path, content)
     local parent_directory = tostring(file_path or ""):match("^(.*)[/\\][^/\\]+$")
-    if parent_directory then
-        local ensured, ensure_error = ensure_directory(parent_directory)
-        if not ensured then
+    if parent_directory and trim(parent_directory) ~= "" then
+        local _, ensure_error = ensure_directory(parent_directory)
+        if ensure_error then
             return nil, ensure_error
         end
     end
 
-    local ok, write_error = pcall(vulcan.fs_write, file_path, tostring(content or ""))
+    local ok, write_error = pcall(vulcan.fs_write, file_path, content)
     if not ok then
         return nil, {
-            error = "write_text_file_failed",
+            error = "write_file_failed",
             message = tostring(write_error),
-            file_path = file_path,
+            path = file_path,
         }
     end
     return true, nil
 end
 
 --[[
-中文：解析大结果缓存目录，统一写入宿主提供的临时目录。
-English: Resolve the cache directory for oversized results, always using the host-provided temporary directory.
+中文：解析大结果落盘目录，统一写入 `vulcan.temp_dir/mcp/cache/`。
+English: Resolve the spill directory for oversized results and always place files under `vulcan.temp_dir/mcp/cache/`.
 ]]
 local function resolve_large_result_directory()
-    local temp_root = trim(vulcan.temp_dir or "")
-    if temp_root == "" then
+    local temp_directory = nil
+    if type(vulcan) == "table" then
+        temp_directory = trim(vulcan.temp_dir or "")
+        if temp_directory == "" and type(vulcan.context) == "table" then
+            temp_directory = trim(vulcan.context.temp_dir or "")
+        end
+    end
+
+    if temp_directory == "" or temp_directory == nil then
         return nil, {
             error = "temp_dir_unavailable",
             message = "vulcan.temp_dir is unavailable; cannot spill large outputs",
         }
     end
-    return vulcan.path_join(temp_root, "mcp", "cache"), nil
+
+    return vulcan.path_join(vulcan.path_join(temp_directory, "mcp"), "cache"), nil
 end
 
 --[[
-中文：生成结果落盘文件名，避免不同调用之间互相覆盖。
-English: Build a spill-file identifier so different invocations do not overwrite each other.
+中文：构建唯一的超限结果文件标识，避免连续调用互相覆盖。
+English: Build a unique spill-file identifier so consecutive oversized calls do not overwrite each other.
 ]]
 local function build_spill_file_id(prefix)
     return string.format("%s_%d_%06d", tostring(prefix or "result"), os.time(), math.floor((os.clock() % 1) * 1000000))
-end
-
---[[
-中文：构造超限时的缓存提示文本，把缓存绝对路径放在最前面，降低客户端截断时丢失关键信息的风险。
-English: Build the oversize-result notice, placing the absolute cache path first so key information survives client truncation more reliably.
-]]
-local function build_large_result_notice(full_output_path)
-    return string.format("> " .. LARGE_RESULT_NOTICE_TEMPLATE, full_output_path)
 end
 
 --[[
@@ -428,7 +449,7 @@ end
 中文：将顶级类型或 impl 节点格式化为紧凑标签，并附带行号范围。
 English: Format a top-level type or impl node as a compact label annotated with its line span.
 ]]
-local function format_container_label(node, helpers)
+local function format_container_label(node)
     local kind = tostring(node.kind or "symbol")
     local name = resolve_container_name(kind, node)
 
@@ -505,7 +526,7 @@ end
 中文：把少量顶级类型/impl 标签拼成紧凑摘要，并在超出上限时附加 `+N` 提示。
 English: Join a few top-level type/impl labels into a compact summary and append `+N` when more entries are omitted.
 ]]
-local function build_container_text(containers, helpers)
+local function build_container_text(containers)
     if #(containers or {}) == 0 then
         return ""
     end
@@ -513,7 +534,7 @@ local function build_container_text(containers, helpers)
     local labels = {}
     local visible_count = math.min(#containers, MAX_LISTED_CONTAINERS)
     for index = 1, visible_count do
-        table.insert(labels, format_container_label(containers[index], helpers))
+        table.insert(labels, format_container_label(containers[index]))
     end
     if #containers > visible_count then
         table.insert(labels, string.format("+%d", #containers - visible_count))
@@ -530,7 +551,7 @@ local function build_file_summary(file_path, root_nodes, helpers)
     local line_count = helpers.get_file_line_count(file_path)
     local type_count, impl_count, free_function_count, method_count, containers = summarize_tree_metrics(root_nodes or {})
     local metric_text = build_metric_text(line_count, type_count, impl_count, free_function_count, method_count)
-    local container_text = build_container_text(containers, helpers)
+    local container_text = build_container_text(containers)
 
     local summary = string.format("- %s %s", get_file_name(file_path), metric_text)
     if container_text ~= "" then
@@ -539,77 +560,10 @@ local function build_file_summary(file_path, root_nodes, helpers)
 
     return {
         directory = get_parent_directory(file_path),
-        file_name = get_file_name(file_path),
         sort_key = normalize_sort_key(file_path),
         summary = summary,
+        item_count = #root_nodes,
     }
-end
-
---[[
-中文：构建最终 Markdown 文本，按目录分组并保证组内文件稳定排序。
-English: Build the final Markdown text grouped by directory while keeping file order stable inside each group.
-]]
-local function build_tree_content(groups_by_directory)
-    local directories = {}
-    for _, group in pairs(groups_by_directory or {}) do
-        table.insert(directories, group)
-    end
-
-    table.sort(directories, function(left, right)
-        return normalize_sort_key(left.path) < normalize_sort_key(right.path)
-    end)
-
-    if #directories == 0 then
-        return "> (no source files found)"
-    end
-
-    local lines = {}
-    for directory_index, group in ipairs(directories) do
-        table.sort(group.items, function(left, right)
-            return left.sort_key < right.sort_key
-        end)
-
-        table.insert(lines, string.format("## DIR %s [files:%d]", tostring(group.path or "."), #group.items))
-        for _, item in ipairs(group.items) do
-            table.insert(lines, item.summary)
-        end
-
-        if directory_index < #directories then
-            table.insert(lines, "")
-        end
-    end
-
-    return table.concat(lines, "\n")
-end
-
---[[
-中文：按与主 AST 工具一致的字符预算规则处理最终文本；超限时写入缓存并把缓存地址备注前置。
-English: Finalize the output text with the same character-budget rule as the main AST tool; when oversized, spill to cache and prepend a cache-address notice.
-]]
-local function finalize_tree_content(content)
-    local normalized = tostring(content or "")
-    if #normalized <= CURRENT_AST_CLIENT_CHAR_LIMIT then
-        return normalized
-    end
-
-    local output_directory, output_directory_error = resolve_large_result_directory()
-    if output_directory_error then
-        return output_directory_error
-    end
-
-    local file_id = build_spill_file_id("codekit_ast_tree")
-    local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
-    local _, write_error = write_text_file(full_output_path, normalized)
-    if write_error then
-        return write_error
-    end
-
-    return table.concat({
-        build_large_result_notice(full_output_path),
-        string.format("> Inline limit: %d chars", CURRENT_AST_CLIENT_CHAR_LIMIT),
-        "",
-        normalized,
-    }, "\n")
 end
 
 --[[
@@ -630,6 +584,52 @@ local function append_file_summary(groups_by_directory, file_summary)
 end
 
 --[[
+中文：构建最终 Markdown 文本，先给出总览摘要，再按目录分组输出文件摘要。
+English: Build the final Markdown text by emitting a summary first and then directory-grouped file summaries.
+]]
+local function build_tree_content(groups_by_directory, files_scanned, files_with_symbols, items_found)
+    local directories = {}
+    for _, group in pairs(groups_by_directory or {}) do
+        table.insert(directories, group)
+    end
+
+    table.sort(directories, function(left, right)
+        return normalize_sort_key(left.path) < normalize_sort_key(right.path)
+    end)
+
+    local lines = {
+        "# AST TREE SUMMARY",
+        string.format("- files_scanned: %d", tonumber(files_scanned) or 0),
+        string.format("- files_with_symbols: %d", tonumber(files_with_symbols) or 0),
+        string.format("- items_found: %d", tonumber(items_found) or 0),
+    }
+
+    if #directories == 0 then
+        table.insert(lines, "")
+        table.insert(lines, "> (no source files found)")
+        return table.concat(lines, "\n")
+    end
+
+    table.insert(lines, "")
+    for directory_index, group in ipairs(directories) do
+        table.sort(group.items, function(left, right)
+            return left.sort_key < right.sort_key
+        end)
+
+        table.insert(lines, string.format("## DIR %s [files:%d]", tostring(group.path or "."), #group.items))
+        for _, item in ipairs(group.items) do
+            table.insert(lines, item.summary)
+        end
+
+        if directory_index < #directories then
+            table.insert(lines, "")
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+--[[
 中文：把扫描过程中的非致命诊断写入日志，保持工具返回正文尽量纯净。
 English: Write non-fatal scan diagnostics to logs so the main tool response can stay as clean text.
 ]]
@@ -647,6 +647,36 @@ local function log_diagnostics(diagnostics)
     end
 end
 
+--[[
+中文：按客户端字符预算处理最终文本；超限时落盘并在返回头部附带缓存绝对路径备注。
+English: Finalize the output text using the client-specific character budget; when oversized, spill it to disk and prepend the cache-file notice.
+]]
+local function finalize_tree_content(content)
+    local normalized = tostring(content or "")
+    if #normalized <= CURRENT_AST_CLIENT_CHAR_LIMIT then
+        return normalized
+    end
+
+    local output_directory, output_directory_error = resolve_large_result_directory()
+    if output_directory_error then
+        return output_directory_error
+    end
+
+    local file_id = build_spill_file_id("codekit_ast_tree")
+    local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
+    local _, write_error = write_text_file(full_output_path, normalized)
+    if write_error then
+        return write_error
+    end
+
+    return table.concat({
+        string.format("> " .. LARGE_RESULT_NOTICE_TEMPLATE, full_output_path),
+        string.format("> Inline limit: %d chars", CURRENT_AST_CLIENT_CHAR_LIMIT),
+        "",
+        normalized,
+    }, "\n")
+end
+
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
     initialize_ast_client_char_limit()
@@ -656,9 +686,14 @@ return function(args)
         return helpers_error
     end
 
-    local target_paths, path_error = helpers.validate_path_argument(args and args.path)
-    if path_error then
-        return path_error
+    local target_paths, paths_error = validate_paths_argument(args and args.paths)
+    if paths_error then
+        return paths_error
+    end
+
+    local comment_error = validate_comment_absence(args and args.comment)
+    if comment_error then
+        return comment_error
     end
 
     local extension_filter, extension_error = helpers.validate_extension_argument(args and args.ext)
@@ -677,8 +712,8 @@ return function(args)
     end
     if target_mode ~= "directory" then
         return {
-            error = "directory_paths_required",
-            message = "codekit-ast-tree accepts directory paths only; pass one or more directories separated by newlines",
+            error = "single_directory_required",
+            message = "codekit-ast-tree accepts exactly one directory path; file paths and multiple directories are not supported",
         }
     end
 
@@ -717,11 +752,17 @@ return function(args)
     end
 
     local groups_by_directory = {}
+    local files_with_symbols = 0
+    local items_found = 0
     for _, file_info in ipairs(files or {}) do
         local symbols = helpers.deduplicate_symbols(normalized_by_file[file_info.path] or {})
         local tree = (#symbols > 0) and helpers.build_symbol_tree(symbols) or {}
+        if #symbols > 0 then
+            files_with_symbols = files_with_symbols + 1
+            items_found = items_found + #symbols
+        end
         append_file_summary(groups_by_directory, build_file_summary(file_info.path, tree, helpers))
     end
 
-    return finalize_tree_content(build_tree_content(groups_by_directory))
+    return finalize_tree_content(build_tree_content(groups_by_directory, #files, files_with_symbols, items_found))
 end

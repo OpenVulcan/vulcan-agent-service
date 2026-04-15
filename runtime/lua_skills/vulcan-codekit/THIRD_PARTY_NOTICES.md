@@ -4,7 +4,7 @@
 
 适用范围如下：
 
-- `codekit-ast`
+- `codekit-ast-detail`
 - `codekit-rg`
 - `codekit-patch`
 - `codekit-markdown-menu`
@@ -19,7 +19,7 @@
 ## 1. ast-grep
 
 - 组件名称：`ast-grep`
-- 在本 skill 包中的用途：为 `codekit-ast` 与 `codekit-patch` 提供 AST 结构扫描、结构匹配与补丁验证能力
+- 在本 skill 包中的用途：为 `codekit-ast-detail`、`codekit-ast-tree` 与 `codekit-patch` 提供 AST 结构扫描、结构匹配与补丁验证能力
 - 上游仓库：<https://github.com/ast-grep/ast-grep>
 - 官方许可证文件：<https://github.com/ast-grep/ast-grep/blob/main/LICENSE>
 - 许可证类型：`MIT License`

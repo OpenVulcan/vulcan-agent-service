@@ -38,28 +38,30 @@
 - 对文档根目录做首轮筛选时建议 `recursive=false`，确认相关文档范围后再缩小路径或开启递归
 - 不做缓存、不写入 `workdir`、不导出 Markdown 文件；如果客户端侧发生截断，应根据 `# FILE MENU` 判断需要的文件或子目录，并重新调用本工具缩小范围
 
-`codekit-ast-tree` 这类“目录级 AST 导航”工具，建议遵循以下规则：
+`codekit-ast-tree` 这类“单目录 AST 导航”工具，建议遵循以下规则：
 
-- 只接受目录输入，不接受显式文件路径
-- 工具固定递归扫描子目录，不再暴露 `recursive` 开关
-- 返回值建议直接使用 Markdown 纯文本，而不是 JSON 包裹后的 `content` 字段
-- 输出按目录分组，每个文件固定占一行，避免把大量文件摘要压成单行导致模型误读
-- 文件指标缩写建议统一为：`l`=总行数，`t`=顶级类型级结构数量，`i`=顶级 impl/extension 风格结构数量，`f`=顶级自由函数数量，`m`=顶级类型或 impl 下的方法数量
-- 文件详情仅列出少量顶级 `impl/class/interface/struct/trait/protocol` 等名称及其行号范围，不展开函数详情
-- 对 Lua 这类动态语言，不要强行推断不稳定的“类”概念；当不存在稳定类型结构时，仅输出可靠的行数与函数统计
-- 适合作为全盘分析、功能检索前的首轮文件筛选入口；真正需要细节时，再转向 `codekit-ast` 或 `codekit-rg`
-- 当输出文本超过与 `codekit-ast` 相同的客户端字符预算时，应将完整结果写入 `vulcan.temp_dir/mcp/cache/`，并在返回正文最前面附带缓存绝对路径备注
+- 参数名沿用 `paths`，但当前协议只允许传入一个目录路径
+- 多目录输入、文件路径输入都会被明确拒绝
+- 返回值直接使用 Markdown 纯文本，而不是 JSON 包裹后的 `content` 字段
+- 输出头部先给出扫描摘要，再按子目录分组输出文件级单行 AST 摘要
+- 递归扫描是隐式开启的，不再单独暴露 `recursive`
+- 支持 `ext` 作为文件扩展名过滤，也支持把 `rust`、`typescript` 这类语言名自动归一化为扩展名集合
+- 默认仍启用忽略规则；仅当显式传入 `noignore=true` 时，才关闭 `.gitignore`、`.ignore` 与内建黑名单过滤
+- 不支持 `comment` 与 `export_md_path`
+- 适合作为仓库级或子系统级的首轮文件筛选入口；真正需要细节时，再转向 `codekit-ast-detail` 或 `codekit-rg`
+- 当输出文本超过与 `codekit-ast-detail` 相同的客户端字符预算时，应将完整结果写入 `vulcan.temp_dir/mcp/cache/`，并在返回正文最前面附带缓存绝对路径备注
 
-`codekit-ast` 与 `codekit-rg` 当前推荐统一采用以下“大结果处理规则”：
+`codekit-ast-detail` 与 `codekit-rg` 当前推荐统一采用以下“大结果处理规则”：
 
 - 不再暴露 `cache_id`、`page`、`truncate_chars`、`cache_ttl_sec` 这类工具级缓存/分页参数
 - 结果 JSON 编码后若不超过 `10000` 字节，则直接内联返回完整内容
 - 结果 JSON 编码后若超过 `10000` 字节，则将完整 Markdown 写入磁盘，只返回紧凑预览
 - 完整 Markdown 统一写入 `vulcan.temp_dir/mcp/cache/`，不再写入工作目录，避免缓存文件干扰模型对仓库状态的判断
 - 当结果发生落盘时，返回结果顶层必须包含提示消息与完整文件绝对路径
-- 若提供 `export_md_path`，则仅导出完整 Markdown 文件，并返回“文件已生成 + 绝对路径”的简洁提示，不再内联结果
+- `codekit-ast-detail` 不再暴露 `export_md_path`，仅保留内联返回与超限缓存提示两种行为
+- `codekit-rg` 若提供 `export_md_path`，则仅导出完整 Markdown 文件，并返回“文件已生成 + 绝对路径”的简洁提示，不再内联结果
 
-`codekit-ast` 在 `comment=true` 场景下，备注提取建议统一如下：
+`codekit-ast-detail` 在 `comment=true` 场景下，备注提取建议统一如下：
 
 - 备注应输出为压缩后的单行摘要，而不是完整注释块原文
 - 需要过滤 `// -----------`、`// ========` 这类分隔线或区域装饰注释
@@ -295,8 +297,8 @@ vulcan.print(t.name)  -- test
 在 Lua 内调用其他已加载 skill。
 
 ```lua
-local result = vulcan.call("codekit-ast", { path = "src/", recursive = true })
-vulcan.print("found", result.items_found, "items")
+local result = vulcan.call("codekit-ast-detail", { paths = "src/main.rs" })
+vulcan.print(result)
 ```
 
 ### `vulcan.temp_dir -> string`

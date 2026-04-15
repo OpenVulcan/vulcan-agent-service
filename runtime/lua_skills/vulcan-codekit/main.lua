@@ -1,7 +1,7 @@
 --[[
-codekit-ast
-中文：基于 ast-grep 的结构视图工具，输出按文件聚合、可直接阅读的轻量结构摘要。
-English: AST structure viewer powered by ast-grep. It returns file-grouped, human-readable structure summaries.
+codekit-ast-detail
+中文：基于 ast-grep 的文件级结构详情工具，输出按文件聚合、可直接阅读的纯文本结构摘要。
+English: File-level AST detail viewer powered by ast-grep. It returns file-grouped plain-text structure summaries.
 ]]
 
 -- 语言注册表 / Language registry for rule bundles, file extensions, and comment styles.
@@ -473,7 +473,7 @@ end
 
 -- 路径与语言解析 / Resolve skill-relative paths and normalize language keys.
 local function get_skill_dir()
-    return __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_ast_detail or __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
 end
 
 --[[
@@ -1430,22 +1430,23 @@ local function render_error_lines(errors)
 end
 
 --[[
-中文：把 codekit-ast 结果渲染为 Markdown 文本，便于用户按需导出成可阅读文件。
-English: Render the codekit-ast result into Markdown text so callers can export it into a readable file when needed.
+中文：把 `codekit-ast-detail` 的扫描结果渲染为 Markdown 纯文本，便于 AI 直接阅读并继续选择下一步文件操作。
+English: Render the `codekit-ast-detail` scan result as plain Markdown text so the AI can read it directly and choose the next file-level action.
 ]]
-local function build_ast_markdown(result)
+local function build_ast_detail_text(result)
     local lines = {
-        "# codekit-ast Export",
+        "# AST DETAIL SUMMARY",
         "",
-        string.format("- Files scanned: %d", result.files_scanned or 0),
-        string.format("- Files with symbols: %d", result.files_with_symbols or 0),
-        string.format("- Items found: %d", result.items_found or 0),
+        string.format("- files_scanned: %d", result.files_scanned or 0),
+        string.format("- files_with_symbols: %d", result.files_with_symbols or 0),
+        string.format("- items_found: %d", result.items_found or 0),
+        string.format("- errors: %d", #(result.errors or {})),
     }
 
     local error_lines = render_error_lines(result.errors)
     if #error_lines > 0 then
         table.insert(lines, "")
-        table.insert(lines, "## Errors")
+        table.insert(lines, "## ERRORS")
         table.insert(lines, "")
         for _, line in ipairs(error_lines) do
             table.insert(lines, line)
@@ -1454,63 +1455,32 @@ local function build_ast_markdown(result)
 
     for _, file_result in ipairs(result.files or {}) do
         table.insert(lines, "")
-        table.insert(lines, "## " .. tostring(file_result.file or "unknown"))
+        table.insert(lines, "## FILE " .. tostring(file_result.file or "unknown"))
         table.insert(lines, "")
-        table.insert(lines, string.format("- Lines: %d", tonumber(file_result.lines) or 0))
-        table.insert(lines, "")
-        table.insert(lines, "```text")
-        if trim(file_result.content or "") ~= "" then
+        table.insert(lines, string.format("- lines: %d", tonumber(file_result.lines) or 0))
+        table.insert(lines, string.format("- symbols: %d", tonumber(file_result.symbol_count) or 0))
+        if trim(file_result.content or "") == "" then
+            table.insert(lines, "")
+            table.insert(lines, "> No AST symbols found in this file.")
+        else
+            table.insert(lines, "")
+            table.insert(lines, "```text")
             table.insert(lines, tostring(file_result.content))
+            table.insert(lines, "```")
         end
-        table.insert(lines, "```")
     end
 
     return table.concat(lines, "\n")
 end
 
-local function attach_large_result_notice(full_result, full_output_path, export_md_path, total_bytes)
-    local annotated = shallow_copy_object(full_result)
-    annotated["!msg"] = build_large_result_notice(full_output_path)
-    annotated.full_output_file = full_output_path
-    annotated.full_output_bytes = total_bytes
-    if export_md_path then
-        annotated.exported_markdown_path = export_md_path
-    end
-    return annotated
-end
-
 --[[
-中文：根据结果大小决定直接返回、导出 Markdown、或在保留全量返回的同时落盘完整 Markdown 并附加提示。
-English: Decide whether to return inline, export Markdown, or spill the full Markdown result to disk while still returning the complete result with an attached notice.
+中文：根据客户端字符预算决定是否直接返回详情文本；若超限则将完整正文写入缓存文件，并在返回头部附带缓存路径提示。
+English: Return detail text inline when it fits the client budget; otherwise spill the complete text to cache and prepend the cache-path notice.
 ]]
-local function finalize_ast_result(full_result, export_md_path)
-    local markdown_text = build_ast_markdown(full_result)
-    if export_md_path then
-        local _, export_error = write_text_file(export_md_path, markdown_text)
-        if export_error then
-            return export_error
-        end
-        -- 中文：显式导出时进入静默导出模式，仅返回导出成功提示与路径，避免重复内联大结果。
-        -- English: When explicit export is requested, switch to silent export mode and return only a success notice with the file path.
-        return {
-            exported_markdown_path = export_md_path,
-            message = string.format("Markdown file has been generated at %s", export_md_path),
-        }
-    end
-
-    local serializable_result = shallow_copy_object(full_result)
-
-    local ok, encoded = pcall(vulcan.json_encode, serializable_result)
-    if not ok or type(encoded) ~= "string" then
-        return {
-            error = "result_encoding_failed",
-            message = "failed to encode codekit-ast result as JSON",
-        }
-    end
-
-    if #encoded <= MAX_INLINE_RESULT_BYTES then
-        serializable_result.truncated = false
-        return serializable_result
+local function finalize_ast_detail_content(markdown_text)
+    local normalized = tostring(markdown_text or "")
+    if #normalized <= CURRENT_AST_CLIENT_CHAR_LIMIT then
+        return normalized
     end
 
     local output_directory, output_directory_error = resolve_large_result_directory()
@@ -1518,14 +1488,19 @@ local function finalize_ast_result(full_result, export_md_path)
         return output_directory_error
     end
 
-    local file_id = build_spill_file_id("vmcp_ast")
+    local file_id = build_spill_file_id("codekit_ast_detail")
     local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
-    local _, write_error = write_text_file(full_output_path, markdown_text)
+    local _, write_error = write_text_file(full_output_path, normalized)
     if write_error then
         return write_error
     end
 
-    return attach_large_result_notice(serializable_result, full_output_path, export_md_path, #markdown_text)
+    return table.concat({
+        string.format("> " .. LARGE_RESULT_NOTICE_TEMPLATE, full_output_path),
+        string.format("> Inline limit: %d chars", CURRENT_AST_CLIENT_CHAR_LIMIT),
+        "",
+        normalized,
+    }, "\n")
 end
 
 -- 文件读取与 capture 提取 / Cache file content and decode ast-grep captures.
@@ -2381,28 +2356,62 @@ local function validate_comment_argument(value)
     return value, nil
 end
 
+--[[
+中文：校验 `codekit-ast-detail` 的 `paths` 参数；当前仅支持显式文件列表，且最多 20 个文件。
+English: Validate the `paths` argument for `codekit-ast-detail`; only explicit file lists are supported and the request is capped at 20 files.
+]]
+local function validate_detail_paths_argument(value)
+    if type(value) ~= "string" then
+        return nil, {
+            error = "invalid_paths_argument",
+            message = "paths must be a non-empty string containing one or more file paths",
+            actual_type = type(value),
+        }
+    end
+
+    local normalized_paths = {}
+    for _, line in ipairs(split_lines(value)) do
+        local normalized_line = trim(line)
+        if normalized_line ~= "" then
+            table.insert(normalized_paths, normalized_line)
+        end
+    end
+
+    if #normalized_paths == 0 then
+        return nil, {
+            error = "invalid_paths_argument",
+            message = "paths must contain at least one non-empty file path",
+            actual_type = "string",
+        }
+    end
+    if #normalized_paths > MAX_EXPLICIT_FILES then
+        return nil, {
+            error = "too_many_explicit_files",
+            message = "codekit-ast-detail supports at most 20 explicit files per request",
+            limit = MAX_EXPLICIT_FILES,
+            requested_files = #normalized_paths,
+        }
+    end
+
+    return normalized_paths, nil
+end
+
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
     initialize_ast_client_char_limit()
 
-    local target_paths, path_error = validate_path_argument(args and args.path)
+    -- 中文：为 `codekit-rg`、`codekit-markdown-menu` 与 `codekit-ast-tree` 保留共享 helper 的闭包 upvalue。
+    -- English: Keep shared helper functions as closure upvalues so `codekit-rg`, `codekit-markdown-menu`, and `codekit-ast-tree` can continue extracting them.
+    if args and args.__codekit_helper_probe == "__never__" then
+        validate_path_argument(args.path)
+        validate_recursive_argument(args.recursive)
+        validate_noignore_argument(args.noignore)
+        validate_extension_argument(args.ext)
+    end
+
+    local target_paths, path_error = validate_detail_paths_argument(args and args.paths)
     if path_error then
         return path_error
-    end
-
-    local recursive, recursive_error = validate_recursive_argument(args and args.recursive)
-    if recursive_error then
-        return recursive_error
-    end
-
-    local extension_filter, extension_error = validate_extension_argument(args and args.ext)
-    if extension_error then
-        return extension_error
-    end
-
-    local ignore_enabled, ignore_error = validate_noignore_argument(args and args.noignore)
-    if ignore_error then
-        return ignore_error
     end
 
     local include_comments, comment_error = validate_comment_argument(args and args.comment)
@@ -2410,27 +2419,14 @@ return function(args)
         return comment_error
     end
 
-    local export_md_path, export_md_error = validate_export_md_argument(args and args.export_md_path)
-    if export_md_error then
-        return export_md_error
-    end
-
     local target_mode, target_mode_error = classify_target_path_modes(target_paths)
     if target_mode_error then
         return target_mode_error
     end
-    if target_mode == "mixed" then
+    if target_mode ~= "file" then
         return {
-            error = "mixed_path_modes_not_supported",
-            message = "file paths and directory paths cannot be mixed in one request",
-        }
-    end
-    if target_mode == "file" and #target_paths > MAX_EXPLICIT_FILES then
-        return {
-            error = "too_many_explicit_files",
-            message = "explicit file search supports at most 20 files per request",
-            limit = MAX_EXPLICIT_FILES,
-            requested_files = #target_paths,
+            error = "explicit_files_required",
+            message = "codekit-ast-detail accepts only explicit file paths; directories and mixed path sets are not supported",
         }
     end
 
@@ -2442,9 +2438,18 @@ return function(args)
         }
     end
 
-    local files, scan_mode, errors, collection_error = collect_files(target_paths, recursive, extension_filter, ignore_enabled)
+    local files, _, errors, collection_error = collect_files(target_paths, false, nil, true)
     if collection_error then
         return collection_error
+    end
+    errors = errors or {}
+    if #files == 0 then
+        return {
+            error = "no_supported_files_found",
+            message = "codekit-ast-detail could not analyze any supported source file from the provided paths",
+            requested_paths = target_paths,
+            errors = errors,
+        }
     end
 
     local grouped_files = {}
@@ -2454,7 +2459,6 @@ return function(args)
     end
 
     local normalized_by_file = {}
-    errors = errors or {}
     for language_key, file_paths in pairs(grouped_files) do
         local matches, diagnostics = run_language_scan(binary_directory, executable_name, language_key, file_paths)
         if diagnostics and #diagnostics > 0 then
@@ -2471,15 +2475,18 @@ return function(args)
 
     local file_results = {}
     local total_items = 0
+    local files_with_symbols = 0
     for _, file_info in ipairs(files) do
         local symbols = deduplicate_symbols(normalized_by_file[file_info.path] or {})
+        local tree = (#symbols > 0) and build_symbol_tree(symbols) or {}
+        table.insert(file_results, {
+            file = file_info.display_file or file_info.path,
+            lines = get_file_line_count(file_info.path),
+            symbol_count = #symbols,
+            content = build_file_content(tree, include_comments),
+        })
         if #symbols > 0 then
-            local tree = build_symbol_tree(symbols)
-            table.insert(file_results, {
-                file = file_info.display_file or file_info.path,
-                lines = get_file_line_count(file_info.path),
-                content = build_file_content(tree, include_comments),
-            })
+            files_with_symbols = files_with_symbols + 1
             total_items = total_items + #symbols
         end
     end
@@ -2490,17 +2497,16 @@ return function(args)
 
     local meta = {
         files_scanned = #files,
-        files_with_symbols = #file_results,
+        files_with_symbols = files_with_symbols,
         items_found = total_items,
         errors = errors,
     }
 
-    return finalize_ast_result({
+    return finalize_ast_detail_content(build_ast_detail_text({
         files_scanned = meta.files_scanned,
         files_with_symbols = meta.files_with_symbols,
         items_found = meta.items_found,
         files = file_results,
         errors = meta.errors,
-        truncated = false,
-    }, export_md_path)
+    }))
 end
