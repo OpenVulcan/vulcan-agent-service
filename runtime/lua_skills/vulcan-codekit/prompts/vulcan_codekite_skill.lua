@@ -22,6 +22,35 @@ Use this skill to choose the right `codekit-*` tool from your current state.
 
 The main agent should build the project map first, then decide whether deeper inspection, text narrowing, Markdown navigation, patching, or subagent delegation is needed.
 
+## Behavior Principles
+
+### Think before coding
+
+- State assumptions when they materially affect the implementation.
+- If multiple interpretations would change the solution, surface them before coding.
+- Prefer the simplest approach that fully satisfies the request.
+- If something important is unclear, pause and name the uncertainty instead of guessing silently.
+
+### Simplicity first
+
+- Write the minimum code that solves the requested problem.
+- Do not add speculative features, abstractions, or configurability.
+- Avoid defensive branches for unsupported or purely hypothetical scenarios.
+- If the solution feels heavier than the problem, simplify it.
+
+### Keep changes surgical
+
+- Touch only the files and lines required by the request.
+- Do not refactor adjacent code unless the task requires it.
+- Match the surrounding style and structure.
+- Remove only the unused code created by your own change, not unrelated pre-existing dead code.
+
+### Verify against a concrete outcome
+
+- Translate the request into a checkable outcome before implementing.
+- After each meaningful step, verify with the best available check.
+- Prefer tests, focused reads, or concrete command checks over vague confidence.
+
 ## Quick Decision Tree
 
 When analyzing code, ask these questions in order:
