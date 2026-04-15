@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::protocol::RequestContext;
 
@@ -64,7 +64,9 @@ impl SessionManager {
     pub async fn send(&self, session_id: &str, value: Value) -> Result<(), ()> {
         let sender = {
             let sessions = self.sessions.lock().await;
-            sessions.get(session_id).and_then(|session| session.tx.clone())
+            sessions
+                .get(session_id)
+                .and_then(|session| session.tx.clone())
         };
 
         let Some(tx) = sender else {
@@ -138,7 +140,10 @@ impl SseSessionManager {
         *counter += 1;
         let session_id = format!("sse-{}", counter);
         let (tx, rx) = mpsc::channel::<Value>(256);
-        self.sessions.lock().await.insert(session_id.clone(), SseSession { tx });
+        self.sessions
+            .lock()
+            .await
+            .insert(session_id.clone(), SseSession { tx });
         (session_id, rx)
     }
 

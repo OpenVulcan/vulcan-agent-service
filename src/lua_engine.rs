@@ -1,5 +1,5 @@
 use mlua::{Function, Lua, MultiValue, Table, Value as LuaValue};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use crate::lua_skill::SkillMeta;
 use crate::protocol::{
     Prompt, PromptArgument, PromptGetResult, PromptMessage, RequestContext, Resource,
-    ResourceContents, ResourceReadResult, ResourceTemplate, TextContent, Tool,
-    ToolAnnotations,
+    ResourceContents, ResourceReadResult, ResourceTemplate, TextContent, Tool, ToolAnnotations,
 };
 use crate::skill_dependency::ensure_skill_dependencies;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
@@ -406,12 +405,8 @@ fn table_get_string_map_field(
                         "{fn_name}: failed to read {field_name} / 读取 {field_name} 失败: {error}"
                     ))
                 })?;
-                let key = require_string_arg(
-                    key_value,
-                    fn_name,
-                    &format!("{field_name}.<key>"),
-                    false,
-                )?;
+                let key =
+                    require_string_arg(key_value, fn_name, &format!("{field_name}.<key>"), false)?;
                 let value_text = require_exec_scalar_text(
                     field_value,
                     fn_name,
@@ -487,12 +482,12 @@ fn parse_exec_request(value: LuaValue, fn_name: &str) -> mlua::Result<ExecReques
                 (Some(_), Some(_)) => {
                     return Err(mlua::Error::runtime(format!(
                         "{fn_name}: command and program are mutually exclusive / command 与 program 不能同时提供"
-                    )))
+                    )));
                 }
                 (None, None) => {
                     return Err(mlua::Error::runtime(format!(
                         "{fn_name}: expected a string command or a table with command/program / 需要字符串命令或包含 command/program 的 table"
-                    )))
+                    )));
                 }
             };
 
@@ -747,7 +742,11 @@ fn json_value_to_template_text(value: &Value) -> String {
 
 /// Read a UTF-8 text file relative to the skill directory.
 /// 读取相对于技能目录的 UTF-8 文本文件。
-fn read_skill_text_file(skill_dir: &Path, relative_path: &str, label: &str) -> Result<String, String> {
+fn read_skill_text_file(
+    skill_dir: &Path,
+    relative_path: &str,
+    label: &str,
+) -> Result<String, String> {
     let file_path = skill_dir.join(relative_path);
     std::fs::read_to_string(&file_path).map_err(|error| {
         format!(
@@ -781,7 +780,10 @@ fn apply_text_template(template_text: &str, variables: &serde_json::Map<String, 
 
 /// Normalize a JSON value returned from a skill generator into ResourceReadResult.
 /// 将技能生成器返回的 JSON 值标准化为 ResourceReadResult。
-fn normalize_resource_result(value: Value, fallback_uri: &str) -> Result<ResourceReadResult, String> {
+fn normalize_resource_result(
+    value: Value,
+    fallback_uri: &str,
+) -> Result<ResourceReadResult, String> {
     if let Ok(result) = serde_json::from_value::<ResourceReadResult>(value.clone()) {
         return Ok(result);
     }
@@ -794,7 +796,10 @@ fn normalize_resource_result(value: Value, fallback_uri: &str) -> Result<Resourc
             let text = map.get("text").and_then(|value| value.as_str());
             let blob = map.get("blob").and_then(|value| value.as_str());
             if text.is_none() && blob.is_none() {
-                return Err("Resource generator must return ResourceReadResult or an object with text/blob".to_string());
+                return Err(
+                    "Resource generator must return ResourceReadResult or an object with text/blob"
+                        .to_string(),
+                );
             }
             let uri = map
                 .get("uri")
@@ -845,7 +850,10 @@ fn normalize_prompt_result(value: Value, fallback_role: &str) -> Result<PromptGe
                     serde_json::from_value(messages_value).map_err(|error| {
                         format!("Prompt generator messages shape is invalid: {}", error)
                     })?;
-                return Ok(PromptGetResult { description, messages });
+                return Ok(PromptGetResult {
+                    description,
+                    messages,
+                });
             }
 
             if let Some(text) = map.get("text").and_then(|value| value.as_str()) {
@@ -956,7 +964,7 @@ impl LuaVmPool {
                         return Ok(LuaVmLease {
                             pool: self.clone(),
                             vm: Some(vm),
-                        })
+                        });
                     }
                     Err(error) => {
                         let mut state = self.state.lock().unwrap();
@@ -1027,7 +1035,9 @@ fn match_uri_template(uri_template: &str, uri: &str) -> Option<serde_json::Map<S
         if let Some(open_offset) = remaining.find('{') {
             let open_index = cursor + open_offset;
             if open_index > cursor {
-                segments.push(Segment::Literal(uri_template[cursor..open_index].to_string()));
+                segments.push(Segment::Literal(
+                    uri_template[cursor..open_index].to_string(),
+                ));
             }
             let after_open = open_index + 1;
             let close_offset = uri_template[after_open..].find('}')?;
@@ -1055,10 +1065,13 @@ fn match_uri_template(uri_template: &str, uri: &str) -> Option<serde_json::Map<S
                 uri_cursor += literal.len();
             }
             Segment::Variable(name) => {
-                let next_literal = segments[index + 1..].iter().find_map(|candidate| match candidate {
-                    Segment::Literal(text) if !text.is_empty() => Some(text.as_str()),
-                    _ => None,
-                });
+                let next_literal =
+                    segments[index + 1..]
+                        .iter()
+                        .find_map(|candidate| match candidate {
+                            Segment::Literal(text) if !text.is_empty() => Some(text.as_str()),
+                            _ => None,
+                        });
                 let end_index = if let Some(next_text) = next_literal {
                     let relative_end = uri[uri_cursor..].find(next_text)?;
                     uri_cursor + relative_end
@@ -1167,24 +1180,29 @@ impl LuaEngine {
             if tool.lua_entry.trim().is_empty() || tool.lua_module.trim().is_empty() {
                 return Err(format!(
                     "skill {} declares tool {} but lua_entry/lua_module is missing",
-                    meta.name,
-                    tool.name
+                    meta.name, tool.name
                 )
                 .into());
             }
 
             let lua_path = dir.join(&tool.lua_entry);
             if !lua_path.exists() {
-                return Err(
-                    format!("Lua entry {} not found in {}", tool.lua_entry, dir.display()).into(),
-                );
+                return Err(format!(
+                    "Lua entry {} not found in {}",
+                    tool.lua_entry,
+                    dir.display()
+                )
+                .into());
             }
         }
 
-        self.skills.insert(meta.name.clone(), LoadedSkill {
-            meta,
-            dir: dir.to_path_buf(),
-        });
+        self.skills.insert(
+            meta.name.clone(),
+            LoadedSkill {
+                meta,
+                dir: dir.to_path_buf(),
+            },
+        );
 
         Ok(())
     }
@@ -1211,7 +1229,10 @@ impl LuaEngine {
 
     /// Register all tool-bearing skill entries into a specific Lua VM.
     /// 将所有声明了工具入口的 skill 条目注册到指定 Lua 虚拟机中。
-    fn register_skill_functions(lua: &Lua, skills: &HashMap<String, LoadedSkill>) -> Result<(), String> {
+    fn register_skill_functions(
+        lua: &Lua,
+        skills: &HashMap<String, LoadedSkill>,
+    ) -> Result<(), String> {
         for skill in skills.values() {
             for tool in skill.meta.tools() {
                 Self::compile_skill_into_lua(lua, skill, tool, false)?;
@@ -1232,7 +1253,11 @@ impl LuaEngine {
         let source = std::fs::read_to_string(&lua_path)
             .map_err(|error| format!("Failed to read {}: {}", lua_path.display(), error))?;
         if always_reload {
-            eprintln!("[LuaSkill] Hot reload {}: {}", tool.lua_module, lua_path.display());
+            eprintln!(
+                "[LuaSkill] Hot reload {}: {}",
+                tool.lua_module,
+                lua_path.display()
+            );
         }
 
         lua.globals()
@@ -1240,18 +1265,34 @@ impl LuaEngine {
                 format!("__skill_dir_{}", tool.lua_module),
                 skill.dir.to_string_lossy().to_string(),
             )
-            .map_err(|error| format!("Failed to set skill dir for {}::{}: {}", skill.meta.name, tool.name, error))?;
+            .map_err(|error| {
+                format!(
+                    "Failed to set skill dir for {}::{}: {}",
+                    skill.meta.name, tool.name, error
+                )
+            })?;
 
         let chunk = lua.load(&source).set_name(&tool.lua_module);
-        let outer: Function = chunk
-            .into_function()
-            .map_err(|error| format!("Failed to compile skill '{}::{}': {}", skill.meta.name, tool.lua_module, error))?;
-        let handler: Function = outer
-            .call(())
-            .map_err(|error| format!("Failed to initialize skill '{}::{}': {}", skill.meta.name, tool.lua_module, error))?;
+        let outer: Function = chunk.into_function().map_err(|error| {
+            format!(
+                "Failed to compile skill '{}::{}': {}",
+                skill.meta.name, tool.lua_module, error
+            )
+        })?;
+        let handler: Function = outer.call(()).map_err(|error| {
+            format!(
+                "Failed to initialize skill '{}::{}': {}",
+                skill.meta.name, tool.lua_module, error
+            )
+        })?;
         lua.globals()
             .set(format!("__skill_{}", tool.lua_module), handler)
-            .map_err(|error| format!("Failed to register skill '{}::{}': {}", skill.meta.name, tool.lua_module, error))?;
+            .map_err(|error| {
+                format!(
+                    "Failed to register skill '{}::{}': {}",
+                    skill.meta.name, tool.lua_module, error
+                )
+            })?;
         Ok(())
     }
 
@@ -1273,7 +1314,10 @@ impl LuaEngine {
                     let mut required = Vec::new();
                     for parameter in &tool.parameters {
                         let mut prop = serde_json::Map::new();
-                        prop.insert("type".to_string(), Value::String(parameter.param_type.clone()));
+                        prop.insert(
+                            "type".to_string(),
+                            Value::String(parameter.param_type.clone()),
+                        );
                         prop.insert(
                             "description".to_string(),
                             Value::String(parameter.description.clone()),
@@ -1324,7 +1368,8 @@ impl LuaEngine {
         self.skills
             .values()
             .flat_map(|skill| {
-                skill.meta
+                skill
+                    .meta
                     .resource_templates()
                     .map(|template| ResourceTemplate {
                         uri_template: template.uri_template.clone(),
@@ -1453,14 +1498,20 @@ impl LuaEngine {
         let call_result = (|| {
             // Call the function
             let result: LuaValue = handler.call(args_table).map_err(|e| {
-                let msg = format!("Lua skill '{}::{}' error: {}", skill.meta.name, group.name, e);
+                let msg = format!(
+                    "Lua skill '{}::{}' error: {}",
+                    skill.meta.name, group.name, e
+                );
                 eprintln!("[LuaSkill:error] {}", msg);
                 msg
             })?;
 
             // Convert result back to JSON
             lua_value_to_json(&result).map_err(|e| {
-                let msg = format!("Lua skill '{}::{}' JSON conversion error: {}", skill.meta.name, group.name, e);
+                let msg = format!(
+                    "Lua skill '{}::{}' JSON conversion error: {}",
+                    skill.meta.name, group.name, e
+                );
                 eprintln!("[LuaSkill:error] {}", msg);
                 msg
             })
@@ -1483,18 +1534,21 @@ impl LuaEngine {
 
         // Build a wrapper that passes args as a local variable
         let args_table = json_to_lua_table(lua, args)?;
-        lua.globals().set("__runlua_args", args_table)
+        lua.globals()
+            .set("__runlua_args", args_table)
             .map_err(|e| format!("Failed to set args: {}", e))?;
 
-        let wrapper = format!("return (function()\n  local args = __runlua_args\n  {}\nend)()", code);
+        let wrapper = format!(
+            "return (function()\n  local args = __runlua_args\n  {}\nend)()",
+            code
+        );
 
         let run_result = (|| {
-            let result = lua.load(&wrapper).eval::<LuaValue>()
-                .map_err(|e| {
-                    let msg = format!("Lua run_lua error: {}", e);
-                    eprintln!("[LuaSkill:error] {}", msg);
-                    msg
-                })?;
+            let result = lua.load(&wrapper).eval::<LuaValue>().map_err(|e| {
+                let msg = format!("Lua run_lua error: {}", e);
+                eprintln!("[LuaSkill:error] {}", msg);
+                msg
+            })?;
 
             lua_value_to_json(&result)
         })();
@@ -1540,11 +1594,11 @@ impl LuaEngine {
             for template in skill.meta.resource_templates() {
                 if let Some(raw_params) = match_uri_template(&template.uri_template, uri) {
                     if is_lua_provider_file(&template.file) {
-                    let generated = self.run_skill_helper(
-                        skill,
-                        &template.file,
-                        request_context,
-                        &json!({
+                        let generated = self.run_skill_helper(
+                            skill,
+                            &template.file,
+                            request_context,
+                            &json!({
                             "uri": uri,
                             "uri_template": template.uri_template,
                                 "params": raw_params,
@@ -1621,24 +1675,33 @@ impl LuaEngine {
         args: &Value,
     ) -> Result<Value, String> {
         let helper_path = skill.dir.join(relative_path);
-        let helper_source = std::fs::read_to_string(&helper_path)
-            .map_err(|error| format!("Failed to read helper {}: {}", helper_path.display(), error))?;
+        let helper_source = std::fs::read_to_string(&helper_path).map_err(|error| {
+            format!("Failed to read helper {}: {}", helper_path.display(), error)
+        })?;
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
         Self::populate_vulcan_request_context(lua, request_context)?;
         let args_table = json_to_lua_table(lua, args)?;
         let chunk_name = format!("{}::{}", skill.meta.name, relative_path);
         let chunk = lua.load(&helper_source).set_name(&chunk_name);
-        let outer: Function = chunk
-            .into_function()
-            .map_err(|error| format!("Helper compile error for {}: {}", helper_path.display(), error))?;
-        let handler: Function = outer
-            .call(())
-            .map_err(|error| format!("Helper init error for {}: {}", helper_path.display(), error))?;
+        let outer: Function = chunk.into_function().map_err(|error| {
+            format!(
+                "Helper compile error for {}: {}",
+                helper_path.display(),
+                error
+            )
+        })?;
+        let handler: Function = outer.call(()).map_err(|error| {
+            format!("Helper init error for {}: {}", helper_path.display(), error)
+        })?;
         let helper_result = (|| {
-            let result: LuaValue = handler
-                .call(args_table)
-                .map_err(|error| format!("Helper runtime error for {}: {}", helper_path.display(), error))?;
+            let result: LuaValue = handler.call(args_table).map_err(|error| {
+                format!(
+                    "Helper runtime error for {}: {}",
+                    helper_path.display(),
+                    error
+                )
+            })?;
             lua_value_to_json(&result)
         })();
         Self::populate_vulcan_request_context(lua, None)?;
@@ -1646,12 +1709,18 @@ impl LuaEngine {
     }
 
     /// Populate the vulcan.call function to dispatch to loaded skills.
-    fn populate_vulcan_call_for_lua(lua: &Lua, skills_map: &HashMap<String, LoadedSkill>) -> Result<(), String> {
-        let vulcan: Table = lua.globals().get("vulcan")
+    fn populate_vulcan_call_for_lua(
+        lua: &Lua,
+        skills_map: &HashMap<String, LoadedSkill>,
+    ) -> Result<(), String> {
+        let vulcan: Table = lua
+            .globals()
+            .get("vulcan")
             .map_err(|e| format!("vulcan module not found: {}", e))?;
 
         // Create the call dispatcher
-        let skills: Vec<(String, String)> = skills_map.iter()
+        let skills: Vec<(String, String)> = skills_map
+            .iter()
             .flat_map(|(_, skill)| {
                 skill
                     .meta
@@ -1664,27 +1733,39 @@ impl LuaEngine {
         let skill_names: Vec<String> = skills.iter().map(|(n, _)| n.clone()).collect();
         let module_names: Vec<String> = skills.iter().map(|(_, m)| m.clone()).collect();
 
-        let dispatcher = lua.create_function(move |lua, (name, args): (LuaValue, LuaValue)| {
-            let name = require_string_arg(name, "call", "name", false)?;
-            let args = require_table_arg(args, "call", "args")?;
-            // Find the module function
-            let idx = skill_names.iter().position(|n| n == &name)
-                .ok_or_else(|| mlua::Error::runtime(format!("Skill '{}' not found", name)))?;
-            let module = &module_names[idx];
-            let func_name = format!("__skill_{}", module);
-            let func: Function = lua.globals().get(func_name.as_str())
-                .map_err(|_| mlua::Error::runtime(format!("Skill function '{}' not found", module)))?;
-            func.call::<LuaValue>(args)
-        }).map_err(|e| format!("Failed to create vulcan.call dispatcher: {}", e))?;
+        let dispatcher = lua
+            .create_function(move |lua, (name, args): (LuaValue, LuaValue)| {
+                let name = require_string_arg(name, "call", "name", false)?;
+                let args = require_table_arg(args, "call", "args")?;
+                // Find the module function
+                let idx = skill_names
+                    .iter()
+                    .position(|n| n == &name)
+                    .ok_or_else(|| mlua::Error::runtime(format!("Skill '{}' not found", name)))?;
+                let module = &module_names[idx];
+                let func_name = format!("__skill_{}", module);
+                let func: Function = lua.globals().get(func_name.as_str()).map_err(|_| {
+                    mlua::Error::runtime(format!("Skill function '{}' not found", module))
+                })?;
+                func.call::<LuaValue>(args)
+            })
+            .map_err(|e| format!("Failed to create vulcan.call dispatcher: {}", e))?;
 
-        vulcan.set("call", dispatcher)
+        vulcan
+            .set("call", dispatcher)
             .map_err(|e| format!("Failed to set vulcan.call: {}", e))?;
 
         Ok(())
     }
 
     /// Configure package.path and package.cpath to include project-local luarocks tree.
-    /// This allows `require("cjson")` etc. to load C modules installed via luarocks.
+    /// 配置 package.path 与 package.cpath，使其只依赖项目内统一的 lua 目录布局。
+    ///
+    /// This keeps runtime resolution aligned with the deployed layout under
+    /// `lua_packages/share/lua/` and `lua_packages/lib/lua/`, instead of relying on
+    /// versioned `5.1` subdirectories that may not exist in the shipped bundle.
+    /// 这会让运行时只依赖 `lua_packages/share/lua/` 与 `lua_packages/lib/lua/`
+    /// 这套已部署目录结构，而不再依赖可能并不存在的 `5.1` 子目录。
     fn setup_package_paths(lua: &Lua) -> Result<(), Box<dyn std::error::Error>> {
         // Find the lua_packages directory relative to the executable's parent directory.
         let exe_path = std::env::current_exe().ok();
@@ -1695,10 +1776,10 @@ impl LuaEngine {
 
                 if lua_packages.exists() {
                     // Build package.cpath entries for C modules (.dll on Windows)
+                    // 中文：统一使用 lib/lua 目录，不再依赖 lib/lua/5.1。
                     #[cfg(windows)]
                     let cpath_pattern = format!(
-                        "{}\\share\\lua\\5.1\\?.dll;{}\\share\\lua\\5.1\\?\\init.dll;{}\\lib\\lua\\5.1\\?.dll;{}\\lib\\lua\\5.1\\loadall.dll;{}\\?\\?.dll;",
-                        lua_packages.display(),
+                        "{}\\lib\\lua\\?.dll;{}\\lib\\lua\\?\\init.dll;{}\\lib\\lua\\loadall.dll;{}\\?\\?.dll;",
                         lua_packages.display(),
                         lua_packages.display(),
                         lua_packages.display(),
@@ -1706,9 +1787,10 @@ impl LuaEngine {
                     );
 
                     // Build package.path entries for Lua modules
+                    // 中文：统一使用 share/lua 目录，不再依赖 share/lua/5.1。
                     #[cfg(windows)]
                     let path_pattern = format!(
-                        "{}\\share\\lua\\5.1\\?.lua;{}\\share\\lua\\5.1\\?\\init.lua;{}\\?.lua;",
+                        "{}\\share\\lua\\?.lua;{}\\share\\lua\\?\\init.lua;{}\\?.lua;",
                         lua_packages.display(),
                         lua_packages.display(),
                         lua_packages.display()
@@ -1724,7 +1806,10 @@ impl LuaEngine {
                     let new_path = format!("{}{}", path_pattern, old_path.to_str()?.to_string());
                     package.set("path", lua.create_string(&new_path)?)?;
 
-                    eprintln!("[LuaEngine] package.cpath prepended: {}", lua_packages.display());
+                    eprintln!(
+                        "[LuaEngine] package.cpath prepended: {}",
+                        lua_packages.display()
+                    );
                 }
             }
         }
@@ -1809,7 +1894,7 @@ impl LuaEngine {
         let path_join_fn = lua.create_function(|lua, parts: MultiValue| {
             if parts.is_empty() {
                 return Err(mlua::Error::runtime(
-                    "path_join: expected at least one path segment / 至少需要一个路径片段"
+                    "path_join: expected at least one path segment / 至少需要一个路径片段",
                 ));
             }
 
@@ -1870,12 +1955,11 @@ impl LuaEngine {
         vulcan.set("osinfo", os_info)?;
 
         // vulcan.json_encode(table) -> string
-        let json_encode_fn = lua.create_function(|lua, val: LuaValue| {
-            match lua_value_to_json(&val) {
+        let json_encode_fn =
+            lua.create_function(|lua, val: LuaValue| match lua_value_to_json(&val) {
                 Ok(json) => lua.create_string(serde_json::to_string(&json).unwrap_or_default()),
                 Err(e) => Err(mlua::Error::runtime(format!("json_encode: {}", e))),
-            }
-        })?;
+            })?;
         vulcan.set("json_encode", json_encode_fn)?;
 
         // vulcan.json_decode(string) -> table
@@ -1889,33 +1973,37 @@ impl LuaEngine {
         vulcan.set("json_decode", json_decode_fn)?;
 
         // vulcan.cache_put(tool_name, value, ttl_sec?) -> cache_id
-        let cache_put_fn = lua.create_function(|_, (tool_name, value, ttl_sec): (LuaValue, LuaValue, LuaValue)| {
-            let tool_name = require_string_arg(tool_name, "cache_put", "tool_name", false)?;
-            let ttl_secs = optional_u64_arg(ttl_sec, "cache_put", "ttl_sec")?;
-            let payload = lua_value_to_json(&value)
-                .map_err(|e| mlua::Error::runtime(format!("cache_put: {}", e)))?;
-            let cache_id = global_tool_cache().create(&tool_name, payload, ttl_secs);
-            Ok(cache_id)
-        })?;
+        let cache_put_fn = lua.create_function(
+            |_, (tool_name, value, ttl_sec): (LuaValue, LuaValue, LuaValue)| {
+                let tool_name = require_string_arg(tool_name, "cache_put", "tool_name", false)?;
+                let ttl_secs = optional_u64_arg(ttl_sec, "cache_put", "ttl_sec")?;
+                let payload = lua_value_to_json(&value)
+                    .map_err(|e| mlua::Error::runtime(format!("cache_put: {}", e)))?;
+                let cache_id = global_tool_cache().create(&tool_name, payload, ttl_secs);
+                Ok(cache_id)
+            },
+        )?;
         vulcan.set("cache_put", cache_put_fn)?;
 
         // vulcan.cache_get(tool_name, cache_id) -> value|nil
-        let cache_get_fn = lua.create_function(|lua, (tool_name, cache_id): (LuaValue, LuaValue)| {
-            let tool_name = require_string_arg(tool_name, "cache_get", "tool_name", false)?;
-            let cache_id = require_string_arg(cache_id, "cache_get", "cache_id", false)?;
-            match global_tool_cache().get(&tool_name, &cache_id) {
-                Some(value) => json_value_to_lua(lua, &value),
-                None => Ok(LuaValue::Nil),
-            }
-        })?;
+        let cache_get_fn =
+            lua.create_function(|lua, (tool_name, cache_id): (LuaValue, LuaValue)| {
+                let tool_name = require_string_arg(tool_name, "cache_get", "tool_name", false)?;
+                let cache_id = require_string_arg(cache_id, "cache_get", "cache_id", false)?;
+                match global_tool_cache().get(&tool_name, &cache_id) {
+                    Some(value) => json_value_to_lua(lua, &value),
+                    None => Ok(LuaValue::Nil),
+                }
+            })?;
         vulcan.set("cache_get", cache_get_fn)?;
 
         // vulcan.cache_delete(tool_name, cache_id) -> boolean
-        let cache_delete_fn = lua.create_function(|_, (tool_name, cache_id): (LuaValue, LuaValue)| {
-            let tool_name = require_string_arg(tool_name, "cache_delete", "tool_name", false)?;
-            let cache_id = require_string_arg(cache_id, "cache_delete", "cache_id", false)?;
-            Ok(global_tool_cache().delete(&tool_name, &cache_id))
-        })?;
+        let cache_delete_fn =
+            lua.create_function(|_, (tool_name, cache_id): (LuaValue, LuaValue)| {
+                let tool_name = require_string_arg(tool_name, "cache_delete", "tool_name", false)?;
+                let cache_id = require_string_arg(cache_id, "cache_delete", "cache_id", false)?;
+                Ok(global_tool_cache().delete(&tool_name, &cache_id))
+            })?;
         vulcan.set("cache_delete", cache_delete_fn)?;
 
         // vulcan.context / vulcan.client_info / vulcan.client_capabilities
@@ -1989,9 +2077,9 @@ fn lua_value_to_json(val: &LuaValue) -> Result<Value, String> {
                 Ok(Value::Null)
             }
         }
-        LuaValue::String(s) => {
-            Ok(Value::String(s.to_str().map(|b| b.to_string()).unwrap_or_default()))
-        }
+        LuaValue::String(s) => Ok(Value::String(
+            s.to_str().map(|b| b.to_string()).unwrap_or_default(),
+        )),
         LuaValue::Table(t) => {
             // Heuristic: if raw_len() > 0, treat as array. Otherwise as object.
             if t.raw_len() > 0 {

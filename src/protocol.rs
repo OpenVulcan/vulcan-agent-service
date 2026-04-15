@@ -39,7 +39,9 @@ pub fn has_feature(version: &str, feature: FeatureFlag) -> bool {
         | FeatureFlag::Completions
         | FeatureFlag::Elicitation
         | FeatureFlag::ProgressToken
-        | FeatureFlag::Cancellation => version == "2025-03-26" || version == "2025-06-18" || version == "2025-11-25",
+        | FeatureFlag::Cancellation => {
+            version == "2025-03-26" || version == "2025-06-18" || version == "2025-11-25"
+        }
 
         // Features added in 2025-11-25
         FeatureFlag::Streaming
@@ -303,8 +305,8 @@ pub struct TextContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageContent {
-    pub data: String,       // base64-encoded
-    pub mime_type: String,  // e.g. "image/png"
+    pub data: String,      // base64-encoded
+    pub mime_type: String, // e.g. "image/png"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
 }
@@ -312,8 +314,8 @@ pub struct ImageContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioContent {
-    pub data: String,       // base64-encoded
-    pub mime_type: String,  // e.g. "audio/wav"
+    pub data: String,      // base64-encoded
+    pub mime_type: String, // e.g. "audio/wav"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
 }

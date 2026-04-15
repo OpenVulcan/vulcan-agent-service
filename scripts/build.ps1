@@ -98,11 +98,16 @@ if (Test-Path $ThirdPartyPackages) {
         $src = Join-Path $ThirdPartyPackages $dir
         $dst = Join-Path $PkgOut $dir
         if (Test-Path $src) {
-            New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
-            Copy-Item -Force -Recurse "$src\*" $dst
+            New-Item -ItemType Directory -Path $dst -Force | Out-Null
+            $versioned = Join-Path $src "5.1"
+            $copyRoot = if (Test-Path $versioned) { $versioned } else { $src }
+            Get-ChildItem $copyRoot -Force | Where-Object { $_.Name -ne "5.1" } | ForEach-Object {
+                $target = Join-Path $dst $_.Name
+                Copy-Item -LiteralPath $_.FullName -Destination $target -Force -Recurse
+            }
         }
     }
-    Write-Host "==> Third-party Lua packages synced to $PkgOut\"
+    Write-Host "==> Third-party Lua packages synced to $PkgOut\ (flattening 5.1 package layout into lua/)"
 } else {
     Write-Host "==> No third_party/lua_packages found (run scripts/install_lua_deps.ps1 first)"
 }

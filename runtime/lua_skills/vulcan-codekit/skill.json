@@ -8,7 +8,7 @@
       "tools": [
         {
           "name": "codekit-ast-detail",
-          "description": "[FILE AST DETAIL] Read one or more explicit source files and return plain-text AST structure details. Use it after codekit-ast-tree has helped you choose the exact files that need deeper inspection.",
+          "description": "[FILE AST DETAIL] Inspect one or more exact source files and return plain Markdown AST details. Use this only after you already know the exact files, typically from codekit-ast-tree or codekit-rg.",
           "lua_entry": "main.lua",
           "lua_module": "codekit_ast_detail",
           "parameters": [
@@ -26,11 +26,11 @@
             }
           ],
           "return_type": "string",
-          "prompt": "[OPERATION PROTOCOL] 1. PURPOSE: use codekit-ast-detail only after you already know the exact source files you want to inspect. 2. INPUT SHAPE: pass one or more explicit file paths through `paths`, separated by newlines; directories, recursive scanning, extension filters, ignore toggles, and Markdown export are not supported here. 3. OUTPUT RULE: the tool returns plain Markdown text directly, starting with a detail summary and then one section per file. 4. LIMIT RULE: the request supports at most 20 explicit files and only supported source files are analyzed. 5. LARGE RESULT RULE: when the inline text exceeds the same client-side AST limit used elsewhere in vulcan-codekit, the tool writes the complete content to vulcan.temp_dir/mcp/cache/ and prepends a cache-address notice to the returned text. 6. COMMENT RULE: keep `comment=false` for the default compact view; enable it only when the condensed function-note summary materially helps file-level reading."
+          "prompt": "CRITICAL RULES:\n- USE THIS ONLY when you already know the exact source files. Do NOT guess or hallucinate paths.\n- INPUT: Pass explicit file paths in `paths`, separated by newlines. Max 20 files. Directories are rejected.\n- COMMENTS: Keep `comment=false` by default. Enable it only when condensed function-note summaries are truly needed.\n- OUTPUT: Returns plain Markdown text.\n- CACHE: Large results auto-spill to vulcan.temp_dir/mcp/cache/. Follow the returned cache notice."
         },
         {
           "name": "codekit-rg",
-          "description": "[TEXT-TO-STRUCTURE BRIDGE] Run ripgrep first, then map matched lines back to the most relevant AST structures. Use this when codekit-ast-detail alone is too broad and you need only the class/function context that directly contains a regex hit.",
+          "description": "[TEXT-TO-STRUCTURE BRIDGE] Use this after you have a text signal or regex target. Search a directory with ripgrep, then return only the directly relevant function/class AST context as plain Markdown.",
           "lua_entry": "main_rg.lua",
           "lua_module": "codekit_rg",
           "parameters": [
@@ -66,11 +66,11 @@
             }
           ],
           "return_type": "string",
-          "prompt": "[OPERATION PROTOCOL] 1. USE THIS AFTER YOU KNOW THE TEXT SIGNAL: codekit-rg is for regex-to-structure narrowing, not for first-pass repository exploration. 2. SEARCH FLOW: it runs rg first and then only scans matched files with codekit-ast-detail internals. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, codekit-rg uses the same built-in source-code default set as codekit-ast-detail and excludes non-core formats such as css/html/json/yaml. Treat ext as a file-extension filter; if convenient, you may pass common language names such as rust or typescript and they will be normalized to matching extensions. 4. IGNORE RULE: ignored paths stay enabled by default; pass noignore=true only when you intentionally need ignored search targets. 5. OUTPUT RULE: the tool returns plain Markdown text directly, showing only structures directly related to the matched lines. By default, function or method hits show only the matched lines plus structure context; enable show_full_function only when you need the full function source. 6. USAGE GUIDANCE: keep show_full_function disabled for repository-wide analysis or broad feature lookup; enable it for precise file-level analysis when the exact function body matters. 7. LARGE RESULT RULE: when the inline text exceeds the shared client-side AST limit, the tool writes the complete Markdown text to vulcan.temp_dir/mcp/cache/ and prepends a cache-address notice to the returned text. 8. PARAMETER SCOPE: this tool no longer supports Markdown export; use the inline result or the automatic cache file notice."
+          "prompt": "CRITICAL RULES:\n- WORKFLOW: Use this after identifying a text signal or regex target. Do NOT use it for first-pass repository exploration.\n- INPUT: `dir` must be a directory and `rg_pattern` is required. `ext` is a file-extension filter; common language names are normalized automatically.\n- IGNORE: Leave ignored paths enabled by default. Set `noignore=true` only when you explicitly need ignored directories.\n- FULL SOURCE: Keep `show_full_function=false` for broad analysis. Enable it only when the exact function body is critical.\n- CACHE: Large results auto-spill to vulcan.temp_dir/mcp/cache/. Follow the returned cache notice."
         },
         {
           "name": "codekit-markdown-menu",
-          "description": "[MARKDOWN DIRECTORY MENU] Scan one or more files/directories for Markdown documents and return only the `#` / `##` / `###` heading menu with line numbers. Use it to triage docs quickly, identify the relevant file after truncation, and then re-run with a narrower path.",
+          "description": "[MARKDOWN MENU] Triage Markdown files by headings only. Use this to locate the right docs file or section before reading body text elsewhere.",
           "lua_entry": "main_markdown_menu.lua",
           "lua_module": "codekit_markdown_menu",
           "parameters": [
@@ -94,11 +94,11 @@
             }
           ],
           "return_type": "string",
-          "prompt": "[OPERATION PROTOCOL] 1. PURPOSE: use codekit-markdown-menu only for Markdown triage and document navigation; it does not summarize body text. 2. INPUT SHAPE: path supports files, directories, or newline-separated mixed path sets, and duplicate Markdown files are removed automatically. 3. OUTPUT RULE: the tool returns plain Markdown text directly, not a wrapped content table. The header starts with a dedicated scan-summary block, followed by a top-level file menu and per-file `#` / `##` / `###` headings with line numbers only. 4. IGNORE RULE: ignored paths stay enabled by default; pass noignore=true only when you intentionally need ignored documentation trees. 5. SCOPE GUIDANCE: keep recursive=false for a first pass over docs roots, then rerun on a smaller path or enable recursive when the file menu shows where the relevant document lives. 6. NO CACHE / NO EXPORT: this tool does not write cache files, does not use workdir, and does not export Markdown; if the client truncates the response, narrow the path set and call it again."
+          "prompt": "CRITICAL RULES:\n- PURPOSE: Use only for Markdown triage and navigation. It does NOT summarize body text.\n- INPUT: `path` accepts files, directories, or mixed newline-separated paths. Duplicate Markdown files are removed automatically.\n- RECURSION: Keep `recursive=false` for first-pass top-level triage. Enable it only when diving into a smaller docs subtree.\n- IGNORE: Leave ignored paths enabled by default. Set `noignore=true` only when you explicitly need ignored docs.\n- LIMITATION: No cache and no export. If the client truncates the response, narrow the path scope and call the tool again."
         },
         {
           "name": "codekit-ast-tree",
-          "description": "[DIRECTORY AST TREE] Scan exactly one directory recursively and return a compact Markdown tree grouped by subdirectory. Use it for repository-level file picking before detailed AST inspection.",
+          "description": "[DIRECTORY AST TREE] Pick candidate source files from exactly one directory before deep inspection. Returns a compact recursive Markdown tree grouped by subdirectory.",
           "lua_entry": "main_ast_tree.lua",
           "lua_module": "codekit_ast_tree",
           "parameters": [
@@ -122,11 +122,11 @@
             }
           ],
           "return_type": "string",
-          "prompt": "[OPERATION PROTOCOL] 1. PURPOSE: use codekit-ast-tree for repository-level triage when you want a compact file-picking view before detailed AST inspection. 2. INPUT SHAPE: pass exactly one directory path through the `paths` field; multiple directories and file paths are rejected. 3. SCAN RULE: recursion is always enabled for subdirectories. Use `ext` to narrow the file-extension scope when the default source-language set is too broad. 4. IGNORE RULE: ignored paths stay enabled by default; pass noignore=true only when you intentionally need ignored trees such as target or dist. 5. OUTPUT RULE: the tool returns plain Markdown text directly, starting with an AST summary and then one compact line per file grouped by subdirectory. 6. PARAMETER SCOPE: this tool does not support comment toggles, recursive switches, or Markdown export. 7. LARGE RESULT RULE: when the inline text exceeds the same client-side AST limit used by codekit-ast-detail, the tool writes the complete content to vulcan.temp_dir/mcp/cache/ and prepends a cache-address notice to the returned text. 8. USAGE GUIDANCE: use the returned directory groups to choose the next smaller target set for codekit-ast-detail or codekit-rg."
+          "prompt": "CRITICAL RULES:\n- PURPOSE: Use this for repository-level file picking before `codekit-ast-detail`.\n- INPUT STRICTNESS: Pass exactly one directory path in `paths`. Multiple paths or explicit files are rejected.\n- BEHAVIOR: Always recursive. Use `ext` to narrow the file-extension scope when the tree is too noisy.\n- IGNORE: Leave ignored paths enabled by default. Set `noignore=true` only when you explicitly need ignored trees such as target or dist.\n- NEXT STEP: Use the grouped output to choose exact files for `codekit-ast-detail` or `codekit-rg`.\n- CACHE: Large results auto-spill to vulcan.temp_dir/mcp/cache/. Follow the returned cache notice."
         },
         {
           "name": "codekit-patch",
-          "description": "[FUNCTION-LEVEL AST PATCHER] Re-locate a function or method by structural selector and replace the full function source. Use this when line numbers are stale and you need AST-based function replacement instead of raw text patching.",
+          "description": "[FUNCTION AST PATCH] Replace one function or method by structural selector. Use this only for full-function replacement when raw line edits are unsafe or stale.",
           "lua_entry": "main_patch.lua",
           "lua_module": "codekit_patch",
           "parameters": [
@@ -150,7 +150,22 @@
             }
           ],
           "return_type": "table",
-          "prompt": "[OPERATION PROTOCOL] 1. PATCH FUNCTIONS ONLY: this tool only replaces function or method nodes, never type names or field identifiers. 2. STRICT INPUT RULE: always pass the complete function source starting from the declaration line; do not pass mode and do not pass body-only fragments. Requests that do not follow this rule are rejected. 3. SELECTOR FLOW: pass the loosest selector first; if multiple nodes match, the tool will return more specific structural candidates. 4. SAFETY: patches are written through a temp-file + rollback flow, validated by generic AST re-scan, ast-grep ERROR-node detection, and target identity re-location before the write is accepted."
+          "prompt": "CRITICAL RULES:\n- SCOPE: Replaces only function or method nodes. Never target type names or field identifiers.\n- STRICT REPLACEMENT: `replacement` must contain the complete function source from declaration to closing delimiter. Body-only fragments are rejected.\n- RESOLUTION: Start with a loose `selector`. If multiple nodes match, use the returned candidates to refine the next call.\n- SAFETY: The tool validates the patched file with AST re-scan and error-node checks before accepting the write."
+        }
+      ],
+      "prompts": [
+        {
+          "name": "vulcan_codekite_skill",
+          "description": "Best-practice workflow for choosing codekit tools, with an optional task string appended as the user's current instruction.",
+          "file": "prompts/vulcan_codekite_skill.lua",
+          "role": "user",
+          "arguments": [
+            {
+              "name": "task",
+              "description": "The user's current instruction. When provided, it is appended at the end of the generated prompt.",
+              "required": false
+            }
+          ]
         }
       ]
     }

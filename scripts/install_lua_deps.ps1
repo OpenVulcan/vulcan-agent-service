@@ -1282,9 +1282,13 @@ foreach ($pkg in $InstallResults.Keys | Sort-Object) {
 Write-Host "`n==> Installed files:"
 if (Test-Path (Join-Path $LuaPackages "lib\lua\5.1")) {
     Get-ChildItem (Join-Path $LuaPackages "lib\lua\5.1") -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName)" }
+} elseif (Test-Path (Join-Path $LuaPackages "lib\lua")) {
+    Get-ChildItem (Join-Path $LuaPackages "lib\lua") -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName)" }
 }
 if (Test-Path (Join-Path $LuaPackages "share\lua\5.1")) {
     Get-ChildItem (Join-Path $LuaPackages "share\lua\5.1") -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName)" }
+} elseif (Test-Path (Join-Path $LuaPackages "share\lua")) {
+    Get-ChildItem (Join-Path $LuaPackages "share\lua") -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName)" }
 }
 
 Write-Host "`n==> Done."

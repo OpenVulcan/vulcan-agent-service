@@ -77,10 +77,20 @@ if [ -d "$PKG_SRC" ]; then
     for dir in lib/lua share/lua; do
         if [ -d "$PKG_SRC/$dir" ]; then
             mkdir -p "$PKG_OUT/$dir"
-            cp -rf "$PKG_SRC/$dir"/* "$PKG_OUT/$dir/"
+            copy_root="$PKG_SRC/$dir"
+            if [ -d "$PKG_SRC/$dir/5.1" ]; then
+                copy_root="$PKG_SRC/$dir/5.1"
+            fi
+            for entry in "$copy_root"/*; do
+                [ -e "$entry" ] || continue
+                if [ "$(basename "$entry")" = "5.1" ]; then
+                    continue
+                fi
+                cp -rf "$entry" "$PKG_OUT/$dir/"
+            done
         fi
     done
-    echo "==> Third-party Lua packages synced to $PKG_OUT/"
+    echo "==> Third-party Lua packages synced to $PKG_OUT/ (flattening 5.1 package layout into lua/)"
 else
     echo "==> No third_party/lua_packages found (run scripts/install_lua_deps.sh first)"
 fi

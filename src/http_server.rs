@@ -1,23 +1,25 @@
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::{Query, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::{
-        sse::{Event, Sse},
         IntoResponse, Response,
+        sse::{Event, Sse},
     },
     routing::{delete, get, post},
-    Json, Router,
 };
 use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::protocol::{InitializeRequest, RequestContext, negotiate_version, PROTOCOL_VERSION_LATEST};
+use crate::protocol::{
+    InitializeRequest, PROTOCOL_VERSION_LATEST, RequestContext, negotiate_version,
+};
 use crate::server::McpServer;
 use crate::session::{SessionManager, SseSessionManager};
 
@@ -299,17 +301,19 @@ async fn handle_initialize_request(
         );
     };
 
-    let initialize_request: InitializeRequest = match serde_json::from_value(
-        msg.get("params").cloned().unwrap_or_default(),
-    ) {
-        Ok(request) => request,
-        Err(error) => {
-            return plain_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("initialize params could not be reconstructed after success: {}", error),
-            );
-        }
-    };
+    let initialize_request: InitializeRequest =
+        match serde_json::from_value(msg.get("params").cloned().unwrap_or_default()) {
+            Ok(request) => request,
+            Err(error) => {
+                return plain_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!(
+                        "initialize params could not be reconstructed after success: {}",
+                        error
+                    ),
+                );
+            }
+        };
 
     let new_session_id = state
         .sessions
@@ -473,7 +477,10 @@ async fn validate_session_protocol(
         if negotiate_version(header_version).is_none() {
             return Err(plain_response(
                 StatusCode::BAD_REQUEST,
-                &format!("Unsupported MCP-Protocol-Version header: {}", header_version),
+                &format!(
+                    "Unsupported MCP-Protocol-Version header: {}",
+                    header_version
+                ),
             ));
         }
         if header_version != session_version {
@@ -498,7 +505,8 @@ fn negotiated_protocol_from_initialize(response: &Value) -> Option<String> {
         .and_then(|result| result.get("protocolVersion"))
         .and_then(|value| value.as_str())?;
 
-    if protocol_version == PROTOCOL_VERSION_LATEST || negotiate_version(protocol_version).is_some() {
+    if protocol_version == PROTOCOL_VERSION_LATEST || negotiate_version(protocol_version).is_some()
+    {
         return Some(protocol_version.to_string());
     }
 
@@ -584,9 +592,9 @@ fn sse_event_stream(
         .event("endpoint")
         .data(format!("/message?sessionId={}", session_id));
 
-    let ping_stream = tokio_stream::wrappers::IntervalStream::new(
-        tokio::time::interval(std::time::Duration::from_secs(30)),
-    )
+    let ping_stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+        std::time::Duration::from_secs(30),
+    ))
     .map(|_| Ok::<_, Infallible>(Event::default().event("ping").data("")));
 
     let message_stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|val| {

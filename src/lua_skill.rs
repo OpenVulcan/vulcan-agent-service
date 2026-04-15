@@ -242,7 +242,10 @@ impl SkillMeta {
 
     /// Find a tool entry together with its owning group.
     /// 根据工具名称查找其入口以及所属分组。
-    pub fn find_tool_with_group(&self, tool_name: &str) -> Option<(&SkillGroupMeta, &SkillToolMeta)> {
+    pub fn find_tool_with_group(
+        &self,
+        tool_name: &str,
+    ) -> Option<(&SkillGroupMeta, &SkillToolMeta)> {
         for group in &self.groups {
             if let Some(tool) = group.tools.iter().find(|tool| tool.name == tool_name) {
                 return Some((group, tool));
@@ -253,7 +256,10 @@ impl SkillMeta {
 
     /// Find a resource entry together with its owning group.
     /// 根据 URI 查找资源入口以及所属分组。
-    pub fn find_resource_with_group(&self, uri: &str) -> Option<(&SkillGroupMeta, &SkillResourceMeta)> {
+    pub fn find_resource_with_group(
+        &self,
+        uri: &str,
+    ) -> Option<(&SkillGroupMeta, &SkillResourceMeta)> {
         for group in &self.groups {
             if let Some(resource) = group.resources.iter().find(|resource| resource.uri == uri) {
                 return Some((group, resource));
@@ -264,9 +270,16 @@ impl SkillMeta {
 
     /// Find a prompt entry together with its owning group.
     /// 根据提示词名称查找提示词入口以及所属分组。
-    pub fn find_prompt_with_group(&self, prompt_name: &str) -> Option<(&SkillGroupMeta, &SkillPromptMeta)> {
+    pub fn find_prompt_with_group(
+        &self,
+        prompt_name: &str,
+    ) -> Option<(&SkillGroupMeta, &SkillPromptMeta)> {
         for group in &self.groups {
-            if let Some(prompt) = group.prompts.iter().find(|prompt| prompt.name == prompt_name) {
+            if let Some(prompt) = group
+                .prompts
+                .iter()
+                .find(|prompt| prompt.name == prompt_name)
+            {
                 return Some((group, prompt));
             }
         }

@@ -1,11 +1,11 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use tonic::{Request, Response, Status};
-use tonic::transport::Server;
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
+use tonic::transport::Server;
+use tonic::{Request, Response, Status};
 
 use crate::protocol::PROTOCOL_VERSION_LATEST;
 use crate::protocol::RequestContext;
@@ -17,8 +17,8 @@ pub mod pb {
 
 use pb::mcp_service_server::{McpService, McpServiceServer};
 use pb::{
-    connect_event::Event as ConnectEventType,
-    ConnectRequest, HealthzResponse, ConnectEvent, HeartbeatEvent, McpCallRequest, McpCallResponse, WelcomeEvent,
+    ConnectEvent, ConnectRequest, HealthzResponse, HeartbeatEvent, McpCallRequest, McpCallResponse,
+    WelcomeEvent, connect_event::Event as ConnectEventType,
 };
 
 // ============================================================
@@ -45,7 +45,10 @@ impl ConnectionManager {
         *id += 1;
         let session_id = format!("grpc-{}-{}", client_name, id);
         self.connections.lock().await.insert(session_id.clone(), tx);
-        eprintln!("[gRPC] Client connected: {} (session: {})", client_name, session_id);
+        eprintln!(
+            "[gRPC] Client connected: {} (session: {})",
+            client_name, session_id
+        );
         (session_id, rx)
     }
 
@@ -117,19 +120,18 @@ impl McpServiceImpl {
                 let result_str = serde_json::to_string(&resp).unwrap_or_default();
                 (result_str, is_error, message)
             }
-            None => {
-                (serde_json::to_string(&json!({})).unwrap(), false, String::new())
-            }
+            None => (
+                serde_json::to_string(&json!({})).unwrap(),
+                false,
+                String::new(),
+            ),
         }
     }
 }
 
 #[tonic::async_trait]
 impl McpService for McpServiceImpl {
-    async fn healthz(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<HealthzResponse>, Status> {
+    async fn healthz(&self, _request: Request<()>) -> Result<Response<HealthzResponse>, Status> {
         let _uptime = self.start_time.elapsed().as_secs();
         Ok(Response::new(HealthzResponse {
             status: "ok".to_string(),
@@ -143,8 +145,10 @@ impl McpService for McpServiceImpl {
         request: Request<McpCallRequest>,
     ) -> Result<Response<McpCallResponse>, Status> {
         let req = request.into_inner();
-        eprintln!("[gRPC] Call: method={} project_id={} user_id={}",
-            req.method, req.project_id, req.user_id);
+        eprintln!(
+            "[gRPC] Call: method={} project_id={} user_id={}",
+            req.method, req.project_id, req.user_id
+        );
 
         let (result, is_error, message) = self.dispatch_method(&req.method, &req.arguments).await;
 
@@ -182,9 +186,8 @@ impl McpService for McpServiceImpl {
         };
 
         let heartbeat_interval = std::time::Duration::from_millis(heartbeat_ms);
-        let mut heartbeat_stream = tokio_stream::wrappers::IntervalStream::new(
-            tokio::time::interval(heartbeat_interval),
-        );
+        let mut heartbeat_stream =
+            tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(heartbeat_interval));
 
         let output = async_stream::stream! {
             // Send welcome first

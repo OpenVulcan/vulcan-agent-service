@@ -1,17 +1,17 @@
+mod config;
 #[allow(dead_code)]
 mod grpc_client;
 mod grpc_server;
 mod http_server;
 mod lua_engine;
 mod lua_skill;
-mod skill_dependency;
 #[allow(dead_code)]
 mod protocol;
 mod server;
 #[allow(dead_code)]
 mod session;
+mod skill_dependency;
 mod temp_maintenance;
-mod config;
 mod tool_cache;
 
 pub mod pb_lancedb {
@@ -54,7 +54,10 @@ fn print_call_tools_result(value: &Value) -> Result<(), Box<dyn std::error::Erro
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime_mode = parse_runtime_mode()?;
     match runtime_mode {
-        RuntimeMode::CallTool { tool_name, arguments } => run_call_tool_mode(&tool_name, arguments),
+        RuntimeMode::CallTool {
+            tool_name,
+            arguments,
+        } => run_call_tool_mode(&tool_name, arguments),
         RuntimeMode::Serve => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -72,9 +75,15 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
 
     configure_global_tool_cache(ToolCacheConfig {
-        max_entries: cfg.tool_cache_max_entries.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
-        default_ttl_secs: cfg.tool_cache_default_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
-        max_ttl_secs: cfg.tool_cache_max_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
+        max_entries: cfg
+            .tool_cache_max_entries
+            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
+        default_ttl_secs: cfg
+            .tool_cache_default_ttl_secs
+            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
+        max_ttl_secs: cfg
+            .tool_cache_max_ttl_secs
+            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
     });
 
     // Prepend output/libs/ to PATH so C dependency DLLs are found at runtime
@@ -97,10 +106,7 @@ enum RuntimeMode {
     Serve,
     /// 中文：仅初始化工具运行环境，并直接调用单个 tool 做本地调试。
     /// English: Initialize the tool runtime only and directly invoke a single tool for local debugging.
-    CallTool {
-        tool_name: String,
-        arguments: Value,
-    },
+    CallTool { tool_name: String, arguments: Value },
 }
 
 /// 中文：根据命令行参数解析运行模式。
@@ -126,7 +132,10 @@ fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
                 None => json!({}),
             };
 
-            return Ok(RuntimeMode::CallTool { tool_name, arguments });
+            return Ok(RuntimeMode::CallTool {
+                tool_name,
+                arguments,
+            });
         }
     }
 
@@ -176,9 +185,18 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
 
 /// 中文：运行默认的 HTTP/gRPC 服务模式。
 /// English: Run the default HTTP/gRPC service mode.
-async fn run_network_transports(server: McpServer, cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let http_addr = cfg.http.clone().unwrap_or_else(|| "127.0.0.1:19201".to_string());
-    let grpc_addr = cfg.grpc.clone().unwrap_or_else(|| "127.0.0.1:19202".to_string());
+async fn run_network_transports(
+    server: McpServer,
+    cfg: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let http_addr = cfg
+        .http
+        .clone()
+        .unwrap_or_else(|| "127.0.0.1:19201".to_string());
+    let grpc_addr = cfg
+        .grpc
+        .clone()
+        .unwrap_or_else(|| "127.0.0.1:19202".to_string());
 
     // Clone server for parallel transports
     let server_for_http = server.clone();
@@ -206,24 +224,27 @@ async fn run_network_transports(server: McpServer, cfg: &Config) -> Result<(), B
 
 /// 中文：在不启动服务的情况下，直接初始化 Lua skill 并调用目标 tool，便于调试技能加载、依赖初始化与实际返回值。
 /// English: Initialize Lua skills and invoke the target tool directly without starting transports, making skill loading, dependency setup, and real return values easier to debug.
-fn run_call_tool_mode(
-    tool_name: &str,
-    arguments: Value,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn run_call_tool_mode(tool_name: &str, arguments: Value) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
 
     configure_global_tool_cache(ToolCacheConfig {
-        max_entries: cfg.tool_cache_max_entries.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
-        default_ttl_secs: cfg.tool_cache_default_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
-        max_ttl_secs: cfg.tool_cache_max_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
+        max_entries: cfg
+            .tool_cache_max_entries
+            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
+        default_ttl_secs: cfg
+            .tool_cache_default_ttl_secs
+            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
+        max_ttl_secs: cfg
+            .tool_cache_max_ttl_secs
+            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
     });
 
     add_libs_to_path();
 
-    let (base_dir, override_dir) = find_lua_skill_dirs(&cfg)
-        .ok_or("Lua skill directory not found for --call-tools mode")?;
+    let (base_dir, override_dir) =
+        find_lua_skill_dirs(&cfg).ok_or("Lua skill directory not found for --call-tools mode")?;
 
     let mut engine = LuaEngine::new(LuaVmPoolConfig {
         min_size: cfg.lua_vm_pool_min_size.unwrap_or(1),
@@ -245,7 +266,9 @@ fn run_call_tool_mode(
 
 /// Find Lua skill base and override directories.
 /// Returns (base_dir, Option<override_dir>) if skills exist.
-fn find_lua_skill_dirs(cfg: &config::Config) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+fn find_lua_skill_dirs(
+    cfg: &config::Config,
+) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
     // Base directory: <exe_parent>/lua_skills/
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
@@ -259,7 +282,11 @@ fn find_lua_skill_dirs(cfg: &config::Config) -> Option<(std::path::PathBuf, Opti
     // Override directory: from config or default ~/.vulcan/vulcan-mcp/lua_skills/
     let override_dir = cfg.lua_skills_override.clone().or_else(|| {
         let home = home_dir()?;
-        Some(home.join(".vulcan/vulcan-mcp/lua_skills").to_string_lossy().to_string())
+        Some(
+            home.join(".vulcan/vulcan-mcp/lua_skills")
+                .to_string_lossy()
+                .to_string(),
+        )
     });
 
     let override_path = override_dir.and_then(|p| {
@@ -273,8 +300,12 @@ fn find_lua_skill_dirs(cfg: &config::Config) -> Option<(std::path::PathBuf, Opti
 /// Prepend output/libs/ to PATH so C dependency DLLs (zlib1.dll, etc.)
 /// are discoverable when Lua C modules load via FFI.
 fn add_libs_to_path() {
-    let Ok(exe_path) = std::env::current_exe() else { return };
-    let Some(exe_dir) = exe_path.parent() else { return };
+    let Ok(exe_path) = std::env::current_exe() else {
+        return;
+    };
+    let Some(exe_dir) = exe_path.parent() else {
+        return;
+    };
     let parent = exe_dir.parent().unwrap_or(exe_dir);
     let libs_dir = parent.join("libs");
 
@@ -291,12 +322,16 @@ fn add_libs_to_path() {
     let separator = ":";
 
     let new_path = format!("{}{}{}", libs_str, separator, current_path);
-    unsafe { std::env::set_var("PATH", new_path); }
+    unsafe {
+        std::env::set_var("PATH", new_path);
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+    std::env::var("USERPROFILE")
+        .ok()
+        .map(std::path::PathBuf::from)
 }
 
 #[cfg(not(target_os = "windows"))]

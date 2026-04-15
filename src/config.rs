@@ -102,7 +102,9 @@ impl Config {
                 eprintln!("[Config]   - -config flag");
                 eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
                 eprintln!("[Config] Template source in repository: runtime/configs/config.yaml");
-                eprintln!("[Config] Provide config via -config flag or place the built config file at <exe_parent>/configs/config.yaml.");
+                eprintln!(
+                    "[Config] Provide config via -config flag or place the built config file at <exe_parent>/configs/config.yaml."
+                );
                 std::process::exit(1);
             }
         }

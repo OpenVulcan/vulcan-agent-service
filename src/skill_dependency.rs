@@ -135,8 +135,14 @@ fn resolve_tools_bin_dir(skill_dir: &Path) -> Result<PathBuf, Box<dyn std::error
 /// 构造一个可访问 GitHub 的阻塞式 HTTP 客户端。
 fn build_github_client() -> Result<Client, Box<dyn std::error::Error>> {
     let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static("vulcan-mcp-skill-downloader"));
-    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github+json"));
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static("vulcan-mcp-skill-downloader"),
+    );
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
 
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
         if !token.trim().is_empty() {
@@ -204,13 +210,23 @@ fn ensure_one_dependency(
 
 /// Render one dependency target with tag/version placeholders resolved.
 /// 使用 tag/version 渲染单个平台目标中的模板字段。
-fn render_dependency_target(target: &DependencyTarget, tag: &str, version: &str) -> DependencyTarget {
+fn render_dependency_target(
+    target: &DependencyTarget,
+    tag: &str,
+    version: &str,
+) -> DependencyTarget {
     DependencyTarget {
         os: target.os.clone(),
         arch: target.arch.clone(),
         asset_name: render_template(&target.asset_name, tag, version),
-        install_as: target.install_as.clone().map(|value| render_template(&value, tag, version)),
-        archive_path: target.archive_path.clone().map(|value| render_template(&value, tag, version)),
+        install_as: target
+            .install_as
+            .clone()
+            .map(|value| render_template(&value, tag, version)),
+        archive_path: target
+            .archive_path
+            .clone()
+            .map(|value| render_template(&value, tag, version)),
         executable: target.executable,
     }
 }
@@ -265,9 +281,7 @@ fn fetch_latest_tag(client: &Client, tag_api: &str) -> Result<String, Box<dyn st
 /// Render an asset or URL template with the resolved tag and version.
 /// 使用解析出的 tag 和 version 渲染资源名或 URL 模板。
 fn render_template(template: &str, tag: &str, version: &str) -> String {
-    template
-        .replace("{tag}", tag)
-        .replace("{version}", version)
+    template.replace("{tag}", tag).replace("{version}", version)
 }
 
 /// Render the final download URL for one dependency asset.
@@ -278,16 +292,14 @@ fn render_download_url(
     version: &str,
     asset_name: &str,
 ) -> String {
-    let template = source
-        .download_url_template
-        .clone()
-        .unwrap_or_else(|| format!("{}/releases/download/{{tag}}/{{asset_name}}", source.repo.trim_end_matches('/')));
+    let template = source.download_url_template.clone().unwrap_or_else(|| {
+        format!(
+            "{}/releases/download/{{tag}}/{{asset_name}}",
+            source.repo.trim_end_matches('/')
+        )
+    });
 
-    render_template(
-        &template.replace("{asset_name}", asset_name),
-        tag,
-        version,
-    )
+    render_template(&template.replace("{asset_name}", asset_name), tag, version)
 }
 
 /// Download one asset file and show a terminal progress bar while streaming bytes.
@@ -373,10 +385,12 @@ fn extract_zip_asset(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let archive_file = File::open(archive_path)?;
     let mut archive = zip::ZipArchive::new(archive_file)?;
-    let target_name = target
-        .archive_path
-        .as_deref()
-        .unwrap_or_else(|| install_path.file_name().and_then(|name| name.to_str()).unwrap_or(""));
+    let target_name = target.archive_path.as_deref().unwrap_or_else(|| {
+        install_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+    });
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
@@ -406,10 +420,12 @@ fn extract_targz_asset(
     let archive_file = File::open(archive_path)?;
     let decoder = flate2::read::GzDecoder::new(archive_file);
     let mut archive = tar::Archive::new(decoder);
-    let target_name = target
-        .archive_path
-        .as_deref()
-        .unwrap_or_else(|| install_path.file_name().and_then(|name| name.to_str()).unwrap_or(""));
+    let target_name = target.archive_path.as_deref().unwrap_or_else(|| {
+        install_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+    });
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;

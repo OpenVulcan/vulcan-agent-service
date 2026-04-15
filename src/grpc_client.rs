@@ -3,24 +3,21 @@ use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
 use crate::pb_lancedb::{
-    lance_db_service_client::LanceDbServiceClient,
-    CreateTableRequest, ColumnDef, InputFormat, OutputFormat,
-    DeleteRequest, DropTableRequest, SearchRequest, UpsertRequest,
+    ColumnDef, CreateTableRequest, DeleteRequest, DropTableRequest, InputFormat, OutputFormat,
+    SearchRequest, UpsertRequest, lance_db_service_client::LanceDbServiceClient,
 };
 use crate::pb_sqlite::{
-    sqlite_service_client::SqliteServiceClient,
     ExecuteBatchItem, ExecuteBatchRequest, ExecuteRequest, QueryRequest, SqliteValue,
-    sqlite_value,
+    sqlite_service_client::SqliteServiceClient, sqlite_value,
 };
 use crate::pb_vmm::{
+    ApplyProfileInstructionRequest, ChatCompactRequest, DeleteProjectRequest, DeleteUserRequest,
+    EnsureProjectRequest, GetProfileBundleRequest, GetProfileNodesRequest, GetTurnDetailsRequest,
+    MigrateProjectRequest, PostActionRequest, PostActionTimelineItem, PreCheckRequest,
+    ResolveProjectRequest, ResolveUserRequest, ScratchpadCleanRequest, ScratchpadDeleteRequest,
+    ScratchpadGetRequest, ScratchpadItem as VmmScratchpadItem, ScratchpadListKeysRequest,
+    ScratchpadUpsertRequest, SearchMemoryEventsRequest, WriteMemoriesRequest, WriteMemoryItem,
     vmm_service_client::VmmServiceClient,
-    ResolveProjectRequest, EnsureProjectRequest, DeleteProjectRequest, MigrateProjectRequest,
-    ResolveUserRequest, DeleteUserRequest, GetProfileNodesRequest, GetProfileBundleRequest,
-    ApplyProfileInstructionRequest, SearchMemoryEventsRequest, GetTurnDetailsRequest,
-    WriteMemoriesRequest, WriteMemoryItem, ScratchpadUpsertRequest, ScratchpadItem as VmmScratchpadItem,
-    ScratchpadDeleteRequest, ScratchpadGetRequest, ScratchpadListKeysRequest,
-    ScratchpadCleanRequest, ChatCompactRequest, PreCheckRequest, PostActionRequest,
-    PostActionTimelineItem,
 };
 
 // ============================================================
@@ -125,7 +122,10 @@ impl LanceDbClient {
         let resp = client.delete(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         if inner.success {
-            Ok(format!("version={}, deleted={}", inner.version, inner.deleted_rows))
+            Ok(format!(
+                "version={}, deleted={}",
+                inner.version, inner.deleted_rows
+            ))
         } else {
             Err(inner.message)
         }
@@ -176,7 +176,10 @@ impl SqliteClient {
             params,
         });
         let mut client = self.client.lock().await;
-        let resp = client.execute_script(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .execute_script(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         if inner.success {
             Ok(format!(
@@ -281,7 +284,9 @@ pub fn sqlite_bool(v: bool) -> SqliteValue {
 
 pub fn sqlite_null() -> SqliteValue {
     SqliteValue {
-        kind: Some(sqlite_value::Kind::NullValue(crate::pb_sqlite::NullValue {})),
+        kind: Some(sqlite_value::Kind::NullValue(
+            crate::pb_sqlite::NullValue {},
+        )),
     }
 }
 
@@ -366,7 +371,10 @@ fn validate_scope(project_id: u64, user_id: u64, session_id: &str) -> Result<(),
         return Err("session_id is required".into());
     }
     if trimmed.len() > SCRATCHPAD_SESSION_KEY_MAX_LEN {
-        return Err(format!("session_id must be <= {} characters", SCRATCHPAD_SESSION_KEY_MAX_LEN));
+        return Err(format!(
+            "session_id must be <= {} characters",
+            SCRATCHPAD_SESSION_KEY_MAX_LEN
+        ));
     }
     Ok(())
 }
@@ -377,7 +385,10 @@ fn validate_plan_name(name: &str) -> Result<(), String> {
         return Err("plan_name is required".into());
     }
     if trimmed.len() > SCRATCHPAD_PLAN_NAME_MAX_LEN {
-        return Err(format!("plan_name must be <= {} characters", SCRATCHPAD_PLAN_NAME_MAX_LEN));
+        return Err(format!(
+            "plan_name must be <= {} characters",
+            SCRATCHPAD_PLAN_NAME_MAX_LEN
+        ));
     }
     Ok(())
 }
@@ -387,7 +398,10 @@ fn normalize_items(items: &[ScratchpadItem]) -> Result<Vec<ScratchpadItem>, Stri
         return Err("items must contain at least one item".into());
     }
     if items.len() > SCRATCHPAD_BATCH_ITEM_LIMIT {
-        return Err(format!("items must contain <= {} items", SCRATCHPAD_BATCH_ITEM_LIMIT));
+        return Err(format!(
+            "items must contain <= {} items",
+            SCRATCHPAD_BATCH_ITEM_LIMIT
+        ));
     }
     // Deduplicate: keep last value for same key
     let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -398,17 +412,26 @@ fn normalize_items(items: &[ScratchpadItem]) -> Result<Vec<ScratchpadItem>, Stri
             return Err(format!("items[{}].key is required", idx));
         }
         if key.len() > SCRATCHPAD_ITEM_KEY_MAX_LEN {
-            return Err(format!("items[{}].key must be <= {} characters", idx, SCRATCHPAD_ITEM_KEY_MAX_LEN));
+            return Err(format!(
+                "items[{}].key must be <= {} characters",
+                idx, SCRATCHPAD_ITEM_KEY_MAX_LEN
+            ));
         }
         if value.is_empty() {
             return Err(format!("items[{}].value is required", idx));
         }
         if value.len() > SCRATCHPAD_ITEM_VALUE_MAX_LEN {
-            return Err(format!("items[{}].value must be <= {} characters", idx, SCRATCHPAD_ITEM_VALUE_MAX_LEN));
+            return Err(format!(
+                "items[{}].value must be <= {} characters",
+                idx, SCRATCHPAD_ITEM_VALUE_MAX_LEN
+            ));
         }
         map.insert(key, value);
     }
-    let mut out: Vec<ScratchpadItem> = map.into_iter().map(|(k, v)| ScratchpadItem { key: k, value: v }).collect();
+    let mut out: Vec<ScratchpadItem> = map
+        .into_iter()
+        .map(|(k, v)| ScratchpadItem { key: k, value: v })
+        .collect();
     out.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(out)
 }
@@ -424,7 +447,10 @@ fn normalize_keys(keys: &[String]) -> Result<Vec<String>, String> {
             return Err(format!("keys[{}] is required", idx));
         }
         if trimmed.len() > SCRATCHPAD_ITEM_KEY_MAX_LEN {
-            return Err(format!("keys[{}] must be <= {} characters", idx, SCRATCHPAD_ITEM_KEY_MAX_LEN));
+            return Err(format!(
+                "keys[{}] must be <= {} characters",
+                idx, SCRATCHPAD_ITEM_KEY_MAX_LEN
+            ));
         }
         set.insert(trimmed);
     }
@@ -449,15 +475,25 @@ const LATEST_SCHEMA_VERSION: i64 = 1;
 /// Run all pending migrations in order. Returns the final version.
 async fn run_migrations(client: &SqliteClient) -> Result<i64, Box<dyn std::error::Error>> {
     // Ensure version table exists
-    client.execute_script(SCHEMA_VERSION_DDL, vec![])
+    client
+        .execute_script(SCHEMA_VERSION_DDL, vec![])
         .await
         .map_err(|e| format!("Failed to create version table: {}", e))?;
 
     // Read current version
-    let current = match client.query_json("SELECT version FROM vmcp_schema_version ORDER BY version DESC LIMIT 1", vec![]).await {
+    let current = match client
+        .query_json(
+            "SELECT version FROM vmcp_schema_version ORDER BY version DESC LIMIT 1",
+            vec![],
+        )
+        .await
+    {
         Ok(json_str) => {
             let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
-            rows.first().and_then(|v| v.get("version")).and_then(|v| v.as_i64()).unwrap_or(0)
+            rows.first()
+                .and_then(|v| v.get("version"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
         }
         Err(_) => 0,
     };
@@ -467,7 +503,9 @@ async fn run_migrations(client: &SqliteClient) -> Result<i64, Box<dyn std::error
         let plans_exist = table_exists(client, "vmcp_scratchpad_plans").await?;
         let nodes_exist = table_exists(client, "vmcp_scratchpad_nodes").await?;
         if plans_exist && nodes_exist {
-            eprintln!("[MCP] Detected existing scratchpad tables without version record, setting version to 1");
+            eprintln!(
+                "[MCP] Detected existing scratchpad tables without version record, setting version to 1"
+            );
             let now = now_unix_millis();
             client.execute_script(
                 &format!("INSERT INTO vmcp_schema_version (version, applied_at, description) VALUES (1, {}, 'auto-detected existing tables')", now),
@@ -485,8 +523,13 @@ async fn run_migrations(client: &SqliteClient) -> Result<i64, Box<dyn std::error
 
     // Run pending migrations in order
     if current < 1 {
-        eprintln!("[MCP] Migrating SQLite schema: v{} -> v1 (initial schema: plans + nodes tables)", current);
-        migrate_v1(client).await.map_err(|e| format!("Migration v1 failed: {}", e))?;
+        eprintln!(
+            "[MCP] Migrating SQLite schema: v{} -> v1 (initial schema: plans + nodes tables)",
+            current
+        );
+        migrate_v1(client)
+            .await
+            .map_err(|e| format!("Migration v1 failed: {}", e))?;
         let now = now_unix_millis();
         client.execute_script(
             &format!("INSERT OR REPLACE INTO vmcp_schema_version (version, applied_at, description) VALUES (1, {}, 'initial schema: plans + nodes tables')", now),
@@ -501,8 +544,14 @@ async fn run_migrations(client: &SqliteClient) -> Result<i64, Box<dyn std::error
     Ok(LATEST_SCHEMA_VERSION)
 }
 
-async fn table_exists(client: &SqliteClient, table: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    let sql = format!("SELECT name FROM sqlite_master WHERE type='table' AND name='{}'", table);
+async fn table_exists(
+    client: &SqliteClient,
+    table: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let sql = format!(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='{}'",
+        table
+    );
     match client.query_json(&sql, vec![]).await {
         Ok(json_str) => {
             let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
@@ -537,28 +586,62 @@ impl ScratchpadStore {
         &self.sqlite
     }
 
-    async fn load_plan(&self, project_id: u64, user_id: u64, session_key: &str) -> Result<Option<serde_json::Value>, String> {
+    async fn load_plan(
+        &self,
+        project_id: u64,
+        user_id: u64,
+        session_key: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let sql = "SELECT id, project_id, user_id, session_key, plan_name, plan_name_norm, created_timestamp, updated_timestamp FROM vmcp_scratchpad_plans WHERE project_id = ? AND user_id = ? AND session_key = ? LIMIT 1";
-        let json_str = self.sqlite.query_json(sql, vec![
-            sqlite_int64(project_id as i64),
-            sqlite_int64(user_id as i64),
-            sqlite_string(session_key.trim()),
-        ]).await?;
+        let json_str = self
+            .sqlite
+            .query_json(
+                sql,
+                vec![
+                    sqlite_int64(project_id as i64),
+                    sqlite_int64(user_id as i64),
+                    sqlite_string(session_key.trim()),
+                ],
+            )
+            .await?;
         let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
         Ok(arr.into_iter().next())
     }
 
-    async fn create_plan(&self, project_id: u64, user_id: u64, session_key: &str, plan_name: &str, now_ms: i64) -> Result<serde_json::Value, String> {
+    async fn create_plan(
+        &self,
+        project_id: u64,
+        user_id: u64,
+        session_key: &str,
+        plan_name: &str,
+        now_ms: i64,
+    ) -> Result<serde_json::Value, String> {
         // Re-check under lock: get next id
-        let id_json = self.sqlite.query_json("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmcp_scratchpad_plans", vec![]).await?;
+        let id_json = self
+            .sqlite
+            .query_json(
+                "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmcp_scratchpad_plans",
+                vec![],
+            )
+            .await?;
         let id_arr: Vec<serde_json::Value> = serde_json::from_str(&id_json).unwrap_or_default();
-        let next_id = id_arr.first().and_then(|v| v.get("next_id")).and_then(|v| v.as_i64()).unwrap_or(1);
+        let next_id = id_arr
+            .first()
+            .and_then(|v| v.get("next_id"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1);
 
         let plan_name_trimmed = plan_name.trim();
         let sql = format!(
             "INSERT INTO vmcp_scratchpad_plans (id, project_id, user_id, session_key, plan_name, plan_name_norm, created_timestamp, updated_timestamp) VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
-            next_id, project_id, user_id, sql_hex(session_key.trim()), sql_hex(plan_name_trimmed),
-            sql_hex(&plan_name_trimmed.to_lowercase()), now_ms, now_ms
+            next_id,
+            project_id,
+            user_id,
+            sql_hex(session_key.trim()),
+            sql_hex(plan_name_trimmed),
+            sql_hex(&plan_name_trimmed.to_lowercase()),
+            now_ms,
+            now_ms
         );
         self.sqlite.execute_script(&sql, vec![]).await?;
         Ok(json!({
@@ -588,10 +671,18 @@ impl ScratchpadStore {
 
         let plan = self.load_plan(project_id, user_id, session_id).await?;
         if let Some(ref p) = plan {
-            let canonical = p.get("plan_name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let canonical = p
+                .get("plan_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let input = plan_name.trim();
             if canonical.to_lowercase() != input.to_lowercase() {
-                return Ok(format!("status=failed, msg=The input plan_name does not match the current scratchpad plan. Check whether the plan_name is misspelled or call Clean before switching to a new plan. Current plan: {}. Input plan: {}", canonical, input));
+                return Ok(format!(
+                    "status=failed, msg=The input plan_name does not match the current scratchpad plan. Check whether the plan_name is misspelled or call Clean before switching to a new plan. Current plan: {}. Input plan: {}",
+                    canonical, input
+                ));
             }
         }
 
@@ -600,21 +691,30 @@ impl ScratchpadStore {
             p
         } else {
             // Concurrent re-check: try loading again (simplified, no mutex needed since unique constraint handles it)
-            self.create_plan(project_id, user_id, session_id, plan_name, now_ms).await?
+            self.create_plan(project_id, user_id, session_id, plan_name, now_ms)
+                .await?
         };
 
         let plan_id = plan.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         // Load existing nodes for insert/update counting
         let existing_keys: Vec<String> = items.iter().map(|i| i.key.clone()).collect();
         let existing_json = if !existing_keys.is_empty() {
-            let placeholders = existing_keys.iter().map(|k| sql_hex(k)).collect::<Vec<_>>().join(", ");
-            let sql = format!("SELECT item_key FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({})", plan_id, placeholders);
+            let placeholders = existing_keys
+                .iter()
+                .map(|k| sql_hex(k))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT item_key FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({})",
+                plan_id, placeholders
+            );
             let j = self.sqlite.query_json(&sql, vec![]).await?;
             serde_json::from_str::<Vec<serde_json::Value>>(&j).unwrap_or_default()
         } else {
             vec![]
         };
-        let existing_set: std::collections::HashSet<String> = existing_json.iter()
+        let existing_set: std::collections::HashSet<String> = existing_json
+            .iter()
             .filter_map(|v| v.get("item_key").and_then(|v| v.as_str()).map(String::from))
             .collect();
 
@@ -636,13 +736,22 @@ impl ScratchpadStore {
                 ));
             }
         }
-        statements.push_str(&format!("UPDATE vmcp_scratchpad_plans SET updated_timestamp = {} WHERE id = {};\n", now_ms, plan_id));
+        statements.push_str(&format!(
+            "UPDATE vmcp_scratchpad_plans SET updated_timestamp = {} WHERE id = {};\n",
+            now_ms, plan_id
+        ));
         statements.push_str("COMMIT;\n");
 
         self.sqlite.execute_script(&statements, vec![]).await?;
         let total = inserted + updated;
-        Ok(format!("status=success, msg=Upserted {} scratchpad record(s)., plan_name={}, affected={}, inserted={}, updated={}",
-            total, plan_name.trim(), total, inserted, updated))
+        Ok(format!(
+            "status=success, msg=Upserted {} scratchpad record(s)., plan_name={}, affected={}, inserted={}, updated={}",
+            total,
+            plan_name.trim(),
+            total,
+            inserted,
+            updated
+        ))
     }
 
     /// Delete keys from scratchpad
@@ -664,22 +773,38 @@ impl ScratchpadStore {
         };
 
         let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let canonical = p.get("plan_name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let canonical = p
+            .get("plan_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let input = plan_name.trim();
         if canonical.to_lowercase() != input.to_lowercase() {
-            return Ok(format!("status=failed, msg=The input plan_name does not match the current scratchpad plan. Current plan: {}. Input plan: {}", canonical, input));
+            return Ok(format!(
+                "status=failed, msg=The input plan_name does not match the current scratchpad plan. Current plan: {}. Input plan: {}",
+                canonical, input
+            ));
         }
 
         let now_ms = now_unix_millis();
-        let key_list = keys.iter().map(|k| sql_hex(k)).collect::<Vec<_>>().join(", ");
+        let key_list = keys
+            .iter()
+            .map(|k| sql_hex(k))
+            .collect::<Vec<_>>()
+            .join(", ");
         let delete_sql = format!(
             "BEGIN IMMEDIATE;\nDELETE FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({});\nUPDATE vmcp_scratchpad_plans SET updated_timestamp = {} WHERE id = {};\nCOMMIT;\n",
             plan_id, key_list, now_ms, plan_id
         );
         self.sqlite.execute_script(&delete_sql, vec![]).await?;
 
-        Ok(format!("status=success, msg=Deleted {} scratchpad record(s)., plan_name={}, affected={}",
-            keys.len(), canonical, keys.len()))
+        Ok(format!(
+            "status=success, msg=Deleted {} scratchpad record(s)., plan_name={}, affected={}",
+            keys.len(),
+            canonical,
+            keys.len()
+        ))
     }
 
     /// Get scratchpad items
@@ -698,17 +823,40 @@ impl ScratchpadStore {
         };
 
         let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let plan_name = p.get("plan_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let updated = p.get("updated_timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let plan_name = p
+            .get("plan_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let updated = p
+            .get("updated_timestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
 
         let items_json = if keys.is_empty() {
-            let sql = format!("SELECT item_key, item_value FROM vmcp_scratchpad_nodes WHERE plan_id = {} ORDER BY item_key ASC, id ASC", plan_id);
-            self.sqlite.query_json(&sql, vec![]).await.unwrap_or_else(|_| "[]".into())
+            let sql = format!(
+                "SELECT item_key, item_value FROM vmcp_scratchpad_nodes WHERE plan_id = {} ORDER BY item_key ASC, id ASC",
+                plan_id
+            );
+            self.sqlite
+                .query_json(&sql, vec![])
+                .await
+                .unwrap_or_else(|_| "[]".into())
         } else {
             let validated_keys = normalize_keys(&keys)?;
-            let key_list = validated_keys.iter().map(|k| sql_hex(k)).collect::<Vec<_>>().join(", ");
-            let sql = format!("SELECT item_key, item_value FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({}) ORDER BY item_key ASC, id ASC", plan_id, key_list);
-            self.sqlite.query_json(&sql, vec![]).await.unwrap_or_else(|_| "[]".into())
+            let key_list = validated_keys
+                .iter()
+                .map(|k| sql_hex(k))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT item_key, item_value FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({}) ORDER BY item_key ASC, id ASC",
+                plan_id, key_list
+            );
+            self.sqlite
+                .query_json(&sql, vec![])
+                .await
+                .unwrap_or_else(|_| "[]".into())
         };
 
         let items: Vec<serde_json::Value> = serde_json::from_str(&items_json).unwrap_or_default();
@@ -719,7 +867,8 @@ impl ScratchpadStore {
             "updated_timestamp": updated,
             "item_count": items.len(),
             "items": items,
-        })).unwrap_or_default())
+        }))
+        .unwrap_or_default())
     }
 
     /// List scratchpad keys
@@ -737,15 +886,23 @@ impl ScratchpadStore {
         };
 
         let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let plan_name = p.get("plan_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let updated = p.get("updated_timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let plan_name = p
+            .get("plan_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let updated = p
+            .get("updated_timestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
 
         let keys_json = self.sqlite.query_json(
             &format!("SELECT item_key FROM vmcp_scratchpad_nodes WHERE plan_id = {} ORDER BY item_key ASC, id ASC", plan_id),
             vec![],
         ).await.unwrap_or_else(|_| "[]".into());
         let rows: Vec<serde_json::Value> = serde_json::from_str(&keys_json).unwrap_or_default();
-        let keys: Vec<String> = rows.iter()
+        let keys: Vec<String> = rows
+            .iter()
             .filter_map(|r| r.get("item_key").and_then(|v| v.as_str()).map(String::from))
             .collect();
 
@@ -756,7 +913,8 @@ impl ScratchpadStore {
             "updated_timestamp": updated,
             "key_count": keys.len(),
             "keys": keys,
-        })).unwrap_or_default())
+        }))
+        .unwrap_or_default())
     }
 
     /// Clean entire scratchpad scope
@@ -770,7 +928,9 @@ impl ScratchpadStore {
 
         let plan = self.load_plan(project_id, user_id, session_id).await?;
         let Some(p) = plan else {
-            return Ok("status=success, msg=The current scratchpad is already empty., affected=0".into());
+            return Ok(
+                "status=success, msg=The current scratchpad is already empty., affected=0".into(),
+            );
         };
 
         let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -809,7 +969,10 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.healthz(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={}, trace_id={}", inner.status, inner.trace_id))
+        Ok(format!(
+            "status={}, trace_id={}",
+            inner.status, inner.trace_id
+        ))
     }
 
     // 2. ListProjects
@@ -818,8 +981,16 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.list_projects(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        let projects: Vec<String> = inner.projects.iter().map(|p| p.display_path.clone()).collect();
-        Ok(format!("projects={}, trace_id={}", projects.join(", "), inner.trace_id))
+        let projects: Vec<String> = inner
+            .projects
+            .iter()
+            .map(|p| p.display_path.clone())
+            .collect();
+        Ok(format!(
+            "projects={}, trace_id={}",
+            projects.join(", "),
+            inner.trace_id
+        ))
     }
 
     // 3. ResolveProject
@@ -828,54 +999,113 @@ impl VmmClient {
             project_ref: project_ref.to_string(),
         });
         let mut client = self.client.lock().await;
-        let resp = client.resolve_project(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .resolve_project(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        let path = inner.project.as_ref().map(|p| p.display_path.clone()).unwrap_or_default();
-        Ok(format!("message={}, project={}, trace_id={}", inner.message, path, inner.trace_id))
+        let path = inner
+            .project
+            .as_ref()
+            .map(|p| p.display_path.clone())
+            .unwrap_or_default();
+        Ok(format!(
+            "message={}, project={}, trace_id={}",
+            inner.message, path, inner.trace_id
+        ))
     }
 
     // 4. EnsureProject
-    pub async fn ensure_project(&self, project_path: &str, confirm_create: bool) -> Result<String, String> {
+    pub async fn ensure_project(
+        &self,
+        project_path: &str,
+        confirm_create: bool,
+    ) -> Result<String, String> {
         let req = tonic::Request::new(EnsureProjectRequest {
             project_path: project_path.to_string(),
             confirm_create,
         });
         let mut client = self.client.lock().await;
-        let resp = client.ensure_project(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .ensure_project(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        let path = inner.project.as_ref().map(|p| p.display_path.clone()).unwrap_or_default();
-        Ok(format!("message={}, exists={}, project={}, trace_id={}", inner.message, inner.exists, path, inner.trace_id))
+        let path = inner
+            .project
+            .as_ref()
+            .map(|p| p.display_path.clone())
+            .unwrap_or_default();
+        Ok(format!(
+            "message={}, exists={}, project={}, trace_id={}",
+            inner.message, inner.exists, path, inner.trace_id
+        ))
     }
 
     // 5. DeleteProject
-    pub async fn delete_project(&self, project_path: &str, confirm_delete: bool) -> Result<String, String> {
+    pub async fn delete_project(
+        &self,
+        project_path: &str,
+        confirm_delete: bool,
+    ) -> Result<String, String> {
         let req = tonic::Request::new(DeleteProjectRequest {
             project_path: project_path.to_string(),
             confirm_delete,
         });
         let mut client = self.client.lock().await;
-        let resp = client.delete_project(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .delete_project(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("message={}, needs_confirm={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
-            inner.message, inner.needs_confirm, inner.deleted_sessions, inner.deleted_messages, inner.deleted_memories, inner.deleted_vector_rows, inner.trace_id))
+        Ok(format!(
+            "message={}, needs_confirm={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
+            inner.message,
+            inner.needs_confirm,
+            inner.deleted_sessions,
+            inner.deleted_messages,
+            inner.deleted_memories,
+            inner.deleted_vector_rows,
+            inner.trace_id
+        ))
     }
 
     // 6. MigrateProject
-    pub async fn migrate_project(&self, source: &str, target: &str, confirm: bool) -> Result<String, String> {
+    pub async fn migrate_project(
+        &self,
+        source: &str,
+        target: &str,
+        confirm: bool,
+    ) -> Result<String, String> {
         let req = tonic::Request::new(MigrateProjectRequest {
             source_project_path: source.to_string(),
             target_project_path: target.to_string(),
             confirm_migrate: confirm,
         });
         let mut client = self.client.lock().await;
-        let resp = client.migrate_project(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .migrate_project(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("message={}, needs_confirm={}, migrated_sessions={}, migrated_messages={}, migrated_memories={}, rebuilt_vector={}, trace_id={}",
-            inner.message, inner.needs_confirm, inner.migrated_sessions, inner.migrated_messages, inner.migrated_memories, inner.rebuilt_vector_rows, inner.trace_id))
+        Ok(format!(
+            "message={}, needs_confirm={}, migrated_sessions={}, migrated_messages={}, migrated_memories={}, rebuilt_vector={}, trace_id={}",
+            inner.message,
+            inner.needs_confirm,
+            inner.migrated_sessions,
+            inner.migrated_messages,
+            inner.migrated_memories,
+            inner.rebuilt_vector_rows,
+            inner.trace_id
+        ))
     }
 
     // 7. ResolveUser
-    pub async fn resolve_user(&self, user_ref: &str, confirm_create: bool) -> Result<String, String> {
+    pub async fn resolve_user(
+        &self,
+        user_ref: &str,
+        confirm_create: bool,
+    ) -> Result<String, String> {
         let req = tonic::Request::new(ResolveUserRequest {
             user_ref: user_ref.to_string(),
             confirm_create,
@@ -883,8 +1113,15 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.resolve_user(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        let user_info = inner.user.as_ref().map(|u| format!("{}({})", u.user_name, u.user_id)).unwrap_or_default();
-        Ok(format!("message={}, user={}, created={}, exists={}, trace_id={}", inner.message, user_info, inner.created, inner.exists, inner.trace_id))
+        let user_info = inner
+            .user
+            .as_ref()
+            .map(|u| format!("{}({})", u.user_name, u.user_id))
+            .unwrap_or_default();
+        Ok(format!(
+            "message={}, user={}, created={}, exists={}, trace_id={}",
+            inner.message, user_info, inner.created, inner.exists, inner.trace_id
+        ))
     }
 
     // 8. ListUsers
@@ -893,12 +1130,24 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.list_users(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        let users: Vec<String> = inner.users.iter().map(|u| format!("{}({})", u.user_name, u.user_id)).collect();
-        Ok(format!("users={}, trace_id={}", users.join(", "), inner.trace_id))
+        let users: Vec<String> = inner
+            .users
+            .iter()
+            .map(|u| format!("{}({})", u.user_name, u.user_id))
+            .collect();
+        Ok(format!(
+            "users={}, trace_id={}",
+            users.join(", "),
+            inner.trace_id
+        ))
     }
 
     // 9. DeleteUser
-    pub async fn delete_user(&self, user_ref: &str, confirmation_code: &str) -> Result<String, String> {
+    pub async fn delete_user(
+        &self,
+        user_ref: &str,
+        confirmation_code: &str,
+    ) -> Result<String, String> {
         let req = tonic::Request::new(DeleteUserRequest {
             user_ref: user_ref.to_string(),
             confirmation_code: confirmation_code.to_string(),
@@ -906,9 +1155,22 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.delete_user(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        let user_info = inner.user.as_ref().map(|u| format!("{}({})", u.user_name, u.user_id)).unwrap_or_default();
-        Ok(format!("message={}, requires_confirmation={}, user={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
-            inner.message, inner.requires_confirmation, user_info, inner.deleted_sessions, inner.deleted_messages, inner.deleted_memories, inner.deleted_vector_rows, inner.trace_id))
+        let user_info = inner
+            .user
+            .as_ref()
+            .map(|u| format!("{}({})", u.user_name, u.user_id))
+            .unwrap_or_default();
+        Ok(format!(
+            "message={}, requires_confirmation={}, user={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
+            inner.message,
+            inner.requires_confirmation,
+            user_info,
+            inner.deleted_sessions,
+            inner.deleted_messages,
+            inner.deleted_memories,
+            inner.deleted_vector_rows,
+            inner.trace_id
+        ))
     }
 
     // 10. GetProfileNodes
@@ -926,9 +1188,16 @@ impl VmmClient {
             limit,
         });
         let mut client = self.client.lock().await;
-        let resp = client.get_profile_nodes(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .get_profile_nodes(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("node_count={}, trace_id={}", inner.nodes.len(), inner.trace_id))
+        Ok(format!(
+            "node_count={}, trace_id={}",
+            inner.nodes.len(),
+            inner.trace_id
+        ))
     }
 
     // 11. GetProfileBundle
@@ -946,9 +1215,16 @@ impl VmmClient {
             include_explanation: include_exp,
         });
         let mut client = self.client.lock().await;
-        let resp = client.get_profile_bundle(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .get_profile_bundle(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("combined_text_len={}, trace_id={}", inner.combined_text.len(), inner.trace_id))
+        Ok(format!(
+            "combined_text_len={}, trace_id={}",
+            inner.combined_text.len(),
+            inner.trace_id
+        ))
     }
 
     // 12. ApplyProfileInstruction
@@ -966,10 +1242,18 @@ impl VmmClient {
             instruction: instruction.to_string(),
         });
         let mut client = self.client.lock().await;
-        let resp = client.apply_profile_instruction(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .apply_profile_instruction(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("instruction_id={}, accepted_nodes={}, retired_nodes={}, trace_id={}",
-            inner.instruction_id, inner.accepted_nodes.len(), inner.retired_nodes.len(), inner.trace_id))
+        Ok(format!(
+            "instruction_id={}, accepted_nodes={}, retired_nodes={}, trace_id={}",
+            inner.instruction_id,
+            inner.accepted_nodes.len(),
+            inner.retired_nodes.len(),
+            inner.trace_id
+        ))
     }
 
     // 13. SearchMemoryEvents
@@ -987,21 +1271,34 @@ impl VmmClient {
             top_k,
         });
         let mut client = self.client.lock().await;
-        let resp = client.search_memory_events(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .search_memory_events(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         let total: usize = inner.results.iter().map(|r| r.hits.len()).sum();
-        Ok(format!("total_hits={}, query_groups={}, trace_id={}", total, inner.results.len(), inner.trace_id))
+        Ok(format!(
+            "total_hits={}, query_groups={}, trace_id={}",
+            total,
+            inner.results.len(),
+            inner.trace_id
+        ))
     }
 
     // 14. GetTurnDetails
     pub async fn get_turn_details(&self, turn_ids: Vec<u64>) -> Result<String, String> {
-        let req = tonic::Request::new(GetTurnDetailsRequest {
-            turn_ids,
-        });
+        let req = tonic::Request::new(GetTurnDetailsRequest { turn_ids });
         let mut client = self.client.lock().await;
-        let resp = client.get_turn_details(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .get_turn_details(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("turns_loaded={}, trace_id={}", inner.turns.len(), inner.trace_id))
+        Ok(format!(
+            "turns_loaded={}, trace_id={}",
+            inner.turns.len(),
+            inner.trace_id
+        ))
     }
 
     // 15. WriteMemories
@@ -1019,10 +1316,18 @@ impl VmmClient {
             items,
         });
         let mut client = self.client.lock().await;
-        let resp = client.write_memories(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .write_memories(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         let deduped: usize = inner.items.iter().filter(|i| i.deduped).count();
-        Ok(format!("written={}, deduped={}, trace_id={}", inner.items.len(), deduped, inner.trace_id))
+        Ok(format!(
+            "written={}, deduped={}, trace_id={}",
+            inner.items.len(),
+            deduped,
+            inner.trace_id
+        ))
     }
 
     // 16. ScratchpadUpsert
@@ -1043,16 +1348,28 @@ impl VmmClient {
             plan_name: plan_name.to_string(),
             key,
             value,
-            items: items.into_iter().map(|i| VmmScratchpadItem {
-                key: i.key,
-                value: i.value,
-            }).collect(),
+            items: items
+                .into_iter()
+                .map(|i| VmmScratchpadItem {
+                    key: i.key,
+                    value: i.value,
+                })
+                .collect(),
         });
         let mut client = self.client.lock().await;
-        let resp = client.scratchpad_upsert(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .scratchpad_upsert(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, affected={}, inserted={}, updated={}",
-            inner.status, inner.msg, inner.affected_count, inner.inserted_count, inner.updated_count))
+        Ok(format!(
+            "status={:?}, msg={}, affected={}, inserted={}, updated={}",
+            inner.status,
+            inner.msg,
+            inner.affected_count,
+            inner.inserted_count,
+            inner.updated_count
+        ))
     }
 
     // 17. ScratchpadDelete
@@ -1074,9 +1391,15 @@ impl VmmClient {
             keys,
         });
         let mut client = self.client.lock().await;
-        let resp = client.scratchpad_delete(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .scratchpad_delete(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, affected={}", inner.status, inner.msg, inner.affected_count))
+        Ok(format!(
+            "status={:?}, msg={}, affected={}",
+            inner.status, inner.msg, inner.affected_count
+        ))
     }
 
     // 18. ScratchpadGet
@@ -1094,10 +1417,15 @@ impl VmmClient {
             keys,
         });
         let mut client = self.client.lock().await;
-        let resp = client.scratchpad_get(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .scratchpad_get(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, plan_name={}, item_count={}",
-            inner.status, inner.msg, inner.plan_name, inner.item_count))
+        Ok(format!(
+            "status={:?}, msg={}, plan_name={}, item_count={}",
+            inner.status, inner.msg, inner.plan_name, inner.item_count
+        ))
     }
 
     // 19. ScratchpadListKeys
@@ -1113,10 +1441,15 @@ impl VmmClient {
             project_id,
         });
         let mut client = self.client.lock().await;
-        let resp = client.scratchpad_list_keys(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .scratchpad_list_keys(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, plan_name={}, key_count={}",
-            inner.status, inner.msg, inner.plan_name, inner.key_count))
+        Ok(format!(
+            "status={:?}, msg={}, plan_name={}, key_count={}",
+            inner.status, inner.msg, inner.plan_name, inner.key_count
+        ))
     }
 
     // 20. ScratchpadClean
@@ -1132,7 +1465,10 @@ impl VmmClient {
             project_id,
         });
         let mut client = self.client.lock().await;
-        let resp = client.scratchpad_clean(req).await.map_err(|e| e.to_string())?;
+        let resp = client
+            .scratchpad_clean(req)
+            .await
+            .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         Ok(format!("status={:?}, msg={}", inner.status, inner.msg))
     }
@@ -1152,8 +1488,10 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.chat_compact(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("accepted={}, updated={}, compacted_turn_id={}, trace_id={}",
-            inner.accepted, inner.updated, inner.compacted_turn_id, inner.trace_id))
+        Ok(format!(
+            "accepted={}, updated={}, compacted_turn_id={}, trace_id={}",
+            inner.accepted, inner.updated, inner.compacted_turn_id, inner.trace_id
+        ))
     }
 
     // 22. PreCheck
@@ -1175,8 +1513,13 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.pre_check(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("should_inject={}, context_items={}, degraded={}, trace_id={}",
-            inner.should_inject, inner.context_items.len(), inner.degraded, inner.trace_id))
+        Ok(format!(
+            "should_inject={}, context_items={}, degraded={}, trace_id={}",
+            inner.should_inject,
+            inner.context_items.len(),
+            inner.degraded,
+            inner.trace_id
+        ))
     }
 
     // 23. PostAction
@@ -1200,6 +1543,9 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.post_action(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("accepted={}, trace_id={}", inner.accepted, inner.trace_id))
+        Ok(format!(
+            "accepted={}, trace_id={}",
+            inner.accepted, inner.trace_id
+        ))
     }
 }

@@ -1,9 +1,9 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::grpc_client::{LanceDbClient, SqliteClient, ScratchpadItem, ScratchpadStore, VmmClient};
+use crate::grpc_client::{LanceDbClient, ScratchpadItem, ScratchpadStore, SqliteClient, VmmClient};
 use crate::lua_engine::{LuaEngine, LuaVmPoolConfig};
 use crate::protocol::*;
 
@@ -33,10 +33,7 @@ fn tool_add(args: &Value) -> ToolCallResult {
 }
 
 fn tool_greet(args: &Value) -> ToolCallResult {
-    let name = args
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("World");
+    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("World");
     ToolCallResult {
         content: vec![TextContent::text(&format!("Hello, {}!", name))],
         is_error: None,
@@ -125,14 +122,20 @@ impl McpServer {
     pub async fn with_lancedb(self, endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = LanceDbClient::connect(endpoint).await?;
         eprintln!("[MCP] LanceDb client connected: {}", endpoint);
-        Ok(Self { lancedb: Some(client), ..self })
+        Ok(Self {
+            lancedb: Some(client),
+            ..self
+        })
     }
 
     /// Configure the Sqlite gRPC client endpoint.
     pub async fn with_sqlite(self, endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = SqliteClient::connect(endpoint).await?;
         eprintln!("[MCP] Sqlite client connected: {}", endpoint);
-        Ok(Self { sqlite: Some(client), ..self })
+        Ok(Self {
+            sqlite: Some(client),
+            ..self
+        })
     }
 
     /// Configure the VMM (VulcanMemoryMesh) gRPC client endpoint.
@@ -140,16 +143,25 @@ impl McpServer {
     pub async fn with_vmm(self, endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = VmmClient::connect(endpoint).await?;
         eprintln!("[MCP] VMM client connected: {}", endpoint);
-        Ok(Self { vmm: Some(client), ..self })
+        Ok(Self {
+            vmm: Some(client),
+            ..self
+        })
     }
 
     /// Configure the scratchpad store using the vldb_sqlite gRPC endpoint.
     /// Requires --sqlite to be set (scratchpad stores data in SQLite with vmcp_ prefix).
     pub async fn with_scratchpad_from_sqlite(self) -> Result<Self, Box<dyn std::error::Error>> {
-        let sqlite = self.sqlite.clone().ok_or("Scratchpad requires --sqlite endpoint to be set")?;
+        let sqlite = self
+            .sqlite
+            .clone()
+            .ok_or("Scratchpad requires --sqlite endpoint to be set")?;
         let store = ScratchpadStore::create(sqlite).await?;
         eprintln!("[MCP] Scratchpad store initialized (vmcp_ tables via SQLite)");
-        Ok(Self { scratchpad: Some(store), ..self })
+        Ok(Self {
+            scratchpad: Some(store),
+            ..self
+        })
     }
 
     /// Configure Lua skills from system and override directories.
@@ -454,7 +466,12 @@ impl McpServer {
                     "key": {"type": "string", "description": "Single key to delete"},
                     "keys": {"type": "array", "description": "Array of keys to delete"}
                 }),
-                vec!["project_id".to_string(), "user_id".to_string(), "session_id".to_string(), "plan_name".to_string()],
+                vec![
+                    "project_id".to_string(),
+                    "user_id".to_string(),
+                    "session_id".to_string(),
+                    "plan_name".to_string(),
+                ],
                 sp_annotations.clone(),
             ),
         );
@@ -483,8 +500,16 @@ impl McpServer {
                     "user_id": {"type": "number", "description": "User ID"},
                     "session_id": {"type": "string", "description": "Session key"}
                 }),
-                vec!["project_id".to_string(), "user_id".to_string(), "session_id".to_string()],
-                ToolAnnotations { read_only_hint: Some(true), destructive_hint: Some(false), ..sp_annotations.clone() },
+                vec![
+                    "project_id".to_string(),
+                    "user_id".to_string(),
+                    "session_id".to_string(),
+                ],
+                ToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    ..sp_annotations.clone()
+                },
             ),
         );
         inner.tools.insert(
@@ -541,10 +566,7 @@ impl McpServer {
         if let Some(batch) = msg.as_array() {
             let mut responses = Vec::new();
             for item in batch {
-                if let Some(resp) = self
-                    .handle_single(item, request_context.clone())
-                    .await
-                {
+                if let Some(resp) = self.handle_single(item, request_context.clone()).await {
                     responses.push(resp);
                 }
             }
@@ -579,7 +601,8 @@ impl McpServer {
             }
         } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
             let params = msg.get("params").cloned();
-            self.handle_notification(method, params, request_context).await;
+            self.handle_notification(method, params, request_context)
+                .await;
             None
         } else {
             None
@@ -627,11 +650,12 @@ impl McpServer {
             }
             "notifications/cancelled" => {
                 if let Some(p) = params {
-                    let cancel: Result<CancellationNotification, _> =
-                        serde_json::from_value(p);
+                    let cancel: Result<CancellationNotification, _> = serde_json::from_value(p);
                     if let Ok(c) = cancel {
-                        eprintln!("[MCP] Request cancelled: {:?}, reason: {:?}",
-                            c.request_id, c.reason);
+                        eprintln!(
+                            "[MCP] Request cancelled: {:?}, reason: {:?}",
+                            c.request_id, c.reason
+                        );
                     }
                 }
             }
@@ -649,10 +673,8 @@ impl McpServer {
     // ----------------------------------------------------------
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
-        let req: InitializeRequest =
-            serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-                (-32602, format!("Invalid initialize params: {}", e))
-            })?;
+        let req: InitializeRequest = serde_json::from_value(params.unwrap_or_default())
+            .map_err(|e| (-32602, format!("Invalid initialize params: {}", e)))?;
 
         let negotiated = negotiate_version(&req.protocol_version).ok_or_else(|| {
             (
@@ -673,9 +695,10 @@ impl McpServer {
         // We need to make handle_initialize async or use try_lock.
         // Let's just use the synchronous path since initialize is called once.
 
-        let mut inner = self.inner.try_lock().map_err(|_| {
-            (-32603, "Server is busy".to_string())
-        })?;
+        let mut inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Server is busy".to_string()))?;
 
         inner.version = Some(negotiated.to_string());
         inner.client_capabilities =
@@ -710,7 +733,9 @@ impl McpServer {
                     list_changed: Some(false),
                 }),
                 logging: if has_feature(negotiated, FeatureFlag::StructuredLogging) {
-                    Some(LoggingCapability { enabled: Some(true) })
+                    Some(LoggingCapability {
+                        enabled: Some(true),
+                    })
                 } else {
                     None
                 },
@@ -736,7 +761,10 @@ impl McpServer {
     }
 
     fn handle_tools_list(&self) -> Result<Value, (i64, String)> {
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Busy".to_string()))?;
         let tools: Vec<Tool> = inner.tools.values().cloned().collect();
         Ok(json!({ "tools": tools }))
     }
@@ -765,98 +793,218 @@ impl McpServer {
 
             // --- LanceDb gRPC tools ---
             "lancedb_create_table" => {
-                let client = self.lancedb.as_ref().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?.clone();
-                let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
-                let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
+                let client = self
+                    .lancedb
+                    .as_ref()
+                    .ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?
+                    .clone();
+                let table_name = args
+                    .get("table_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let overwrite = args
+                    .get("overwrite")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let columns = parse_column_defs(&args)
                     .map_err(|e| (-32602, format!("Invalid columns: {}", e)))?;
                 match client.create_table(table_name, columns, overwrite).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "lancedb_upsert" => {
-                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
-                let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
-                let format_str = args.get("input_format").and_then(|v| v.as_str()).unwrap_or("json_rows");
+                let client = self
+                    .lancedb
+                    .clone()
+                    .ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let table_name = args
+                    .get("table_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let format_str = args
+                    .get("input_format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("json_rows");
                 let input_format = match format_str {
                     "arrow_ipc" => crate::pb_lancedb::InputFormat::ArrowIpc,
                     _ => crate::pb_lancedb::InputFormat::JsonRows,
                 };
                 let data_str = args.get("data").and_then(|v| v.as_str()).unwrap_or("");
                 let data = if input_format == crate::pb_lancedb::InputFormat::ArrowIpc {
-                    base64_decode(data_str).map_err(|e| (-32602, format!("Invalid base64 data: {}", e)))?
+                    base64_decode(data_str)
+                        .map_err(|e| (-32602, format!("Invalid base64 data: {}", e)))?
                 } else {
                     data_str.as_bytes().to_vec()
                 };
-                let key_columns: Vec<String> = args.get("key_columns")
+                let key_columns: Vec<String> = args
+                    .get("key_columns")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                match client.vector_upsert(table_name, input_format, data, key_columns).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                match client
+                    .vector_upsert(table_name, input_format, data, key_columns)
+                    .await
+                {
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "lancedb_search" => {
-                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
-                let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
-                let vector: Vec<f32> = args.get("vector")
+                let client = self
+                    .lancedb
+                    .clone()
+                    .ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let table_name = args
+                    .get("table_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let vector: Vec<f32> = args
+                    .get("vector")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_f64()).map(|f| f as f32).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_f64())
+                            .map(|f| f as f32)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32;
-                let filter = args.get("filter").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let vector_column = args.get("vector_column").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let output_format_str = args.get("output_format").and_then(|v| v.as_str()).unwrap_or("json_rows");
+                let filter = args
+                    .get("filter")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let vector_column = args
+                    .get("vector_column")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let output_format_str = args
+                    .get("output_format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("json_rows");
                 let output_format = match output_format_str {
                     "arrow_ipc" => crate::pb_lancedb::OutputFormat::ArrowIpc,
                     _ => crate::pb_lancedb::OutputFormat::JsonRows,
                 };
-                match client.vector_search(table_name, vector, limit, filter, vector_column, output_format).await {
+                match client
+                    .vector_search(
+                        table_name,
+                        vector,
+                        limit,
+                        filter,
+                        vector_column,
+                        output_format,
+                    )
+                    .await
+                {
                     Ok(data) => {
                         let text = if output_format == crate::pb_lancedb::OutputFormat::JsonRows {
                             String::from_utf8_lossy(&data).to_string()
                         } else {
                             base64_encode(&data)
                         };
-                        ToolCallResult { content: vec![TextContent::text(&text)], is_error: None }
+                        ToolCallResult {
+                            content: vec![TextContent::text(&text)],
+                            is_error: None,
+                        }
                     }
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "lancedb_delete" => {
-                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
-                let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
-                let condition = args.get("condition").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let client = self
+                    .lancedb
+                    .clone()
+                    .ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let table_name = args
+                    .get("table_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let condition = args
+                    .get("condition")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 match client.delete(table_name, condition).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "lancedb_drop_table" => {
-                let client = self.lancedb.clone().ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
-                let table_name = args.get("table_name").and_then(|v| v.as_str()).unwrap_or("");
+                let client = self
+                    .lancedb
+                    .clone()
+                    .ok_or_else(|| (-32603, "LanceDb client not configured".to_string()))?;
+                let table_name = args
+                    .get("table_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 match client.drop_table(table_name).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
 
             // --- Sqlite gRPC tools ---
             "sqlite_execute" => {
-                let client = self.sqlite.clone().ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
+                let client = self
+                    .sqlite
+                    .clone()
+                    .ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
                 let sql = args.get("sql").and_then(|v| v.as_str()).unwrap_or("");
                 let params = parse_sqlite_params(&args);
                 match client.execute_script(sql, params).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "sqlite_execute_batch" => {
-                let client = self.sqlite.clone().ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
+                let client = self
+                    .sqlite
+                    .clone()
+                    .ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
                 let sql = args.get("sql").and_then(|v| v.as_str()).unwrap_or("");
-                let params: Vec<Vec<crate::pb_sqlite::SqliteValue>> = args.get("items")
+                let params: Vec<Vec<crate::pb_sqlite::SqliteValue>> = args
+                    .get("items")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
@@ -865,127 +1013,265 @@ impl McpServer {
                     })
                     .unwrap_or_default();
                 match client.execute_batch(sql, params).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "sqlite_query" => {
-                let client = self.sqlite.clone().ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
+                let client = self
+                    .sqlite
+                    .clone()
+                    .ok_or_else(|| (-32603, "Sqlite client not configured".to_string()))?;
                 let sql = args.get("sql").and_then(|v| v.as_str()).unwrap_or("");
-                let output = args.get("output").and_then(|v| v.as_str()).unwrap_or("json");
+                let output = args
+                    .get("output")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("json");
                 let params = parse_sqlite_params(&args);
                 if output == "arrow" {
                     match client.query_stream(sql, params).await {
-                        Ok(data) => ToolCallResult { content: vec![TextContent::text(&base64_encode(&data))], is_error: None },
-                        Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                        Ok(data) => ToolCallResult {
+                            content: vec![TextContent::text(&base64_encode(&data))],
+                            is_error: None,
+                        },
+                        Err(e) => ToolCallResult {
+                            content: vec![TextContent::text(&e)],
+                            is_error: Some(true),
+                        },
                     }
                 } else {
                     match client.query_json(sql, params).await {
-                        Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                        Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                        Ok(msg) => ToolCallResult {
+                            content: vec![TextContent::text(&msg)],
+                            is_error: None,
+                        },
+                        Err(e) => ToolCallResult {
+                            content: vec![TextContent::text(&e)],
+                            is_error: Some(true),
+                        },
                     }
                 }
             }
 
             // --- Scratchpad (DWM working memory via SQLite, vmcp_ tables) ---
             "vmcp_scratchpad_upsert" => {
-                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| {
+                    (
+                        -32603,
+                        "Scratchpad store not configured. Use --sqlite to enable.".to_string(),
+                    )
+                })?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                let session_id = args
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let plan_name = args.get("plan_name").and_then(|v| v.as_str()).unwrap_or("");
                 // Single key/value or batch items
                 let items = if let Some(arr) = args.get("items").and_then(|v| v.as_array()) {
-                    arr.iter().filter_map(|item| {
-                        Some(ScratchpadItem {
-                            key: item.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            value: item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    arr.iter()
+                        .filter_map(|item| {
+                            Some(ScratchpadItem {
+                                key: item
+                                    .get("key")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                value: item
+                                    .get("value")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
                         })
-                    }).collect()
+                        .collect()
                 } else if let (Some(k), Some(v)) = (
                     args.get("key").and_then(|v| v.as_str()),
                     args.get("value").and_then(|v| v.as_str()),
                 ) {
-                    vec![ScratchpadItem { key: k.to_string(), value: v.to_string() }]
+                    vec![ScratchpadItem {
+                        key: k.to_string(),
+                        value: v.to_string(),
+                    }]
                 } else {
                     return Err((-32602, "Either key+value or items array is required".into()));
                 };
-                match store.upsert(project_id, user_id, session_id, plan_name, items).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                match store
+                    .upsert(project_id, user_id, session_id, plan_name, items)
+                    .await
+                {
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "vmcp_scratchpad_delete" => {
-                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| {
+                    (
+                        -32603,
+                        "Scratchpad store not configured. Use --sqlite to enable.".to_string(),
+                    )
+                })?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                let session_id = args
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let plan_name = args.get("plan_name").and_then(|v| v.as_str()).unwrap_or("");
                 let keys = if let Some(k) = args.get("key").and_then(|v| v.as_str()) {
                     vec![k.to_string()]
                 } else {
                     args.get("keys")
                         .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default()
                 };
                 if keys.is_empty() {
                     return Err((-32602, "Either key or keys array is required".into()));
                 }
-                match store.delete(project_id, user_id, session_id, plan_name, keys).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                match store
+                    .delete(project_id, user_id, session_id, plan_name, keys)
+                    .await
+                {
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "vmcp_scratchpad_get" => {
-                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| {
+                    (
+                        -32603,
+                        "Scratchpad store not configured. Use --sqlite to enable.".to_string(),
+                    )
+                })?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
-                let keys: Vec<String> = args.get("keys")
+                let session_id = args
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let keys: Vec<String> = args
+                    .get("keys")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 match store.get(project_id, user_id, session_id, keys).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "vmcp_scratchpad_list_keys" => {
-                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| {
+                    (
+                        -32603,
+                        "Scratchpad store not configured. Use --sqlite to enable.".to_string(),
+                    )
+                })?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                let session_id = args
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 match store.list_keys(project_id, user_id, session_id).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
             "vmcp_scratchpad_clean" => {
-                let store = self.scratchpad.clone().ok_or_else(|| (-32603, "Scratchpad store not configured. Use --sqlite to enable.".to_string()))?;
+                let store = self.scratchpad.clone().ok_or_else(|| {
+                    (
+                        -32603,
+                        "Scratchpad store not configured. Use --sqlite to enable.".to_string(),
+                    )
+                })?;
                 let project_id = args.get("project_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let user_id = args.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                let session_id = args
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 match store.clean(project_id, user_id, session_id).await {
-                    Ok(msg) => ToolCallResult { content: vec![TextContent::text(&msg)], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(msg) => ToolCallResult {
+                        content: vec![TextContent::text(&msg)],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
 
             // --- runlua: execute arbitrary Lua code ---
             "runlua" => {
-                let engine = self.lua_engine.as_ref().ok_or_else(|| (-32603, "Lua engine not configured. Add lua_skills directory.".to_string()))?;
-                let code = args.get("code").and_then(|v| v.as_str()).ok_or_else(|| (-32602, "Missing required parameter: code".to_string()))?;
+                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                    (
+                        -32603,
+                        "Lua engine not configured. Add lua_skills directory.".to_string(),
+                    )
+                })?;
+                let code = args
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| (-32602, "Missing required parameter: code".to_string()))?;
                 let code = code.to_string();
                 let call_args = args.get("args").cloned().unwrap_or(json!({}));
                 let engine_clone = engine.clone();
                 let request_context = request_context.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     engine_clone.run_lua(&code, &call_args, Some(&request_context))
-                }).await.map_err(|e| (-32603, format!("runlua spawn error: {}", e)))?;
+                })
+                .await
+                .map_err(|e| (-32603, format!("runlua spawn error: {}", e)))?;
                 match result {
-                    Ok(val) => ToolCallResult { content: vec![TextContent::text(&format_json_value_for_text(&val))], is_error: None },
-                    Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                    Ok(val) => ToolCallResult {
+                        content: vec![TextContent::text(&format_json_value_for_text(&val))],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![TextContent::text(&e)],
+                        is_error: Some(true),
+                    },
                 }
             }
 
@@ -999,10 +1285,18 @@ impl McpServer {
                         let request_context = request_context.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             engine_clone.call_skill(&tool_name, &args_clone, Some(&request_context))
-                        }).await.map_err(|e| (-32603, format!("Lua skill spawn error: {}", e)))?;
+                        })
+                        .await
+                        .map_err(|e| (-32603, format!("Lua skill spawn error: {}", e)))?;
                         match result {
-                            Ok(val) => ToolCallResult { content: vec![TextContent::text(&format_json_value_for_text(&val))], is_error: None },
-                            Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
+                            Ok(val) => ToolCallResult {
+                                content: vec![TextContent::text(&format_json_value_for_text(&val))],
+                                is_error: None,
+                            },
+                            Err(e) => ToolCallResult {
+                                content: vec![TextContent::text(&e)],
+                                is_error: Some(true),
+                            },
                         }
                     } else {
                         return Err((-32603, format!("Tool not implemented: {}", tool.name)));
@@ -1017,7 +1311,10 @@ impl McpServer {
     }
 
     fn handle_resources_list(&self) -> Result<Value, (i64, String)> {
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Busy".to_string()))?;
         Ok(json!({ "resources": inner.resources }))
     }
 
@@ -1032,7 +1329,10 @@ impl McpServer {
             .ok_or_else(|| (-32602, "Missing required parameter: uri".to_string()))?;
 
         {
-            let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+            let inner = self
+                .inner
+                .try_lock()
+                .map_err(|_| (-32603, "Busy".to_string()))?;
 
             if let Some(content) = inner.resource_data.get(&uri) {
                 let mime = inner
@@ -1076,12 +1376,18 @@ impl McpServer {
     }
 
     fn handle_resource_templates_list(&self) -> Result<Value, (i64, String)> {
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Busy".to_string()))?;
         Ok(json!({ "resourceTemplates": inner.resource_templates }))
     }
 
     fn handle_prompts_list(&self) -> Result<Value, (i64, String)> {
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Busy".to_string()))?;
         Ok(json!({ "prompts": inner.prompts }))
     }
 
@@ -1163,7 +1469,10 @@ impl McpServer {
     }
 
     fn handle_roots_list(&self) -> Result<Value, (i64, String)> {
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Busy".to_string()))?;
         Ok(json!({ "roots": inner.roots }))
     }
 
@@ -1187,10 +1496,22 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Busy".to_string()))?;
         let values: Vec<String> = match (ref_type, argument_name) {
             ("ref/prompt", "language") => {
-                let all = vec!["rust", "python", "javascript", "typescript", "go", "java", "c++", "ruby"];
+                let all = vec![
+                    "rust",
+                    "python",
+                    "javascript",
+                    "typescript",
+                    "go",
+                    "java",
+                    "c++",
+                    "ruby",
+                ];
                 all.into_iter()
                     .filter(|s| s.starts_with(argument_value))
                     .map(String::from)
@@ -1235,7 +1556,10 @@ impl McpServer {
             .and_then(|v| v.as_str().map(String::from))
             .ok_or_else(|| (-32602, "Missing required parameter: level".to_string()))?;
 
-        let mut inner = self.inner.try_lock().map_err(|_| (-32603, "Busy".to_string()))?;
+        let mut inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| (-32603, "Busy".to_string()))?;
         inner.log_level = level.clone();
         eprintln!("[MCP] Log level set to: {}", level);
         Ok(json!({}))
@@ -1268,8 +1592,16 @@ fn base64_encode(data: &[u8]) -> String {
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
         let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
         let triple = (b0 << 16) | (b1 << 8) | b2;
-        let _ = write!(result, "{}", CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        let _ = write!(result, "{}", CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        let _ = write!(
+            result,
+            "{}",
+            CHARS[((triple >> 18) & 0x3F) as usize] as char
+        );
+        let _ = write!(
+            result,
+            "{}",
+            CHARS[((triple >> 12) & 0x3F) as usize] as char
+        );
         if chunk.len() > 1 {
             let _ = write!(result, "{}", CHARS[((triple >> 6) & 0x3F) as usize] as char);
         } else {
@@ -1326,8 +1658,15 @@ fn decode_chunk(map: &[u8; 256], chunk: &[u8]) -> Result<[u8; 3], String> {
         };
         vals[i] = v;
     }
-    let triple = ((vals[0] as u32) << 18) | ((vals[1] as u32) << 12) | ((vals[2] as u32) << 6) | (vals[3] as u32);
-    Ok([(triple >> 16) as u8, ((triple >> 8) & 0xFF) as u8, (triple & 0xFF) as u8])
+    let triple = ((vals[0] as u32) << 18)
+        | ((vals[1] as u32) << 12)
+        | ((vals[2] as u32) << 6)
+        | (vals[3] as u32);
+    Ok([
+        (triple >> 16) as u8,
+        ((triple >> 8) & 0xFF) as u8,
+        (triple & 0xFF) as u8,
+    ])
 }
 
 // ============================================================
@@ -1370,7 +1709,9 @@ fn column_type_from_str(s: &str) -> crate::pb_lancedb::ColumnType {
         "int64" | "COLUMN_TYPE_INT64" => crate::pb_lancedb::ColumnType::Int64,
         "float64" | "COLUMN_TYPE_FLOAT64" => crate::pb_lancedb::ColumnType::Float64,
         "bool" | "COLUMN_TYPE_BOOL" => crate::pb_lancedb::ColumnType::Bool,
-        "vector_float32" | "COLUMN_TYPE_VECTOR_FLOAT32" => crate::pb_lancedb::ColumnType::VectorFloat32,
+        "vector_float32" | "COLUMN_TYPE_VECTOR_FLOAT32" => {
+            crate::pb_lancedb::ColumnType::VectorFloat32
+        }
         "float32" | "COLUMN_TYPE_FLOAT32" => crate::pb_lancedb::ColumnType::Float32,
         "uint64" | "COLUMN_TYPE_UINT64" => crate::pb_lancedb::ColumnType::Uint64,
         "int32" | "COLUMN_TYPE_INT32" => crate::pb_lancedb::ColumnType::Int32,
@@ -1387,8 +1728,15 @@ fn parse_column_defs(args: &Value) -> Result<Vec<crate::pb_lancedb::ColumnDef>, 
 
     cols.iter()
         .map(|c| {
-            let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let column_type_str = c.get("column_type").and_then(|v| v.as_str()).unwrap_or("string");
+            let name = c
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let column_type_str = c
+                .get("column_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("string");
             let column_type = column_type_from_str(column_type_str);
             let vector_dim = c.get("vector_dim").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let nullable = c.get("nullable").and_then(|v| v.as_bool()).unwrap_or(true);
