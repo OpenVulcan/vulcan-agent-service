@@ -10,20 +10,33 @@
 
 - 中文调试文档：`docs/skill_debugging_cn.md`
 - English debugging guide: `docs/skill_debugging_en.md`
-- `vmcp-patch` 中文使用说明：`docs/vmcp_patch_usage_cn.md`
+- `codekit-patch` 中文使用说明：`docs/vmcp_patch_usage_cn.md`
 
 当前仓库已支持 `--call-tools <tool_name> [json_arguments]` 本地调试模式，可在不启动 HTTP / gRPC 服务的情况下直接初始化 Lua skill 并执行目标 tool。
 
-`vmcp-rg` 这类“文本命中回映结构”的工具，建议输出为树结构文本，即：
+`codekit-rg` 这类“文本命中回映结构”的工具，建议输出为树结构文本，即：
 
 - 文件仍通过 JSON 字段返回
 - `files[].content` 内仅保留结构树
 - 结构节点统一显示为 `signature [Lx-y]`
 - 命中行统一作为子节点显示为 `Lx | text`
-- 命中函数声明或函数体时，应展开该函数的完整源码片段
+- 默认不要展开命中函数的完整源码，只显示命中行与结构上下文
+- 仅在显式开启类似 `show_full_function=true` 的参数时，才展开命中函数的完整源码片段
 - 命中类型/结构声明时，应只显示结构头与行号范围，不额外展开无关子树
+- 对于全盘分析或功能检索，不建议开启完整函数显示
+- 对于精确文件分析、需要直接审阅具体函数实现的场景，建议开启完整函数显示
 
-`vmcp-ast` 与 `vmcp-rg` 当前推荐统一采用以下“大结果处理规则”：
+`codekit-markdown-menu` 这类“文档目录筛选”工具，建议遵循以下规则：
+
+- 仅扫描 `.md` 文件，不尝试解析正文、表格或复杂 Markdown 语义
+- 输出统一为单个 `content` 文本块，前半部分是 `# FILE MENU`，后半部分是逐文件的标题目录详情
+- 每个文件仅展示 `#`、`##`、`###` 标题和行号，不展示正文内容
+- 支持目录、文件、多路径组合，并对重复 Markdown 文件去重
+- 允许目录与文件在一次请求中混用，便于截断后按文件菜单做精确重取
+- 对文档根目录做首轮筛选时建议 `recursive=false`，确认相关文档范围后再缩小路径或开启递归
+- 不做缓存、不写入 `workdir`、不导出 Markdown 文件；如果客户端侧发生截断，应根据 `# FILE MENU` 判断需要的文件或子目录，并重新调用本工具缩小范围
+
+`codekit-ast` 与 `codekit-rg` 当前推荐统一采用以下“大结果处理规则”：
 
 - 不再暴露 `cache_id`、`page`、`truncate_chars`、`cache_ttl_sec` 这类工具级缓存/分页参数
 - 结果 JSON 编码后若不超过 `10000` 字节，则直接内联返回完整内容
@@ -33,13 +46,30 @@
 - 当结果发生落盘时，返回结果顶层必须包含提示消息与完整文件绝对路径
 - 若提供 `export_md_path`，则仅导出完整 Markdown 文件，并返回“文件已生成 + 绝对路径”的简洁提示，不再内联结果
 
+`codekit-ast` 在 `comment=true` 场景下，备注提取建议统一如下：
+
+- 备注应输出为压缩后的单行摘要，而不是完整注释块原文
+- 需要过滤 `// -----------`、`// ========` 这类分隔线或区域装饰注释
+- 需要过滤 `@param`、`@returns`、`参数 / Parameters`、`返回 / Returns` 这类结构化标签说明
+- 多行中英文备注应合并为单行，并只保留前部核心有效信息
+- 单条备注建议限制在较短字节数内，避免注释挤占结构输出空间
+
+如需批量验证常见备注格式与多语言备注格式，可直接运行：
+
+```powershell
+python scripts/verify_vmcp_ast_comment_notes.py
+```
+
 默认语言范围建议也统一如下：
 
+- `ext` 的语义应明确为“文件扩展名过滤”，不是编程语言枚举本身
 - 当未显式传入 `ext` 时，优先扫描源代码语言，例如 `c/cpp/csharp/go/java/js/ts/tsx/kotlin/lua/php/python/ruby/rust/swift` 等
+- 当调用方传入 `rust`、`typescript`、`python` 这类完整语言名时，可在内部自动归一化为对应扩展名集合
+- 当调用方传入 `rs`、`ts`、`js` 这类明确扩展名时，应按精确扩展名处理，不要意外放大过滤范围
 - 默认排除 `css/html/json/yaml` 这类样式、标记或数据配置格式
 - 若确实需要覆盖配置类文件，再显式传入 `ext`
 
-`vmcp-patch` 这类“结构重定位替换”的工具，建议遵循以下规则：
+`codekit-patch` 这类“结构重定位替换”的工具，建议遵循以下规则：
 
 - 只允许 patch function / method 这类完整代码节点
 - selector 优先采用宽松的结构路径，例如 `with_vmm`、`McpServer/with_vmm`、`impl McpServer/with_vmm`
@@ -250,7 +280,7 @@ vulcan.print(t.name)  -- test
 在 Lua 内调用其他已加载 skill。
 
 ```lua
-local result = vulcan.call("vmcp-ast", { path = "src/", recursive = true })
+local result = vulcan.call("codekit-ast", { path = "src/", recursive = true })
 vulcan.print("found", result.items_found, "items")
 ```
 
@@ -482,7 +512,7 @@ dependencies:
 
 ```json
 {
-  "name": "ast-grep",
+  "name": "vulcan-codekit",
   "debug": true,
   ...
 }

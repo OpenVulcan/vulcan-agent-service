@@ -1,0 +1,209 @@
+{
+  "name": "vulcan-codekit",
+  "debug": true,
+  "groups": [
+    {
+      "name": "analysis",
+      "description": "Primary grouped entries for vulcan-codekit.",
+      "tools": [
+        {
+          "name": "codekit-ast",
+          "description": "[CORE INFRASTRUCTURE / INVOKE FIRST] Ultra-fast AST code structure analyzer. When taking over a project, locating definitions, or assessing refactoring impact, you MUST prioritize this tool to establish global/local context. It returns a dehydrated structural map with exact line numbers in a single call, heavily replacing traditional grep searches.",
+          "lua_entry": "main.lua",
+          "lua_module": "codekit_ast",
+          "parameters": [
+            {
+              "name": "path",
+              "type": "string",
+              "description": "Target path. Supports a single file/directory, or multiple paths separated by newlines (\\n).",
+              "required": false
+            },
+            {
+              "name": "recursive",
+              "type": "boolean",
+              "description": "Whether to scan subdirectories recursively when a directory is encountered (default: false). Keep this false if you only need shallow entry points of the current directory.",
+              "required": false
+            },
+            {
+              "name": "ignore",
+              "type": "boolean",
+              "description": "Enable default blacklist and scoped .gitignore rules (default: true). STRONGLY RECOMMENDED to keep enabled to prevent context explosion, unless you explicitly need to inspect build artifacts like target/dist.",
+              "required": false
+            },
+            {
+              "name": "ext",
+              "type": "string",
+              "description": "Optional file-extension filter, comma-separated (for example rs,ts,tsx). You may also pass common language names such as rust or typescript, which are normalized to their corresponding file extensions. When omitted, codekit-ast uses a built-in source-code default set and excludes non-core formats such as css/html/json/yaml.",
+              "required": false
+            },
+            {
+              "name": "comment",
+              "type": "boolean",
+              "description": "Include condensed comment summaries for functions in the structural output (default: false). Separator-style comment banners and metadata-only lines such as params/returns are filtered out, and each summary is compressed to a short single-line note.",
+              "required": false
+            },
+            {
+              "name": "workdir",
+              "type": "string",
+              "description": "Optional absolute working-directory path. When the full result grows beyond the inline MCP budget, codekit-ast writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ before returning a compact preview.",
+              "required": false
+            },
+            {
+              "name": "export_md_path",
+              "type": "string",
+              "description": "Optional absolute Markdown file path. When provided, codekit-ast exports the full result as a Markdown document to this path and returns only a generated-file notice with the exact path.",
+              "required": false
+            }
+          ],
+          "return_type": "table",
+          "prompt": "[OPERATION PROTOCOL] 1. EXPLORE FIRST: ALWAYS invoke this tool before executing file reads (read_file) or text searches (grep/rg). Use the precise line numbers and AST signatures as anchors for your next steps. 2. ANTI-EXPLOSION: This tool has a strict 5000-file circuit breaker limit for matched files and allows at most 20 explicitly listed files in one call; do not mix file paths and directory paths. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, codekit-ast scans a built-in source-code default set and excludes non-core formats such as css/html/json/yaml. Treat ext as a file-extension filter; if convenient, you may pass common language names such as rust or typescript and they will be normalized to matching extensions. 4. NO PAGINATION CONTRACT: codekit-ast no longer uses cache_id/page style follow-up calls. If the result is too large for inline MCP delivery, it automatically writes the full Markdown result to <workdir>/.vulcan/mcp/cache/ or to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 5. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
+        },
+        {
+          "name": "codekit-rg",
+          "description": "[TEXT-TO-STRUCTURE BRIDGE] Run ripgrep first, then map matched lines back to the most relevant AST structures. Use this when codekit-ast alone is too broad and you need only the class/function context that directly contains a regex hit.",
+          "lua_entry": "main_rg.lua",
+          "lua_module": "codekit_rg",
+          "parameters": [
+            {
+              "name": "dir",
+              "type": "string",
+              "description": "Target directory to search recursively. This parameter is required for a fresh search and must point to an existing directory.",
+              "required": false
+            },
+            {
+              "name": "ext",
+              "type": "string",
+              "description": "Optional file-extension filter, comma-separated (for example lua,rs,ts). You may also pass common language names such as rust or typescript, which are normalized to their corresponding file extensions. When omitted, codekit-rg uses the same built-in source-code default set as codekit-ast and excludes non-core formats such as css/html/json/yaml.",
+              "required": false
+            },
+            {
+              "name": "rg_pattern",
+              "type": "string",
+              "description": "Ripgrep regex used for the first-pass text search. This parameter is required for a fresh search.",
+              "required": false
+            },
+            {
+              "name": "workdir",
+              "type": "string",
+              "description": "Optional absolute working-directory path. When the full result grows beyond the inline MCP budget, codekit-rg writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ before returning a compact preview.",
+              "required": false
+            },
+            {
+              "name": "show_full_function",
+              "type": "boolean",
+              "description": "Whether to expand the full source of the matched function or method. Default is false. Keep it false for repository-wide analysis or broad feature lookup; enable it for precise file-level analysis when you need the whole function body.",
+              "required": false
+            },
+            {
+              "name": "export_md_path",
+              "type": "string",
+              "description": "Optional absolute Markdown file path. When provided, codekit-rg exports the full result as a Markdown document to this path and returns only a generated-file notice with the exact path.",
+              "required": false
+            }
+          ],
+          "return_type": "table",
+          "prompt": "[OPERATION PROTOCOL] 1. USE THIS AFTER YOU KNOW THE TEXT SIGNAL: codekit-rg is for regex-to-structure narrowing, not for first-pass repository exploration. 2. SEARCH FLOW: it runs rg first and then only scans matched files with codekit-ast internals. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, codekit-rg uses the same built-in source-code default set as codekit-ast and excludes non-core formats such as css/html/json/yaml. Treat ext as a file-extension filter; if convenient, you may pass common language names such as rust or typescript and they will be normalized to matching extensions. 4. OUTPUT RULE: only structures directly related to the matched lines are returned. By default, function or method hits show only the matched lines plus structure context; enable show_full_function only when you need the full function source. 5. USAGE GUIDANCE: keep show_full_function disabled for repository-wide analysis or broad feature lookup; enable it for precise file-level analysis when the exact function body matters. 6. NO PAGINATION CONTRACT: codekit-rg no longer uses cache_id/page style follow-up calls. If the full result is too large for inline MCP delivery, it automatically writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ or to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 7. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
+        },
+        {
+          "name": "codekit-markdown-menu",
+          "description": "[MARKDOWN DIRECTORY MENU] Scan one or more files/directories for Markdown documents and return only the `#` / `##` / `###` heading menu with line numbers. Use it to triage docs quickly, identify the relevant file after truncation, and then re-run with a narrower path.",
+          "lua_entry": "main_markdown_menu.lua",
+          "lua_module": "codekit_markdown_menu",
+          "parameters": [
+            {
+              "name": "path",
+              "type": "string",
+              "description": "Target path. Supports a single file/directory, or multiple paths separated by newlines (\\n). Directory and file paths may be mixed in one request and duplicate Markdown files are automatically removed.",
+              "required": false
+            },
+            {
+              "name": "recursive",
+              "type": "boolean",
+              "description": "Whether to recurse into subdirectories when a directory is encountered (default: false). Keep this false for top-level doc triage and enable it only when you need nested Markdown files.",
+              "required": false
+            },
+            {
+              "name": "ignore",
+              "type": "boolean",
+              "description": "Enable default blacklist and scoped .gitignore rules (default: true). Keep this enabled unless you intentionally need ignored documentation trees.",
+              "required": false
+            }
+          ],
+          "return_type": "table",
+          "prompt": "[OPERATION PROTOCOL] 1. PURPOSE: use codekit-markdown-menu only for Markdown triage and document navigation; it does not summarize body text. 2. INPUT SHAPE: path supports files, directories, or newline-separated mixed path sets, and duplicate Markdown files are removed automatically. 3. OUTPUT RULE: the tool emits a single inline menu-style content block with a top-level file menu plus per-file `#` / `##` / `###` headings and line numbers only. 4. SCOPE GUIDANCE: keep recursive=false for a first pass over docs roots, then rerun on a smaller path or enable recursive when the file menu shows where the relevant document lives. 5. NO CACHE / NO EXPORT: this tool does not write cache files, does not use workdir, and does not export Markdown; if the client truncates the response, narrow the path set and call it again."
+        },
+        {
+          "name": "codekit-patch",
+          "description": "[FUNCTION-LEVEL AST PATCHER] Re-locate a function or method by structural selector and replace the full function source. Use this when line numbers are stale and you need AST-based function replacement instead of raw text patching.",
+          "lua_entry": "main_patch.lua",
+          "lua_module": "codekit_patch",
+          "parameters": [
+            {
+              "name": "file",
+              "type": "string",
+              "description": "Target file that contains the function to patch. This parameter is required and must point to a regular file.",
+              "required": true
+            },
+            {
+              "name": "selector",
+              "type": "string",
+              "description": "Flexible structural selector for a function or method, for example with_vmm, McpServer/with_vmm, or impl McpServer/with_vmm. If multiple nodes match, the tool returns more specific candidates instead of patching blindly.",
+              "required": true
+            },
+            {
+              "name": "replacement",
+              "type": "string",
+              "description": "Replacement source text. It must be the complete function source, starting from the declaration line. Body-only fragments are rejected.",
+              "required": true
+            }
+          ],
+          "return_type": "table",
+          "prompt": "[OPERATION PROTOCOL] 1. PATCH FUNCTIONS ONLY: this tool only replaces function or method nodes, never type names or field identifiers. 2. STRICT INPUT RULE: always pass the complete function source starting from the declaration line; do not pass mode and do not pass body-only fragments. Requests that do not follow this rule are rejected. 3. SELECTOR FLOW: pass the loosest selector first; if multiple nodes match, the tool will return more specific structural candidates. 4. SAFETY: patches are written through a temp-file + rollback flow, validated by generic AST re-scan, ast-grep ERROR-node detection, and target identity re-location before the write is accepted."
+        }
+      ],
+      "resources": [
+        {
+          "uri": "skill://vulcan-codekit/guide",
+          "name": "Vulcan CodeKit Guide",
+          "description": "Reference guidance for using codekit-ast safely and effectively.",
+          "mime_type": "text/markdown",
+          "file": "resources/guide.md"
+        }
+      ],
+      "resource_templates": [
+        {
+          "uri_template": "skill://vulcan-codekit/example/{topic}",
+          "name": "Vulcan CodeKit Example",
+          "description": "Parameterized codekit-ast usage example generated from a topic.",
+          "mime_type": "text/markdown",
+          "file": "templates/example_generator.lua"
+        }
+      ],
+      "prompts": [
+        {
+          "name": "codekit_ast_first_pass",
+          "description": "Prompt template that teaches an agent to start with codekit-ast.",
+          "file": "prompts/first_pass.md",
+          "role": "user",
+          "arguments": [
+            {
+              "name": "target",
+              "description": "The initial file or directory the agent should inspect.",
+              "required": false
+            },
+            {
+              "name": "goal",
+              "description": "The coding or analysis goal that motivates the scan.",
+              "required": false
+            },
+            {
+              "name": "constraints",
+              "description": "Optional operating constraints such as extension filters or shallow scanning.",
+              "required": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

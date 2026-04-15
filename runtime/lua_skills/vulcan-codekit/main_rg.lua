@@ -1,7 +1,7 @@
 --[[
-vmcp-rg
-中文：先基于 ripgrep 做文本命中，再结合 vmcp-ast 的结构能力，仅输出与命中行直接相关的 AST 结构。
-English: Perform ripgrep text matching first, then reuse vmcp-ast structural analysis to return only AST structures directly related to the matched lines.
+codekit-rg
+中文：先基于 ripgrep 做文本命中，再结合 codekit-ast 的结构能力，仅输出与命中行直接相关的 AST 结构。
+English: Perform ripgrep text matching first, then reuse codekit-ast structural analysis to return only AST structures directly related to the matched lines.
 ]]
 
 -- 工具常量 / Tool constants for rg execution and response shaping.
@@ -11,7 +11,7 @@ local MAX_MATCH_LINES_PER_SYMBOL = 12
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
 local LFS_MODULE = nil
 
--- 缓存的 vmcp-ast 助手集合 / Cached vmcp-ast helper bundle extracted from the existing skill entry.
+-- 缓存的 codekit-ast 助手集合 / Cached codekit-ast helper bundle extracted from the existing skill entry.
 local AST_RUNTIME_HELPERS = nil
 local FILE_SOURCE_CACHE = {}
 
@@ -91,12 +91,12 @@ English: Resolve the current skill directory. Prefer the host-injected `__skill_
 - string: 当前 skill 目录 / Current skill directory.
 ]]
 local function get_skill_dir()
-    return __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_rg or __skill_dir_ast_grep or "."
 end
 
 --[[
-中文：通过 `debug.getupvalue` 从现有 `vmcp-ast` 入口中提取内部助手函数，避免复制一整套 AST 解析实现。
-English: Extract internal helper functions from the existing `vmcp-ast` entry with `debug.getupvalue` to avoid duplicating the full AST parsing pipeline.
+中文：通过 `debug.getupvalue` 从现有 `codekit-ast` 入口中提取内部助手函数，避免复制一整套 AST 解析实现。
+English: Extract internal helper functions from the existing `codekit-ast` entry with `debug.getupvalue` to avoid duplicating the full AST parsing pipeline.
 
 参数 / Parameters:
 - fn(function): 待检查 upvalue 的函数 / Function whose upvalues will be inspected.
@@ -121,8 +121,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：懒加载 `vmcp-ast` 内部助手，确保 `vmcp-rg` 与现有 AST 规则、文件收集和结构归一化逻辑保持一致。
-English: Lazily load internal `vmcp-ast` helpers so `vmcp-rg` stays aligned with the existing AST rules, file collection logic, and symbol normalization flow.
+中文：懒加载 `codekit-ast` 内部助手，确保 `codekit-rg` 与现有 AST 规则、文件收集和结构归一化逻辑保持一致。
+English: Lazily load internal `codekit-ast` helpers so `codekit-rg` stays aligned with the existing AST rules, file collection logic, and symbol normalization flow.
 
 参数 / Parameters:
 - 无 / None.
@@ -150,7 +150,7 @@ local function load_ast_runtime_helpers()
     if not ok or type(ast_entry) ~= "function" then
         return nil, {
             error = "vmcp_ast_entry_invalid",
-            message = ok and "vmcp-ast entry did not return a function" or tostring(ast_entry),
+            message = ok and "codekit-ast entry did not return a function" or tostring(ast_entry),
             path = ast_entry_path,
         }
     end
@@ -170,7 +170,7 @@ local function load_ast_runtime_helpers()
         if type(helper_value) ~= "function" then
             return nil, {
                 error = "vmcp_ast_helper_missing",
-                message = "required helper missing from vmcp-ast runtime",
+                message = "required helper missing from codekit-ast runtime",
                 helper = helper_name,
                 path = ast_entry_path,
             }
@@ -314,6 +314,30 @@ local function validate_export_md_argument(value)
         }
     end
     return normalized, nil
+end
+
+--[[
+中文：校验“是否展开完整函数源码”的布尔参数。未提供时默认为 false。
+English: Validate the boolean flag that controls whether full function source should be expanded. Defaults to false when omitted.
+
+参数 / Parameters:
+- value(any): 调用方传入的原始参数值 / Raw argument value from the caller.
+
+返回 / Returns:
+- boolean: 是否开启完整函数源码显示 / Whether full function source rendering is enabled.
+- table|nil: 参数非法时返回结构化错误 / Structured error when the argument is invalid.
+]]
+local function validate_show_full_function_argument(value)
+    if value == nil then
+        return false, nil
+    end
+    if type(value) ~= "boolean" then
+        return false, {
+            error = "invalid_show_full_function_argument",
+            message = "show_full_function must be a boolean when provided",
+        }
+    end
+    return value, nil
 end
 
 local function get_lfs_module()
@@ -592,6 +616,11 @@ local function run_rg_command(rg_binary_path, arguments)
             timeout_ms = RG_TIMEOUT_MS,
         })
         if ok and type(result) == "table" then
+            -- 中文：ripgrep 退出码 1 表示“无匹配”，不是执行失败。这里显式转成空结果，避免上层把它误报成 rg_exec_failed。
+            -- English: ripgrep exit code 1 means "no matches", not an execution failure. Convert it into an empty successful result here.
+            if (not result.timed_out) and tonumber(result.code) == 1 then
+                return tostring(result.stdout or ""), tostring(result.stderr or ""), nil
+            end
             if result.error then
                 return nil, nil, {
                     error = "rg_exec_failed",
@@ -955,7 +984,7 @@ English: Mark the AST tree according to rg hit lines, retaining only related anc
 - boolean: 若存在可展示的相关结构则返回 true，否则返回 false。
   True when there are relevant structures to render; otherwise false.
 ]]
-local function annotate_tree_with_rg_hits(symbol_roots, rg_hits)
+local function annotate_tree_with_rg_hits(symbol_roots, rg_hits, show_full_function)
     clear_symbol_marks(symbol_roots)
     attach_parent_links(symbol_roots, nil)
 
@@ -963,12 +992,12 @@ local function annotate_tree_with_rg_hits(symbol_roots, rg_hits)
     for _, hit in ipairs(rg_hits or {}) do
         local matched_symbol = find_deepest_symbol_for_line(symbol_roots, hit.line)
         if matched_symbol then
-            local display_symbol, hit_mode = resolve_display_symbol(matched_symbol, hit.line)
+            local display_symbol = resolve_display_symbol(matched_symbol, hit.line)
             if display_symbol then
                 mark_symbol_chain(display_symbol)
-                if is_function_like(display_symbol) then
+                if is_function_like(display_symbol) and show_full_function then
                     mark_symbol_expand_source(display_symbol)
-                elseif hit_mode ~= "declaration" then
+                else
                     append_symbol_match_line(display_symbol, hit.line, hit.text)
                 end
                 has_relevant_symbol = true
@@ -1012,12 +1041,12 @@ local function render_error_lines(errors)
 end
 
 --[[
-中文：把 vmcp-rg 结果渲染为 Markdown 文本，便于导出成可阅读的结果文件。
-English: Render the vmcp-rg result into Markdown text so it can be exported as a readable result file.
+中文：把 codekit-rg 结果渲染为 Markdown 文本，便于导出成可阅读的结果文件。
+English: Render the codekit-rg result into Markdown text so it can be exported as a readable result file.
 ]]
 local function build_rg_markdown(result)
     local lines = {
-        "# vmcp-rg Export",
+        "# codekit-rg Export",
         "",
         string.format("- Files scanned: %d", result.files_scanned or 0),
         string.format("- Files with matches: %d", result.files_with_matches or 0),
@@ -1083,7 +1112,7 @@ local function finalize_rg_result(full_result, workdir, export_md_path)
     if not ok or type(encoded) ~= "string" then
         return {
             error = "result_encoding_failed",
-            message = "failed to encode vmcp-rg result as JSON",
+            message = "failed to encode codekit-rg result as JSON",
         }
     end
 
@@ -1137,6 +1166,11 @@ return function(args)
     local export_md_path, export_md_error = validate_export_md_argument(args and args.export_md_path)
     if export_md_error then
         return export_md_error
+    end
+
+    local show_full_function, show_full_function_error = validate_show_full_function_argument(args and args.show_full_function)
+    if show_full_function_error then
+        return show_full_function_error
     end
 
     local rg_binary_path, rg_binary_error = find_rg_binary()
@@ -1211,7 +1245,7 @@ return function(args)
         local symbols = helper_bundle.deduplicate_symbols(normalized_by_file[file_info.path] or {})
         if #symbols > 0 and #file_hits > 0 then
             local tree = helper_bundle.build_symbol_tree(symbols)
-            local has_relevant_symbol = annotate_tree_with_rg_hits(tree, file_hits)
+            local has_relevant_symbol = annotate_tree_with_rg_hits(tree, file_hits, show_full_function)
             if has_relevant_symbol then
                 local content = build_filtered_file_content(tree)
                 if trim(content) ~= "" then

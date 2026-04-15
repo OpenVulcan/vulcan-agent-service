@@ -1,5 +1,5 @@
 --[[
-ast-grep
+codekit-ast
 中文：基于 ast-grep 的结构视图工具，输出按文件聚合、可直接阅读的轻量结构摘要。
 English: AST structure viewer powered by ast-grep. It returns file-grouped, human-readable structure summaries.
 ]]
@@ -55,6 +55,7 @@ local MAX_MATCHED_FILES = 5000
 local MAX_EXPLICIT_FILES = 20
 local MAX_INLINE_RESULT_BYTES = 10000
 local MAX_HEADER_LINES = 4
+local MAX_COMMENT_SUMMARY_BYTES = 50
 local AST_GREP_TIMEOUT_MS = 30000
 local CURRENT_WORKING_DIRECTORY = nil
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
@@ -414,7 +415,7 @@ end
 
 -- 路径与语言解析 / Resolve skill-relative paths and normalize language keys.
 local function get_skill_dir()
-    return __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
 end
 
 --[[
@@ -776,15 +777,35 @@ local function validate_extension_argument(value)
     local normalized_items = {}
     local seen = {}
 
+    local function append_normalized_extension(extension_name)
+        local normalized = trim(extension_name):gsub("^%.*", ""):lower()
+        if normalized ~= "" and not seen[normalized] then
+            seen[normalized] = true
+            table.insert(normalized_items, normalized)
+        end
+    end
+
     local function append_extension_item(item)
         if type(item) ~= "string" then
             return false, type(item)
         end
         for token in tostring(item):gmatch("[^,]+") do
             local normalized = trim(token):gsub("^%.*", ""):lower()
-            if normalized ~= "" and not seen[normalized] then
-                seen[normalized] = true
-                table.insert(normalized_items, normalized)
+            if normalized ~= "" then
+                local language_key = nil
+                if LANGUAGE_REGISTRY[normalized] then
+                    language_key = normalized
+                elseif LANGUAGE_ALIAS_MAP[normalized] and not EXTENSION_MAP[normalized] then
+                    language_key = LANGUAGE_ALIAS_MAP[normalized]
+                end
+
+                if language_key and LANGUAGE_REGISTRY[language_key] then
+                    for _, extension_name in ipairs(LANGUAGE_REGISTRY[language_key].extensions or {}) do
+                        append_normalized_extension(extension_name)
+                    end
+                else
+                    append_normalized_extension(normalized)
+                end
             end
         end
         return true, nil
@@ -795,7 +816,7 @@ local function validate_extension_argument(value)
         if not ok then
             return nil, {
                 error = "invalid_ext_argument",
-                message = "ext must be a comma-separated string or string array when provided",
+                message = "ext must be a comma-separated string or string array of file extensions or language names when provided",
                 actual_type = type(value),
             }
         end
@@ -805,7 +826,7 @@ local function validate_extension_argument(value)
             if not ok then
                 return nil, {
                     error = "invalid_ext_argument",
-                    message = "ext array items must be strings",
+                    message = "ext array items must be strings representing file extensions or language names",
                     actual_type = actual_type,
                 }
             end
@@ -813,7 +834,7 @@ local function validate_extension_argument(value)
     else
         return nil, {
             error = "invalid_ext_argument",
-            message = "ext must be a comma-separated string or string array when provided",
+            message = "ext must be a comma-separated string or string array of file extensions or language names when provided",
             actual_type = type(value),
         }
     end
@@ -1389,12 +1410,12 @@ local function render_error_lines(errors)
 end
 
 --[[
-中文：把 vmcp-ast 结果渲染为 Markdown 文本，便于用户按需导出成可阅读文件。
-English: Render the vmcp-ast result into Markdown text so callers can export it into a readable file when needed.
+中文：把 codekit-ast 结果渲染为 Markdown 文本，便于用户按需导出成可阅读文件。
+English: Render the codekit-ast result into Markdown text so callers can export it into a readable file when needed.
 ]]
 local function build_ast_markdown(result)
     local lines = {
-        "# vmcp-ast Export",
+        "# codekit-ast Export",
         "",
         string.format("- Files scanned: %d", result.files_scanned or 0),
         string.format("- Files with symbols: %d", result.files_with_symbols or 0),
@@ -1463,7 +1484,7 @@ local function finalize_ast_result(full_result, workdir, export_md_path)
     if not ok or type(encoded) ~= "string" then
         return {
             error = "result_encoding_failed",
-            message = "failed to encode vmcp-ast result as JSON",
+            message = "failed to encode codekit-ast result as JSON",
         }
     end
 
@@ -1706,14 +1727,149 @@ local function infer_parameters(header, symbol_kind)
     return trim(parameter_text), parameters, trim(receiver_text)
 end
 
+local function get_sorted_comment_prefixes(comment_config)
+    local prefixes = clone_array((comment_config and comment_config.line_prefixes) or {})
+    table.sort(prefixes, function(left, right)
+        return #tostring(left or "") > #tostring(right or "")
+    end)
+    return prefixes
+end
+
 local function clean_comment_line(line, comment_config)
     local current = trim(line)
-    for _, prefix in ipairs(comment_config.line_prefixes or {}) do
+    for _, prefix in ipairs(get_sorted_comment_prefixes(comment_config)) do
         if starts_with(current, prefix) then
             return trim(current:sub(#prefix + 1))
         end
     end
     return current
+end
+
+--[[
+中文：移除注释行里常见的文档装饰字符，例如块注释中的 `*` 前缀。
+English: Strip common decorative markers from a comment line, such as the leading `*` used in block comments.
+]]
+local function strip_comment_decorations(line)
+    local current = trim(line)
+    current = current:gsub("^%*+%s*", "")
+    current = current:gsub("^%-%-+%s*", "")
+    return trim(current)
+end
+
+--[[
+中文：判断一行备注是否只是分隔线、区域边界或其它无语义装饰文本。
+English: Determine whether a comment line is merely a separator, section boundary, or other non-semantic decoration.
+]]
+local function is_separator_comment_line(line)
+    local current = strip_comment_decorations(line)
+    if current == "" then
+        return true
+    end
+    local meaningful = current
+        :gsub("[%s%-%=%*_/\\|#~`%.:,;>%<%+%(%)[%]{}]+", "")
+        :gsub("·", "")
+        :gsub("•", "")
+    return meaningful == ""
+end
+
+--[[
+中文：判断备注行是否属于参数、返回值等结构化标签说明，而非核心摘要内容。
+English: Determine whether a comment line is a structured label such as params or returns instead of core summary content.
+]]
+local function is_comment_metadata_line(line)
+    local current = strip_comment_decorations(line):lower()
+    if current == "" then
+        return false
+    end
+    if starts_with(current, "@param")
+        or starts_with(current, "@return")
+        or starts_with(current, "@returns")
+        or starts_with(current, "@throws")
+        or starts_with(current, "@example")
+        or starts_with(current, "param ")
+        or starts_with(current, "params ")
+        or starts_with(current, "return ")
+        or starts_with(current, "returns ")
+        or starts_with(current, "parameters:")
+        or starts_with(current, "returns:")
+        or starts_with(current, "parameters /")
+        or starts_with(current, "returns /")
+    then
+        return true
+    end
+    if starts_with(current, "参数")
+        or starts_with(current, "返回")
+        or starts_with(current, "返回值")
+        or starts_with(current, "参数 /")
+        or starts_with(current, "返回 /")
+        or starts_with(current, "返回值 /")
+    then
+        return true
+    end
+    return false
+end
+
+--[[
+中文：按 UTF-8 字节边界截断字符串，避免中文字符被截成半个字节序列。
+English: Truncate text on UTF-8 byte boundaries so multi-byte characters are not split mid-sequence.
+]]
+local function utf8_truncate_by_bytes(text, max_bytes)
+    local source = tostring(text or "")
+    local limit = tonumber(max_bytes) or #source
+    if #source <= limit then
+        return source
+    end
+
+    local index = 1
+    local used = 0
+    local parts = {}
+    while index <= #source do
+        local byte = source:byte(index)
+        local char_length = 1
+        if byte >= 240 then
+            char_length = 4
+        elseif byte >= 224 then
+            char_length = 3
+        elseif byte >= 192 then
+            char_length = 2
+        end
+        if used + char_length > limit then
+            break
+        end
+        table.insert(parts, source:sub(index, index + char_length - 1))
+        used = used + char_length
+        index = index + char_length
+    end
+    return table.concat(parts)
+end
+
+--[[
+中文：把原始多行注释压缩为适合 AST 备注展示的单行摘要。
+English: Compress raw multi-line comments into a single-line summary suitable for AST note display.
+]]
+local function summarize_comment_text(raw_comment)
+    local source = tostring(raw_comment or "")
+    if trim(source) == "" then
+        return ""
+    end
+
+    local effective_lines = {}
+    for _, raw_line in ipairs(split_lines(source)) do
+        local cleaned = strip_comment_decorations(raw_line)
+        if cleaned ~= ""
+            and not is_separator_comment_line(cleaned)
+            and not is_comment_metadata_line(cleaned)
+        then
+            table.insert(effective_lines, cleaned)
+        end
+    end
+
+    if #effective_lines == 0 then
+        return ""
+    end
+
+    local merged = normalize_whitespace(table.concat(effective_lines, " "))
+    return utf8_truncate_by_bytes(merged, MAX_COMMENT_SUMMARY_BYTES)
 end
 
 local function extract_leading_comment(file_state, start_line, comment_config)
@@ -1734,7 +1890,7 @@ local function extract_leading_comment(file_state, start_line, comment_config)
     while cursor >= 1 do
         local current = trim(file_state.lines[cursor] or "")
         local matched = false
-        for _, prefix in ipairs(comment_config.line_prefixes or {}) do
+        for _, prefix in ipairs(get_sorted_comment_prefixes(comment_config)) do
             if starts_with(current, prefix) then
                 table.insert(line_comments, 1, clean_comment_line(current, comment_config))
                 matched = true
@@ -1748,7 +1904,7 @@ local function extract_leading_comment(file_state, start_line, comment_config)
     end
 
     if #line_comments > 0 then
-        return normalize_whitespace(table.concat(line_comments, "\n"))
+        return trim(table.concat(line_comments, "\n"))
     end
 
     local current_line = trim(file_state.lines[index] or "")
@@ -1762,10 +1918,13 @@ local function extract_leading_comment(file_state, start_line, comment_config)
                 local block_line = file_state.lines[block_cursor] or ""
                 table.insert(collected, 1, block_line)
                 if block_line:find(start_token, 1, true) then
-                    local text = normalize_whitespace(table.concat(collected, "\n"))
-                    text = replace_literal(text, start_token, "")
-                    text = replace_literal(text, end_token, "")
-                    return trim(text)
+                    local normalized_lines = {}
+                    for _, collected_line in ipairs(collected) do
+                        local text = replace_literal(collected_line, start_token, "")
+                        text = replace_literal(text, end_token, "")
+                        table.insert(normalized_lines, trim(text))
+                    end
+                    return trim(table.concat(normalized_lines, "\n"))
                 end
                 block_cursor = block_cursor - 1
             end
@@ -1791,20 +1950,20 @@ local function extract_docstring(file_state, start_line, end_line, comment_confi
         if starts_with(first_line, token) then
             local parts = {}
             local body = first_line:sub(#token + 1)
-            if body:find(token, 1, true) then
-                table.insert(parts, trim(replace_literal(body, token, "")))
-                return normalize_whitespace(table.concat(parts, "\n"))
-            end
+                if body:find(token, 1, true) then
+                    table.insert(parts, trim(replace_literal(body, token, "")))
+                    return trim(table.concat(parts, "\n"))
+                end
             if body ~= "" then
                 table.insert(parts, body)
             end
             cursor = cursor + 1
             while cursor <= end_line do
                 local line = file_state.lines[cursor] or ""
-                if line:find(token, 1, true) then
-                    table.insert(parts, trim(replace_literal(line, token, "")))
-                    return normalize_whitespace(table.concat(parts, "\n"))
-                end
+                    if line:find(token, 1, true) then
+                        table.insert(parts, trim(replace_literal(line, token, "")))
+                        return trim(table.concat(parts, "\n"))
+                    end
                 table.insert(parts, line)
                 cursor = cursor + 1
             end
@@ -1856,6 +2015,7 @@ local function normalize_symbol(match, language_key)
     if comment == "" then
         comment = extract_docstring(file_state, start_line, end_line, comment_config)
     end
+    comment = summarize_comment_text(comment)
 
     return {
         kind = kind,

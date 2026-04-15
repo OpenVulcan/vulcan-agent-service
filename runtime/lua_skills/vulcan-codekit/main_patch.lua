@@ -1,5 +1,5 @@
 --[[
-vmcp-patch
+codekit-patch
 中文：基于 AST 结构路径重新定位函数/方法节点，并执行整函数替换。
 English: Re-locate function or method nodes by AST structural selectors and replace the full function source.
 ]]
@@ -44,8 +44,8 @@ local function clone_array(items)
 end
 
 --[[
-中文：通过 `debug.getupvalue` 从现有 `vmcp-ast` 入口中提取内部 helper，避免复制整套 AST 分析实现。
-English: Extract internal helpers from the existing `vmcp-ast` entry through `debug.getupvalue` so the full AST pipeline does not need to be duplicated.
+中文：通过 `debug.getupvalue` 从现有 `codekit-ast` 入口中提取内部 helper，避免复制整套 AST 分析实现。
+English: Extract internal helpers from the existing `codekit-ast` entry through `debug.getupvalue` so the full AST pipeline does not need to be duplicated.
 
 参数 / Parameters:
 - fn(function): 待扫描 upvalue 的函数 / Function whose upvalues will be scanned.
@@ -77,12 +77,12 @@ English: Resolve the current skill directory, preferring the host-injected `__sk
 - string: 当前 skill 目录 / Current skill directory.
 ]]
 local function get_skill_dir()
-    return __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_patch or __skill_dir_ast_grep or "."
 end
 
 --[[
-中文：懒加载 `vmcp-ast` 内部 helper，确保 `vmcp-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
-English: Lazily load internal `vmcp-ast` helpers so `vmcp-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
+中文：懒加载 `codekit-ast` 内部 helper，确保 `codekit-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
+English: Lazily load internal `codekit-ast` helpers so `codekit-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
 
 返回 / Returns:
 - table|nil: helper 函数集合 / Helper bundle on success.
@@ -107,7 +107,7 @@ local function load_ast_runtime_helpers()
     if not ok or type(ast_entry) ~= "function" then
         return nil, {
             error = "vmcp_ast_entry_invalid",
-            message = ok and "vmcp-ast entry did not return a function" or tostring(ast_entry),
+            message = ok and "codekit-ast entry did not return a function" or tostring(ast_entry),
             path = ast_entry_path,
         }
     end
@@ -125,7 +125,7 @@ local function load_ast_runtime_helpers()
         if type(helper_value) ~= "function" then
             return nil, {
                 error = "vmcp_ast_helper_missing",
-                message = "required helper missing from vmcp-ast runtime",
+                message = "required helper missing from codekit-ast runtime",
                 helper = helper_name,
                 path = ast_entry_path,
             }
@@ -201,7 +201,7 @@ local function validate_mode_absence(value)
     if value ~= nil then
         return {
             error = "mode_not_supported",
-            message = "vmcp-patch only accepts full-function replacements and does not support the mode argument",
+            message = "codekit-patch only accepts full-function replacements and does not support the mode argument",
         }
     end
     return nil
@@ -626,7 +626,7 @@ local function collect_ast_for_file(file_path, helper_bundle)
     if not files or #files == 0 then
         return nil, nil, {
             error = "file_not_analyzable",
-            message = "the target file could not be analyzed by vmcp-ast",
+            message = "the target file could not be analyzed by codekit-ast",
             file = file_path,
         }
     end
@@ -669,7 +669,7 @@ English: Build a generic ERROR-node scan rule so ast-grep can detect syntax dama
 ]]
 local function build_error_node_rule(language_key)
     return table.concat({
-        "id: vmcp-patch-error-node",
+        "id: codekit-patch-error-node",
         "language: " .. tostring(language_key or ""),
         "rule:",
         "  kind: ERROR",
