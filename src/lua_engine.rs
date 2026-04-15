@@ -14,6 +14,7 @@ use crate::protocol::{
     ResourceReadResult, ResourceTemplate, TextContent, Tool, ToolAnnotations,
 };
 use crate::skill_dependency::ensure_skill_dependencies;
+use crate::temp_maintenance::ensure_runtime_temp_dir;
 use crate::tool_cache::global_tool_cache;
 
 // ============================================================
@@ -1747,6 +1748,12 @@ impl LuaEngine {
             lua.create_string(&current_dir_text)
         })?;
         vulcan.set("cwd", cwd_fn)?;
+
+        // vulcan.temp_dir -> string
+        let temp_dir_path = ensure_runtime_temp_dir()
+            .map_err(|error| mlua::Error::runtime(format!("temp_dir: {}", error)))?;
+        let temp_dir_text = temp_dir_path.to_string_lossy().to_string();
+        vulcan.set("temp_dir", temp_dir_text)?;
 
         // vulcan.exec(spec) -> { ok, success, code, stdout, stderr, timed_out, error }
         let exec_fn = lua.create_function(|lua, spec: LuaValue| {

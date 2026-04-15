@@ -23,6 +23,22 @@
 - 命中函数声明或函数体时，应展开该函数的完整源码片段
 - 命中类型/结构声明时，应只显示结构头与行号范围，不额外展开无关子树
 
+`vmcp-ast` 与 `vmcp-rg` 当前推荐统一采用以下“大结果处理规则”：
+
+- 不再暴露 `cache_id`、`page`、`truncate_chars`、`cache_ttl_sec` 这类工具级缓存/分页参数
+- 结果 JSON 编码后若不超过 `10000` 字节，则直接内联返回完整内容
+- 结果 JSON 编码后若超过 `10000` 字节，则将完整 Markdown 写入磁盘，只返回紧凑预览
+- 若调用方提供 `workdir`，完整 Markdown 写入 `<workdir>/.vulcan/mcp/cache/`
+- 若未提供 `workdir`，完整 Markdown 写入 `vulcan.temp_dir/mcp/cache/`
+- 当结果发生落盘时，返回结果顶层必须包含提示消息与完整文件绝对路径
+- 若提供 `export_md_path`，则仅导出完整 Markdown 文件，并返回“文件已生成 + 绝对路径”的简洁提示，不再内联结果
+
+默认语言范围建议也统一如下：
+
+- 当未显式传入 `ext` 时，优先扫描源代码语言，例如 `c/cpp/csharp/go/java/js/ts/tsx/kotlin/lua/php/python/ruby/rust/swift` 等
+- 默认排除 `css/html/json/yaml` 这类样式、标记或数据配置格式
+- 若确实需要覆盖配置类文件，再显式传入 `ext`
+
 `vmcp-patch` 这类“结构重定位替换”的工具，建议遵循以下规则：
 
 - 只允许 patch function / method 这类完整代码节点
@@ -236,6 +252,15 @@ vulcan.print(t.name)  -- test
 ```lua
 local result = vulcan.call("vmcp-ast", { path = "src/", recursive = true })
 vulcan.print("found", result.items_found, "items")
+```
+
+### `vulcan.temp_dir -> string`
+
+返回宿主提供的 MCP 临时目录绝对路径。当前规则为“程序目录的上级目录下的 `temp` 目录”，例如调试构建常见为 `output/temp`。
+
+```lua
+local spill_root = vulcan.path_join(vulcan.temp_dir, "mcp", "cache")
+vulcan.print("temp spill root:", spill_root)
 ```
 
 ## LuaJIT 标准库

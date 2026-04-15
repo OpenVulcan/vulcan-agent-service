@@ -48,16 +48,40 @@ local FILE_CACHE = {}
 local IGNORE_RULE_CACHE = {}
 local LANGUAGE_ALIAS_MAP = {}
 local EXTENSION_MAP = {}
-local TOOL_CACHE_NAMESPACE = "vmcp-ast"
+local DEFAULT_EXTENSION_FILTER = {}
 local MAX_AST_GREP_BATCH_FILES = 50
 local FALLBACK_AST_GREP_BATCH_FILES = 24
 local MAX_MATCHED_FILES = 5000
 local MAX_EXPLICIT_FILES = 20
-local DEFAULT_PAGE_CHAR_LIMIT = 20000
+local MAX_INLINE_RESULT_BYTES = 10000
 local MAX_HEADER_LINES = 4
 local AST_GREP_TIMEOUT_MS = 30000
 local CURRENT_WORKING_DIRECTORY = nil
-local TRUNCATION_NOTICE = "Some development tools may truncate long MCP responses. When truncation is detected, proactively follow the hint to request the remaining MCP information before drawing conclusions."
+local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
+local LFS_MODULE = nil
+local DEFAULT_SOURCE_LANGUAGES = {
+    bash = true,
+    c = true,
+    cpp = true,
+    csharp = true,
+    elixir = true,
+    go = true,
+    haskell = true,
+    java = true,
+    javascript = true,
+    kotlin = true,
+    lua = true,
+    nix = true,
+    php = true,
+    python = true,
+    ruby = true,
+    rust = true,
+    scala = true,
+    solidity = true,
+    swift = true,
+    typescript = true,
+    tsx = true,
+}
 
 for language_key, language_spec in pairs(LANGUAGE_REGISTRY) do
     LANGUAGE_ALIAS_MAP[language_key] = language_key
@@ -66,6 +90,9 @@ for language_key, language_spec in pairs(LANGUAGE_REGISTRY) do
     end
     for _, extension in ipairs(language_spec.extensions or {}) do
         EXTENSION_MAP[extension:lower()] = language_key
+        if DEFAULT_SOURCE_LANGUAGES[language_key] then
+            DEFAULT_EXTENSION_FILTER[extension:lower()] = true
+        end
     end
 end
 
@@ -729,21 +756,21 @@ local function run_language_scan(binary_directory, executable_name, language_key
 end
 
 --[[
-中文：将扩展名过滤统一解析为集合，支持逗号分隔字符串，也兼容字符串数组。
-English: Normalize the extension filter into a lookup set. Comma-separated strings are supported, and string arrays are accepted as a compatibility convenience.
+中文：将扩展名过滤统一解析为集合；未传 `ext` 时自动回退到默认代码语言集合，避免把 HTML/CSS/JSON/YAML 等非核心代码文件扫入结果。
+English: Normalize the extension filter into a lookup set. When `ext` is omitted, fall back to the default source-language set so HTML/CSS/JSON/YAML-style files are excluded by default.
 
 参数 / Parameters:
 - value(any): 用户传入的 `ext` 参数 / User-provided `ext` argument.
 
 返回 / Returns:
-- table|nil: 规范化后的扩展名集合；未提供或为空时返回 nil。
-  Normalized extension lookup set, or nil when omitted/empty.
+- table: 规范化后的扩展名集合；未提供或为空时返回默认代码扩展集合。
+  Normalized extension lookup set; when omitted or empty, the default source-code extension set is returned.
 - table|nil: 参数非法时返回结构化错误对象；成功时为 nil。
   A structured error object when the argument is invalid; otherwise nil.
 ]]
 local function validate_extension_argument(value)
     if value == nil then
-        return nil, nil
+        return DEFAULT_EXTENSION_FILTER, nil
     end
 
     local normalized_items = {}
@@ -792,7 +819,7 @@ local function validate_extension_argument(value)
     end
 
     if #normalized_items == 0 then
-        return nil, nil
+        return DEFAULT_EXTENSION_FILTER, nil
     end
 
     local extension_filter = {}
@@ -803,8 +830,8 @@ local function validate_extension_argument(value)
 end
 
 --[[
-中文：判断文件是否满足扩展名过滤集合；未提供过滤时默认放行。
-English: Decide whether a file matches the extension filter set. When no filter is provided, the file is allowed by default.
+中文：判断文件是否满足扩展名过滤集合；当前调用链始终会传入显式集合或默认代码语言集合。
+English: Decide whether a file matches the extension filter set. The current flow always supplies either an explicit set or the default source-code set.
 
 参数 / Parameters:
 - file_name(string): 文件名或路径文本 / File name or path text.
@@ -1049,178 +1076,415 @@ local function classify_target_path_modes(target_paths)
 end
 
 --[[
-中文：校验分页页码参数，默认返回第 1 页，仅接受正整数。
-English: Validate the pagination page argument, defaulting to page 1 and accepting only positive integers.
+中文：校验工作目录参数，要求为绝对路径且必须指向已存在的目录。
+English: Validate the workdir argument; it must be an absolute path pointing to an existing directory.
 ]]
-local function validate_page_argument(value)
-    if value == nil then
-        return 1, nil
-    end
-    if type(value) ~= "number" or value < 1 or value % 1 ~= 0 then
-        return nil, {
-            error = "invalid_page_argument",
-            message = "page must be a positive integer when provided",
-            actual_type = type(value),
-            actual_value = value,
-        }
-    end
-    return value, nil
-end
-
---[[
-中文：校验分页字符预算，默认 20000；除非用户明确要求，否则不建议调整该参数。
-English: Validate the per-page character budget, defaulting to 20000; callers should avoid changing it unless explicitly requested.
-]]
-local function validate_truncate_chars_argument(value)
-    if value == nil then
-        return DEFAULT_PAGE_CHAR_LIMIT, nil
-    end
-    if type(value) ~= "number" or value < 1000 or value % 1 ~= 0 then
-        return nil, {
-            error = "invalid_truncate_chars_argument",
-            message = "truncate_chars must be an integer >= 1000 when provided",
-            actual_type = type(value),
-            actual_value = value,
-        }
-    end
-    return value, nil
-end
-
---[[
-中文：校验缓存编号参数，未传时返回 nil；传入时要求为非空字符串。
-English: Validate the cache id argument, returning nil when omitted and requiring a non-empty string otherwise.
-]]
-local function validate_cache_id_argument(value)
+local function validate_workdir_argument(value)
     if value == nil then
         return nil, nil
     end
     if type(value) ~= "string" or trim(value) == "" then
         return nil, {
-            error = "invalid_cache_id_argument",
-            message = "cache_id must be a non-empty string when provided",
+            error = "invalid_workdir_argument",
+            message = "workdir must be a non-empty absolute directory path when provided",
             actual_type = type(value),
         }
     end
-    return trim(value), nil
+
+    local normalized = trim(value)
+    if not is_absolute_path(normalized) then
+        return nil, {
+            error = "invalid_workdir_argument",
+            message = "workdir must be an absolute directory path",
+            workdir = normalized,
+        }
+    end
+    if not vulcan.fs_exists(normalized) or not vulcan.fs_is_dir(normalized) then
+        return nil, {
+            error = "workdir_not_found",
+            message = "workdir must point to an existing directory",
+            workdir = normalized,
+        }
+    end
+    return normalized, nil
 end
 
 --[[
-中文：校验缓存 TTL 参数，未传时使用系统默认；传入时要求为正整数秒数。
-English: Validate the cache TTL argument. The system default is used when omitted, and provided values must be positive integer seconds.
+中文：校验 Markdown 导出路径，要求为绝对路径，并建议使用 `.md` 扩展名。
+English: Validate the Markdown export path; it must be absolute and should use the `.md` extension.
 ]]
-local function validate_cache_ttl_argument(value)
+local function validate_export_md_argument(value)
     if value == nil then
         return nil, nil
     end
-    if type(value) ~= "number" or value < 1 or value % 1 ~= 0 then
+    if type(value) ~= "string" or trim(value) == "" then
         return nil, {
-            error = "invalid_cache_ttl_argument",
-            message = "cache_ttl_sec must be a positive integer when provided",
+            error = "invalid_export_md_argument",
+            message = "export_md_path must be a non-empty absolute file path when provided",
             actual_type = type(value),
-            actual_value = value,
         }
     end
-    return value, nil
+
+    local normalized = trim(value)
+    if not is_absolute_path(normalized) then
+        return nil, {
+            error = "invalid_export_md_argument",
+            message = "export_md_path must be an absolute file path",
+            export_md_path = normalized,
+        }
+    end
+    if not normalized:lower():match("%.md$") then
+        return nil, {
+            error = "invalid_export_md_argument",
+            message = "export_md_path must end with .md",
+            export_md_path = normalized,
+        }
+    end
+    return normalized, nil
 end
 
 --[[
-中文：按当前页文件列表生成最终返回对象；仅在有文件时附加根节点提示信息。
-English: Build the final response object for one page of files; attach the root notice only when the page includes files.
+中文：懒加载 LuaFileSystem，用于在导出 JSON/Markdown 前递归创建目录。
+English: Lazily load LuaFileSystem so directories can be created recursively before exporting JSON or Markdown.
 ]]
-local function build_page_result(meta, page_files, page, total_pages, cache_id)
-    local result = {
-        page = page,
-        total_pages = total_pages,
-        has_next_page = page < total_pages,
-        files_scanned = meta.files_scanned or 0,
-        files_with_symbols = meta.files_with_symbols or 0,
-        items_found = meta.items_found or 0,
-        files = page_files or {},
-        errors = meta.errors or {},
-        truncated = total_pages > 1,
+local function get_lfs_module()
+    if LFS_MODULE ~= nil then
+        return LFS_MODULE
+    end
+    local ok, module = pcall(require, "lfs")
+    if ok then
+        LFS_MODULE = module
+    else
+        LFS_MODULE = false
+    end
+    return LFS_MODULE
+end
+
+--[[
+中文：获取某个路径的父目录，缺失时返回 nil。
+English: Get the parent directory of a path and return nil when no parent exists.
+]]
+local function get_parent_directory(path)
+    local normalized = tostring(path or ""):gsub("[\\/]+$", "")
+    local parent = normalized:match("^(.*)[\\/][^\\/]+$")
+    if not parent or parent == normalized then
+        return nil
+    end
+    return parent
+end
+
+local function append_path_segment(current, segment)
+    if current == "" then
+        return segment
+    end
+    if current == "/" then
+        return "/" .. segment
+    end
+    if current:sub(-1) == "/" then
+        return current .. segment
+    end
+    return current .. "/" .. segment
+end
+
+--[[
+中文：在 LuaFileSystem 不可用时，回退到宿主 `vulcan.exec` 递归创建目录，避免大结果落盘依赖单一 Lua C 模块。
+English: Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSystem is unavailable, so large-result spilling does not depend on a single Lua C module.
+
+参数 / Parameters:
+- directory_path(string): 需要创建的目录绝对路径 / Absolute directory path that should be created.
+
+返回 / Returns:
+- boolean: 创建成功或目录已存在时返回 true / Returns true when creation succeeds or the directory already exists.
+- table|nil: 创建失败时返回结构化错误对象 / Structured error object when creation fails.
+]]
+local function ensure_directory_via_exec(directory_path)
+    if type(vulcan.exec) ~= "function" then
+        return false, {
+            error = "directory_creation_failed",
+            message = "neither LuaFileSystem nor vulcan.exec is available for directory creation",
+            path = directory_path,
+        }
+    end
+
+    local os_info = vulcan.osinfo()
+    local request
+    if os_info and os_info.os == "windows" then
+        request = {
+            program = "powershell.exe",
+            args = {
+                "-NoProfile",
+                "-Command",
+                string.format("New-Item -ItemType Directory -Force -Path '%s' | Out-Null", tostring(directory_path):gsub("'", "''")),
+            },
+            timeout_ms = 10000,
+        }
+    else
+        request = {
+            program = "mkdir",
+            args = { "-p", directory_path },
+            timeout_ms = 10000,
+        }
+    end
+
+    local ok, result = pcall(vulcan.exec, request)
+    if not ok or type(result) ~= "table" then
+        return false, {
+            error = "directory_creation_failed",
+            message = ok and "unexpected exec result" or tostring(result),
+            path = directory_path,
+        }
+    end
+    if result.error or result.timed_out or result.success == false then
+        return false, {
+            error = "directory_creation_failed",
+            message = trim(result.error or result.stderr or "mkdir failed"),
+            path = directory_path,
+        }
+    end
+    if vulcan.fs_exists(directory_path) and vulcan.fs_is_dir(directory_path) then
+        return true, nil
+    end
+    return false, {
+        error = "directory_creation_failed",
+        message = "directory was not created",
+        path = directory_path,
     }
-    if total_pages > 1 then
-        result.cache_id = cache_id
-        if page < total_pages then
-            result.next_page = page + 1
+end
+
+--[[
+中文：递归创建目录，供工作目录缓存和 Markdown 导出复用。
+English: Create directories recursively so workdir-based cache dumps and Markdown exports can share the same helper.
+]]
+local function ensure_directory(directory_path)
+    local normalized = trim(directory_path or "")
+    if normalized == "" then
+        return false, {
+            error = "directory_creation_failed",
+            message = "directory path is empty",
+        }
+    end
+    if vulcan.fs_exists(normalized) then
+        if vulcan.fs_is_dir(normalized) then
+            return true, nil
+        end
+        return false, {
+            error = "directory_creation_failed",
+            message = "target path already exists as a file",
+            path = normalized,
+        }
+    end
+
+    local lfs = get_lfs_module()
+    if not lfs then
+        return ensure_directory_via_exec(normalized)
+    end
+
+    local path_text = tostring(normalized):gsub("\\", "/")
+    local prefix = ""
+    if path_text:match("^%a:/") then
+        prefix = path_text:sub(1, 3)
+        path_text = path_text:sub(4)
+    elseif starts_with(path_text, "/") then
+        prefix = "/"
+        path_text = path_text:sub(2)
+    end
+
+    local current = prefix
+    for segment in path_text:gmatch("[^/]+") do
+        current = append_path_segment(current, segment)
+        if not vulcan.fs_exists(current) then
+            local ok, mkdir_error = lfs.mkdir(current)
+            if not ok then
+                return false, {
+                    error = "directory_creation_failed",
+                    message = tostring(mkdir_error or "mkdir failed"),
+                    path = current,
+                }
+            end
+        elseif not vulcan.fs_is_dir(current) then
+            return false, {
+                error = "directory_creation_failed",
+                message = "path exists but is not a directory",
+                path = current,
+            }
         end
     end
-    if page_files and #page_files > 0 then
-        result["!msg"] = TRUNCATION_NOTICE
-    end
-    return result
+    return true, nil
 end
 
 --[[
-中文：使用紧凑 JSON 实际长度估算当前页体积，尽量贴近主程序最终输出大小。
-English: Estimate the current page size using the compact JSON serialization length so pagination tracks the final host output more closely.
+中文：确保输出文件的父目录存在，并把文本内容写入目标文件。
+English: Ensure the parent directory exists and then write the text content to the target file.
 ]]
-local function estimate_page_chars(meta, page_files)
-    local sample = build_page_result(meta, page_files, 1, 1, "cache-placeholder")
-    local ok, encoded = pcall(vulcan.json_encode, sample)
-    if ok and type(encoded) == "string" then
-        return #encoded
+local function write_text_file(file_path, content)
+    local parent_directory = get_parent_directory(file_path)
+    if parent_directory then
+        local ensured, ensure_error = ensure_directory(parent_directory)
+        if not ensured then
+            return nil, ensure_error
+        end
     end
-    return 0
+
+    local ok, write_error = pcall(vulcan.fs_write, file_path, tostring(content or ""))
+    if not ok then
+        return nil, {
+            error = "file_write_failed",
+            message = tostring(write_error),
+            file = file_path,
+        }
+    end
+    return file_path, nil
 end
 
 --[[
-中文：根据字符预算切分分页；当单文件自身超限时，仍保证该文件至少独占一页，避免结果丢失。
-English: Split results into pages under the character budget; if one file alone exceeds the limit, it still gets its own page to avoid data loss.
+中文：构造结果落盘目录；优先使用工作目录的 `.vulcan/mcp/cache`，否则回退到宿主提供的 MCP 临时目录。
+English: Resolve the spill directory, preferring `<workdir>/.vulcan/mcp/cache` and falling back to the host-provided MCP temp directory.
 ]]
-local function paginate_file_results(meta, file_results, char_limit)
-    local pages = {}
-    local index = 1
-    while index <= #file_results do
-        local page_files = {}
-        local candidate_index = index
-        while candidate_index <= #file_results do
-            local candidate_files = clone_array(page_files)
-            table.insert(candidate_files, file_results[candidate_index])
-            local candidate_chars = estimate_page_chars(meta, candidate_files)
-            if #page_files == 0 or candidate_chars <= char_limit then
-                page_files = candidate_files
-                candidate_index = candidate_index + 1
-            else
-                break
+local function resolve_large_result_directory(workdir)
+    if workdir then
+        return vulcan.path_join(workdir, ".vulcan", "mcp", "cache"), nil
+    end
+
+    local temp_root = trim(vulcan.temp_dir or "")
+    if temp_root == "" then
+        return nil, {
+            error = "temp_dir_unavailable",
+            message = "vulcan.temp_dir is unavailable; cannot spill large outputs",
+        }
+    end
+    return vulcan.path_join(temp_root, "mcp", "cache"), nil
+end
+
+local function build_spill_file_id(prefix)
+    return string.format("%s_%d_%06d", tostring(prefix or "result"), os.time(), math.floor((os.clock() % 1) * 1000000))
+end
+
+local function build_large_result_notice(full_output_path)
+    return string.format(LARGE_RESULT_NOTICE_TEMPLATE, full_output_path)
+end
+
+local function shallow_copy_object(source)
+    local copied = {}
+    for key, value in pairs(source or {}) do
+        copied[key] = value
+    end
+    return copied
+end
+
+local function render_error_lines(errors)
+    local lines = {}
+    for _, item in ipairs(errors or {}) do
+        if type(item) == "string" then
+            table.insert(lines, "- " .. item)
+        elseif type(item) == "table" then
+            if item.group then
+                table.insert(lines, "- Group: " .. tostring(item.group))
+            end
+            for _, diagnostic in ipairs(item.diagnostics or {}) do
+                table.insert(lines, "  - " .. tostring(diagnostic))
             end
         end
-        table.insert(pages, page_files)
-        index = candidate_index
     end
-    if #pages == 0 then
-        table.insert(pages, {})
-    end
-    return pages
+    return lines
 end
 
 --[[
-中文：从共享缓存中读取分页快照，并按页码生成响应；缓存不存在或已过期时返回结构化错误。
-English: Read a paginated snapshot from the shared cache and generate the requested page response; return structured errors when the cache is missing or expired.
+中文：把 vmcp-ast 结果渲染为 Markdown 文本，便于用户按需导出成可阅读文件。
+English: Render the vmcp-ast result into Markdown text so callers can export it into a readable file when needed.
 ]]
-local function read_cached_page(cache_id, page)
-    local cached = vulcan.cache_get(TOOL_CACHE_NAMESPACE, cache_id)
-    if type(cached) ~= "table" then
-        return nil, {
-            error = "cache_not_found",
-            message = "cache_id not found or expired",
-            cache_id = cache_id,
+local function build_ast_markdown(result)
+    local lines = {
+        "# vmcp-ast Export",
+        "",
+        string.format("- Files scanned: %d", result.files_scanned or 0),
+        string.format("- Files with symbols: %d", result.files_with_symbols or 0),
+        string.format("- Items found: %d", result.items_found or 0),
+    }
+
+    local error_lines = render_error_lines(result.errors)
+    if #error_lines > 0 then
+        table.insert(lines, "")
+        table.insert(lines, "## Errors")
+        table.insert(lines, "")
+        for _, line in ipairs(error_lines) do
+            table.insert(lines, line)
+        end
+    end
+
+    for _, file_result in ipairs(result.files or {}) do
+        table.insert(lines, "")
+        table.insert(lines, "## " .. tostring(file_result.file or "unknown"))
+        table.insert(lines, "")
+        table.insert(lines, string.format("- Lines: %d", tonumber(file_result.lines) or 0))
+        table.insert(lines, "")
+        table.insert(lines, "```text")
+        if trim(file_result.content or "") ~= "" then
+            table.insert(lines, tostring(file_result.content))
+        end
+        table.insert(lines, "```")
+    end
+
+    return table.concat(lines, "\n")
+end
+
+local function attach_large_result_notice(full_result, full_output_path, export_md_path, total_bytes)
+    local annotated = shallow_copy_object(full_result)
+    annotated["!msg"] = build_large_result_notice(full_output_path)
+    annotated.full_output_file = full_output_path
+    annotated.full_output_bytes = total_bytes
+    if export_md_path then
+        annotated.exported_markdown_path = export_md_path
+    end
+    return annotated
+end
+
+--[[
+中文：根据结果大小决定直接返回、导出 Markdown、或在保留全量返回的同时落盘完整 Markdown 并附加提示。
+English: Decide whether to return inline, export Markdown, or spill the full Markdown result to disk while still returning the complete result with an attached notice.
+]]
+local function finalize_ast_result(full_result, workdir, export_md_path)
+    local markdown_text = build_ast_markdown(full_result)
+    if export_md_path then
+        local _, export_error = write_text_file(export_md_path, markdown_text)
+        if export_error then
+            return export_error
+        end
+        -- 中文：显式导出时进入静默导出模式，仅返回导出成功提示与路径，避免重复内联大结果。
+        -- English: When explicit export is requested, switch to silent export mode and return only a success notice with the file path.
+        return {
+            exported_markdown_path = export_md_path,
+            message = string.format("Markdown file has been generated at %s", export_md_path),
         }
     end
 
-    local pages = cached.pages or {}
-    local meta = cached.meta or {}
-    if page > #pages or page < 1 then
-        return nil, {
-            error = "page_out_of_range",
-            message = "requested page is outside the cached page range",
-            cache_id = cache_id,
-            page = page,
-            total_pages = #pages,
+    local serializable_result = shallow_copy_object(full_result)
+
+    local ok, encoded = pcall(vulcan.json_encode, serializable_result)
+    if not ok or type(encoded) ~= "string" then
+        return {
+            error = "result_encoding_failed",
+            message = "failed to encode vmcp-ast result as JSON",
         }
     end
 
-    return build_page_result(meta, pages[page] or {}, page, #pages, cache_id), nil
+    if #encoded <= MAX_INLINE_RESULT_BYTES then
+        serializable_result.truncated = false
+        return serializable_result
+    end
+
+    local output_directory, output_directory_error = resolve_large_result_directory(workdir)
+    if output_directory_error then
+        return output_directory_error
+    end
+
+    local file_id = build_spill_file_id("vmcp_ast")
+    local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
+    local _, write_error = write_text_file(full_output_path, markdown_text)
+    if write_error then
+        return write_error
+    end
+
+    return attach_large_result_notice(serializable_result, full_output_path, export_md_path, #markdown_text)
 end
 
 -- 文件读取与 capture 提取 / Cache file content and decode ast-grep captures.
@@ -1902,8 +2166,8 @@ local function validate_ignore_argument(value)
 end
 
 --[[
-中文：校验备注输出开关，默认启用；只有显式传入 `false` 时才关闭备注渲染。
-English: Validate the comment-output toggle. Comments are enabled by default and are disabled only when `false` is explicitly provided.
+中文：校验备注输出开关，默认关闭；只有显式传入 `true` 时才开启备注渲染。
+English: Validate the comment-output toggle. Comments are disabled by default and are enabled only when `true` is explicitly provided.
 
 参数 / Parameters:
 - value(any): 用户传入的备注控制参数。
@@ -1931,42 +2195,7 @@ end
 
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
-    local requested_page, page_error = validate_page_argument(args and args.page)
-    if page_error then
-        return page_error
-    end
-
-    local cache_id, cache_id_error = validate_cache_id_argument(args and args.cache_id)
-    if cache_id_error then
-        return cache_id_error
-    end
-
-    local page_char_limit, truncate_chars_error = validate_truncate_chars_argument(args and args.truncate_chars)
-    if truncate_chars_error then
-        return truncate_chars_error
-    end
-
-    local cache_ttl_sec, cache_ttl_error = validate_cache_ttl_argument(args and args.cache_ttl_sec)
-    if cache_ttl_error then
-        return cache_ttl_error
-    end
-
-    if cache_id then
-        if args and (args.path ~= nil or args.dir ~= nil or args.ext ~= nil or args.recursive ~= nil or args.ignore ~= nil or args.comment ~= nil) then
-            return {
-                error = "cache_request_with_search_arguments",
-                message = "cache_id requests must not include fresh search arguments",
-                cache_id = cache_id,
-            }
-        end
-        local cached_page, cached_error = read_cached_page(cache_id, requested_page)
-        if cached_error then
-            return cached_error
-        end
-        return cached_page
-    end
-
-    local target_paths, path_error = validate_path_argument((args and args.path) or (args and args.dir))
+    local target_paths, path_error = validate_path_argument(args and args.path)
     if path_error then
         return path_error
     end
@@ -1989,6 +2218,16 @@ return function(args)
     local include_comments, comment_error = validate_comment_argument(args and args.comment)
     if comment_error then
         return comment_error
+    end
+
+    local workdir, workdir_error = validate_workdir_argument(args and args.workdir)
+    if workdir_error then
+        return workdir_error
+    end
+
+    local export_md_path, export_md_error = validate_export_md_argument(args and args.export_md_path)
+    if export_md_error then
+        return export_md_error
     end
 
     local target_mode, target_mode_error = classify_target_path_modes(target_paths)
@@ -2071,16 +2310,12 @@ return function(args)
         errors = errors,
     }
 
-    local pages = paginate_file_results(meta, file_results, page_char_limit)
-    if #pages <= 1 then
-        return build_page_result(meta, file_results, 1, 1, nil)
-    end
-
-    local cache_payload = {
-        meta = meta,
-        pages = pages,
-        truncate_chars = page_char_limit,
-    }
-    local generated_cache_id = vulcan.cache_put(TOOL_CACHE_NAMESPACE, cache_payload, cache_ttl_sec)
-    return build_page_result(meta, pages[1] or {}, 1, #pages, generated_cache_id)
+    return finalize_ast_result({
+        files_scanned = meta.files_scanned,
+        files_with_symbols = meta.files_with_symbols,
+        items_found = meta.items_found,
+        files = file_results,
+        errors = meta.errors,
+        truncated = false,
+    }, workdir, export_md_path)
 end

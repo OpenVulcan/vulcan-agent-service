@@ -15,7 +15,7 @@
             {
               "name": "path",
               "type": "string",
-              "description": "Target path. Supports a single file/directory, or multiple paths separated by newlines (\\n). Required for a fresh search, but omitted when requesting a later page with cache_id.",
+              "description": "Target path. Supports a single file/directory, or multiple paths separated by newlines (\\n).",
               "required": false
             },
             {
@@ -33,7 +33,7 @@
             {
               "name": "ext",
               "type": "string",
-              "description": "Extension filter, comma-separated (e.g., js,ts,rs). When scanning large directories, it is STRONGLY RECOMMENDED to explicitly specify 'ext' to avoid hitting irrelevant files and triggering the 5000-file circuit breaker limit.",
+              "description": "Optional extension filter, comma-separated (e.g., js,ts,rs). When omitted, vmcp-ast uses a built-in source-code default set and excludes non-core formats such as css/html/json/yaml.",
               "required": false
             },
             {
@@ -43,32 +43,20 @@
               "required": false
             },
             {
-              "name": "cache_id",
+              "name": "workdir",
               "type": "string",
-              "description": "Pagination cache identifier returned by a previous truncated search. Use this instead of path when requesting another page.",
+              "description": "Optional absolute working-directory path. When the full result grows beyond the inline MCP budget, vmcp-ast writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ before returning a compact preview.",
               "required": false
             },
             {
-              "name": "page",
-              "type": "number",
-              "description": "Page number to fetch from a cached paginated result (default: 1).",
-              "required": false
-            },
-            {
-              "name": "truncate_chars",
-              "type": "number",
-              "description": "Character budget per page (default: 20000). Do not override this unless the user explicitly requests a different budget or the prompt specifically requires it; the default is recommended.",
-              "required": false
-            },
-            {
-              "name": "cache_ttl_sec",
-              "type": "number",
-              "description": "Optional cache lifetime in seconds for paginated results. When omitted, the system default is used and values above the configured maximum are clamped automatically.",
+              "name": "export_md_path",
+              "type": "string",
+              "description": "Optional absolute Markdown file path. When provided, vmcp-ast exports the full result as a Markdown document to this path and returns only a generated-file notice with the exact path.",
               "required": false
             }
           ],
           "return_type": "table",
-          "prompt": "[OPERATION PROTOCOL] 1. EXPLORE FIRST: ALWAYS invoke this tool before executing file reads (read_file) or text searches (grep/rg). Use the precise line numbers and AST signatures as anchors for your next steps. 2. ANTI-EXPLOSION: This tool has a strict 5000-file circuit breaker limit for matched files and allows at most 20 explicitly listed files in one call; do not mix file paths and directory paths. 3. PAGINATION: Large results may be paginated with cache_id + page. 4. BUDGET CONTROL: truncate_chars defaults to 20000 and should not be overridden unless the user explicitly asks for a different budget or the prompt requires it."
+          "prompt": "[OPERATION PROTOCOL] 1. EXPLORE FIRST: ALWAYS invoke this tool before executing file reads (read_file) or text searches (grep/rg). Use the precise line numbers and AST signatures as anchors for your next steps. 2. ANTI-EXPLOSION: This tool has a strict 5000-file circuit breaker limit for matched files and allows at most 20 explicitly listed files in one call; do not mix file paths and directory paths. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, vmcp-ast scans a built-in source-code default set and excludes non-core formats such as css/html/json/yaml. 4. NO PAGINATION CONTRACT: vmcp-ast no longer uses cache_id/page style follow-up calls. If the result is too large for inline MCP delivery, it automatically writes the full Markdown result to <workdir>/.vulcan/mcp/cache/ or to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 5. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
         },
         {
           "name": "vmcp-rg",
@@ -85,7 +73,7 @@
             {
               "name": "ext",
               "type": "string",
-              "description": "Optional extension filter, comma-separated (e.g., lua,rs,ts). When omitted, rg searches all files and vmcp-rg keeps only files that vmcp-ast can structurally analyze.",
+              "description": "Optional extension filter, comma-separated (e.g., lua,rs,ts). When omitted, vmcp-rg uses the same built-in source-code default set as vmcp-ast and excludes non-core formats such as css/html/json/yaml.",
               "required": false
             },
             {
@@ -95,26 +83,20 @@
               "required": false
             },
             {
-              "name": "cache_id",
+              "name": "workdir",
               "type": "string",
-              "description": "Pagination cache identifier returned by a previous truncated vmcp-rg search. Use this instead of dir/ext/rg_pattern when requesting another page.",
+              "description": "Optional absolute working-directory path. When the full result grows beyond the inline MCP budget, vmcp-rg writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ before returning a compact preview.",
               "required": false
             },
             {
-              "name": "page",
-              "type": "number",
-              "description": "Page number to fetch from a cached paginated result (default: 1).",
-              "required": false
-            },
-            {
-              "name": "truncate_chars",
-              "type": "number",
-              "description": "Character budget per page (default: 20000). Increase only when the user explicitly asks for a larger structural window.",
+              "name": "export_md_path",
+              "type": "string",
+              "description": "Optional absolute Markdown file path. When provided, vmcp-rg exports the full result as a Markdown document to this path and returns only a generated-file notice with the exact path.",
               "required": false
             }
           ],
           "return_type": "table",
-          "prompt": "[OPERATION PROTOCOL] 1. USE THIS AFTER YOU KNOW THE TEXT SIGNAL: vmcp-rg is for regex-to-structure narrowing, not for first-pass repository exploration. 2. SEARCH FLOW: it runs rg first and then only scans matched files with vmcp-ast internals. 3. OUTPUT RULE: only structures directly related to the matched lines are returned. Declaration hits expand that declaration structure; body hits collapse to the nearest relevant function/method context. 4. PAGINATION: large results may be paginated with cache_id + page."
+          "prompt": "[OPERATION PROTOCOL] 1. USE THIS AFTER YOU KNOW THE TEXT SIGNAL: vmcp-rg is for regex-to-structure narrowing, not for first-pass repository exploration. 2. SEARCH FLOW: it runs rg first and then only scans matched files with vmcp-ast internals. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, vmcp-rg uses the same built-in source-code default set as vmcp-ast and excludes non-core formats such as css/html/json/yaml. 4. OUTPUT RULE: only structures directly related to the matched lines are returned. Declaration hits expand that declaration structure; body hits collapse to the nearest relevant function/method context. 5. NO PAGINATION CONTRACT: vmcp-rg no longer uses cache_id/page follow-up calls. If the full result is too large for inline MCP delivery, it automatically writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ or to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 6. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
         },
         {
           "name": "vmcp-patch",

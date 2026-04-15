@@ -30,6 +30,7 @@ indicatif = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14"

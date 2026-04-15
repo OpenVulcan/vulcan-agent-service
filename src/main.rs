@@ -10,6 +10,7 @@ mod protocol;
 mod server;
 #[allow(dead_code)]
 mod session;
+mod temp_maintenance;
 mod config;
 mod tool_cache;
 
@@ -33,6 +34,7 @@ use config::Config;
 use lua_engine::{LuaEngine, LuaVmPoolConfig};
 use serde_json::{Value, json};
 use server::McpServer;
+use temp_maintenance::{CleanupTrigger, maintain_runtime_temp_dir, spawn_cross_day_cleanup_task};
 use tool_cache::ToolCacheConfig;
 use tool_cache::configure_global_tool_cache;
 
@@ -54,6 +56,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
 
+    maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
+
     configure_global_tool_cache(ToolCacheConfig {
         max_entries: cfg.tool_cache_max_entries.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
         default_ttl_secs: cfg.tool_cache_default_ttl_secs.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
@@ -64,6 +68,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     add_libs_to_path();
 
     let server = build_server(&cfg).await?;
+
+    spawn_cross_day_cleanup_task();
 
     run_network_transports(server, &cfg).await?;
 
@@ -192,6 +198,8 @@ fn run_call_tool_mode(
     arguments: Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
+
+    maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
 
     configure_global_tool_cache(ToolCacheConfig {
         max_entries: cfg.tool_cache_max_entries.unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
