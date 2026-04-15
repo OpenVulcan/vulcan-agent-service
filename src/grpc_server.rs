@@ -8,6 +8,7 @@ use tonic::transport::Server;
 use tokio_stream::StreamExt;
 
 use crate::protocol::PROTOCOL_VERSION_LATEST;
+use crate::protocol::RequestContext;
 use crate::server::McpServer;
 
 pub mod pb {
@@ -91,7 +92,16 @@ impl McpServiceImpl {
             }
         });
 
-        let result = self.server.handle_message(&msg).await;
+        let result = self
+            .server
+            .handle_message_with_context(
+                &msg,
+                RequestContext {
+                    transport: Some("grpc_unary".to_string()),
+                    ..RequestContext::default()
+                },
+            )
+            .await;
         match result {
             Some(resp) => {
                 let is_error = resp.get("error").is_some();

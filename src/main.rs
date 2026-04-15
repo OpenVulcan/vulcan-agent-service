@@ -38,6 +38,19 @@ use temp_maintenance::{CleanupTrigger, maintain_runtime_temp_dir, spawn_cross_da
 use tool_cache::ToolCacheConfig;
 use tool_cache::configure_global_tool_cache;
 
+/// 中文：将 `--call-tools` 结果按类型输出；基础标量原样打印，数组和对象保持 JSON 形式。
+/// English: Print `--call-tools` results by type; emit scalar values verbatim while keeping arrays/objects as JSON.
+fn print_call_tools_result(value: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    match value {
+        Value::String(text) => println!("{}", text),
+        Value::Number(number) => println!("{}", number),
+        Value::Bool(flag) => println!("{}", flag),
+        Value::Null => println!("null"),
+        Value::Array(_) | Value::Object(_) => println!("{}", serde_json::to_string_pretty(value)?),
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime_mode = parse_runtime_mode()?;
     match runtime_mode {
@@ -224,11 +237,10 @@ fn run_call_tool_mode(
     }
 
     let result = engine
-        .call_skill(tool_name, &arguments)
+        .call_skill(tool_name, &arguments, None)
         .map_err(|error| format!("call-tools failed for {}: {}", tool_name, error))?;
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
+    print_call_tools_result(&result)
 }
 
 /// Find Lua skill base and override directories.

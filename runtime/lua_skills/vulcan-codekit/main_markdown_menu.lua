@@ -109,7 +109,7 @@ local function load_ast_runtime_helpers()
     local helpers = {
         validate_path_argument = extract_upvalue_by_name(ast_entry, "validate_path_argument"),
         validate_recursive_argument = extract_upvalue_by_name(ast_entry, "validate_recursive_argument"),
-        validate_ignore_argument = extract_upvalue_by_name(ast_entry, "validate_ignore_argument"),
+        validate_noignore_argument = extract_upvalue_by_name(ast_entry, "validate_noignore_argument"),
     }
 
     for helper_name, helper_value in pairs(helpers) do
@@ -444,11 +444,17 @@ local function extract_markdown_headings(file_path)
 end
 
 --[[
-中文：将 Markdown 文件列表和标题信息渲染成单段 `content` 文本，前半部分为文件菜单，后半部分为逐文件目录详情。
-English: Render Markdown files and heading data into a single `content` block whose first half is the file menu and second half is per-file heading detail.
+中文：将扫描统计、文件菜单和标题目录详情渲染成单段 Markdown 文本，便于模型直接阅读而无需再解析结构体包装。
+English: Render scan statistics, the file menu, and heading details into a single Markdown text block so models can read it directly without unpacking a wrapper table.
 ]]
-local function build_markdown_menu_content(documents)
+local function build_markdown_menu_content(documents, stats)
     local lines = {
+        "# SCAN SUMMARY",
+        string.format("- files_scanned: %d", tonumber(stats and stats.files_scanned) or 0),
+        string.format("- files_with_headings: %d", tonumber(stats and stats.files_with_headings) or 0),
+        string.format("- heading_items: %d", tonumber(stats and stats.items_found) or 0),
+        string.format("- errors: %d", tonumber(stats and stats.error_count) or 0),
+        "",
         "# FILE MENU",
     }
 
@@ -503,7 +509,7 @@ return function(args)
         return recursive_error
     end
 
-    local ignore_enabled, ignore_error = helpers.validate_ignore_argument(args and args.ignore)
+    local ignore_enabled, ignore_error = helpers.validate_noignore_argument(args and args.noignore)
     if ignore_error then
         return ignore_error
     end
@@ -534,13 +540,10 @@ return function(args)
         end
     end
 
-    local result = {
-        content = build_markdown_menu_content(documents),
+    return build_markdown_menu_content(documents, {
         files_scanned = #(markdown_files or {}),
         files_with_headings = files_with_headings,
         items_found = headings_found,
-        errors = read_errors,
-        truncated = false,
-    }
-    return result
+        error_count = #(read_errors or {}),
+    })
 end

@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use crate::lua_skill::SkillMeta;
 use crate::protocol::{
-    Prompt, PromptArgument, PromptGetResult, PromptMessage, Resource, ResourceContents,
-    ResourceReadResult, ResourceTemplate, TextContent, Tool, ToolAnnotations,
+    Prompt, PromptArgument, PromptGetResult, PromptMessage, RequestContext, Resource,
+    ResourceContents, ResourceReadResult, ResourceTemplate, TextContent, Tool,
+    ToolAnnotations,
 };
 use crate::skill_dependency::ensure_skill_dependencies;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
@@ -1367,9 +1368,58 @@ impl LuaEngine {
             .any(|skill| skill.meta.find_tool(name).is_some())
     }
 
+    /// Populate per-request context into the `vulcan` module.
+    /// 将单次请求的上下文注入到 `vulcan` 模块中。
+    fn populate_vulcan_request_context(
+        lua: &Lua,
+        request_context: Option<&RequestContext>,
+    ) -> Result<(), String> {
+        let vulcan: Table = lua
+            .globals()
+            .get("vulcan")
+            .map_err(|error| format!("Failed to get vulcan module: {}", error))?;
+        let context_value = match request_context {
+            Some(context) => serde_json::to_value(context)
+                .map_err(|error| format!("Failed to serialize request context: {}", error))?,
+            None => Value::Object(serde_json::Map::new()),
+        };
+        let context_lua = json_value_to_lua(lua, &context_value)
+            .map_err(|error| format!("Failed to convert request context to Lua: {}", error))?;
+        let client_info_value = match &context_value {
+            Value::Object(object) => object.get("client_info").cloned().unwrap_or(Value::Null),
+            _ => Value::Null,
+        };
+        let client_capabilities_value = match &context_value {
+            Value::Object(object) => object
+                .get("client_capabilities")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+            _ => Value::Object(serde_json::Map::new()),
+        };
+        let client_info_lua = json_value_to_lua(lua, &client_info_value)
+            .map_err(|error| format!("Failed to convert client_info to Lua: {}", error))?;
+        let client_capabilities_lua = json_value_to_lua(lua, &client_capabilities_value)
+            .map_err(|error| format!("Failed to convert client_capabilities to Lua: {}", error))?;
+        vulcan
+            .set("context", context_lua)
+            .map_err(|error| format!("Failed to set vulcan.context: {}", error))?;
+        vulcan
+            .set("client_info", client_info_lua)
+            .map_err(|error| format!("Failed to set vulcan.client_info: {}", error))?;
+        vulcan
+            .set("client_capabilities", client_capabilities_lua)
+            .map_err(|error| format!("Failed to set vulcan.client_capabilities: {}", error))?;
+        Ok(())
+    }
+
     /// Call a loaded Lua skill with the given JSON arguments.
     /// This is synchronous — wrap in spawn_blocking for async contexts.
-    pub fn call_skill(&self, tool_name: &str, args: &Value) -> Result<Value, String> {
+    pub fn call_skill(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        request_context: Option<&RequestContext>,
+    ) -> Result<Value, String> {
         let skill = self
             .skills
             .values()
@@ -1390,6 +1440,8 @@ impl LuaEngine {
             Self::compile_skill_into_lua(lua, skill, tool, true)?;
         }
 
+        Self::populate_vulcan_request_context(lua, request_context)?;
+
         let handler: Function = lua
             .globals()
             .get(func_name.as_str())
@@ -1398,27 +1450,36 @@ impl LuaEngine {
         // Convert JSON args to Lua table
         let args_table = json_to_lua_table(lua, args)?;
 
-        // Call the function
-        let result: LuaValue = handler.call(args_table).map_err(|e| {
-            let msg = format!("Lua skill '{}::{}' error: {}", skill.meta.name, group.name, e);
-            eprintln!("[LuaSkill:error] {}", msg);
-            msg
-        })?;
+        let call_result = (|| {
+            // Call the function
+            let result: LuaValue = handler.call(args_table).map_err(|e| {
+                let msg = format!("Lua skill '{}::{}' error: {}", skill.meta.name, group.name, e);
+                eprintln!("[LuaSkill:error] {}", msg);
+                msg
+            })?;
 
-        // Convert result back to JSON
-        let json_result = lua_value_to_json(&result).map_err(|e| {
-            let msg = format!("Lua skill '{}::{}' JSON conversion error: {}", skill.meta.name, group.name, e);
-            eprintln!("[LuaSkill:error] {}", msg);
-            msg
-        })?;
+            // Convert result back to JSON
+            lua_value_to_json(&result).map_err(|e| {
+                let msg = format!("Lua skill '{}::{}' JSON conversion error: {}", skill.meta.name, group.name, e);
+                eprintln!("[LuaSkill:error] {}", msg);
+                msg
+            })
+        })();
 
-        Ok(json_result)
+        Self::populate_vulcan_request_context(lua, None)?;
+        call_result
     }
 
     /// Execute arbitrary Lua code and return the result.
-    pub fn run_lua(&self, code: &str, args: &Value) -> Result<Value, String> {
+    pub fn run_lua(
+        &self,
+        code: &str,
+        args: &Value,
+        request_context: Option<&RequestContext>,
+    ) -> Result<Value, String> {
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
+        Self::populate_vulcan_request_context(lua, request_context)?;
 
         // Build a wrapper that passes args as a local variable
         let args_table = json_to_lua_table(lua, args)?;
@@ -1427,25 +1488,35 @@ impl LuaEngine {
 
         let wrapper = format!("return (function()\n  local args = __runlua_args\n  {}\nend)()", code);
 
-        let result = lua.load(&wrapper).eval::<LuaValue>()
-            .map_err(|e| {
-                let msg = format!("Lua run_lua error: {}", e);
-                eprintln!("[LuaSkill:error] {}", msg);
-                msg
-            })?;
+        let run_result = (|| {
+            let result = lua.load(&wrapper).eval::<LuaValue>()
+                .map_err(|e| {
+                    let msg = format!("Lua run_lua error: {}", e);
+                    eprintln!("[LuaSkill:error] {}", msg);
+                    msg
+                })?;
 
-        lua_value_to_json(&result)
+            lua_value_to_json(&result)
+        })();
+
+        Self::populate_vulcan_request_context(lua, None)?;
+        run_result
     }
 
     /// Read a skill-provided resource or expand a skill resource template by URI.
     /// 根据 URI 读取技能提供的资源，或展开技能的资源模板。
-    pub fn read_resource(&self, uri: &str) -> Result<Option<ResourceReadResult>, String> {
+    pub fn read_resource(
+        &self,
+        uri: &str,
+        request_context: Option<&RequestContext>,
+    ) -> Result<Option<ResourceReadResult>, String> {
         for skill in self.skills.values() {
             if let Some((group, resource)) = skill.meta.find_resource_with_group(uri) {
                 if is_lua_provider_file(&resource.file) {
                     let generated = self.run_skill_helper(
                         skill,
                         &resource.file,
+                        request_context,
                         &json!({
                             "uri": uri,
                             "skill_name": skill.meta.name,
@@ -1469,12 +1540,13 @@ impl LuaEngine {
             for template in skill.meta.resource_templates() {
                 if let Some(raw_params) = match_uri_template(&template.uri_template, uri) {
                     if is_lua_provider_file(&template.file) {
-                        let generated = self.run_skill_helper(
-                            skill,
-                            &template.file,
-                            &json!({
-                                "uri": uri,
-                                "uri_template": template.uri_template,
+                    let generated = self.run_skill_helper(
+                        skill,
+                        &template.file,
+                        request_context,
+                        &json!({
+                            "uri": uri,
+                            "uri_template": template.uri_template,
                                 "params": raw_params,
                                 "skill_name": skill.meta.name,
                                 "template_name": template.name,
@@ -1502,13 +1574,19 @@ impl LuaEngine {
 
     /// Resolve a skill-provided prompt into MCP PromptGetResult.
     /// 将技能提供的提示词解析为 MCP PromptGetResult。
-    pub fn get_prompt(&self, name: &str, arguments: &Value) -> Result<Option<PromptGetResult>, String> {
+    pub fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &Value,
+        request_context: Option<&RequestContext>,
+    ) -> Result<Option<PromptGetResult>, String> {
         for skill in self.skills.values() {
             if let Some((group, prompt)) = skill.meta.find_prompt_with_group(name) {
                 if is_lua_provider_file(&prompt.file) {
                     let generated = self.run_skill_helper(
                         skill,
                         &prompt.file,
+                        request_context,
                         &json!({
                             "name": prompt.name,
                             "arguments": arguments.clone(),
@@ -1539,6 +1617,7 @@ impl LuaEngine {
         &self,
         skill: &LoadedSkill,
         relative_path: &str,
+        request_context: Option<&RequestContext>,
         args: &Value,
     ) -> Result<Value, String> {
         let helper_path = skill.dir.join(relative_path);
@@ -1546,6 +1625,7 @@ impl LuaEngine {
             .map_err(|error| format!("Failed to read helper {}: {}", helper_path.display(), error))?;
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
+        Self::populate_vulcan_request_context(lua, request_context)?;
         let args_table = json_to_lua_table(lua, args)?;
         let chunk_name = format!("{}::{}", skill.meta.name, relative_path);
         let chunk = lua.load(&helper_source).set_name(&chunk_name);
@@ -1555,10 +1635,14 @@ impl LuaEngine {
         let handler: Function = outer
             .call(())
             .map_err(|error| format!("Helper init error for {}: {}", helper_path.display(), error))?;
-        let result: LuaValue = handler
-            .call(args_table)
-            .map_err(|error| format!("Helper runtime error for {}: {}", helper_path.display(), error))?;
-        lua_value_to_json(&result)
+        let helper_result = (|| {
+            let result: LuaValue = handler
+                .call(args_table)
+                .map_err(|error| format!("Helper runtime error for {}: {}", helper_path.display(), error))?;
+            lua_value_to_json(&result)
+        })();
+        Self::populate_vulcan_request_context(lua, None)?;
+        helper_result
     }
 
     /// Populate the vulcan.call function to dispatch to loaded skills.
@@ -1833,6 +1917,13 @@ impl LuaEngine {
             Ok(global_tool_cache().delete(&tool_name, &cache_id))
         })?;
         vulcan.set("cache_delete", cache_delete_fn)?;
+
+        // vulcan.context / vulcan.client_info / vulcan.client_capabilities
+        // These fields are refreshed for every request before Lua execution.
+        // 这些字段会在每次 Lua 执行前刷新，用于暴露当前请求的客户端上下文。
+        vulcan.set("context", lua.create_table()?)?;
+        vulcan.set("client_info", LuaValue::Nil)?;
+        vulcan.set("client_capabilities", lua.create_table()?)?;
 
         // Placeholder for call (populated after skills load)
         let call_stub = lua.create_function(|_, _: (LuaValue, LuaValue)| {

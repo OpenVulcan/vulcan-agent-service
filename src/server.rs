@@ -11,6 +11,18 @@ use crate::protocol::*;
 // Built-in tool handlers
 // ============================================================
 
+/// 中文：将 Lua/JSON 返回值格式化为 MCP 文本内容；基础标量原样输出，数组和对象按 JSON 输出。
+/// English: Format a Lua/JSON result into MCP text content; emit scalar values verbatim and serialize arrays/objects as JSON.
+fn format_json_value_for_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
 fn tool_add(args: &Value) -> ToolCallResult {
     let a = args.get("a").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let b = args.get("b").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -514,11 +526,25 @@ impl McpServer {
     /// Handle a single JSON-RPC message and return the JSON response (if any).
     /// Thread-safe: can be called from any transport.
     pub async fn handle_message(&self, msg: &Value) -> Option<Value> {
+        self.handle_message_with_context(msg, RequestContext::default())
+            .await
+    }
+
+    /// Handle a JSON-RPC message with request-scoped client context.
+    /// 使用请求级客户端上下文处理 JSON-RPC 消息。
+    pub async fn handle_message_with_context(
+        &self,
+        msg: &Value,
+        request_context: RequestContext,
+    ) -> Option<Value> {
         // Batch request (array)
         if let Some(batch) = msg.as_array() {
             let mut responses = Vec::new();
             for item in batch {
-                if let Some(resp) = self.handle_single(item).await {
+                if let Some(resp) = self
+                    .handle_single(item, request_context.clone())
+                    .await
+                {
                     responses.push(resp);
                 }
             }
@@ -528,14 +554,14 @@ impl McpServer {
             return None;
         }
 
-        self.handle_single(msg).await
+        self.handle_single(msg, request_context).await
     }
 
-    async fn handle_single(&self, msg: &Value) -> Option<Value> {
+    async fn handle_single(&self, msg: &Value, request_context: RequestContext) -> Option<Value> {
         if let Some(id) = msg.get("id").cloned() {
             let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
             let params = msg.get("params").cloned();
-            let result = self.handle_request(method, params).await;
+            let result = self.handle_request(method, params, request_context).await;
             match result {
                 Ok(value) => Some(json!({
                     "jsonrpc": "2.0",
@@ -553,7 +579,7 @@ impl McpServer {
             }
         } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
             let params = msg.get("params").cloned();
-            self.handle_notification(method, params).await;
+            self.handle_notification(method, params, request_context).await;
             None
         } else {
             None
@@ -564,17 +590,18 @@ impl McpServer {
         &self,
         method: &str,
         params: Option<Value>,
+        request_context: RequestContext,
     ) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => self.handle_initialize(params),
             "ping" => Ok(json!({})),
             "tools/list" => self.handle_tools_list(),
-            "tools/call" => self.handle_tools_call(params).await,
+            "tools/call" => self.handle_tools_call(params, &request_context).await,
             "resources/list" => self.handle_resources_list(),
-            "resources/read" => self.handle_resources_read(params),
+            "resources/read" => self.handle_resources_read(params, &request_context),
             "resources/templates/list" => self.handle_resource_templates_list(),
             "prompts/list" => self.handle_prompts_list(),
-            "prompts/get" => self.handle_prompts_get(params),
+            "prompts/get" => self.handle_prompts_get(params, &request_context),
             "roots/list" => self.handle_roots_list(),
             "completion/complete" => self.handle_completion(params),
             "sampling/createMessage" => self.handle_sampling(params),
@@ -587,7 +614,12 @@ impl McpServer {
         }
     }
 
-    async fn handle_notification(&self, method: &str, params: Option<Value>) {
+    async fn handle_notification(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        _request_context: RequestContext,
+    ) {
         match method {
             "notifications/initialized" => {
                 self.inner.lock().await.initialized = true;
@@ -709,7 +741,11 @@ impl McpServer {
         Ok(json!({ "tools": tools }))
     }
 
-    async fn handle_tools_call(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
+    async fn handle_tools_call(
+        &self,
+        params: Option<Value>,
+        request_context: &RequestContext,
+    ) -> Result<Value, (i64, String)> {
         let req: ToolCallRequest = serde_json::from_value(params.unwrap_or_default())
             .map_err(|e| (-32602, format!("Invalid tools/call params: {}", e)))?;
 
@@ -943,11 +979,12 @@ impl McpServer {
                 let code = code.to_string();
                 let call_args = args.get("args").cloned().unwrap_or(json!({}));
                 let engine_clone = engine.clone();
+                let request_context = request_context.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    engine_clone.run_lua(&code, &call_args)
+                    engine_clone.run_lua(&code, &call_args, Some(&request_context))
                 }).await.map_err(|e| (-32603, format!("runlua spawn error: {}", e)))?;
                 match result {
-                    Ok(val) => ToolCallResult { content: vec![TextContent::text(&serde_json::to_string(&val).unwrap_or_default())], is_error: None },
+                    Ok(val) => ToolCallResult { content: vec![TextContent::text(&format_json_value_for_text(&val))], is_error: None },
                     Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
                 }
             }
@@ -959,11 +996,12 @@ impl McpServer {
                         let engine_clone = engine.clone();
                         let tool_name = tool.name.clone();
                         let args_clone = args.clone();
+                        let request_context = request_context.clone();
                         let result = tokio::task::spawn_blocking(move || {
-                            engine_clone.call_skill(&tool_name, &args_clone)
+                            engine_clone.call_skill(&tool_name, &args_clone, Some(&request_context))
                         }).await.map_err(|e| (-32603, format!("Lua skill spawn error: {}", e)))?;
                         match result {
-                            Ok(val) => ToolCallResult { content: vec![TextContent::text(&serde_json::to_string(&val).unwrap_or_default())], is_error: None },
+                            Ok(val) => ToolCallResult { content: vec![TextContent::text(&format_json_value_for_text(&val))], is_error: None },
                             Err(e) => ToolCallResult { content: vec![TextContent::text(&e)], is_error: Some(true) },
                         }
                     } else {
@@ -983,7 +1021,11 @@ impl McpServer {
         Ok(json!({ "resources": inner.resources }))
     }
 
-    fn handle_resources_read(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
+    fn handle_resources_read(
+        &self,
+        params: Option<Value>,
+        request_context: &RequestContext,
+    ) -> Result<Value, (i64, String)> {
         let uri = params
             .and_then(|p| p.get("uri").cloned())
             .and_then(|v| v.as_str().map(String::from))
@@ -1022,7 +1064,7 @@ impl McpServer {
 
         if let Some(engine) = &self.lua_engine {
             if let Some(result) = engine
-                .read_resource(&uri)
+                .read_resource(&uri, Some(request_context))
                 .map_err(|e| (-32603, format!("Lua skill resource error: {}", e)))?
             {
                 return serde_json::to_value(result)
@@ -1043,7 +1085,11 @@ impl McpServer {
         Ok(json!({ "prompts": inner.prompts }))
     }
 
-    fn handle_prompts_get(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
+    fn handle_prompts_get(
+        &self,
+        params: Option<Value>,
+        request_context: &RequestContext,
+    ) -> Result<Value, (i64, String)> {
         let params = params.unwrap_or_default();
         let name = params
             .get("name")
@@ -1100,7 +1146,11 @@ impl McpServer {
             _ => {
                 if let Some(engine) = &self.lua_engine {
                     if let Some(result) = engine
-                        .get_prompt(&name, params.get("arguments").unwrap_or(&Value::Null))
+                        .get_prompt(
+                            &name,
+                            params.get("arguments").unwrap_or(&Value::Null),
+                            Some(request_context),
+                        )
                         .map_err(|e| (-32603, format!("Lua skill prompt error: {}", e)))?
                     {
                         return serde_json::to_value(result)

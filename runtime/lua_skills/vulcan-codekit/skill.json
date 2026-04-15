@@ -25,9 +25,9 @@
               "required": false
             },
             {
-              "name": "ignore",
+              "name": "noignore",
               "type": "boolean",
-              "description": "Enable default blacklist and scoped .gitignore rules (default: true). STRONGLY RECOMMENDED to keep enabled to prevent context explosion, unless you explicitly need to inspect build artifacts like target/dist.",
+              "description": "Disable default blacklist and scoped .gitignore rules only when set to true. Leave it unset for the normal ignored-by-default behavior.",
               "required": false
             },
             {
@@ -43,12 +43,6 @@
               "required": false
             },
             {
-              "name": "workdir",
-              "type": "string",
-              "description": "Optional absolute working-directory path. When the full result grows beyond the inline MCP budget, codekit-ast writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ before returning a compact preview.",
-              "required": false
-            },
-            {
               "name": "export_md_path",
               "type": "string",
               "description": "Optional absolute Markdown file path. When provided, codekit-ast exports the full result as a Markdown document to this path and returns only a generated-file notice with the exact path.",
@@ -56,7 +50,7 @@
             }
           ],
           "return_type": "table",
-          "prompt": "[OPERATION PROTOCOL] 1. EXPLORE FIRST: ALWAYS invoke this tool before executing file reads (read_file) or text searches (grep/rg). Use the precise line numbers and AST signatures as anchors for your next steps. 2. ANTI-EXPLOSION: This tool has a strict 5000-file circuit breaker limit for matched files and allows at most 20 explicitly listed files in one call; do not mix file paths and directory paths. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, codekit-ast scans a built-in source-code default set and excludes non-core formats such as css/html/json/yaml. Treat ext as a file-extension filter; if convenient, you may pass common language names such as rust or typescript and they will be normalized to matching extensions. 4. NO PAGINATION CONTRACT: codekit-ast no longer uses cache_id/page style follow-up calls. If the result is too large for inline MCP delivery, it automatically writes the full Markdown result to <workdir>/.vulcan/mcp/cache/ or to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 5. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
+          "prompt": "[OPERATION PROTOCOL] 1. EXPLORE FIRST: ALWAYS invoke this tool before executing file reads (read_file) or text searches (grep/rg). Use the precise line numbers and AST signatures as anchors for your next steps. 2. ANTI-EXPLOSION: This tool has a strict 5000-file circuit breaker limit for matched files and allows at most 20 explicitly listed files in one call; do not mix file paths and directory paths. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, codekit-ast scans a built-in source-code default set and excludes non-core formats such as css/html/json/yaml. Treat ext as a file-extension filter; if convenient, you may pass common language names such as rust or typescript and they will be normalized to matching extensions. 4. IGNORE RULE: ignored paths stay enabled by default; pass noignore=true only when you intentionally need ignored trees such as target/dist. 5. NO PAGINATION CONTRACT: codekit-ast no longer uses cache_id/page style follow-up calls. If the result is too large for inline MCP delivery, it automatically writes the full Markdown result to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 6. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
         },
         {
           "name": "codekit-rg",
@@ -77,15 +71,15 @@
               "required": false
             },
             {
-              "name": "rg_pattern",
-              "type": "string",
-              "description": "Ripgrep regex used for the first-pass text search. This parameter is required for a fresh search.",
+              "name": "noignore",
+              "type": "boolean",
+              "description": "Disable ignore rules only when set to true. Leave it unset for the normal ignored-by-default search behavior.",
               "required": false
             },
             {
-              "name": "workdir",
+              "name": "rg_pattern",
               "type": "string",
-              "description": "Optional absolute working-directory path. When the full result grows beyond the inline MCP budget, codekit-rg writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ before returning a compact preview.",
+              "description": "Ripgrep regex used for the first-pass text search. This parameter is required for a fresh search.",
               "required": false
             },
             {
@@ -102,7 +96,7 @@
             }
           ],
           "return_type": "table",
-          "prompt": "[OPERATION PROTOCOL] 1. USE THIS AFTER YOU KNOW THE TEXT SIGNAL: codekit-rg is for regex-to-structure narrowing, not for first-pass repository exploration. 2. SEARCH FLOW: it runs rg first and then only scans matched files with codekit-ast internals. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, codekit-rg uses the same built-in source-code default set as codekit-ast and excludes non-core formats such as css/html/json/yaml. Treat ext as a file-extension filter; if convenient, you may pass common language names such as rust or typescript and they will be normalized to matching extensions. 4. OUTPUT RULE: only structures directly related to the matched lines are returned. By default, function or method hits show only the matched lines plus structure context; enable show_full_function only when you need the full function source. 5. USAGE GUIDANCE: keep show_full_function disabled for repository-wide analysis or broad feature lookup; enable it for precise file-level analysis when the exact function body matters. 6. NO PAGINATION CONTRACT: codekit-rg no longer uses cache_id/page style follow-up calls. If the full result is too large for inline MCP delivery, it automatically writes the complete Markdown result to <workdir>/.vulcan/mcp/cache/ or to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 7. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
+          "prompt": "[OPERATION PROTOCOL] 1. USE THIS AFTER YOU KNOW THE TEXT SIGNAL: codekit-rg is for regex-to-structure narrowing, not for first-pass repository exploration. 2. SEARCH FLOW: it runs rg first and then only scans matched files with codekit-ast internals. 3. DEFAULT LANGUAGE SCOPE: when ext is omitted, codekit-rg uses the same built-in source-code default set as codekit-ast and excludes non-core formats such as css/html/json/yaml. Treat ext as a file-extension filter; if convenient, you may pass common language names such as rust or typescript and they will be normalized to matching extensions. 4. IGNORE RULE: ignored paths stay enabled by default; pass noignore=true only when you intentionally need ignored search targets. 5. OUTPUT RULE: only structures directly related to the matched lines are returned. By default, function or method hits show only the matched lines plus structure context; enable show_full_function only when you need the full function source. 6. USAGE GUIDANCE: keep show_full_function disabled for repository-wide analysis or broad feature lookup; enable it for precise file-level analysis when the exact function body matters. 7. NO PAGINATION CONTRACT: codekit-rg no longer uses cache_id/page style follow-up calls. If the full result is too large for inline MCP delivery, it automatically writes the complete Markdown result to vulcan.temp_dir/mcp/cache/ and returns a compact preview with the exact file path. 8. OPTIONAL EXPORT: when export_md_path is provided, export the full Markdown to that path and return only a generated-file notice with the exact path."
         },
         {
           "name": "codekit-markdown-menu",
@@ -123,14 +117,42 @@
               "required": false
             },
             {
-              "name": "ignore",
+              "name": "noignore",
               "type": "boolean",
-              "description": "Enable default blacklist and scoped .gitignore rules (default: true). Keep this enabled unless you intentionally need ignored documentation trees.",
+              "description": "Disable ignore rules only when set to true. Leave it unset for the normal ignored-by-default documentation scan behavior.",
               "required": false
             }
           ],
-          "return_type": "table",
-          "prompt": "[OPERATION PROTOCOL] 1. PURPOSE: use codekit-markdown-menu only for Markdown triage and document navigation; it does not summarize body text. 2. INPUT SHAPE: path supports files, directories, or newline-separated mixed path sets, and duplicate Markdown files are removed automatically. 3. OUTPUT RULE: the tool emits a single inline menu-style content block with a top-level file menu plus per-file `#` / `##` / `###` headings and line numbers only. 4. SCOPE GUIDANCE: keep recursive=false for a first pass over docs roots, then rerun on a smaller path or enable recursive when the file menu shows where the relevant document lives. 5. NO CACHE / NO EXPORT: this tool does not write cache files, does not use workdir, and does not export Markdown; if the client truncates the response, narrow the path set and call it again."
+          "return_type": "string",
+          "prompt": "[OPERATION PROTOCOL] 1. PURPOSE: use codekit-markdown-menu only for Markdown triage and document navigation; it does not summarize body text. 2. INPUT SHAPE: path supports files, directories, or newline-separated mixed path sets, and duplicate Markdown files are removed automatically. 3. OUTPUT RULE: the tool returns plain Markdown text directly, not a wrapped content table. The header starts with a dedicated scan-summary block, followed by a top-level file menu and per-file `#` / `##` / `###` headings with line numbers only. 4. IGNORE RULE: ignored paths stay enabled by default; pass noignore=true only when you intentionally need ignored documentation trees. 5. SCOPE GUIDANCE: keep recursive=false for a first pass over docs roots, then rerun on a smaller path or enable recursive when the file menu shows where the relevant document lives. 6. NO CACHE / NO EXPORT: this tool does not write cache files, does not use workdir, and does not export Markdown; if the client truncates the response, narrow the path set and call it again."
+        },
+        {
+          "name": "codekit-ast-tree",
+          "description": "[DIRECTORY AST TREE] Scan one or more directories and return a compact Markdown text tree grouped by directory. Each file is rendered as one line such as `name [l:120|t:2|i:1|f:3|m:8]`, where `l` is total lines, `t` is top-level type-like declarations, `i` is top-level impl/extension-style blocks, `f` is top-level free functions, and `m` is methods under top-level types or impl blocks.",
+          "lua_entry": "main_ast_tree.lua",
+          "lua_module": "codekit_ast_tree",
+          "parameters": [
+            {
+              "name": "path",
+              "type": "string",
+              "description": "Target directory path. Supports a single directory or multiple directories separated by newlines (\\n). This tool accepts directories only.",
+              "required": false
+            },
+            {
+              "name": "noignore",
+              "type": "boolean",
+              "description": "Disable ignore rules only when set to true. Leave it unset for the normal ignored-by-default code-tree scan behavior.",
+              "required": false
+            },
+            {
+              "name": "ext",
+              "type": "string",
+              "description": "Optional file-extension filter, comma-separated (for example rs,ts,lua). You may also pass common language names such as rust or typescript, which are normalized to the matching file extensions.",
+              "required": false
+            }
+          ],
+          "return_type": "string",
+          "prompt": "[OPERATION PROTOCOL] 1. PURPOSE: use codekit-ast-tree for repository-wide triage and file picking before detailed AST inspection. 2. INPUT SHAPE: pass one or more directories only; do not pass explicit files. The tool always walks subdirectories, so no recursive switch is exposed. 3. OUTPUT RULE: the tool returns plain Markdown text, not per-file JSON tables, to avoid escape-noise and keep the result easy for models to read. 4. IGNORE RULE: ignored paths stay enabled by default; pass noignore=true only when you intentionally need ignored trees. 5. COMPRESSION STRATEGY: files are grouped by directory and rendered one line at a time; only top-level type / impl names and their line spans are listed, while dynamic languages omit unreliable class-like guesses. 6. LARGE RESULT RULE: when the inline text exceeds the same client-side AST limit used by codekit-ast, the tool writes the complete content to vulcan.temp_dir/mcp/cache/ and prepends a cache-address notice to the returned text. 7. USAGE GUIDANCE: use the returned directory groups to choose the next smaller target set for codekit-ast or codekit-rg."
         },
         {
           "name": "codekit-patch",

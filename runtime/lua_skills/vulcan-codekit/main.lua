@@ -55,7 +55,9 @@ local MAX_MATCHED_FILES = 5000
 local MAX_EXPLICIT_FILES = 20
 local MAX_INLINE_RESULT_BYTES = 10000
 local MAX_HEADER_LINES = 4
-local MAX_COMMENT_SUMMARY_BYTES = 50
+local MAX_COMMENT_SUMMARY_BYTES = 100
+local DEFAULT_AST_CLIENT_CHAR_LIMIT = 10000
+local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
 local AST_GREP_TIMEOUT_MS = 30000
 local CURRENT_WORKING_DIRECTORY = nil
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
@@ -108,6 +110,62 @@ end
 
 local function starts_with(text, prefix)
     return tostring(text or ""):sub(1, #prefix) == prefix
+end
+
+--[[
+中文：从 `vulcan` 请求上下文中提取当前客户端名称，用于后续做客户端差异化策略。
+English: Extract the current client name from the `vulcan` request context for client-specific behavior.
+]]
+local function resolve_current_client_name()
+    local vulcan_context = type(vulcan) == "table" and vulcan or nil
+    if not vulcan_context then
+        return nil
+    end
+
+    local client_info = vulcan_context.client_info
+    if type(client_info) ~= "table" and type(vulcan_context.context) == "table" then
+        client_info = vulcan_context.context.client_info
+    end
+
+    if type(client_info) ~= "table" then
+        return nil
+    end
+
+    local client_name = trim(client_info.name)
+    if client_name == "" then
+        return nil
+    end
+    return client_name:lower()
+end
+
+--[[
+中文：按 MCP 客户端名称决定当前 AST 处理的字符预算上限，仅做初始化映射，不处理超限逻辑。
+English: Resolve the AST character budget for the current MCP client name. This only initializes the mapping and does not perform overflow handling.
+]]
+local function resolve_ast_client_char_limit(client_name)
+    local normalized_name = trim(client_name or ""):lower()
+    if normalized_name == "" then
+        return DEFAULT_AST_CLIENT_CHAR_LIMIT
+    end
+    if starts_with(normalized_name, "qwen-code-mcp-client") or normalized_name:find("qwen", 1, true) then
+        return 25000
+    end
+    if normalized_name == "codex-mcp-client" then
+        return 10000
+    end
+    if normalized_name:find("opencode", 1, true) or normalized_name:find("claude-code", 1, true) then
+        return 50000
+    end
+    return DEFAULT_AST_CLIENT_CHAR_LIMIT
+end
+
+--[[
+中文：在单次工具调用开始时初始化当前客户端的 AST 字符预算。
+English: Initialize the current client's AST character budget at the start of each tool call.
+]]
+local function initialize_ast_client_char_limit()
+    CURRENT_AST_CLIENT_CHAR_LIMIT = resolve_ast_client_char_limit(resolve_current_client_name())
+    return CURRENT_AST_CLIENT_CHAR_LIMIT
 end
 
 --[[
@@ -1097,40 +1155,6 @@ local function classify_target_path_modes(target_paths)
 end
 
 --[[
-中文：校验工作目录参数，要求为绝对路径且必须指向已存在的目录。
-English: Validate the workdir argument; it must be an absolute path pointing to an existing directory.
-]]
-local function validate_workdir_argument(value)
-    if value == nil then
-        return nil, nil
-    end
-    if type(value) ~= "string" or trim(value) == "" then
-        return nil, {
-            error = "invalid_workdir_argument",
-            message = "workdir must be a non-empty absolute directory path when provided",
-            actual_type = type(value),
-        }
-    end
-
-    local normalized = trim(value)
-    if not is_absolute_path(normalized) then
-        return nil, {
-            error = "invalid_workdir_argument",
-            message = "workdir must be an absolute directory path",
-            workdir = normalized,
-        }
-    end
-    if not vulcan.fs_exists(normalized) or not vulcan.fs_is_dir(normalized) then
-        return nil, {
-            error = "workdir_not_found",
-            message = "workdir must point to an existing directory",
-            workdir = normalized,
-        }
-    end
-    return normalized, nil
-end
-
---[[
 中文：校验 Markdown 导出路径，要求为绝对路径，并建议使用 `.md` 扩展名。
 English: Validate the Markdown export path; it must be absolute and should use the `.md` extension.
 ]]
@@ -1358,14 +1382,10 @@ local function write_text_file(file_path, content)
 end
 
 --[[
-中文：构造结果落盘目录；优先使用工作目录的 `.vulcan/mcp/cache`，否则回退到宿主提供的 MCP 临时目录。
-English: Resolve the spill directory, preferring `<workdir>/.vulcan/mcp/cache` and falling back to the host-provided MCP temp directory.
+中文：构造结果落盘目录，统一使用宿主提供的 MCP 临时目录，避免把缓存写入工作目录干扰模型判断。
+English: Resolve the spill directory using only the host-provided MCP temp directory so cache files never pollute the workspace.
 ]]
-local function resolve_large_result_directory(workdir)
-    if workdir then
-        return vulcan.path_join(workdir, ".vulcan", "mcp", "cache"), nil
-    end
-
+local function resolve_large_result_directory()
     local temp_root = trim(vulcan.temp_dir or "")
     if temp_root == "" then
         return nil, {
@@ -1463,7 +1483,7 @@ end
 中文：根据结果大小决定直接返回、导出 Markdown、或在保留全量返回的同时落盘完整 Markdown 并附加提示。
 English: Decide whether to return inline, export Markdown, or spill the full Markdown result to disk while still returning the complete result with an attached notice.
 ]]
-local function finalize_ast_result(full_result, workdir, export_md_path)
+local function finalize_ast_result(full_result, export_md_path)
     local markdown_text = build_ast_markdown(full_result)
     if export_md_path then
         local _, export_error = write_text_file(export_md_path, markdown_text)
@@ -1493,7 +1513,7 @@ local function finalize_ast_result(full_result, workdir, export_md_path)
         return serializable_result
     end
 
-    local output_directory, output_directory_error = resolve_large_result_directory(workdir)
+    local output_directory, output_directory_error = resolve_large_result_directory()
     if output_directory_error then
         return output_directory_error
     end
@@ -1817,7 +1837,7 @@ local function utf8_truncate_by_bytes(text, max_bytes)
     local source = tostring(text or "")
     local limit = tonumber(max_bytes) or #source
     if #source <= limit then
-        return source
+        return source, false
     end
 
     local index = 1
@@ -1840,7 +1860,7 @@ local function utf8_truncate_by_bytes(text, max_bytes)
         used = used + char_length
         index = index + char_length
     end
-    return table.concat(parts)
+    return table.concat(parts), true
 end
 
 --[[
@@ -1869,7 +1889,15 @@ local function summarize_comment_text(raw_comment)
     end
 
     local merged = normalize_whitespace(table.concat(effective_lines, " "))
-    return utf8_truncate_by_bytes(merged, MAX_COMMENT_SUMMARY_BYTES)
+    local summary_limit = MAX_COMMENT_SUMMARY_BYTES
+    if summary_limit > 3 and #merged > summary_limit then
+        summary_limit = summary_limit - 3
+    end
+    local truncated, was_truncated = utf8_truncate_by_bytes(merged, summary_limit)
+    if was_truncated and truncated ~= "" then
+        return truncated .. "..."
+    end
+    return truncated
 end
 
 local function extract_leading_comment(file_state, start_line, comment_config)
@@ -2298,31 +2326,31 @@ local function validate_recursive_argument(value)
 end
 
 --[[
-中文：校验忽略开关，默认启用忽略目录与忽略文件规则，只有显式传入 false 才会关闭。
-English: Validate the ignore toggle. Ignore directories and ignore-file rules are enabled by default and are disabled only when `false` is explicitly provided.
+中文：校验 `noignore` 开关，默认仍启用忽略目录与忽略文件规则，只有显式传入 `true` 时才关闭忽略。
+English: Validate the `noignore` toggle. Ignore directories and ignore-file rules remain enabled by default and are disabled only when `true` is explicitly provided.
 
 参数 / Parameters:
-- value(any): 用户传入的 `ignore` 参数。
-  The user-provided `ignore` argument.
+- value(any): 用户传入的 `noignore` 参数。
+  The user-provided `noignore` argument.
 
 返回 / Returns:
-- boolean: 规范化后的忽略开关，未传时默认为 true。
-  Normalized ignore flag, defaulting to true when omitted.
+- boolean: 规范化后的“忽略是否启用”开关，未传时默认为 true。
+  Normalized ignore-enabled flag, defaulting to true when omitted.
 - table|nil: 参数非法时返回结构化错误对象；成功时为 nil。
   A structured error object when the argument is invalid; otherwise nil.
 ]]
-local function validate_ignore_argument(value)
+local function validate_noignore_argument(value)
     if value == nil then
         return true, nil
     end
     if type(value) ~= "boolean" then
         return nil, {
-            error = "invalid_ignore_argument",
-            message = "ignore must be a boolean when provided",
+            error = "invalid_noignore_argument",
+            message = "noignore must be a boolean when provided",
             actual_type = type(value),
         }
     end
-    return value, nil
+    return not value, nil
 end
 
 --[[
@@ -2355,6 +2383,8 @@ end
 
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
+    initialize_ast_client_char_limit()
+
     local target_paths, path_error = validate_path_argument(args and args.path)
     if path_error then
         return path_error
@@ -2370,7 +2400,7 @@ return function(args)
         return extension_error
     end
 
-    local ignore_enabled, ignore_error = validate_ignore_argument(args and args.ignore)
+    local ignore_enabled, ignore_error = validate_noignore_argument(args and args.noignore)
     if ignore_error then
         return ignore_error
     end
@@ -2378,11 +2408,6 @@ return function(args)
     local include_comments, comment_error = validate_comment_argument(args and args.comment)
     if comment_error then
         return comment_error
-    end
-
-    local workdir, workdir_error = validate_workdir_argument(args and args.workdir)
-    if workdir_error then
-        return workdir_error
     end
 
     local export_md_path, export_md_error = validate_export_md_argument(args and args.export_md_path)
@@ -2477,5 +2502,5 @@ return function(args)
         files = file_results,
         errors = meta.errors,
         truncated = false,
-    }, workdir, export_md_path)
+    }, export_md_path)
 end

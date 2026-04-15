@@ -1,7 +1,7 @@
 # Vulcan CodeKit Example: {{topic}}
 
 Recommended call:
-`codekit-ast(path="{{path}}", recursive={{recursive}}, ignore={{ignore}}, ext="{{ext}}")`
+`codekit-ast(path="{{path}}", recursive={{recursive}}, noignore={{noignore}}, ext="{{ext}}")`
 
 Why this shape:
 {{reason}}

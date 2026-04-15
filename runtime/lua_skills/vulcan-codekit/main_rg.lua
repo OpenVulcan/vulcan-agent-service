@@ -157,6 +157,7 @@ local function load_ast_runtime_helpers()
 
     local helpers = {
         validate_extension_argument = extract_upvalue_by_name(ast_entry, "validate_extension_argument"),
+        validate_noignore_argument = extract_upvalue_by_name(ast_entry, "validate_noignore_argument"),
         collect_files = extract_upvalue_by_name(ast_entry, "collect_files"),
         find_binary = extract_upvalue_by_name(ast_entry, "find_binary"),
         run_language_scan = extract_upvalue_by_name(ast_entry, "run_language_scan"),
@@ -246,40 +247,6 @@ local function is_absolute_path(path)
     return normalized:match("^%a:[/\\]") ~= nil
         or starts_with(normalized, "\\\\")
         or starts_with(normalized, "/")
-end
-
---[[
-中文：校验工作目录参数，要求为绝对路径且必须指向已存在目录。
-English: Validate the workdir argument; it must be an absolute path pointing to an existing directory.
-]]
-local function validate_workdir_argument(value)
-    if value == nil then
-        return nil, nil
-    end
-    if type(value) ~= "string" or trim(value) == "" then
-        return nil, {
-            error = "invalid_workdir_argument",
-            message = "workdir must be a non-empty absolute directory path when provided",
-            actual_type = type(value),
-        }
-    end
-
-    local normalized = trim(value)
-    if not is_absolute_path(normalized) then
-        return nil, {
-            error = "invalid_workdir_argument",
-            message = "workdir must be an absolute directory path",
-            workdir = normalized,
-        }
-    end
-    if not vulcan.fs_exists(normalized) or not vulcan.fs_is_dir(normalized) then
-        return nil, {
-            error = "workdir_not_found",
-            message = "workdir must point to an existing directory",
-            workdir = normalized,
-        }
-    end
-    return normalized, nil
 end
 
 --[[
@@ -510,11 +477,7 @@ local function write_text_file(file_path, content)
     return file_path, nil
 end
 
-local function resolve_large_result_directory(workdir)
-    if workdir then
-        return vulcan.path_join(workdir, ".vulcan", "mcp", "cache"), nil
-    end
-
+local function resolve_large_result_directory()
     local temp_root = trim(vulcan.temp_dir or "")
     if temp_root == "" then
         return nil, {
@@ -571,8 +534,12 @@ local function quote_argument(value)
     return '"' .. tostring(value or ""):gsub('"', '\\"') .. '"'
 end
 
-local function build_rg_arguments(target_directory, extension_filter, rg_pattern)
+local function build_rg_arguments(target_directory, extension_filter, rg_pattern, ignore_enabled)
     local arguments = { "--json", "--line-number", "--color=never", "-e", rg_pattern, target_directory }
+    if ignore_enabled == false then
+        table.insert(arguments, "--hidden")
+        table.insert(arguments, "--no-ignore")
+    end
     local extensions = {}
     if type(extension_filter) == "table" then
         for extension_name in pairs(extension_filter) do
@@ -1091,7 +1058,7 @@ local function attach_large_result_notice(full_result, full_output_path, export_
     return annotated
 end
 
-local function finalize_rg_result(full_result, workdir, export_md_path)
+local function finalize_rg_result(full_result, export_md_path)
     local markdown_text = build_rg_markdown(full_result)
     if export_md_path then
         local _, export_error = write_text_file(export_md_path, markdown_text)
@@ -1121,7 +1088,7 @@ local function finalize_rg_result(full_result, workdir, export_md_path)
         return serializable_result
     end
 
-    local output_directory, output_directory_error = resolve_large_result_directory(workdir)
+    local output_directory, output_directory_error = resolve_large_result_directory()
     if output_directory_error then
         return output_directory_error
     end
@@ -1158,9 +1125,9 @@ return function(args)
         return extension_error
     end
 
-    local workdir, workdir_error = validate_workdir_argument(args and args.workdir)
-    if workdir_error then
-        return workdir_error
+    local ignore_enabled, ignore_error = helper_bundle.validate_noignore_argument(args and args.noignore)
+    if ignore_error then
+        return ignore_error
     end
 
     local export_md_path, export_md_error = validate_export_md_argument(args and args.export_md_path)
@@ -1178,7 +1145,7 @@ return function(args)
         return rg_binary_error
     end
 
-    local rg_arguments = build_rg_arguments(target_directory, extension_filter, rg_pattern)
+    local rg_arguments = build_rg_arguments(target_directory, extension_filter, rg_pattern, ignore_enabled)
     local rg_stdout, rg_stderr, rg_error = run_rg_command(rg_binary_path, rg_arguments)
     if rg_error then
         return rg_error
@@ -1200,10 +1167,10 @@ return function(args)
             files = {},
             errors = diagnostics,
             truncated = false,
-        }, workdir, export_md_path)
+        }, export_md_path)
     end
 
-    local files, _, collection_errors, collection_error = helper_bundle.collect_files(matched_file_paths, false, nil, true)
+    local files, _, collection_errors, collection_error = helper_bundle.collect_files(matched_file_paths, false, nil, ignore_enabled)
     if collection_error then
         return collection_error
     end
@@ -1280,5 +1247,5 @@ return function(args)
         files = file_results,
         errors = meta.errors,
         truncated = false,
-    }, workdir, export_md_path)
+    }, export_md_path)
 end

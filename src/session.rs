@@ -3,10 +3,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
+use crate::protocol::RequestContext;
+
 /// Streamable HTTP session metadata / Streamable HTTP 会话元数据。
 pub struct Session {
     /// Negotiated MCP protocol version for this session / 当前会话协商后的 MCP 协议版本。
     pub protocol_version: String,
+    /// Request-scoped client registration context / 请求级客户端注册上下文。
+    pub request_context: RequestContext,
     /// Optional sender bound to the active GET /mcp SSE stream / 绑定到当前 GET /mcp SSE 流的可选发送器。
     pub tx: Option<mpsc::Sender<Value>>,
 }
@@ -25,12 +29,15 @@ impl SessionManager {
     }
 
     /// Create a stateful session after initialize / 在 initialize 成功后创建状态化会话。
-    pub async fn create(&self, protocol_version: String) -> String {
+    pub async fn create(&self, mut request_context: RequestContext) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
+        let protocol_version = request_context.protocol_version.clone().unwrap_or_default();
+        request_context.session_id = Some(session_id.clone());
         self.sessions.lock().await.insert(
             session_id.clone(),
             Session {
                 protocol_version,
+                request_context,
                 tx: None,
             },
         );
@@ -91,6 +98,15 @@ impl SessionManager {
             .await
             .get(session_id)
             .map(|session| session.protocol_version.clone())
+    }
+
+    /// Read the stored request context for a session / 读取会话持有的请求上下文。
+    pub async fn request_context(&self, session_id: &str) -> Option<RequestContext> {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.request_context.clone())
     }
 }
 

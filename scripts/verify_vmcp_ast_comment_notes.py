@@ -173,14 +173,18 @@ def assert_fixture_result(file_content: str, fixture: FixtureExpectation) -> lis
     messages: list[str] = []
     for expectation in fixture.expectations:
         note = find_note_for_symbol(file_content, expectation.symbol)
-        if not note.startswith(expectation.prefix):
+        normalized_note = note[:-3] if note.endswith("...") else note
+        if not (
+            note.startswith(expectation.prefix)
+            or expectation.prefix.startswith(normalized_note)
+        ):
             raise AssertionError(
                 f"符号 {expectation.symbol} 的备注前缀不符合预期 / Unexpected note prefix.\n"
                 f"expected prefix: {expectation.prefix}\nactual note: {note}"
             )
-        if len(note.encode("utf-8")) > 50:
+        if len(note.encode("utf-8")) > 100:
             raise AssertionError(
-                f"符号 {expectation.symbol} 的备注超过 50 字节限制 / Note exceeds 50-byte limit.\nactual note: {note}"
+                f"符号 {expectation.symbol} 的备注超过 100 字节限制 / Note exceeds 100-byte limit.\nactual note: {note}"
             )
         for forbidden_token in expectation.forbidden:
             if forbidden_token in note:

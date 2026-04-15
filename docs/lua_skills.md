@@ -29,20 +29,33 @@
 `codekit-markdown-menu` 这类“文档目录筛选”工具，建议遵循以下规则：
 
 - 仅扫描 `.md` 文件，不尝试解析正文、表格或复杂 Markdown 语义
-- 输出统一为单个 `content` 文本块，前半部分是 `# FILE MENU`，后半部分是逐文件的标题目录详情
+- 返回值建议直接使用 Markdown 纯文本，而不是 JSON 包裹后的 `content` 字段
+- 输出头部应先给出独立的扫描统计节点，例如扫描文件数、包含标题的文件数、标题总数与错误数量
+- 统计之后再输出 `# FILE MENU` 与逐文件的标题目录详情
 - 每个文件仅展示 `#`、`##`、`###` 标题和行号，不展示正文内容
 - 支持目录、文件、多路径组合，并对重复 Markdown 文件去重
 - 允许目录与文件在一次请求中混用，便于截断后按文件菜单做精确重取
 - 对文档根目录做首轮筛选时建议 `recursive=false`，确认相关文档范围后再缩小路径或开启递归
 - 不做缓存、不写入 `workdir`、不导出 Markdown 文件；如果客户端侧发生截断，应根据 `# FILE MENU` 判断需要的文件或子目录，并重新调用本工具缩小范围
 
+`codekit-ast-tree` 这类“目录级 AST 导航”工具，建议遵循以下规则：
+
+- 只接受目录输入，不接受显式文件路径
+- 工具固定递归扫描子目录，不再暴露 `recursive` 开关
+- 返回值建议直接使用 Markdown 纯文本，而不是 JSON 包裹后的 `content` 字段
+- 输出按目录分组，每个文件固定占一行，避免把大量文件摘要压成单行导致模型误读
+- 文件指标缩写建议统一为：`l`=总行数，`t`=顶级类型级结构数量，`i`=顶级 impl/extension 风格结构数量，`f`=顶级自由函数数量，`m`=顶级类型或 impl 下的方法数量
+- 文件详情仅列出少量顶级 `impl/class/interface/struct/trait/protocol` 等名称及其行号范围，不展开函数详情
+- 对 Lua 这类动态语言，不要强行推断不稳定的“类”概念；当不存在稳定类型结构时，仅输出可靠的行数与函数统计
+- 适合作为全盘分析、功能检索前的首轮文件筛选入口；真正需要细节时，再转向 `codekit-ast` 或 `codekit-rg`
+- 当输出文本超过与 `codekit-ast` 相同的客户端字符预算时，应将完整结果写入 `vulcan.temp_dir/mcp/cache/`，并在返回正文最前面附带缓存绝对路径备注
+
 `codekit-ast` 与 `codekit-rg` 当前推荐统一采用以下“大结果处理规则”：
 
 - 不再暴露 `cache_id`、`page`、`truncate_chars`、`cache_ttl_sec` 这类工具级缓存/分页参数
 - 结果 JSON 编码后若不超过 `10000` 字节，则直接内联返回完整内容
 - 结果 JSON 编码后若超过 `10000` 字节，则将完整 Markdown 写入磁盘，只返回紧凑预览
-- 若调用方提供 `workdir`，完整 Markdown 写入 `<workdir>/.vulcan/mcp/cache/`
-- 若未提供 `workdir`，完整 Markdown 写入 `vulcan.temp_dir/mcp/cache/`
+- 完整 Markdown 统一写入 `vulcan.temp_dir/mcp/cache/`，不再写入工作目录，避免缓存文件干扰模型对仓库状态的判断
 - 当结果发生落盘时，返回结果顶层必须包含提示消息与完整文件绝对路径
 - 若提供 `export_md_path`，则仅导出完整 Markdown 文件，并返回“文件已生成 + 绝对路径”的简洁提示，不再内联结果
 
@@ -68,6 +81,8 @@ python scripts/verify_vmcp_ast_comment_notes.py
 - 当调用方传入 `rs`、`ts`、`js` 这类明确扩展名时，应按精确扩展名处理，不要意外放大过滤范围
 - 默认排除 `css/html/json/yaml` 这类样式、标记或数据配置格式
 - 若确实需要覆盖配置类文件，再显式传入 `ext`
+- `noignore` 的语义应统一为“关闭忽略规则”；默认不传时仍启用 `.gitignore`、`.ignore` 和内建黑名单
+- 仅当调用方显式传入 `noignore=true` 时，才关闭忽略规则并扫描原本会被过滤的目录树
 
 `codekit-patch` 这类“结构重定位替换”的工具，建议遵循以下规则：
 

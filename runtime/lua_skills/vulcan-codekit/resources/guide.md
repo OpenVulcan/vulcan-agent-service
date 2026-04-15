@@ -13,7 +13,7 @@ Important limits:
 - Matched files are capped at 5000.
 - Explicit file paths are capped at 20.
 - Do not mix explicit file paths and directory paths in one request.
-- Keep `ignore=true` unless you intentionally need ignored source trees.
+- Leave `noignore` unset unless you intentionally need ignored source trees.
 
 Interpretation tips:
 - Use line spans from the AST summary to decide which files deserve deeper reads.

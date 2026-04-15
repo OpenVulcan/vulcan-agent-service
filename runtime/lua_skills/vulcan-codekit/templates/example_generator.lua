@@ -4,7 +4,7 @@ return function(args)
 
   local path = "."
   local recursive = false
-  local ignore = true
+  local noignore = false
   local ext = "rs,ts,js"
   local reason = "Start shallow so you can identify top-level entrypoints without flooding the client with nested implementation details."
   local next_step = "Open the top-level files with the clearest ownership signals and then continue with targeted AST calls."
@@ -26,7 +26,7 @@ return function(args)
     "# ast-grep Example: " .. topic,
     "",
     "Recommended call:",
-    string.format("`vmcp-ast(path=\"%s\", recursive=%s, ignore=%s, ext=\"%s\")`", path, tostring(recursive), tostring(ignore), ext),
+    string.format("`codekit-ast(path=\"%s\", recursive=%s, noignore=%s, ext=\"%s\")`", path, tostring(recursive), tostring(noignore), ext),
     "",
     "Why this shape:",
     reason,

@@ -17,7 +17,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::protocol::{negotiate_version, PROTOCOL_VERSION_LATEST};
+use crate::protocol::{InitializeRequest, RequestContext, negotiate_version, PROTOCOL_VERSION_LATEST};
 use crate::server::McpServer;
 use crate::session::{SessionManager, SseSessionManager};
 
@@ -299,7 +299,28 @@ async fn handle_initialize_request(
         );
     };
 
-    let new_session_id = state.sessions.create(protocol_version).await;
+    let initialize_request: InitializeRequest = match serde_json::from_value(
+        msg.get("params").cloned().unwrap_or_default(),
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            return plain_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("initialize params could not be reconstructed after success: {}", error),
+            );
+        }
+    };
+
+    let new_session_id = state
+        .sessions
+        .create(RequestContext {
+            transport: Some("streamable_http".to_string()),
+            session_id: None,
+            protocol_version: Some(protocol_version),
+            client_info: initialize_request.client_info,
+            client_capabilities: initialize_request.capabilities,
+        })
+        .await;
     let mut resp = Json(response).into_response();
     resp.headers_mut().insert(
         "Mcp-Session-Id",
@@ -329,7 +350,16 @@ async fn handle_streamable_request(
         return resp;
     }
 
-    let Some(response) = state.server.handle_message(&msg).await else {
+    let request_context = match state.sessions.request_context(&session_id).await {
+        Some(context) => context,
+        None => return plain_response(StatusCode::NOT_FOUND, "Session not found."),
+    };
+
+    let Some(response) = state
+        .server
+        .handle_message_with_context(&msg, request_context)
+        .await
+    else {
         return plain_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Request did not produce a JSON-RPC response.",
@@ -365,7 +395,12 @@ async fn handle_streamable_notification(
         return resp;
     }
 
-    let _ = state.server.handle_message(&msg).await;
+    if let Some(request_context) = state.sessions.request_context(&session_id).await {
+        let _ = state
+            .server
+            .handle_message_with_context(&msg, request_context)
+            .await;
+    }
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -390,7 +425,12 @@ async fn handle_streamable_client_response(
         return resp;
     }
 
-    let _ = state.server.handle_message(&msg).await;
+    if let Some(request_context) = state.sessions.request_context(&session_id).await {
+        let _ = state
+            .server
+            .handle_message_with_context(&msg, request_context)
+            .await;
+    }
     StatusCode::ACCEPTED.into_response()
 }
 
