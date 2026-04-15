@@ -2,3 +2,6 @@
 /output
 /third_party
 /mcp_server
+/.qwen
+/.vulcan
+/runtime/lua_skills/__tools/
