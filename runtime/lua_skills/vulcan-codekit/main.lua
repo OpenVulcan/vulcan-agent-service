@@ -62,6 +62,8 @@ local AST_GREP_TIMEOUT_MS = 30000
 local CURRENT_WORKING_DIRECTORY = nil
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
 local LFS_MODULE = nil
+local SHARED_LENGTH_HELPERS = nil
+local load_shared_length_helpers
 local DEFAULT_SOURCE_LANGUAGES = {
     bash = true,
     c = true,
@@ -164,8 +166,12 @@ end
 English: Initialize the current client's AST character budget at the start of each tool call.
 ]]
 local function initialize_ast_client_char_limit()
-    CURRENT_AST_CLIENT_CHAR_LIMIT = resolve_ast_client_char_limit(resolve_current_client_name())
-    return CURRENT_AST_CLIENT_CHAR_LIMIT
+    local helpers, helper_error = load_shared_length_helpers()
+    if helper_error then
+        return nil, helper_error
+    end
+    CURRENT_AST_CLIENT_CHAR_LIMIT = helpers.initialize_client_char_limit(vulcan)
+    return CURRENT_AST_CLIENT_CHAR_LIMIT, nil
 end
 
 --[[
@@ -474,6 +480,38 @@ end
 -- 路径与语言解析 / Resolve skill-relative paths and normalize language keys.
 local function get_skill_dir()
     return __skill_dir_codekit_ast_detail or __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
+end
+
+--[[
+中文：懒加载共享长度规则模块，让多个 codekit 工具复用同一套客户端字符预算映射。
+English: Lazily load the shared length-policy module so multiple codekit tools reuse one client budget mapping.
+]]
+load_shared_length_helpers = function()
+    if SHARED_LENGTH_HELPERS then
+        return SHARED_LENGTH_HELPERS, nil
+    end
+
+    local helper_path = vulcan.path_join(get_skill_dir(), "shared_length.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        return nil, {
+            error = "shared_length_load_failed",
+            message = tostring(load_error),
+            path = helper_path,
+        }
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        return nil, {
+            error = "shared_length_invalid",
+            message = ok and "shared_length.lua did not return a table" or tostring(helpers),
+            path = helper_path,
+        }
+    end
+
+    SHARED_LENGTH_HELPERS = helpers
+    return SHARED_LENGTH_HELPERS, nil
 end
 
 --[[
@@ -2398,7 +2436,10 @@ end
 
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
-    initialize_ast_client_char_limit()
+    local _, client_limit_error = initialize_ast_client_char_limit()
+    if client_limit_error then
+        return client_limit_error
+    end
 
     -- 中文：为 `codekit-rg`、`codekit-markdown-menu` 与 `codekit-ast-tree` 保留共享 helper 的闭包 upvalue。
     -- English: Keep shared helper functions as closure upvalues so `codekit-rg`, `codekit-markdown-menu`, and `codekit-ast-tree` can continue extracting them.

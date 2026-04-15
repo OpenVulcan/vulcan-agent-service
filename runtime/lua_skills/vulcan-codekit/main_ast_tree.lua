@@ -10,6 +10,7 @@ local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete codekit-ast-tree result has already been written to %s. Open that file directly."
 local AST_RUNTIME_HELPERS = nil
 local LFS_MODULE = nil
+local SHARED_LENGTH_HELPERS = nil
 
 local TYPE_LIKE_KINDS = {
     class = true,
@@ -48,6 +49,38 @@ English: Resolve the current skill directory, preferring the host-injected direc
 ]]
 local function get_skill_dir()
     return __skill_dir_codekit_ast_tree or __skill_dir_codekit_ast_detail or __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
+end
+
+--[[
+中文：懒加载共享长度规则模块，让 tree/detail/rg 复用同一套客户端字符预算映射。
+English: Lazily load the shared length-policy module so tree/detail/rg reuse the same client budget mapping.
+]]
+local function load_shared_length_helpers()
+    if SHARED_LENGTH_HELPERS then
+        return SHARED_LENGTH_HELPERS, nil
+    end
+
+    local helper_path = vulcan.path_join(get_skill_dir(), "shared_length.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        return nil, {
+            error = "shared_length_load_failed",
+            message = tostring(load_error),
+            path = helper_path,
+        }
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        return nil, {
+            error = "shared_length_invalid",
+            message = ok and "shared_length.lua did not return a table" or tostring(helpers),
+            path = helper_path,
+        }
+    end
+
+    SHARED_LENGTH_HELPERS = helpers
+    return SHARED_LENGTH_HELPERS, nil
 end
 
 --[[
@@ -182,45 +215,13 @@ end
 中文：从当前请求上下文中提取客户端名称，以便沿用与主 AST 工具一致的字符预算规则。
 English: Resolve the current client name from request context so the same character-budget rules as the main AST tool can be reused.
 ]]
-local function resolve_current_client_name()
-    local vulcan_context = type(vulcan) == "table" and vulcan or nil
-    if not vulcan_context then
-        return nil
-    end
-
-    local client_info = vulcan_context.client_info
-    if type(client_info) ~= "table" and type(vulcan_context.context) == "table" then
-        client_info = vulcan_context.context.client_info
-    end
-    if type(client_info) ~= "table" then
-        return nil
-    end
-
-    local client_name = trim(client_info.name or "")
-    if client_name == "" then
-        return nil
-    end
-    return client_name
-end
-
---[[
-中文：根据客户端名称初始化字符预算，规则与主 `codekit-ast-detail` 保持一致。
-English: Initialize the output character budget from the client name, keeping the same rules as the main `codekit-ast-detail` tool.
-]]
 local function initialize_ast_client_char_limit()
-    local client_name = trim(resolve_current_client_name() or ""):lower()
-    if client_name == "" then
-        CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
-    elseif starts_with(client_name, "qwen-code-mcp-client") or client_name:find("qwen", 1, true) then
-        CURRENT_AST_CLIENT_CHAR_LIMIT = 25000
-    elseif client_name == "codex-mcp-client" then
-        CURRENT_AST_CLIENT_CHAR_LIMIT = 10000
-    elseif client_name:find("opencode", 1, true) or client_name:find("claude-code", 1, true) then
-        CURRENT_AST_CLIENT_CHAR_LIMIT = 50000
-    else
-        CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
+    local helpers, helper_error = load_shared_length_helpers()
+    if helper_error then
+        return nil, helper_error
     end
-    return CURRENT_AST_CLIENT_CHAR_LIMIT
+    CURRENT_AST_CLIENT_CHAR_LIMIT = helpers.initialize_client_char_limit(vulcan)
+    return CURRENT_AST_CLIENT_CHAR_LIMIT, nil
 end
 
 --[[
@@ -679,7 +680,10 @@ end
 
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
-    initialize_ast_client_char_limit()
+    local _, client_limit_error = initialize_ast_client_char_limit()
+    if client_limit_error then
+        return client_limit_error
+    end
 
     local helpers, helpers_error = load_ast_runtime_helpers()
     if helpers_error then

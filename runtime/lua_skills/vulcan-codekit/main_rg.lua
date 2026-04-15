@@ -6,10 +6,12 @@ English: Perform ripgrep text matching first, then reuse codekit-ast structural 
 
 -- 工具常量 / Tool constants for rg execution and response shaping.
 local RG_TIMEOUT_MS = 30000
-local MAX_INLINE_RESULT_BYTES = 10000
 local MAX_MATCH_LINES_PER_SYMBOL = 12
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
 local LFS_MODULE = nil
+local DEFAULT_AST_CLIENT_CHAR_LIMIT = 10000
+local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
+local SHARED_LENGTH_HELPERS = nil
 
 -- 缓存的 codekit-ast 助手集合 / Cached codekit-ast helper bundle extracted from the existing skill entry.
 local AST_RUNTIME_HELPERS = nil
@@ -92,6 +94,51 @@ English: Resolve the current skill directory. Prefer the host-injected `__skill_
 ]]
 local function get_skill_dir()
     return __skill_dir_codekit_rg or __skill_dir_ast_grep or "."
+end
+
+--[[
+中文：懒加载共享长度规则模块，让 rg/detail/tree 复用同一套客户端字符预算映射。
+English: Lazily load the shared length-policy module so rg/detail/tree reuse the same client budget mapping.
+]]
+local function load_shared_length_helpers()
+    if SHARED_LENGTH_HELPERS then
+        return SHARED_LENGTH_HELPERS, nil
+    end
+
+    local helper_path = vulcan.path_join(get_skill_dir(), "shared_length.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        return nil, {
+            error = "shared_length_load_failed",
+            message = tostring(load_error),
+            path = helper_path,
+        }
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        return nil, {
+            error = "shared_length_invalid",
+            message = ok and "shared_length.lua did not return a table" or tostring(helpers),
+            path = helper_path,
+        }
+    end
+
+    SHARED_LENGTH_HELPERS = helpers
+    return SHARED_LENGTH_HELPERS, nil
+end
+
+--[[
+中文：在单次工具调用开始时初始化当前客户端的 RG 字符预算。
+English: Initialize the current client's RG character budget at the start of each tool call.
+]]
+local function initialize_rg_client_char_limit()
+    local helpers, helper_error = load_shared_length_helpers()
+    if helper_error then
+        return nil, helper_error
+    end
+    CURRENT_AST_CLIENT_CHAR_LIMIT = helpers.initialize_client_char_limit(vulcan)
+    return CURRENT_AST_CLIENT_CHAR_LIMIT, nil
 end
 
 --[[
@@ -242,47 +289,6 @@ local function validate_rg_pattern_argument(value)
     return trim(value), nil
 end
 
-local function is_absolute_path(path)
-    local normalized = tostring(path or "")
-    return normalized:match("^%a:[/\\]") ~= nil
-        or starts_with(normalized, "\\\\")
-        or starts_with(normalized, "/")
-end
-
---[[
-中文：校验 Markdown 导出路径，要求为绝对路径并以 `.md` 结尾。
-English: Validate the Markdown export path; it must be absolute and end with `.md`.
-]]
-local function validate_export_md_argument(value)
-    if value == nil then
-        return nil, nil
-    end
-    if type(value) ~= "string" or trim(value) == "" then
-        return nil, {
-            error = "invalid_export_md_argument",
-            message = "export_md_path must be a non-empty absolute file path when provided",
-            actual_type = type(value),
-        }
-    end
-
-    local normalized = trim(value)
-    if not is_absolute_path(normalized) then
-        return nil, {
-            error = "invalid_export_md_argument",
-            message = "export_md_path must be an absolute file path",
-            export_md_path = normalized,
-        }
-    end
-    if not normalized:lower():match("%.md$") then
-        return nil, {
-            error = "invalid_export_md_argument",
-            message = "export_md_path must end with .md",
-            export_md_path = normalized,
-        }
-    end
-    return normalized, nil
-end
-
 --[[
 中文：校验“是否展开完整函数源码”的布尔参数。未提供时默认为 false。
 English: Validate the boolean flag that controls whether full function source should be expanded. Defaults to false when omitted.
@@ -305,6 +311,20 @@ local function validate_show_full_function_argument(value)
         }
     end
     return value, nil
+end
+
+--[[
+中文：显式拒绝 `export_md_path` 参数，避免调用方误以为 `codekit-rg` 仍支持导出到指定目录。
+English: Explicitly reject the `export_md_path` argument so callers do not assume `codekit-rg` still supports exporting to a chosen path.
+]]
+local function validate_export_md_absence(value)
+    if value ~= nil then
+        return {
+            error = "export_md_path_not_supported",
+            message = "codekit-rg no longer supports the export_md_path argument",
+        }
+    end
+    return nil
 end
 
 local function get_lfs_module()
@@ -1008,23 +1028,24 @@ local function render_error_lines(errors)
 end
 
 --[[
-中文：把 codekit-rg 结果渲染为 Markdown 文本，便于导出成可阅读的结果文件。
-English: Render the codekit-rg result into Markdown text so it can be exported as a readable result file.
+中文：把 `codekit-rg` 结果渲染为 Markdown 纯文本，便于模型直接阅读并继续下一步分析。
+English: Render the `codekit-rg` result as plain Markdown text so the model can read it directly and continue analysis.
 ]]
 local function build_rg_markdown(result)
     local lines = {
-        "# codekit-rg Export",
+        "# RG SUMMARY",
         "",
-        string.format("- Files scanned: %d", result.files_scanned or 0),
-        string.format("- Files with matches: %d", result.files_with_matches or 0),
-        string.format("- Items found: %d", result.items_found or 0),
-        string.format("- rg matches: %d", result.rg_matches or 0),
+        string.format("- files_scanned: %d", result.files_scanned or 0),
+        string.format("- files_with_matches: %d", result.files_with_matches or 0),
+        string.format("- items_found: %d", result.items_found or 0),
+        string.format("- rg_matches: %d", result.rg_matches or 0),
+        string.format("- errors: %d", #(result.errors or {})),
     }
 
     local error_lines = render_error_lines(result.errors)
     if #error_lines > 0 then
         table.insert(lines, "")
-        table.insert(lines, "## Errors")
+        table.insert(lines, "## ERRORS")
         table.insert(lines, "")
         for _, line in ipairs(error_lines) do
             table.insert(lines, line)
@@ -1033,9 +1054,9 @@ local function build_rg_markdown(result)
 
     for _, file_result in ipairs(result.files or {}) do
         table.insert(lines, "")
-        table.insert(lines, "## " .. tostring(file_result.file or "unknown"))
+        table.insert(lines, "## FILE " .. tostring(file_result.file or "unknown"))
         table.insert(lines, "")
-        table.insert(lines, string.format("- Lines: %d", tonumber(file_result.lines) or 0))
+        table.insert(lines, string.format("- lines: %d", tonumber(file_result.lines) or 0))
         table.insert(lines, "")
         table.insert(lines, "```text")
         if trim(file_result.content or "") ~= "" then
@@ -1047,45 +1068,11 @@ local function build_rg_markdown(result)
     return table.concat(lines, "\n")
 end
 
-local function attach_large_result_notice(full_result, full_output_path, export_md_path, total_bytes)
-    local annotated = shallow_copy_object(full_result)
-    annotated["!msg"] = build_large_result_notice(full_output_path)
-    annotated.full_output_file = full_output_path
-    annotated.full_output_bytes = total_bytes
-    if export_md_path then
-        annotated.exported_markdown_path = export_md_path
-    end
-    return annotated
-end
-
-local function finalize_rg_result(full_result, export_md_path)
+local function finalize_rg_result(full_result)
     local markdown_text = build_rg_markdown(full_result)
-    if export_md_path then
-        local _, export_error = write_text_file(export_md_path, markdown_text)
-        if export_error then
-            return export_error
-        end
-        -- 中文：显式导出时进入静默导出模式，仅返回导出成功提示与路径，避免同时返回结构内联结果。
-        -- English: When explicit export is requested, switch to silent export mode and return only a success notice with the file path instead of inline structure output.
-        return {
-            exported_markdown_path = export_md_path,
-            message = string.format("Markdown file has been generated at %s", export_md_path),
-        }
-    end
-
-    local serializable_result = shallow_copy_object(full_result)
-
-    local ok, encoded = pcall(vulcan.json_encode, serializable_result)
-    if not ok or type(encoded) ~= "string" then
-        return {
-            error = "result_encoding_failed",
-            message = "failed to encode codekit-rg result as JSON",
-        }
-    end
-
-    if #encoded <= MAX_INLINE_RESULT_BYTES then
-        serializable_result.truncated = false
-        return serializable_result
+    local normalized = tostring(markdown_text or "")
+    if #normalized <= CURRENT_AST_CLIENT_CHAR_LIMIT then
+        return normalized
     end
 
     local output_directory, output_directory_error = resolve_large_result_directory()
@@ -1095,16 +1082,26 @@ local function finalize_rg_result(full_result, export_md_path)
 
     local file_id = build_spill_file_id("vmcp_rg")
     local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
-    local _, write_error = write_text_file(full_output_path, markdown_text)
+    local _, write_error = write_text_file(full_output_path, normalized)
     if write_error then
         return write_error
     end
 
-    return attach_large_result_notice(serializable_result, full_output_path, export_md_path, #markdown_text)
+    return table.concat({
+        string.format("> " .. LARGE_RESULT_NOTICE_TEMPLATE, full_output_path),
+        string.format("> Inline limit: %d chars", CURRENT_AST_CLIENT_CHAR_LIMIT),
+        "",
+        normalized,
+    }, "\n")
 end
 
 -- 工具入口 / Tool entry point invoked by the MCP runtime.
 return function(args)
+    local _, client_limit_error = initialize_rg_client_char_limit()
+    if client_limit_error then
+        return client_limit_error
+    end
+
     local helper_bundle, helper_error = load_ast_runtime_helpers()
     if helper_error then
         return helper_error
@@ -1130,7 +1127,7 @@ return function(args)
         return ignore_error
     end
 
-    local export_md_path, export_md_error = validate_export_md_argument(args and args.export_md_path)
+    local export_md_error = validate_export_md_absence(args and args.export_md_path)
     if export_md_error then
         return export_md_error
     end
@@ -1167,7 +1164,7 @@ return function(args)
             files = {},
             errors = diagnostics,
             truncated = false,
-        }, export_md_path)
+        })
     end
 
     local files, _, collection_errors, collection_error = helper_bundle.collect_files(matched_file_paths, false, nil, ignore_enabled)
@@ -1247,5 +1244,5 @@ return function(args)
         files = file_results,
         errors = meta.errors,
         truncated = false,
-    }, export_md_path)
+    })
 end
