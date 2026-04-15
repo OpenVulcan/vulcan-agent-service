@@ -1,7 +1,7 @@
 --[[
 codekit-rg
-中文：先基于 ripgrep 做文本命中，再结合 codekit-ast 的结构能力，仅输出与命中行直接相关的 AST 结构。
-English: Perform ripgrep text matching first, then reuse codekit-ast structural analysis to return only AST structures directly related to the matched lines.
+中文：先基于 ripgrep 做文本命中，再结合 codekit-ast-detail 的结构能力，仅输出与命中行直接相关的 AST 结构。
+English: Perform ripgrep text matching first, then reuse codekit-ast-detail structural analysis to return only AST structures directly related to the matched lines.
 ]]
 
 -- 工具常量 / Tool constants for rg execution and response shaping.
@@ -13,7 +13,7 @@ local DEFAULT_AST_CLIENT_CHAR_LIMIT = 10000
 local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
 local SHARED_LENGTH_HELPERS = nil
 
--- 缓存的 codekit-ast 助手集合 / Cached codekit-ast helper bundle extracted from the existing skill entry.
+-- 缓存的 codekit-ast-detail 助手集合 / Cached codekit-ast-detail helper bundle extracted from the existing skill entry.
 local AST_RUNTIME_HELPERS = nil
 local FILE_SOURCE_CACHE = {}
 
@@ -83,8 +83,8 @@ local function format_line_span(start_line, end_line)
 end
 
 --[[
-中文：获取当前 skill 目录，优先使用宿主注入的 `__skill_dir_ast_grep`，缺失时回退到当前目录。
-English: Resolve the current skill directory. Prefer the host-injected `__skill_dir_ast_grep` and fall back to the current directory when absent.
+中文：获取当前 skill 目录，优先使用宿主注入的 `__skill_dir_codekit_rg`，缺失时回退到当前目录。
+English: Resolve the current skill directory. Prefer the host-injected `__skill_dir_codekit_rg` and fall back to the current directory when absent.
 
 参数 / Parameters:
 - 无 / None.
@@ -93,7 +93,7 @@ English: Resolve the current skill directory. Prefer the host-injected `__skill_
 - string: 当前 skill 目录 / Current skill directory.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_rg or __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_rg or "."
 end
 
 --[[
@@ -142,8 +142,8 @@ local function initialize_rg_client_char_limit()
 end
 
 --[[
-中文：通过 `debug.getupvalue` 从现有 `codekit-ast` 入口中提取内部助手函数，避免复制一整套 AST 解析实现。
-English: Extract internal helper functions from the existing `codekit-ast` entry with `debug.getupvalue` to avoid duplicating the full AST parsing pipeline.
+中文：通过 `debug.getupvalue` 从现有 `codekit-ast-detail` 入口中提取内部助手函数，避免复制一整套 AST 解析实现。
+English: Extract internal helper functions from the existing `codekit-ast-detail` entry with `debug.getupvalue` to avoid duplicating the full AST parsing pipeline.
 
 参数 / Parameters:
 - fn(function): 待检查 upvalue 的函数 / Function whose upvalues will be inspected.
@@ -168,8 +168,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：懒加载 `codekit-ast` 内部助手，确保 `codekit-rg` 与现有 AST 规则、文件收集和结构归一化逻辑保持一致。
-English: Lazily load internal `codekit-ast` helpers so `codekit-rg` stays aligned with the existing AST rules, file collection logic, and symbol normalization flow.
+中文：懒加载 `codekit-ast-detail` 内部助手，确保 `codekit-rg` 与现有 AST 规则、文件收集和结构归一化逻辑保持一致。
+English: Lazily load internal `codekit-ast-detail` helpers so `codekit-rg` stays aligned with the existing AST rules, file collection logic, and symbol normalization flow.
 
 参数 / Parameters:
 - 无 / None.
@@ -187,7 +187,7 @@ local function load_ast_runtime_helpers()
     local chunk, load_error = loadfile(ast_entry_path)
     if not chunk then
         return nil, {
-            error = "vmcp_ast_entry_load_failed",
+            error = "codekit_ast_entry_load_failed",
             message = tostring(load_error),
             path = ast_entry_path,
         }
@@ -196,7 +196,7 @@ local function load_ast_runtime_helpers()
     local ok, ast_entry = pcall(chunk)
     if not ok or type(ast_entry) ~= "function" then
         return nil, {
-            error = "vmcp_ast_entry_invalid",
+            error = "codekit_ast_entry_invalid",
             message = ok and "codekit-ast-detail entry did not return a function" or tostring(ast_entry),
             path = ast_entry_path,
         }
@@ -217,7 +217,7 @@ local function load_ast_runtime_helpers()
     for helper_name, helper_value in pairs(helpers) do
         if type(helper_value) ~= "function" then
             return nil, {
-                error = "vmcp_ast_helper_missing",
+                error = "codekit_ast_helper_missing",
                 message = "required helper missing from codekit-ast-detail runtime",
                 helper = helper_name,
                 path = ast_entry_path,

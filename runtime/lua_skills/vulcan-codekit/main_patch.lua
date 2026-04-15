@@ -44,8 +44,8 @@ local function clone_array(items)
 end
 
 --[[
-中文：通过 `debug.getupvalue` 从现有 `codekit-ast` 入口中提取内部 helper，避免复制整套 AST 分析实现。
-English: Extract internal helpers from the existing `codekit-ast` entry through `debug.getupvalue` so the full AST pipeline does not need to be duplicated.
+中文：通过 `debug.getupvalue` 从现有 `codekit-ast-detail` 入口中提取内部 helper，避免复制整套 AST 分析实现。
+English: Extract internal helpers from the existing `codekit-ast-detail` entry through `debug.getupvalue` so the full AST pipeline does not need to be duplicated.
 
 参数 / Parameters:
 - fn(function): 待扫描 upvalue 的函数 / Function whose upvalues will be scanned.
@@ -70,19 +70,19 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：获取当前 skill 目录，优先使用宿主注入的 `__skill_dir_ast_grep`。
-English: Resolve the current skill directory, preferring the host-injected `__skill_dir_ast_grep`.
+中文：获取当前 skill 目录，优先使用宿主注入的 `__skill_dir_codekit_patch`。
+English: Resolve the current skill directory, preferring the host-injected `__skill_dir_codekit_patch`.
 
 返回 / Returns:
 - string: 当前 skill 目录 / Current skill directory.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_patch or __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_patch or "."
 end
 
 --[[
-中文：懒加载 `codekit-ast` 内部 helper，确保 `codekit-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
-English: Lazily load internal `codekit-ast` helpers so `codekit-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
+中文：懒加载 `codekit-ast-detail` 内部 helper，确保 `codekit-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
+English: Lazily load internal `codekit-ast-detail` helpers so `codekit-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
 
 返回 / Returns:
 - table|nil: helper 函数集合 / Helper bundle on success.
@@ -97,7 +97,7 @@ local function load_ast_runtime_helpers()
     local chunk, load_error = loadfile(ast_entry_path)
     if not chunk then
         return nil, {
-            error = "vmcp_ast_entry_load_failed",
+            error = "codekit_ast_entry_load_failed",
             message = tostring(load_error),
             path = ast_entry_path,
         }
@@ -106,7 +106,7 @@ local function load_ast_runtime_helpers()
     local ok, ast_entry = pcall(chunk)
     if not ok or type(ast_entry) ~= "function" then
         return nil, {
-            error = "vmcp_ast_entry_invalid",
+            error = "codekit_ast_entry_invalid",
             message = ok and "codekit-ast-detail entry did not return a function" or tostring(ast_entry),
             path = ast_entry_path,
         }
@@ -124,7 +124,7 @@ local function load_ast_runtime_helpers()
     for helper_name, helper_value in pairs(helpers) do
         if type(helper_value) ~= "function" then
             return nil, {
-                error = "vmcp_ast_helper_missing",
+                error = "codekit_ast_helper_missing",
                 message = "required helper missing from codekit-ast-detail runtime",
                 helper = helper_name,
                 path = ast_entry_path,

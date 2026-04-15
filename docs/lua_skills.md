@@ -42,7 +42,7 @@
 
 `codekit-ast-tree` 这类“单目录 AST 导航”工具，建议遵循以下规则：
 
-- 参数名沿用 `paths`，但当前协议只允许传入一个目录路径
+- 参数使用 `paths`，且当前协议只允许传入一个目录路径
 - 多目录输入、文件路径输入都会被明确拒绝
 - 返回值直接使用 Markdown 纯文本，而不是 JSON 包裹后的 `content` 字段
 - 输出头部先给出扫描摘要，再按子目录分组输出文件级单行 AST 摘要
@@ -539,7 +539,7 @@ dependencies:
 
 源码变化时输出日志：
 ```
-[LuaSkill] Hot reload ast_grep: D:\projects\vulcan-mcp-client\output\lua_skills\ast-grep\main.lua
+[LuaSkill] Hot reload codekit_ast_detail: D:\projects\vulcan-mcp-client\output\lua_skills\vulcan-codekit\main.lua
 ```
 
 ## Skill 模板

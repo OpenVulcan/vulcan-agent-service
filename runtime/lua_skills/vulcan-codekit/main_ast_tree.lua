@@ -48,7 +48,7 @@ end
 English: Resolve the current skill directory, preferring the host-injected directory variable for `codekit-ast-tree`.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_ast_tree or __skill_dir_codekit_ast_detail or __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_ast_tree or "."
 end
 
 --[[

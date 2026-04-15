@@ -479,7 +479,7 @@ end
 
 -- 路径与语言解析 / Resolve skill-relative paths and normalize language keys.
 local function get_skill_dir()
-    return __skill_dir_codekit_ast_detail or __skill_dir_codekit_ast or __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_ast_detail or "."
 end
 
 --[[

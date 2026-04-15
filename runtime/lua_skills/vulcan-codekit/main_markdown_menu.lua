@@ -57,12 +57,12 @@ end
 English: Resolve the current skill directory, preferring the host-injected path.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_markdown_menu or __skill_dir_ast_grep or "."
+    return __skill_dir_codekit_markdown_menu or "."
 end
 
 --[[
-中文：从 `codekit-ast` 入口闭包中按名称提取内部助手函数，避免重复复制路径和忽略规则逻辑。
-English: Extract internal helpers from the `codekit-ast` closure by name so path and ignore logic can be reused instead of duplicated.
+中文：从 `codekit-ast-detail` 入口闭包中按名称提取内部助手函数，避免重复复制路径和忽略规则逻辑。
+English: Extract internal helpers from the `codekit-ast-detail` closure by name so path and ignore logic can be reused instead of duplicated.
 ]]
 local function extract_upvalue_by_name(fn, name)
     local index = 1
@@ -79,8 +79,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：懒加载 `codekit-ast` 运行时助手，确保新工具在路径解析、忽略规则和参数校验上保持一致。
-English: Lazily load `codekit-ast` runtime helpers so the new tool stays aligned on path resolution, ignore rules, and argument validation.
+中文：懒加载 `codekit-ast-detail` 运行时助手，确保新工具在路径解析、忽略规则和参数校验上保持一致。
+English: Lazily load `codekit-ast-detail` runtime helpers so the new tool stays aligned on path resolution, ignore rules, and argument validation.
 ]]
 local function load_ast_runtime_helpers()
     if AST_RUNTIME_HELPERS then
@@ -91,7 +91,7 @@ local function load_ast_runtime_helpers()
     local chunk, load_error = loadfile(ast_entry_path)
     if not chunk then
         return nil, {
-            error = "vmcp_ast_entry_load_failed",
+            error = "codekit_ast_entry_load_failed",
             message = tostring(load_error),
             path = ast_entry_path,
         }
@@ -100,7 +100,7 @@ local function load_ast_runtime_helpers()
     local ok, ast_entry = pcall(chunk)
     if not ok or type(ast_entry) ~= "function" then
         return nil, {
-            error = "vmcp_ast_entry_invalid",
+            error = "codekit_ast_entry_invalid",
             message = ok and "codekit-ast-detail entry did not return a function" or tostring(ast_entry),
             path = ast_entry_path,
         }
@@ -115,7 +115,7 @@ local function load_ast_runtime_helpers()
     for helper_name, helper_value in pairs(helpers) do
         if type(helper_value) ~= "function" then
             return nil, {
-                error = "vmcp_ast_helper_missing",
+                error = "codekit_ast_helper_missing",
                 message = "required helper missing from codekit-ast-detail runtime",
                 helper = helper_name,
                 path = ast_entry_path,
