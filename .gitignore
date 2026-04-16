@@ -5,3 +5,4 @@
 /.qwen
 /.vulcan
 /runtime/lua_skills/__tools/
+/runtime/lua_skills/__database/

@@ -58,6 +58,9 @@ pkg lyaml
   depvar libyaml windows YAML_INCDIR dep:libyaml/include
 pkg lua-toml
 
+# Database
+pkg lsqlite3complete
+
 # Utility
 pkg serpent
 
