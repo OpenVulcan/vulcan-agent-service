@@ -1406,6 +1406,27 @@ impl LuaEngine {
             .collect()
     }
 
+    /// Return configured completion candidates for a prompt argument, if declared by a skill.
+    /// 返回某个提示词参数在 skill 元数据中声明的候选补全项。
+    pub fn prompt_argument_completions(
+        &self,
+        prompt_name: &str,
+        argument_name: &str,
+    ) -> Option<Vec<String>> {
+        self.skills.values().find_map(|skill| {
+            let (_, prompt) = skill.meta.find_prompt_with_group(prompt_name)?;
+            let argument = prompt
+                .arguments
+                .iter()
+                .find(|argument| argument.name == argument_name)?;
+            if argument.completions.is_empty() {
+                None
+            } else {
+                Some(argument.completions.clone())
+            }
+        })
+    }
+
     /// Check if a tool_name is a Lua skill.
     pub fn is_skill(&self, name: &str) -> bool {
         self.skills

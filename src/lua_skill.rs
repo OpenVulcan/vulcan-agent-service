@@ -169,6 +169,10 @@ pub struct SkillPromptArgumentMeta {
     /// 参数是否必填。
     #[serde(default)]
     pub required: bool,
+    /// Optional completion candidates shown by completion/complete.
+    /// 通过 completion/complete 暴露的可选候选项列表。
+    #[serde(default)]
+    pub completions: Vec<String>,
 }
 
 /// Prompt entry metadata inside a skill group.

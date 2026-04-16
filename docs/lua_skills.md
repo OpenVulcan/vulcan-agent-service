@@ -26,7 +26,7 @@
 - 命中类型/结构声明时，应只显示结构头与行号范围，不额外展开无关子树
 - 对于全盘分析或功能检索，不建议开启完整函数显示
 - 对于精确文件分析、需要直接审阅具体函数实现的场景，建议开启完整函数显示
-- 不再支持 `export_md_path`；若结果过大，应自动写入 `vulcan.temp_dir/mcp/cache/` 并在正文顶部返回缓存绝对路径提示
+- 不再支持 `export_md_path`；若结果过大，应自动写入 `vulcan.temp_dir/mcp/cache/`，并返回 raw file 指针与安全分块读取计划，不再返回残缺正文
 
 `codekit-markdown-menu` 这类“文档目录筛选”工具，建议遵循以下规则：
 
@@ -51,17 +51,17 @@
 - 默认仍启用忽略规则；仅当显式传入 `noignore=true` 时，才关闭 `.gitignore`、`.ignore` 与内建黑名单过滤
 - 不支持 `comment` 与 `export_md_path`
 - 适合作为仓库级或子系统级的首轮文件筛选入口；真正需要细节时，再转向 `codekit-ast-detail` 或 `codekit-rg`
-- 当输出文本超过与 `codekit-ast-detail` 相同的客户端字符预算时，应将完整结果写入 `vulcan.temp_dir/mcp/cache/`，并在返回正文最前面附带缓存绝对路径备注
+- 当输出文本超过与 `codekit-ast-detail` 相同的客户端安全预算时，应将完整结果写入 `vulcan.temp_dir/mcp/cache/`，并返回 raw file 指针与安全分块读取计划，不再拼接残缺正文
 
 `codekit-ast-detail`、`codekit-ast-tree` 与 `codekit-rg` 当前推荐统一采用以下“大结果处理规则”：
 
 - 不再暴露 `cache_id`、`page`、`truncate_chars`、`cache_ttl_sec` 这类工具级缓存/分页参数
-- 统一按客户端字符预算决定是否内联返回，而不是分别维护固定字节阈值
+- 统一按客户端预算的安全阈值决定是否内联返回，而不是分别维护固定字节阈值
 - 字符预算规则建议收敛到独立公共 Lua 文件中，避免不同工具各自维护一套客户端长度映射
 - 完整 Markdown 统一写入 `vulcan.temp_dir/mcp/cache/`，不再写入工作目录，避免缓存文件干扰模型对仓库状态的判断
-- 当结果发生落盘时，应在返回正文最前面附带缓存提示与完整文件绝对路径
-- `codekit-ast-detail` 不再暴露 `export_md_path`，仅保留内联返回与超限缓存提示两种行为
-- `codekit-rg` 也不再暴露 `export_md_path`，仅保留内联返回与超限缓存提示两种行为
+- 当结果发生落盘时，返回值应改为 raw file 指针块，至少包含原始文件路径、总行数，以及可直接用于宿主 `Read(offset, limit)` 的 chunk 参数（`offset` 为 0-based 起始行，`limit` 为读取行数），同时保留 `start_line/end_line` 作为可读锚点
+- `codekit-ast-detail` 不再暴露 `export_md_path`，仅保留内联返回与超限 pointer 两种行为
+- `codekit-rg` 也不再暴露 `export_md_path`，仅保留内联返回与超限 pointer 两种行为
 
 `codekit-ast-detail` 在 `comment=true` 场景下，备注提取建议统一如下：
 

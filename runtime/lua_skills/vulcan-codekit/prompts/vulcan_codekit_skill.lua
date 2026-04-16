@@ -12,9 +12,6 @@ end
 return function(args)
     local prompt_args = (type(args) == "table" and type(args.arguments) == "table") and args.arguments or {}
     local task = trim(prompt_args.task or "")
-    if task == "" then
-        task = "Analyze the current project, quickly understand its structure, and prepare for the user's next instruction."
-    end
 
     local base_prompt = [[# Vulcan CodeKit
 
@@ -75,14 +72,37 @@ When analyzing code, ask these questions in order:
    Use `codekit-patch`.
    Only do this after the target function is already confirmed.
 
-If the task is only:
+For source-code analysis, the decision tree above is the default route unless one of the narrow fallback cases below explicitly applies.
 
-- finding file names
-- doing a lightweight string search
-- reading one small file
-- making line-level edits such as comments or tiny renames
+## Mandatory Tool Routing
 
-prefer standard tools such as `glob`, `grep_search`, `read_file`, or ordinary edits instead of CodeKit.
+CodeKit is the required default path for source-code analysis.
+
+1. **Project mapping**
+   For unfamiliar repositories or non-trivial source directories, `codekit-ast-tree` is required before deep inspection.
+   Do not start codebase exploration with plain file listing or plain file reading tools.
+
+2. **Structural search**
+   When searching source code for symbols, functions, methods, classes, log strings, or regex anchors, `codekit-rg` replaces plain grep-style search.
+   Owner context is required unless the task is a pure literal lookup.
+
+3. **File inspection**
+   When inspecting source files, `codekit-ast-detail` replaces plain file reading unless the file is trivial and structure is irrelevant.
+   You should prefer signatures, owners, and symbol boundaries over raw text.
+
+4. **Standard-tool fallback is allowed only if**
+   - the target is a pure config file such as `.json`, `.yaml`, `.toml`, or `.env`
+   - the task is pure filename or extension discovery
+   - the task is a literal text lookup where ownership does not matter
+   - the edit is a tiny non-structural text change
+   - the directory is explicitly tiny and already understood
+
+## Output Prediction
+
+- `codekit-ast-tree` returns a grouped Markdown tree with compact metrics such as lines, types, impl blocks, and functions.
+- `codekit-rg` returns matched lines together with the owning function, method, impl, or class context.
+- `codekit-ast-detail` returns a structured symbol tree with nesting, signatures, and line ownership.
+- If output exceeds the safe inline limit, you will receive a `raw_file` pointer together with host-safe `offset` / `limit` read chunks. Follow that chunk plan directly.
 
 ## Main-Agent Rule
 
@@ -128,6 +148,7 @@ Remember:
 - pass explicit file paths only
 - do not pass directories
 - keep `comment=false` unless condensed note summaries truly help
+- prefer this over plain file reading when signatures, owners, or symbol boundaries matter
 
 ### `codekit-rg`
 
@@ -140,6 +161,7 @@ Remember:
 
 - this is not the first-pass exploration tool
 - keep `show_full_function=false` unless the exact body is needed
+- prefer this over plain grep when a clue may need owner context
 
 ### `codekit-markdown-menu`
 
@@ -208,23 +230,46 @@ Subagents are not good for:
 
 ## Boundaries
 
-Do not reach for CodeKit when plain tools are enough.
+Standard tools are exceptions, not the default path for code analysis.
 
-Prefer lighter tools for:
+Only fall back when CodeKit adds near-zero value, such as:
 
-- simple file discovery
-- simple string search
-- reading a small known file
-- line-based edits
-- very small repositories where reading files directly is cheaper
+- pure config files like JSON, YAML, TOML, or env files
+- exact literal search where ownership or symbol context does not matter
+- direct reading of a very small known non-code file
+- simple filename or extension discovery
+- tiny non-structural text edits that do not benefit from AST ownership context
 
-CodeKit is most valuable when the task depends on **function-, class-, impl-, or type-level structure**.]]
+For source code:
 
-    return table.concat({
-        base_prompt,
-        "",
-        "## Current User Instruction",
-        "",
-        task,
-    }, "\n")
+- use `codekit-rg` instead of plain grep when searching for symbols, methods, logs, or patterns
+- use `codekit-ast-detail` instead of plain file reading when inspecting code structure
+- use `codekit-ast-tree` before deep inspection when the file set is not already known
+
+CodeKit is most valuable when the task depends on **function-, class-, impl-, or type-level structure**, and that is the default assumption for code analysis.
+]]
+
+    local messages = {
+        {
+            role = "user",
+            content = {
+                type = "text",
+                text = base_prompt,
+            },
+        },
+    }
+
+    if task ~= "" then
+        table.insert(messages, {
+            role = "user",
+            content = {
+                type = "text",
+                text = task,
+            },
+        })
+    end
+
+    return {
+        messages = messages,
+    }
 end

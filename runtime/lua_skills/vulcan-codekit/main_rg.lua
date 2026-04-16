@@ -12,6 +12,7 @@ local LFS_MODULE = nil
 local DEFAULT_AST_CLIENT_CHAR_LIMIT = 10000
 local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
 local SHARED_LENGTH_HELPERS = nil
+local SHARED_OVERFLOW_HELPERS = nil
 
 -- 缓存的 codekit-ast-detail 助手集合 / Cached codekit-ast-detail helper bundle extracted from the existing skill entry.
 local AST_RUNTIME_HELPERS = nil
@@ -126,6 +127,38 @@ local function load_shared_length_helpers()
 
     SHARED_LENGTH_HELPERS = helpers
     return SHARED_LENGTH_HELPERS, nil
+end
+
+--[[
+中文：懒加载共享 overflow 模块，让 rg/tree/detail 复用一致的大结果 raw file pointer 协议。
+English: Lazily load the shared overflow module so rg/tree/detail reuse one oversized raw-file pointer protocol.
+]]
+local function load_shared_overflow_helpers()
+    if SHARED_OVERFLOW_HELPERS then
+        return SHARED_OVERFLOW_HELPERS, nil
+    end
+
+    local helper_path = vulcan.path_join(get_skill_dir(), "shared_overflow.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        return nil, {
+            error = "shared_overflow_load_failed",
+            message = tostring(load_error),
+            path = helper_path,
+        }
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        return nil, {
+            error = "shared_overflow_invalid",
+            message = ok and "shared_overflow.lua did not return a table" or tostring(helpers),
+            path = helper_path,
+        }
+    end
+
+    SHARED_OVERFLOW_HELPERS = helpers
+    return SHARED_OVERFLOW_HELPERS, nil
 end
 
 --[[
@@ -1070,29 +1103,25 @@ end
 
 local function finalize_rg_result(full_result)
     local markdown_text = build_rg_markdown(full_result)
-    local normalized = tostring(markdown_text or "")
-    if #normalized <= CURRENT_AST_CLIENT_CHAR_LIMIT then
-        return normalized
+    local helpers, helper_error = load_shared_overflow_helpers()
+    if helper_error then
+        return helper_error
     end
 
-    local output_directory, output_directory_error = resolve_large_result_directory()
-    if output_directory_error then
-        return output_directory_error
-    end
-
-    local file_id = build_spill_file_id("vmcp_rg")
-    local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
-    local _, write_error = write_text_file(full_output_path, normalized)
-    if write_error then
-        return write_error
-    end
-
-    return table.concat({
-        string.format("> " .. LARGE_RESULT_NOTICE_TEMPLATE, full_output_path),
-        string.format("> Inline limit: %d chars", CURRENT_AST_CLIENT_CHAR_LIMIT),
-        "",
-        normalized,
-    }, "\n")
+    return helpers.finalize_large_result({
+        content = markdown_text,
+        client_char_limit = CURRENT_AST_CLIENT_CHAR_LIMIT,
+        file_prefix = "codekit_rg",
+        resolve_large_result_directory = resolve_large_result_directory,
+        build_spill_file_id = build_spill_file_id,
+        write_text_file = write_text_file,
+        summary_lines = {
+            string.format("files_scanned: %d", full_result.files_scanned or 0),
+            string.format("files_with_matches: %d", full_result.files_with_matches or 0),
+            string.format("items_found: %d", full_result.items_found or 0),
+            string.format("rg_matches: %d", full_result.rg_matches or 0),
+        },
+    })
 end
 
 -- 工具入口 / Tool entry point invoked by the MCP runtime.

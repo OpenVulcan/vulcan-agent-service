@@ -26,7 +26,7 @@
             }
           ],
           "return_type": "string",
-          "prompt": "CRITICAL RULES:\n- USE THIS ONLY when you already know the exact source files. Do NOT guess or hallucinate paths.\n- INPUT: Pass explicit file paths in `paths`, separated by newlines. Max 20 files. Directories are rejected.\n- COMMENTS: Keep `comment=false` by default. Enable it only when condensed function-note summaries are truly needed.\n- OUTPUT: Returns plain Markdown text.\n- CACHE: Large results auto-spill to vulcan.temp_dir/mcp/cache/. Follow the returned cache notice."
+          "prompt": "CRITICAL RULES:\n- USE THIS ONLY when you already know the exact source files. Do NOT guess or hallucinate paths.\n- INPUT: Pass explicit file paths in `paths`, separated by newlines. Max 20 files. Directories are rejected.\n- COMMENTS: Keep `comment=false` by default. Enable it only when condensed function-note summaries are truly needed.\n- OUTPUT: Returns plain Markdown text.\n- OVERFLOW: If the result exceeds the safe inline budget, inline content is omitted. Follow the returned raw-file pointer and chunked read plan."
         },
         {
           "name": "codekit-rg",
@@ -66,7 +66,7 @@
             }
           ],
           "return_type": "string",
-          "prompt": "CRITICAL RULES:\n- WORKFLOW: Use this after identifying a text signal or regex target. Do NOT use it for first-pass repository exploration.\n- INPUT: `dir` must be a directory and `rg_pattern` is required. `ext` is a file-extension filter; common language names are normalized automatically.\n- IGNORE: Leave ignored paths enabled by default. Set `noignore=true` only when you explicitly need ignored directories.\n- FULL SOURCE: Keep `show_full_function=false` for broad analysis. Enable it only when the exact function body is critical.\n- CACHE: Large results auto-spill to vulcan.temp_dir/mcp/cache/. Follow the returned cache notice."
+          "prompt": "CRITICAL RULES:\n- WORKFLOW: Use this after identifying a text signal or regex target. Do NOT use it for first-pass repository exploration.\n- INPUT: `dir` must be a directory and `rg_pattern` is required. `ext` is a file-extension filter; common language names are normalized automatically.\n- IGNORE: Leave ignored paths enabled by default. Set `noignore=true` only when you explicitly need ignored directories.\n- FULL SOURCE: Keep `show_full_function=false` for broad analysis. Enable it only when the exact function body is critical.\n- OVERFLOW: If the result exceeds the safe inline budget, inline content is omitted. Follow the returned raw-file pointer and chunked read plan."
         },
         {
           "name": "codekit-markdown-menu",
@@ -122,7 +122,7 @@
             }
           ],
           "return_type": "string",
-          "prompt": "CRITICAL RULES:\n- PURPOSE: Use this for repository-level file picking before `codekit-ast-detail`.\n- INPUT STRICTNESS: Pass exactly one directory path in `paths`. Multiple paths or explicit files are rejected.\n- BEHAVIOR: Always recursive. Use `ext` to narrow the file-extension scope when the tree is too noisy.\n- IGNORE: Leave ignored paths enabled by default. Set `noignore=true` only when you explicitly need ignored trees such as target or dist.\n- NEXT STEP: Use the grouped output to choose exact files for `codekit-ast-detail` or `codekit-rg`.\n- CACHE: Large results auto-spill to vulcan.temp_dir/mcp/cache/. Follow the returned cache notice."
+          "prompt": "CRITICAL RULES:\n- PURPOSE: Use this for repository-level file picking before `codekit-ast-detail`.\n- INPUT STRICTNESS: Pass exactly one directory path in `paths`. Multiple paths or explicit files are rejected.\n- BEHAVIOR: Always recursive. Use `ext` to narrow the file-extension scope when the tree is too noisy.\n- IGNORE: Leave ignored paths enabled by default. Set `noignore=true` only when you explicitly need ignored trees such as target or dist.\n- NEXT STEP: Use the grouped output to choose exact files for `codekit-ast-detail` or `codekit-rg`.\n- OVERFLOW: If the result exceeds the safe inline budget, inline content is omitted. Follow the returned raw-file pointer and chunked read plan."
         },
         {
           "name": "codekit-patch",
@@ -155,15 +155,23 @@
       ],
       "prompts": [
         {
-          "name": "vulcan_codekite_skill",
+          "name": "vulcan_codekit_skill",
           "description": "Best-practice workflow for choosing codekit tools, with an optional task string appended as the user's current instruction.",
-          "file": "prompts/vulcan_codekite_skill.lua",
+          "file": "prompts/vulcan_codekit_skill.lua",
           "role": "user",
           "arguments": [
             {
               "name": "task",
-              "description": "The user's current instruction. When provided, it is appended at the end of the generated prompt.",
-              "required": false
+              "description": "Optional current task or intent. Prompt completions provide common analysis and editing workflows; when provided, it is appended as a follow-up user message after the shared guidance.",
+              "required": false,
+              "completions": [
+                "Analyze the current project and summarize its structure, main modules, and key responsibilities",
+                "Search the project for a function name, keyword, log string, or regex clue and identify the owning function or class",
+                "Inspect the selected source files in AST detail and summarize the key symbols and signatures",
+                "Scan the Markdown documentation and locate the most relevant file or heading section for the current topic",
+                "Prepare for a safe full-function or full-method replacement by locating the exact owner and current implementation",
+                "Map an unfamiliar source directory first, then identify which files should be inspected or delegated next"
+              ]
             }
           ]
         }

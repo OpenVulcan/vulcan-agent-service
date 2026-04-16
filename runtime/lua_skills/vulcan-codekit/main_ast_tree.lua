@@ -11,6 +11,7 @@ local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a cli
 local AST_RUNTIME_HELPERS = nil
 local LFS_MODULE = nil
 local SHARED_LENGTH_HELPERS = nil
+local SHARED_OVERFLOW_HELPERS = nil
 
 local TYPE_LIKE_KINDS = {
     class = true,
@@ -81,6 +82,38 @@ local function load_shared_length_helpers()
 
     SHARED_LENGTH_HELPERS = helpers
     return SHARED_LENGTH_HELPERS, nil
+end
+
+--[[
+中文：懒加载共享 overflow 模块，让 tree/detail/rg 复用一致的超限 raw file pointer 协议。
+English: Lazily load the shared overflow module so tree/detail/rg reuse the same oversized raw-file pointer protocol.
+]]
+local function load_shared_overflow_helpers()
+    if SHARED_OVERFLOW_HELPERS then
+        return SHARED_OVERFLOW_HELPERS, nil
+    end
+
+    local helper_path = vulcan.path_join(get_skill_dir(), "shared_overflow.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        return nil, {
+            error = "shared_overflow_load_failed",
+            message = tostring(load_error),
+            path = helper_path,
+        }
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        return nil, {
+            error = "shared_overflow_invalid",
+            message = ok and "shared_overflow.lua did not return a table" or tostring(helpers),
+            path = helper_path,
+        }
+    end
+
+    SHARED_OVERFLOW_HELPERS = helpers
+    return SHARED_OVERFLOW_HELPERS, nil
 end
 
 --[[
@@ -649,33 +682,24 @@ local function log_diagnostics(diagnostics)
 end
 
 --[[
-中文：按客户端字符预算处理最终文本；超限时落盘并在返回头部附带缓存绝对路径备注。
-English: Finalize the output text using the client-specific character budget; when oversized, spill it to disk and prepend the cache-file notice.
+中文：按共享 overflow 协议处理 tree 文本；超限时只返回 raw file 指针与安全分块读取计划。
+English: Finalize tree text with the shared overflow protocol; when oversized, return only the raw-file pointer and safe chunked read plan.
 ]]
-local function finalize_tree_content(content)
-    local normalized = tostring(content or "")
-    if #normalized <= CURRENT_AST_CLIENT_CHAR_LIMIT then
-        return normalized
+local function finalize_tree_content(content, summary_lines)
+    local helpers, helper_error = load_shared_overflow_helpers()
+    if helper_error then
+        return helper_error
     end
 
-    local output_directory, output_directory_error = resolve_large_result_directory()
-    if output_directory_error then
-        return output_directory_error
-    end
-
-    local file_id = build_spill_file_id("codekit_ast_tree")
-    local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
-    local _, write_error = write_text_file(full_output_path, normalized)
-    if write_error then
-        return write_error
-    end
-
-    return table.concat({
-        string.format("> " .. LARGE_RESULT_NOTICE_TEMPLATE, full_output_path),
-        string.format("> Inline limit: %d chars", CURRENT_AST_CLIENT_CHAR_LIMIT),
-        "",
-        normalized,
-    }, "\n")
+    return helpers.finalize_large_result({
+        content = content,
+        client_char_limit = CURRENT_AST_CLIENT_CHAR_LIMIT,
+        file_prefix = "codekit_ast_tree",
+        resolve_large_result_directory = resolve_large_result_directory,
+        build_spill_file_id = build_spill_file_id,
+        write_text_file = write_text_file,
+        summary_lines = summary_lines or {},
+    })
 end
 
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
@@ -768,5 +792,12 @@ return function(args)
         append_file_summary(groups_by_directory, build_file_summary(file_info.path, tree, helpers))
     end
 
-    return finalize_tree_content(build_tree_content(groups_by_directory, #files, files_with_symbols, items_found))
+    return finalize_tree_content(
+        build_tree_content(groups_by_directory, #files, files_with_symbols, items_found),
+        {
+            string.format("files_scanned: %d", #files),
+            string.format("files_with_symbols: %d", files_with_symbols or 0),
+            string.format("items_found: %d", items_found or 0),
+        }
+    )
 end

@@ -7,10 +7,6 @@ use crate::grpc_client::{LanceDbClient, ScratchpadItem, ScratchpadStore, SqliteC
 use crate::lua_engine::{LuaEngine, LuaVmPoolConfig};
 use crate::protocol::*;
 
-// ============================================================
-// Built-in tool handlers
-// ============================================================
-
 /// 中文：将 Lua/JSON 返回值格式化为 MCP 文本内容；基础标量原样输出，数组和对象按 JSON 输出。
 /// English: Format a Lua/JSON result into MCP text content; emit scalar values verbatim and serialize arrays/objects as JSON.
 fn format_json_value_for_text(value: &Value) -> String {
@@ -21,44 +17,6 @@ fn format_json_value_for_text(value: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
     }
-}
-
-fn tool_add(args: &Value) -> ToolCallResult {
-    let a = args.get("a").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let b = args.get("b").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    ToolCallResult {
-        content: vec![TextContent::text(&format!("{}", a + b))],
-        is_error: None,
-    }
-}
-
-fn tool_greet(args: &Value) -> ToolCallResult {
-    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("World");
-    ToolCallResult {
-        content: vec![TextContent::text(&format!("Hello, {}!", name))],
-        is_error: None,
-    }
-}
-
-fn tool_time(_args: &Value) -> ToolCallResult {
-    ToolCallResult {
-        content: vec![TextContent::text(&utc_now())],
-        is_error: None,
-    }
-}
-
-fn utc_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = secs / 86400;
-    let remaining = secs % 86400;
-    let h = remaining / 3600;
-    let m = (remaining % 3600) / 60;
-    let s = remaining % 60;
-    format!("Unix epoch day {}, {:02}:{:02}:{:02} UTC", days, h, m, s)
 }
 
 // ============================================================
@@ -83,13 +41,10 @@ struct ServerInner {
     tools: HashMap<String, Tool>,
     resources: Vec<Resource>,
     resource_templates: Vec<ResourceTemplate>,
-    resource_data: HashMap<String, String>,
     prompts: Vec<Prompt>,
     version: Option<String>,
     initialized: bool,
     client_capabilities: ClientCapabilities,
-    roots: Vec<Root>,
-    log_level: String,
 }
 
 impl McpServer {
@@ -98,13 +53,10 @@ impl McpServer {
             tools: HashMap::new(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
-            resource_data: HashMap::new(),
             prompts: Vec::new(),
             version: None,
             initialized: false,
             client_capabilities: ClientCapabilities::default(),
-            roots: Vec::new(),
-            log_level: "info".to_string(),
         };
         let mut server = Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -197,239 +149,8 @@ impl McpServer {
     fn register_defaults(&mut self) {
         let mut inner = self.inner.try_lock().unwrap();
 
-        // --- Tools ---
-        let annotations = ToolAnnotations {
-            read_only_hint: Some(true),
-            destructive_hint: Some(false),
-            user_confirmation_required: Some(false),
-            idempotent_hint: Some(true),
-        };
-        inner.tools.insert(
-            "add".to_string(),
-            Tool::with_annotations(
-                "add",
-                "Add two numbers together",
-                json!({
-                    "a": {"type": "number", "description": "First operand"},
-                    "b": {"type": "number", "description": "Second operand"}
-                }),
-                vec!["a".to_string(), "b".to_string()],
-                annotations.clone(),
-            ),
-        );
-        inner.tools.insert(
-            "greet".to_string(),
-            Tool::with_annotations(
-                "greet",
-                "Greet someone by name",
-                json!({
-                    "name": {"type": "string", "description": "Name of the person to greet"}
-                }),
-                vec!["name".to_string()],
-                annotations.clone(),
-            ),
-        );
-        inner.tools.insert(
-            "current_time".to_string(),
-            Tool::with_annotations(
-                "current_time",
-                "Get the current UTC time",
-                json!({}),
-                vec![],
-                annotations,
-            ),
-        );
-
-        // --- Resources ---
-        inner.resources.push(Resource {
-            uri: "info://server".to_string(),
-            name: "Server Info".to_string(),
-            description: Some("Basic server information".to_string()),
-            mime_type: Some("text/plain".to_string()),
-            size: None,
-        });
-        inner.resource_data.insert(
-            "info://server".to_string(),
-            "Minimal MCP server supporting protocol versions 2025-11-25 (primary), \
-             2025-06-18, 2025-03-26, and 2024-11-05."
-                .to_string(),
-        );
-
-        inner.resources.push(Resource {
-            uri: "info://protocol".to_string(),
-            name: "Protocol Version".to_string(),
-            description: Some("MCP protocol version in use".to_string()),
-            mime_type: Some("text/plain".to_string()),
-            size: None,
-        });
-        inner.resource_data.insert(
-            "info://protocol".to_string(),
-            "Latest: 2025-11-25. Compatible: 2025-06-18, 2025-03-26, 2024-11-05".to_string(),
-        );
-
-        // --- Resource Templates (2025-03-26+) ---
-        inner.resource_templates.push(ResourceTemplate {
-            uri_template: "echo://{message}".to_string(),
-            name: "Echo".to_string(),
-            description: Some("Echo back a message as a resource".to_string()),
-            mime_type: Some("text/plain".to_string()),
-        });
-
-        // --- Prompts ---
-        inner.prompts.push(Prompt {
-            name: "code_review".to_string(),
-            description: Some("Generate a code review prompt".to_string()),
-            arguments: Some(vec![PromptArgument {
-                name: "language".to_string(),
-                description: Some("Programming language".to_string()),
-                required: Some(true),
-            }]),
-        });
-        inner.prompts.push(Prompt {
-            name: "explain_code".to_string(),
-            description: Some("Ask for a code explanation".to_string()),
-            arguments: Some(vec![PromptArgument {
-                name: "language".to_string(),
-                description: Some("Programming language".to_string()),
-                required: Some(false),
-            }]),
-        });
-
-        // --- Roots ---
-        inner.roots.push(Root {
-            uri: "file:///workspace".to_string(),
-            name: Some("Workspace".to_string()),
-        });
-
-        // --- LanceDb gRPC tools ---
-        let db_annotations = ToolAnnotations {
-            read_only_hint: Some(false),
-            destructive_hint: Some(true),
-            user_confirmation_required: Some(false),
-            idempotent_hint: Some(false),
-        };
-        inner.tools.insert(
-            "lancedb_create_table".to_string(),
-            Tool::with_annotations(
-                "lancedb_create_table",
-                "Create a LanceDb table with specified columns",
-                json!({
-                    "table_name": {"type": "string", "description": "Name of the table to create"},
-                    "columns": {"type": "array", "description": "Column definitions (array of {name, column_type, vector_dim, nullable})"},
-                    "overwrite": {"type": "boolean", "description": "Overwrite if table exists"}
-                }),
-                vec!["table_name".to_string(), "columns".to_string()],
-                db_annotations.clone(),
-            ),
-        );
-        inner.tools.insert(
-            "lancedb_upsert".to_string(),
-            Tool::with_annotations(
-                "lancedb_upsert",
-                "Upsert data into a LanceDb table (JSON rows or Arrow IPC)",
-                json!({
-                    "table_name": {"type": "string", "description": "Target table name"},
-                    "input_format": {"type": "string", "enum": ["json_rows", "arrow_ipc"], "description": "Data format"},
-                    "data": {"type": "string", "description": "JSON array string or base64-encoded Arrow IPC data"},
-                    "key_columns": {"type": "array", "description": "Columns to use as upsert keys"}
-                }),
-                vec!["table_name".to_string(), "input_format".to_string(), "data".to_string()],
-                db_annotations.clone(),
-            ),
-        );
-        inner.tools.insert(
-            "lancedb_search".to_string(),
-            Tool::with_annotations(
-                "lancedb_search",
-                "Vector search on a LanceDb table",
-                json!({
-                    "table_name": {"type": "string", "description": "Target table name"},
-                    "vector": {"type": "array", "description": "Search vector (array of floats)"},
-                    "limit": {"type": "number", "description": "Max results (default 10)"},
-                    "filter": {"type": "string", "description": "SQL filter expression"},
-                    "vector_column": {"type": "string", "description": "Name of the vector column"},
-                    "output_format": {"type": "string", "enum": ["json_rows", "arrow_ipc"], "description": "Output format"}
-                }),
-                vec!["table_name".to_string(), "vector".to_string()],
-                ToolAnnotations { read_only_hint: Some(true), ..db_annotations.clone() },
-            ),
-        );
-        inner.tools.insert(
-            "lancedb_delete".to_string(),
-            Tool::with_annotations(
-                "lancedb_delete",
-                "Delete rows from a LanceDb table",
-                json!({
-                    "table_name": {"type": "string", "description": "Target table name"},
-                    "condition": {"type": "string", "description": "SQL WHERE condition"}
-                }),
-                vec!["table_name".to_string(), "condition".to_string()],
-                db_annotations.clone(),
-            ),
-        );
-        inner.tools.insert(
-            "lancedb_drop_table".to_string(),
-            Tool::with_annotations(
-                "lancedb_drop_table",
-                "Drop a LanceDb table",
-                json!({
-                    "table_name": {"type": "string", "description": "Table to drop"}
-                }),
-                vec!["table_name".to_string()],
-                db_annotations.clone(),
-            ),
-        );
-
-        // --- Sqlite gRPC tools ---
-        let sql_annotations = ToolAnnotations {
-            read_only_hint: Some(false),
-            destructive_hint: Some(true),
-            user_confirmation_required: Some(false),
-            idempotent_hint: Some(false),
-        };
-        inner.tools.insert(
-            "sqlite_execute".to_string(),
-            Tool::with_annotations(
-                "sqlite_execute",
-                "Execute a single SQL statement on the SQLite database",
-                json!({
-                    "sql": {"type": "string", "description": "SQL statement"},
-                    "params": {"type": "array", "description": "Parameter values (supports int, float, string, bool, null)"}
-                }),
-                vec!["sql".to_string()],
-                ToolAnnotations { read_only_hint: Some(true), ..sql_annotations.clone() },
-            ),
-        );
-        inner.tools.insert(
-            "sqlite_execute_batch".to_string(),
-            Tool::with_annotations(
-                "sqlite_execute_batch",
-                "Execute a batch of parameterized SQL statements",
-                json!({
-                    "sql": {"type": "string", "description": "SQL statement with placeholders"},
-                    "items": {"type": "array", "description": "Array of parameter arrays, one per execution"}
-                }),
-                vec!["sql".to_string(), "items".to_string()],
-                sql_annotations.clone(),
-            ),
-        );
-        inner.tools.insert(
-            "sqlite_query".to_string(),
-            Tool::with_annotations(
-                "sqlite_query",
-                "Execute a SQL query and return results as JSON or Arrow IPC",
-                json!({
-                    "sql": {"type": "string", "description": "SQL SELECT query"},
-                    "params": {"type": "array", "description": "Parameter values"},
-                    "output": {"type": "string", "enum": ["json", "arrow"], "description": "Output format (default: json)"}
-                }),
-                vec!["sql".to_string()],
-                ToolAnnotations { read_only_hint: Some(true), ..sql_annotations },
-            ),
-        );
-
         // --- Scratchpad (DWM working memory via SQLite, vmcp_ tables) ---
-        let sp_annotations = ToolAnnotations {
+        let scratchpad_annotations = ToolAnnotations {
             read_only_hint: Some(false),
             destructive_hint: Some(true),
             user_confirmation_required: Some(false),
@@ -447,10 +168,19 @@ impl McpServer {
                     "plan_name": {"type": "string", "description": "Canonical plan name (max 128 chars)"},
                     "key": {"type": "string", "description": "Single key (use if no items array)"},
                     "value": {"type": "string", "description": "Single value (use if no items array)"},
-                    "items": {"type": "array", "description": "Batch of {key, value} items (max 32)"}
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "Batch of {key, value} items (max 32)"
+                    }
                 }),
-                vec!["project_id".to_string(), "user_id".to_string(), "session_id".to_string(), "plan_name".to_string()],
-                sp_annotations.clone(),
+                vec![
+                    "project_id".to_string(),
+                    "user_id".to_string(),
+                    "session_id".to_string(),
+                    "plan_name".to_string(),
+                ],
+                scratchpad_annotations.clone(),
             ),
         );
         inner.tools.insert(
@@ -464,7 +194,11 @@ impl McpServer {
                     "session_id": {"type": "string", "description": "Session key"},
                     "plan_name": {"type": "string", "description": "Canonical plan name"},
                     "key": {"type": "string", "description": "Single key to delete"},
-                    "keys": {"type": "array", "description": "Array of keys to delete"}
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of keys to delete"
+                    }
                 }),
                 vec![
                     "project_id".to_string(),
@@ -472,7 +206,7 @@ impl McpServer {
                     "session_id".to_string(),
                     "plan_name".to_string(),
                 ],
-                sp_annotations.clone(),
+                scratchpad_annotations.clone(),
             ),
         );
         inner.tools.insert(
@@ -484,10 +218,22 @@ impl McpServer {
                     "project_id": {"type": "number", "description": "Project ID"},
                     "user_id": {"type": "number", "description": "User ID"},
                     "session_id": {"type": "string", "description": "Session key"},
-                    "keys": {"type": "array", "description": "Optional array of keys to filter (empty = all)"}
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional array of keys to filter (empty = all)"
+                    }
                 }),
-                vec!["project_id".to_string(), "user_id".to_string(), "session_id".to_string()],
-                ToolAnnotations { read_only_hint: Some(true), destructive_hint: Some(false), ..sp_annotations.clone() },
+                vec![
+                    "project_id".to_string(),
+                    "user_id".to_string(),
+                    "session_id".to_string(),
+                ],
+                ToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    ..scratchpad_annotations.clone()
+                },
             ),
         );
         inner.tools.insert(
@@ -508,7 +254,7 @@ impl McpServer {
                 ToolAnnotations {
                     read_only_hint: Some(true),
                     destructive_hint: Some(false),
-                    ..sp_annotations.clone()
+                    ..scratchpad_annotations.clone()
                 },
             ),
         );
@@ -522,8 +268,12 @@ impl McpServer {
                     "user_id": {"type": "number", "description": "User ID"},
                     "session_id": {"type": "string", "description": "Session key"}
                 }),
-                vec!["project_id".to_string(), "user_id".to_string(), "session_id".to_string()],
-                sp_annotations,
+                vec![
+                    "project_id".to_string(),
+                    "user_id".to_string(),
+                    "session_id".to_string(),
+                ],
+                scratchpad_annotations.clone(),
             ),
         );
 
@@ -625,11 +375,7 @@ impl McpServer {
             "resources/templates/list" => self.handle_resource_templates_list(),
             "prompts/list" => self.handle_prompts_list(),
             "prompts/get" => self.handle_prompts_get(params, &request_context),
-            "roots/list" => self.handle_roots_list(),
             "completion/complete" => self.handle_completion(params),
-            "sampling/createMessage" => self.handle_sampling(params),
-            "elicitation/create" => self.handle_elicitation(params),
-            "logging/setLevel" => self.handle_set_log_level(params),
             _ => {
                 eprintln!("[MCP] Unknown method: {}", method);
                 Err((-32601, format!("Method not found: {}", method)))
@@ -709,37 +455,48 @@ impl McpServer {
             .as_ref()
             .map(|c| c.name.clone())
             .unwrap_or_else(|| "unknown".to_string());
+        let has_tools = !inner.tools.is_empty();
+        let has_resources = !inner.resources.is_empty() || !inner.resource_templates.is_empty();
+        let has_prompts = !inner.prompts.is_empty();
+        let has_completions =
+            has_feature(negotiated, FeatureFlag::Completions) && self.lua_engine.is_some();
         eprintln!("[MCP] Client: {} ({})", client_name, negotiated);
         eprintln!(
-            "[MCP] Features: sampling={}, roots={}, completions={}, logging={}, streaming={}",
-            has_feature(negotiated, FeatureFlag::Sampling),
-            has_feature(negotiated, FeatureFlag::Roots),
+            "[MCP] Features: completions={}, streaming={}, tools={}, resources={}, prompts={}",
             has_feature(negotiated, FeatureFlag::Completions),
-            has_feature(negotiated, FeatureFlag::StructuredLogging),
             has_feature(negotiated, FeatureFlag::Streaming),
+            has_tools,
+            has_resources,
+            has_prompts,
         );
 
         let result = InitializeResult {
             protocol_version: negotiated.to_string(),
             capabilities: ServerCapabilities {
-                tools: Some(ToolCapability {
-                    list_changed: Some(false),
-                }),
-                resources: Some(ResourceCapability {
-                    subscribe: Some(false),
-                    list_changed: Some(false),
-                }),
-                prompts: Some(PromptCapability {
-                    list_changed: Some(false),
-                }),
-                logging: if has_feature(negotiated, FeatureFlag::StructuredLogging) {
-                    Some(LoggingCapability {
-                        enabled: Some(true),
+                tools: if has_tools {
+                    Some(ToolCapability {
+                        list_changed: Some(false),
                     })
                 } else {
                     None
                 },
-                completions: if has_feature(negotiated, FeatureFlag::Completions) {
+                resources: if has_resources {
+                    Some(ResourceCapability {
+                        subscribe: Some(false),
+                        list_changed: Some(false),
+                    })
+                } else {
+                    None
+                },
+                prompts: if has_prompts {
+                    Some(PromptCapability {
+                        list_changed: Some(false),
+                    })
+                } else {
+                    None
+                },
+                logging: None,
+                completions: if has_completions {
                     Some(CompletionsCapability {})
                 } else {
                     None
@@ -750,9 +507,10 @@ impl McpServer {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
             instructions: Some(
-                "Minimal MCP server supporting 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05. \
-                 Features: tools (add, greet, current_time), resources, prompts, \
-                 completions, roots, sampling, elicitation, structured logging."
+                "Vulcan MCP server supporting 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05. \
+                 By default this server exposes Lua skill provided MCP tools, resources, \
+                 resource templates, prompts, and prompt completions, plus the built-in \
+                 vmcp scratchpad and runlua tools."
                     .to_string(),
             ),
         };
@@ -787,10 +545,6 @@ impl McpServer {
 
         let args = req.arguments.unwrap_or_default();
         let result = match tool.name.as_str() {
-            "add" => tool_add(&args),
-            "greet" => tool_greet(&args),
-            "current_time" => tool_time(&args),
-
             // --- LanceDb gRPC tools ---
             "lancedb_create_table" => {
                 let client = self
@@ -1328,40 +1082,6 @@ impl McpServer {
             .and_then(|v| v.as_str().map(String::from))
             .ok_or_else(|| (-32602, "Missing required parameter: uri".to_string()))?;
 
-        {
-            let inner = self
-                .inner
-                .try_lock()
-                .map_err(|_| (-32603, "Busy".to_string()))?;
-
-            if let Some(content) = inner.resource_data.get(&uri) {
-                let mime = inner
-                    .resources
-                    .iter()
-                    .find(|r| r.uri == uri)
-                    .and_then(|r| r.mime_type.clone());
-                let result = ResourceReadResult {
-                    contents: vec![ResourceContents::text(&uri, content, mime)],
-                };
-                return serde_json::to_value(result)
-                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
-            }
-
-            // Check resource templates (echo://{message})
-            if uri.starts_with("echo://") {
-                let message = uri.strip_prefix("echo://").unwrap_or("");
-                let result = ResourceReadResult {
-                    contents: vec![ResourceContents::text(
-                        &uri,
-                        &format!("Echo: {}", message),
-                        Some("text/plain".to_string()),
-                    )],
-                };
-                return serde_json::to_value(result)
-                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
-            }
-        }
-
         if let Some(engine) = &self.lua_engine {
             if let Some(result) = engine
                 .read_resource(&uri, Some(request_context))
@@ -1402,78 +1122,21 @@ impl McpServer {
             .and_then(|v| v.as_str().map(String::from))
             .ok_or_else(|| (-32602, "Missing required parameter: name".to_string()))?;
 
-        let language = params
-            .get("arguments")
-            .and_then(|a| a.get("language"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-
-        match name.as_str() {
-            "code_review" => {
-                let result = PromptGetResult {
-                    description: Some("Code review prompt".to_string()),
-                    messages: vec![
-                        PromptMessage {
-                            role: "user".to_string(),
-                            content: TextContent::text(&format!(
-                                "Please review the following {} code for correctness, performance, and best practices:",
-                                language
-                            )),
-                        },
-                        PromptMessage {
-                            role: "user".to_string(),
-                            content: TextContent::text("<code goes here>"),
-                        },
-                    ],
-                };
-                serde_json::to_value(result)
-                    .map_err(|e| (-32603, format!("Serialization error: {}", e)))
-            }
-            "explain_code" => {
-                let result = PromptGetResult {
-                    description: Some("Code explanation prompt".to_string()),
-                    messages: vec![
-                        PromptMessage {
-                            role: "user".to_string(),
-                            content: TextContent::text(&format!(
-                                "Please explain the following {} code in detail:",
-                                language
-                            )),
-                        },
-                        PromptMessage {
-                            role: "user".to_string(),
-                            content: TextContent::text("<code goes here>"),
-                        },
-                    ],
-                };
-                serde_json::to_value(result)
-                    .map_err(|e| (-32603, format!("Serialization error: {}", e)))
-            }
-            _ => {
-                if let Some(engine) = &self.lua_engine {
-                    if let Some(result) = engine
-                        .get_prompt(
-                            &name,
-                            params.get("arguments").unwrap_or(&Value::Null),
-                            Some(request_context),
-                        )
-                        .map_err(|e| (-32603, format!("Lua skill prompt error: {}", e)))?
-                    {
-                        return serde_json::to_value(result)
-                            .map_err(|e| (-32603, format!("Serialization error: {}", e)));
-                    }
-                }
-                Err((-32602, format!("Prompt not found: {}", name)))
+        if let Some(engine) = &self.lua_engine {
+            if let Some(result) = engine
+                .get_prompt(
+                    &name,
+                    params.get("arguments").unwrap_or(&Value::Null),
+                    Some(request_context),
+                )
+                .map_err(|e| (-32603, format!("Lua skill prompt error: {}", e)))?
+            {
+                return serde_json::to_value(result)
+                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
             }
         }
-    }
 
-    fn handle_roots_list(&self) -> Result<Value, (i64, String)> {
-        let inner = self
-            .inner
-            .try_lock()
-            .map_err(|_| (-32603, "Busy".to_string()))?;
-        Ok(json!({ "roots": inner.roots }))
+        Err((-32602, format!("Prompt not found: {}", name)))
     }
 
     fn handle_completion(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
@@ -1495,29 +1158,34 @@ impl McpServer {
             .and_then(|a| a.get("value"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let ref_name = params
+            .get("ref")
+            .and_then(|r| r.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-        let inner = self
-            .inner
-            .try_lock()
-            .map_err(|_| (-32603, "Busy".to_string()))?;
+        let prompt_completion_values = if ref_type == "ref/prompt" {
+            self.lua_engine
+                .as_ref()
+                .and_then(|engine| engine.prompt_argument_completions(ref_name, argument_name))
+        } else {
+            None
+        };
+
         let values: Vec<String> = match (ref_type, argument_name) {
-            ("ref/prompt", "language") => {
-                let all = vec![
-                    "rust",
-                    "python",
-                    "javascript",
-                    "typescript",
-                    "go",
-                    "java",
-                    "c++",
-                    "ruby",
-                ];
-                all.into_iter()
-                    .filter(|s| s.starts_with(argument_value))
-                    .map(String::from)
-                    .collect()
-            }
-            ("ref/resource", _) => inner.resources.iter().map(|r| r.name.clone()).collect(),
+            ("ref/prompt", _) if prompt_completion_values.is_some() => prompt_completion_values
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|value| {
+                    if argument_value.is_empty() {
+                        true
+                    } else {
+                        value
+                            .to_ascii_lowercase()
+                            .contains(&argument_value.to_ascii_lowercase())
+                    }
+                })
+                .collect(),
             _ => vec![],
         };
 
@@ -1528,41 +1196,6 @@ impl McpServer {
                 "hasMore": false
             }
         }))
-    }
-
-    fn handle_sampling(&self, _params: Option<Value>) -> Result<Value, (i64, String)> {
-        eprintln!("[MCP] Sampling request received (demo mode)");
-        let result = SamplingResult {
-            role: "assistant".to_string(),
-            content: TextContent::text("This is a mock sampling response."),
-            model: "demo-model".to_string(),
-            stop_reason: Some("end_turn".to_string()),
-        };
-        serde_json::to_value(result).map_err(|e| (-32603, format!("Serialization error: {}", e)))
-    }
-
-    fn handle_elicitation(&self, _params: Option<Value>) -> Result<Value, (i64, String)> {
-        eprintln!("[MCP] Elicitation request received (demo mode)");
-        let result = ElicitationResult {
-            action: "accept".to_string(),
-            content: Some(json!({"confirmed": true})),
-        };
-        serde_json::to_value(result).map_err(|e| (-32603, format!("Serialization error: {}", e)))
-    }
-
-    fn handle_set_log_level(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
-        let level = params
-            .and_then(|p| p.get("level").cloned())
-            .and_then(|v| v.as_str().map(String::from))
-            .ok_or_else(|| (-32602, "Missing required parameter: level".to_string()))?;
-
-        let mut inner = self
-            .inner
-            .try_lock()
-            .map_err(|_| (-32603, "Busy".to_string()))?;
-        inner.log_level = level.clone();
-        eprintln!("[MCP] Log level set to: {}", level);
-        Ok(json!({}))
     }
 
     /// Build a parse error response (no id).

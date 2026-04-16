@@ -63,6 +63,7 @@ local CURRENT_WORKING_DIRECTORY = nil
 local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
 local LFS_MODULE = nil
 local SHARED_LENGTH_HELPERS = nil
+local SHARED_OVERFLOW_HELPERS = nil
 local load_shared_length_helpers
 local DEFAULT_SOURCE_LANGUAGES = {
     bash = true,
@@ -512,6 +513,38 @@ load_shared_length_helpers = function()
 
     SHARED_LENGTH_HELPERS = helpers
     return SHARED_LENGTH_HELPERS, nil
+end
+
+--[[
+中文：懒加载共享 overflow 模块，让 detail/tree/rg 复用同一套超限判定与 raw file pointer 输出协议。
+English: Lazily load the shared overflow module so detail/tree/rg reuse the same overflow policy and raw-file pointer protocol.
+]]
+local function load_shared_overflow_helpers()
+    if SHARED_OVERFLOW_HELPERS then
+        return SHARED_OVERFLOW_HELPERS, nil
+    end
+
+    local helper_path = vulcan.path_join(get_skill_dir(), "shared_overflow.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        return nil, {
+            error = "shared_overflow_load_failed",
+            message = tostring(load_error),
+            path = helper_path,
+        }
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        return nil, {
+            error = "shared_overflow_invalid",
+            message = ok and "shared_overflow.lua did not return a table" or tostring(helpers),
+            path = helper_path,
+        }
+    end
+
+    SHARED_OVERFLOW_HELPERS = helpers
+    return SHARED_OVERFLOW_HELPERS, nil
 end
 
 --[[
@@ -1512,33 +1545,24 @@ local function build_ast_detail_text(result)
 end
 
 --[[
-中文：根据客户端字符预算决定是否直接返回详情文本；若超限则将完整正文写入缓存文件，并在返回头部附带缓存路径提示。
-English: Return detail text inline when it fits the client budget; otherwise spill the complete text to cache and prepend the cache-path notice.
+中文：根据共享 overflow 协议决定是否内联返回 detail 文本；超限时仅返回 raw file 指针与安全分块读取计划。
+English: Use the shared overflow protocol to decide whether AST detail text stays inline; when oversized, return only the raw-file pointer plus the safe chunked read plan.
 ]]
-local function finalize_ast_detail_content(markdown_text)
-    local normalized = tostring(markdown_text or "")
-    if #normalized <= CURRENT_AST_CLIENT_CHAR_LIMIT then
-        return normalized
+local function finalize_ast_detail_content(markdown_text, summary_lines)
+    local helpers, helper_error = load_shared_overflow_helpers()
+    if helper_error then
+        return helper_error
     end
 
-    local output_directory, output_directory_error = resolve_large_result_directory()
-    if output_directory_error then
-        return output_directory_error
-    end
-
-    local file_id = build_spill_file_id("codekit_ast_detail")
-    local full_output_path = vulcan.path_join(output_directory, file_id .. ".md")
-    local _, write_error = write_text_file(full_output_path, normalized)
-    if write_error then
-        return write_error
-    end
-
-    return table.concat({
-        string.format("> " .. LARGE_RESULT_NOTICE_TEMPLATE, full_output_path),
-        string.format("> Inline limit: %d chars", CURRENT_AST_CLIENT_CHAR_LIMIT),
-        "",
-        normalized,
-    }, "\n")
+    return helpers.finalize_large_result({
+        content = markdown_text,
+        client_char_limit = CURRENT_AST_CLIENT_CHAR_LIMIT,
+        file_prefix = "codekit_ast_detail",
+        resolve_large_result_directory = resolve_large_result_directory,
+        build_spill_file_id = build_spill_file_id,
+        write_text_file = write_text_file,
+        summary_lines = summary_lines or {},
+    })
 end
 
 -- 文件读取与 capture 提取 / Cache file content and decode ast-grep captures.
@@ -2543,11 +2567,18 @@ return function(args)
         errors = errors,
     }
 
-    return finalize_ast_detail_content(build_ast_detail_text({
-        files_scanned = meta.files_scanned,
-        files_with_symbols = meta.files_with_symbols,
-        items_found = meta.items_found,
-        files = file_results,
-        errors = meta.errors,
-    }))
+    return finalize_ast_detail_content(
+        build_ast_detail_text({
+            files_scanned = meta.files_scanned,
+            files_with_symbols = meta.files_with_symbols,
+            items_found = meta.items_found,
+            files = file_results,
+            errors = meta.errors,
+        }),
+        {
+            string.format("files_scanned: %d", meta.files_scanned or 0),
+            string.format("files_with_symbols: %d", meta.files_with_symbols or 0),
+            string.format("items_found: %d", meta.items_found or 0),
+        }
+    )
 end
