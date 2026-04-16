@@ -559,10 +559,12 @@ echo "=== Step 1: LuaJIT SDK ==="
 LUAJIT_BIN="$LUAJIT_DIR/luajit"
 LUAJIT_SO="$LUAJIT_DIR/libluajit-5.1.so"
 LUAJIT_DYLIB=""
-for ext in dylib a; do
-    f=$(find "$LUAJIT_DIR" -maxdepth 1 -name "libluajit-5.1.$ext" 2>/dev/null | head -1)
-    [ -n "$f" ] && LUAJIT_DYLIB="$f" && break
-done
+if [ -d "$LUAJIT_DIR" ]; then
+    for ext in dylib a; do
+        f=$(find "$LUAJIT_DIR" -maxdepth 1 -name "libluajit-5.1.$ext" 2>/dev/null | head -1)
+        [ -n "$f" ] && LUAJIT_DYLIB="$f" && break
+    done
+fi
 LUA_INCLUDE="$LUAJIT_DIR/include"
 
 if { [ -n "$LUAJIT_SO" ] && [ -f "$LUAJIT_SO" ]; } || { [ -n "$LUAJIT_DYLIB" ] && [ -f "$LUAJIT_DYLIB" ]; } || [ -f "$LUAJIT_BIN" ]; then
@@ -610,7 +612,10 @@ if [ -f "$LUAJIT_DIR/luajit" ]; then
     LUAJIT_CMD="$LUAJIT_DIR/luajit"
 else
     # Try to find the binary
-    LUAJIT_CMD=$(find "$LUAJIT_DIR" -maxdepth 1 -name "luajit*" -type f | head -1)
+    LUAJIT_CMD=""
+    if [ -d "$LUAJIT_DIR" ]; then
+        LUAJIT_CMD=$(find "$LUAJIT_DIR" -maxdepth 1 -name "luajit*" -type f | head -1)
+    fi
     [ -z "$LUAJIT_CMD" ] && { echo "ERROR: luajit binary not found at $LUAJIT_DIR" >&2; exit 1; }
 fi
 echo "==> Using LuaJIT: $LUAJIT_CMD"
