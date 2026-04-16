@@ -31,6 +31,31 @@ function Ensure-Dir {
     if (-not (Test-Path $Path)) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
 }
 
+function Find-LocalArchive {
+    <#
+    .SYNOPSIS
+    在 third_party 顶层及其直接子目录中查找匹配的本地压缩包 / Find a matching local archive under third_party and its direct child directories.
+    #>
+    param([string]$AssetName)
+
+    $CandidatePaths = @(
+        (Join-Path $ThirdParty $AssetName)
+    )
+
+    $DirectSubDirs = Get-ChildItem -Path $ThirdParty -Directory -ErrorAction SilentlyContinue
+    foreach ($Dir in $DirectSubDirs) {
+        $CandidatePaths += Join-Path $Dir.FullName $AssetName
+    }
+
+    foreach ($Candidate in $CandidatePaths) {
+        if (Test-Path -LiteralPath $Candidate) {
+            return $Candidate
+        }
+    }
+
+    return $null
+}
+
 function Get-AvailableTarPath {
     <#
     .SYNOPSIS
@@ -108,16 +133,43 @@ function Install-VldbLancedbLibrary {
     $AssetInfo = Get-VldbLancedbAssetInfo
     $TarPath = Get-AvailableTarPath
     $ApiUrl = "https://api.github.com/repos/$VldbLancedbRepo/releases/latest"
+    $Release = $null
+    $TagName = $null
+    $AssetName = $null
+    $MarkerFile = $null
+    $LocalArchivePath = $null
 
-    Write-Host "==> Querying latest vldb-lancedb release..."
-    $Release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
-    $TagName = $Release.tag_name
-    if (-not $TagName) {
-        throw "Latest vldb-lancedb release is missing tag_name / 最新 vldb-lancedb release 缺少 tag_name"
+    $LocalPattern = "vldb-lancedb-lib-v*-$($AssetInfo.target)$($AssetInfo.archive_ext)"
+    $LocalArchive = Get-ChildItem -Path $ThirdParty -File -Filter $LocalPattern -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $LocalArchive) {
+        $LocalArchive = Get-ChildItem -Path $ThirdParty -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-ChildItem -Path $_.FullName -File -Filter $LocalPattern -ErrorAction SilentlyContinue } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
     }
 
-    $AssetName = "vldb-lancedb-lib-$TagName-$($AssetInfo.target)$($AssetInfo.archive_ext)"
-    $MarkerFile = Join-Path $VldbLancedbDir ".installed-$TagName-$($AssetInfo.target)"
+    if ($LocalArchive) {
+        $AssetName = $LocalArchive.Name
+        if ($AssetName -match '^vldb-lancedb-lib-(v.+)-[^-]+(?:-[^-]+){2,3}(\.zip|\.tar\.gz)$') {
+            $TagName = $Matches[1]
+        } else {
+            throw "Unable to parse vldb-lancedb tag from local archive name: $AssetName"
+        }
+        $MarkerFile = Join-Path $VldbLancedbDir ".installed-$TagName-$($AssetInfo.target)"
+        $LocalArchivePath = $LocalArchive.FullName
+    } else {
+        Write-Host "==> Querying latest vldb-lancedb release..."
+        $Release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
+        $TagName = $Release.tag_name
+        if (-not $TagName) {
+            throw "Latest vldb-lancedb release is missing tag_name / 最新 vldb-lancedb release 缺少 tag_name"
+        }
+
+        $AssetName = "vldb-lancedb-lib-$TagName-$($AssetInfo.target)$($AssetInfo.archive_ext)"
+        $MarkerFile = Join-Path $VldbLancedbDir ".installed-$TagName-$($AssetInfo.target)"
+        $LocalArchivePath = Find-LocalArchive -AssetName $AssetName
+    }
+
     $LibraryDest = Join-Path $DepsDir $AssetInfo.library_name
 
     if ((Test-Path $MarkerFile) -and (Test-Path $LibraryDest)) {
@@ -125,10 +177,12 @@ function Install-VldbLancedbLibrary {
         return
     }
 
-    $Asset = $Release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
-    if (-not $Asset) {
-        $Available = ($Release.assets | ForEach-Object { $_.name }) -join ", "
-        throw "vldb-lancedb asset '$AssetName' not found in latest release. Available assets: $Available"
+    if (-not $LocalArchivePath) {
+        $Asset = $Release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+        if (-not $Asset) {
+            $Available = ($Release.assets | ForEach-Object { $_.name }) -join ", "
+            throw "vldb-lancedb asset '$AssetName' not found in latest release. Available assets: $Available"
+        }
     }
 
     $TempDir = Join-Path $env:TEMP "vldb_lancedb_$pid"
@@ -139,8 +193,13 @@ function Install-VldbLancedbLibrary {
 
     try {
         $ArchivePath = Join-Path $TempDir $AssetName
-        Write-Host "==> Downloading vldb-lancedb library package: $AssetName"
-        Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $ArchivePath -UseBasicParsing
+        if ($LocalArchivePath) {
+            Write-Host "==> Using local vldb-lancedb library package: $LocalArchivePath"
+            Copy-Item $LocalArchivePath $ArchivePath -Force
+        } else {
+            Write-Host "==> Downloading vldb-lancedb library package: $AssetName"
+            Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $ArchivePath -UseBasicParsing
+        }
 
         if ($AssetInfo.archive_ext -eq ".zip") {
             Expand-Archive -Path $ArchivePath -DestinationPath $TempDir -Force

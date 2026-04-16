@@ -74,29 +74,50 @@ install_vldb_lancedb_library() {
     IFS='|' read -r target archive_ext library_name <<< "$asset_info"
 
     local api_url="https://api.github.com/repos/${VLDB_LANCEDB_REPO}/releases/latest"
-    echo "==> Querying latest vldb-lancedb release..."
-
-    local release_data
-    release_data="$(curl -fSL -s "$api_url")"
-
-    local tag_name
-    tag_name="$(printf '%s' "$release_data" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("tag_name",""))')"
-    if [ -z "$tag_name" ]; then
-        echo "ERROR: latest vldb-lancedb release is missing tag_name" >&2
-        return 1
-    fi
-
-    local asset_name="vldb-lancedb-lib-${tag_name}-${target}${archive_ext}"
-    local marker="$VLDB_LANCEDB_DIR/.installed-${tag_name}-${target}"
+    local release_data=""
+    local tag_name=""
+    local asset_name=""
+    local marker=""
+    local local_archive=""
     local library_dest="$DEPS_DIR/$library_name"
+
+    local local_pattern="vldb-lancedb-lib-v*-${target}${archive_ext}"
+    local_archive="$(find "$THIRD_PARTY" -maxdepth 2 -type f -name "$local_pattern" | sort -r | head -1)"
+    if [ -n "$local_archive" ]; then
+        asset_name="$(basename "$local_archive")"
+        tag_name="$(printf '%s' "$asset_name" | python3 -c "
+import re, sys
+name = sys.stdin.read().strip()
+match = re.match(r'^vldb-lancedb-lib-(v.+)-[^-]+(?:-[^-]+){2,3}(?:\\.zip|\\.tar\\.gz)$', name)
+print(match.group(1) if match else '')
+")"
+        if [ -z "$tag_name" ]; then
+            echo "ERROR: unable to parse vldb-lancedb tag from local archive name: $asset_name" >&2
+            return 1
+        fi
+        marker="$VLDB_LANCEDB_DIR/.installed-${tag_name}-${target}"
+    else
+        echo "==> Querying latest vldb-lancedb release..."
+        release_data="$(curl -fSL -s "$api_url")"
+        tag_name="$(printf '%s' "$release_data" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("tag_name",""))')"
+        if [ -z "$tag_name" ]; then
+            echo "ERROR: latest vldb-lancedb release is missing tag_name" >&2
+            return 1
+        fi
+
+        asset_name="vldb-lancedb-lib-${tag_name}-${target}${archive_ext}"
+        marker="$VLDB_LANCEDB_DIR/.installed-${tag_name}-${target}"
+        local_archive="$(find "$THIRD_PARTY" -maxdepth 2 -type f -name "$asset_name" | head -1)"
+    fi
 
     if [ -f "$marker" ] && [ -f "$library_dest" ]; then
         echo "==> vldb-lancedb library already installed ($asset_name)."
         return 0
     fi
 
-    local download_url
-    download_url="$(printf '%s' "$release_data" | python3 -c "
+    local download_url=""
+    if [ -z "$local_archive" ]; then
+        download_url="$(printf '%s' "$release_data" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for asset in data.get('assets', []):
@@ -104,9 +125,10 @@ for asset in data.get('assets', []):
         print(asset.get('browser_download_url', ''))
         break
 ")"
-    if [ -z "$download_url" ]; then
-        echo "ERROR: vldb-lancedb asset '$asset_name' not found in latest release." >&2
-        return 1
+        if [ -z "$download_url" ]; then
+            echo "ERROR: vldb-lancedb asset '$asset_name' not found in latest release." >&2
+            return 1
+        fi
     fi
 
     local temp_dir
@@ -114,8 +136,13 @@ for asset in data.get('assets', []):
     trap 'rm -rf "$temp_dir"' RETURN
 
     local archive_path="$temp_dir/$asset_name"
-    echo "==> Downloading vldb-lancedb library package: $asset_name"
-    curl -fSL "$download_url" -o "$archive_path"
+    if [ -n "$local_archive" ]; then
+        echo "==> Using local vldb-lancedb library package: $local_archive"
+        cp "$local_archive" "$archive_path"
+    else
+        echo "==> Downloading vldb-lancedb library package: $asset_name"
+        curl -fSL "$download_url" -o "$archive_path"
+    fi
 
     if [ "$archive_ext" = ".zip" ]; then
         python3 - "$archive_path" "$temp_dir" <<'PY'

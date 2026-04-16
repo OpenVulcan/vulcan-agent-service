@@ -142,6 +142,44 @@ python scripts/verify_vmcp_ast_comment_notes.py
 - `group`：逻辑分组，便于把相关入口组织在一起
 - `tool/resource/prompt/template`：真正暴露给 MCP 的具体入口
 
+### `lancedb` / `lancedb_enable`
+
+如需让某个 skill 获得宿主管理的专属 LanceDB 实例，推荐在 `skill.json` 顶层声明：
+
+```json
+{
+  "lancedb": {
+    "enable": true,
+    "log_level": "info",
+    "slow_log_enabled": true,
+    "slow_log_threshold_ms": 800
+  }
+}
+```
+
+当前仍兼容旧写法：
+
+```json
+{
+  "lancedb_enable": true
+}
+```
+
+当前规则固定如下：
+
+- 每个 skill 最多只绑定一个 LanceDB 库
+- 库名固定等于 **skill 目录名**
+- 宿主会自动使用 `__lancedb/<skill_dir_name>` 作为数据库目录
+- 若目录不存在，宿主会自动创建
+- Lua 不负责创建/删除数据库，只负责在该固定库内创建表、写入、检索和删表
+- 未开启 `lancedb_enable` 的 skill 不会获得可用的 `vulcan.lancedb` 上下文
+- `log_level` 当前支持：
+  - `off`
+  - `info`
+  - `warning`
+- `slow_log_enabled` 控制是否输出慢操作日志
+- `slow_log_threshold_ms` 控制慢操作阈值（毫秒）
+
 ### 附属能力提供器
 
 `prompts`、`resources`、`resource_templates` 统一只保留 `file` 字段：
@@ -302,6 +340,31 @@ vulcan.print(t.name)  -- test
 local result = vulcan.call("codekit-ast-detail", { paths = "src/main.rs" })
 vulcan.print(result)
 ```
+
+### `vulcan.lancedb`
+
+仅当当前 skill 在 `skill.json` 中显式声明 `lancedb_enable: true` 时，宿主才会注入 `vulcan.lancedb`。
+
+当前最小能力面包括：
+
+- `vulcan.lancedb.status()`
+- `vulcan.lancedb.info()`
+- `vulcan.lancedb.create_table(input)`
+- `vulcan.lancedb.vector_upsert(input)`
+- `vulcan.lancedb.vector_search(input)`
+- `vulcan.lancedb.delete(input)`
+- `vulcan.lancedb.drop_table(input)`
+
+其中：
+
+- `create_table/delete/drop_table` 直接接收 Lua table，宿主会转成对应 JSON 输入
+- `vector_upsert` 支持：
+  - `rows = {...}`：宿主自动按 JSON Rows 编码
+  - `data = "..."`：按原始 bytes 传递
+- `vector_search` 默认按 `json` 输出格式返回，并把结果行挂到 `data_json`
+- `status()` 在未启用 LanceDB 时也能稳定返回 `{ enabled = false, initialized = false, ... }`
+- `info()` 在未启用 LanceDB 时也会返回相同结构，方便 Lua 侧先做状态判断
+- 若当前 skill 未启用 LanceDB，真正的写操作接口会返回“当前 skill 未启用 lancedb”错误
 
 ### `vulcan.temp_dir -> string`
 
