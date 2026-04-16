@@ -575,35 +575,119 @@ fi
 
 if ! { [ -f "$LUAJIT_SO" ] || [ -f "$LUAJIT_DYLIB" ] || [ -f "$LUAJIT_BIN" ]; } || [ ! -d "$LUA_INCLUDE" ]; then
     echo "==> Searching cargo target for LuaJIT build output..."
+    BUILD_OUT=""
     BUILD_SRC=""
-    while IFS= read -r build_dir; do
-        src="$build_dir/src"
-        [ -f "$src/lua.h" ] && { BUILD_SRC="$src"; break; }
-    done < <(find "$PROJECT_DIR/target" -path "*/mlua-sys*/out/luajit-build" -type d 2>/dev/null | sort -r)
+    BUILD_LIB=""
+    BUILD_INCLUDE=""
+    while IFS= read -r out_dir; do
+        src="$out_dir/luajit-build/src"
+        lib="$out_dir/lib"
+        include="$out_dir/include"
+        if [ -f "$include/lua.h" ] || [ -f "$src/lua.h" ]; then
+            BUILD_OUT="$out_dir"
+            BUILD_SRC="$src"
+            BUILD_LIB="$lib"
+            BUILD_INCLUDE="$include"
+            break
+        fi
+    done < <(find "$PROJECT_DIR/target" -path "*/mlua-sys*/out" -type d 2>/dev/null | sort -r)
 
-    if [ -z "$BUILD_SRC" ]; then
+    if [ -z "$BUILD_OUT" ]; then
         echo "==> LuaJIT build output not found. Running cargo build..."
         cargo build
-        while IFS= read -r build_dir; do
-            src="$build_dir/src"
-            [ -f "$src/lua.h" ] && { BUILD_SRC="$src"; break; }
-        done < <(find "$PROJECT_DIR/target" -path "*/mlua-sys*/out/luajit-build" -type d 2>/dev/null | sort -r)
+        while IFS= read -r out_dir; do
+            src="$out_dir/luajit-build/src"
+            lib="$out_dir/lib"
+            include="$out_dir/include"
+            if [ -f "$include/lua.h" ] || [ -f "$src/lua.h" ]; then
+                BUILD_OUT="$out_dir"
+                BUILD_SRC="$src"
+                BUILD_LIB="$lib"
+                BUILD_INCLUDE="$include"
+                break
+            fi
+        done < <(find "$PROJECT_DIR/target" -path "*/mlua-sys*/out" -type d 2>/dev/null | sort -r)
     fi
 
-    [ -z "$BUILD_SRC" ] && { echo "ERROR: LuaJIT build artifacts not found." >&2; exit 1; }
+    [ -z "$BUILD_OUT" ] && { echo "ERROR: LuaJIT build artifacts not found." >&2; exit 1; }
 
     ensure_dir "$LUAJIT_DIR"
     ensure_dir "$LUA_INCLUDE"
 
-    if [ ! -f "$BUILD_SRC/libluajit-5.1.so" ] && [ ! -f "$BUILD_SRC/libluajit-5.1.a" ]; then
-        echo "==> Building LuaJIT..."
-        make -C "$BUILD_SRC" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
+    HAVE_LIB=false
+    if [ -n "$BUILD_LIB" ] && {
+        [ -f "$BUILD_LIB/libluajit-5.1.so" ] || [ -f "$BUILD_LIB/libluajit-5.1.a" ] || [ -f "$BUILD_LIB/libluajit-5.1.dylib" ] ||
+        [ -f "$BUILD_LIB/libluajit.so" ] || [ -f "$BUILD_LIB/libluajit.a" ] || [ -f "$BUILD_LIB/libluajit.dylib" ];
+    }; then
+        HAVE_LIB=true
+    elif [ -n "$BUILD_SRC" ] && {
+        [ -f "$BUILD_SRC/libluajit-5.1.so" ] || [ -f "$BUILD_SRC/libluajit-5.1.a" ] || [ -f "$BUILD_SRC/libluajit-5.1.dylib" ] ||
+        [ -f "$BUILD_SRC/libluajit.so" ] || [ -f "$BUILD_SRC/libluajit.a" ] || [ -f "$BUILD_SRC/libluajit.dylib" ];
+    }; then
+        HAVE_LIB=true
     fi
 
-    cp "$BUILD_SRC"/libluajit-5.1.so* "$LUAJIT_DIR/" 2>/dev/null || true
-    cp "$BUILD_SRC"/libluajit-5.1.a* "$LUAJIT_DIR/" 2>/dev/null || true
-    cp "$BUILD_SRC"/luajit "$LUAJIT_DIR/" 2>/dev/null || true
-    [ -f "$BUILD_SRC/lua.h" ] && cp "$BUILD_SRC"/*.h "$LUA_INCLUDE/" 2>/dev/null || true
+    HAVE_INCLUDE=false
+    if [ -n "$BUILD_INCLUDE" ] && [ -f "$BUILD_INCLUDE/lua.h" ]; then
+        HAVE_INCLUDE=true
+    elif [ -n "$BUILD_SRC" ] && [ -f "$BUILD_SRC/lua.h" ]; then
+        HAVE_INCLUDE=true
+    fi
+
+    HAVE_BIN=false
+    if [ -n "$BUILD_SRC" ] && [ -f "$BUILD_SRC/luajit" ]; then
+        HAVE_BIN=true
+    fi
+
+    if [ "$HAVE_LIB" = false ] && [ "$HAVE_INCLUDE" = true ] && [ -n "$BUILD_SRC" ]; then
+        echo "==> Building LuaJIT..."
+        make -C "$BUILD_SRC" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
+        if [ -f "$BUILD_SRC/libluajit-5.1.so" ] || [ -f "$BUILD_SRC/libluajit-5.1.a" ] || [ -f "$BUILD_SRC/libluajit-5.1.dylib" ] ||
+           [ -f "$BUILD_SRC/libluajit.so" ] || [ -f "$BUILD_SRC/libluajit.a" ] || [ -f "$BUILD_SRC/libluajit.dylib" ]; then
+            HAVE_LIB=true
+        fi
+        if [ -f "$BUILD_SRC/luajit" ]; then
+            HAVE_BIN=true
+        fi
+    fi
+
+    [ -n "$BUILD_LIB" ] && cp "$BUILD_LIB"/libluajit-5.1.so* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_LIB" ] && cp "$BUILD_LIB"/libluajit-5.1.a* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_LIB" ] && cp "$BUILD_LIB"/libluajit-5.1.dylib* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_LIB" ] && cp "$BUILD_LIB"/libluajit.so* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_LIB" ] && cp "$BUILD_LIB"/libluajit.a* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_LIB" ] && cp "$BUILD_LIB"/libluajit.dylib* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_SRC" ] && cp "$BUILD_SRC"/libluajit-5.1.so* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_SRC" ] && cp "$BUILD_SRC"/libluajit-5.1.a* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_SRC" ] && cp "$BUILD_SRC"/libluajit-5.1.dylib* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_SRC" ] && cp "$BUILD_SRC"/libluajit.so* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_SRC" ] && cp "$BUILD_SRC"/libluajit.a* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_SRC" ] && cp "$BUILD_SRC"/libluajit.dylib* "$LUAJIT_DIR/" 2>/dev/null || true
+    [ -n "$BUILD_SRC" ] && cp "$BUILD_SRC"/luajit "$LUAJIT_DIR/" 2>/dev/null || true
+    if [ -n "$BUILD_INCLUDE" ] && [ -f "$BUILD_INCLUDE/lua.h" ]; then
+        cp "$BUILD_INCLUDE"/*.h "$LUA_INCLUDE/" 2>/dev/null || true
+    elif [ -n "$BUILD_SRC" ] && [ -f "$BUILD_SRC/lua.h" ]; then
+        cp "$BUILD_SRC"/*.h "$LUA_INCLUDE/" 2>/dev/null || true
+    fi
+
+    if [ -f "$LUAJIT_DIR/libluajit.a" ] && [ ! -f "$LUAJIT_DIR/libluajit-5.1.a" ]; then
+        cp "$LUAJIT_DIR/libluajit.a" "$LUAJIT_DIR/libluajit-5.1.a"
+    fi
+    if [ -f "$LUAJIT_DIR/libluajit.so" ] && [ ! -f "$LUAJIT_DIR/libluajit-5.1.so" ]; then
+        cp "$LUAJIT_DIR/libluajit.so" "$LUAJIT_DIR/libluajit-5.1.so"
+    fi
+    if [ -f "$LUAJIT_DIR/libluajit.dylib" ] && [ ! -f "$LUAJIT_DIR/libluajit-5.1.dylib" ]; then
+        cp "$LUAJIT_DIR/libluajit.dylib" "$LUAJIT_DIR/libluajit-5.1.dylib"
+    fi
+
+    if ! { [ -f "$LUAJIT_DIR/libluajit-5.1.so" ] || [ -f "$LUAJIT_DIR/libluajit-5.1.a" ] || [ -f "$LUAJIT_DIR/libluajit-5.1.dylib" ] || [ -f "$LUAJIT_DIR/libluajit.so" ] || [ -f "$LUAJIT_DIR/libluajit.a" ] || [ -f "$LUAJIT_DIR/libluajit.dylib" ] || [ -f "$LUAJIT_DIR/luajit" ]; } || [ ! -f "$LUA_INCLUDE/lua.h" ]; then
+        echo "ERROR: LuaJIT SDK is still incomplete after collecting cargo build artifacts." >&2
+        echo "       out dir: $BUILD_OUT" >&2
+        echo "       lib dir: $BUILD_LIB" >&2
+        echo "       src dir: $BUILD_SRC" >&2
+        echo "       include dir: $BUILD_INCLUDE" >&2
+        exit 1
+    fi
 
     echo "==> LuaJIT SDK ready at $LUAJIT_DIR"
 fi
@@ -627,7 +711,7 @@ echo ""
 echo "=== Step 2: luarocks ==="
 
 LUAROCKS_BIN=""
-[ -f "$LUAROCKS_DIR/luarocks" ] && LUAROCKS_BIN="$LUAROCKS_DIR/luarocks"
+[ -f "$LUAROCKS_DIR/bin/luarocks" ] && LUAROCKS_BIN="$LUAROCKS_DIR/bin/luarocks"
 
 if [ -z "$LUAROCKS_BIN" ]; then
     echo "==> Installing luarocks..."
@@ -644,13 +728,14 @@ if [ -z "$LUAROCKS_BIN" ]; then
     [ -z "$LUAROCKS_SRC" ] && { echo "ERROR: luarocks source not found" >&2; exit 1; }
 
     cd "$LUAROCKS_SRC"
-    ./configure --lua-dir="$LUAJIT_DIR" --lua-version=5.1 \
-        --with-lua-include="$LUA_INCLUDE" --prefix="$LUAROCKS_DIR" \
+    ./configure --with-lua="$LUAJIT_DIR" --with-lua-bin="$LUAJIT_DIR" \
+        --with-lua-include="$LUA_INCLUDE" --with-lua-lib="$LUAJIT_DIR" \
+        --lua-version=5.1 --prefix="$LUAROCKS_DIR" \
         --rocks-tree="$LUA_PACKAGES"
     make build && make install
     cd "$PROJECT_DIR"
     rm -rf "$BUILD_TEMP"
-    LUAROCKS_BIN="$LUAROCKS_DIR/luarocks"
+    LUAROCKS_BIN="$LUAROCKS_DIR/bin/luarocks"
 fi
 
 # Create luarocks config

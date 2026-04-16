@@ -38,6 +38,12 @@ pkg lrexlib-pcre2
   dep pcre2 windows vcpkg https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz
   depvar pcre2 windows PCRE2_LIBDIR dep:pcre2/lib
   depvar pcre2 windows PCRE2_INCDIR dep:pcre2/include
+  dep pcre2 linux cmake https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz
+  depvar pcre2 linux PCRE2_LIBDIR dep:pcre2/lib
+  depvar pcre2 linux PCRE2_INCDIR dep:pcre2/include
+  dep pcre2 macos cmake https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.gz
+  depvar pcre2 macos PCRE2_LIBDIR dep:pcre2/lib
+  depvar pcre2 macos PCRE2_INCDIR dep:pcre2/include
 
 # Crypto
 pkg luaossl
@@ -56,6 +62,14 @@ pkg lyaml
   depvar libyaml windows YAML_DIR dep:libyaml
   depvar libyaml windows YAML_LIBDIR dep:libyaml/lib
   depvar libyaml windows YAML_INCDIR dep:libyaml/include
+  dep libyaml linux bundled https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz
+  depvar libyaml linux YAML_DIR dep:libyaml
+  depvar libyaml linux YAML_LIBDIR dep:libyaml/lib
+  depvar libyaml linux YAML_INCDIR dep:libyaml/include
+  dep libyaml macos bundled https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz
+  depvar libyaml macos YAML_DIR dep:libyaml
+  depvar libyaml macos YAML_LIBDIR dep:libyaml/lib
+  depvar libyaml macos YAML_INCDIR dep:libyaml/include
 pkg lua-toml
 
 # Database
