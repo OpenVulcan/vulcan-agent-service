@@ -36,6 +36,69 @@ function Ensure-Dir {
     if (-not (Test-Path $Path)) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
 }
 
+function Get-CurrentArchitectureKey {
+    <#
+    .SYNOPSIS
+    获取当前 CPU 架构标识 / Get the current CPU architecture key.
+    #>
+    $Arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
+    switch ($Arch) {
+        "x64" { return "x64" }
+        "arm64" { return "arm64" }
+        default { throw "Unsupported architecture for prebuilt Lua deps: $Arch" }
+    }
+}
+
+function Get-PrebuiltDepsPlatform {
+    <#
+    .SYNOPSIS
+    获取当前平台对应的 lua-deps 资产名后缀 / Resolve the lua-deps asset suffix for the current platform.
+    #>
+    $ArchKey = Get-CurrentArchitectureKey
+
+    if ($script:IsWindowsPlatform) {
+        if ($ArchKey -ne "x64") {
+            throw "Prebuilt Lua deps currently support Windows x64 only. Current arch: $ArchKey"
+        }
+        return "windows-x64"
+    }
+
+    if ($script:IsMacOSPlatform) {
+        return if ($ArchKey -eq "arm64") { "macos-arm64" } else { "macos-x64" }
+    }
+
+    if ($script:IsLinuxPlatform) {
+        return if ($ArchKey -eq "arm64") { "linux-arm64" } else { "linux-x64" }
+    }
+
+    throw "Unsupported platform for prebuilt Lua deps bootstrap."
+}
+
+function Find-LocalArchive {
+    <#
+    .SYNOPSIS
+    在 third_party 顶层及其直接子目录中查找匹配的本地压缩包 / Find a matching local archive under third_party and its direct child directories.
+    #>
+    param([string]$AssetName)
+
+    $CandidatePaths = @(
+        (Join-Path $ThirdParty $AssetName)
+    )
+
+    $DirectSubDirs = Get-ChildItem -Path $ThirdParty -Directory -ErrorAction SilentlyContinue
+    foreach ($Dir in $DirectSubDirs) {
+        $CandidatePaths += Join-Path $Dir.FullName $AssetName
+    }
+
+    foreach ($Candidate in $CandidatePaths) {
+        if (Test-Path -LiteralPath $Candidate) {
+            return $Candidate
+        }
+    }
+
+    return $null
+}
+
 function Download-Extract-TarGz {
     param([string]$Url, [string]$DestDir)
     $Archive = Join-Path $DestDir "source.tar.gz"
@@ -234,7 +297,7 @@ function Install-Deps-With-Vcpkg {
     $installed = $true
     foreach ($dep in $DepNames) {
         $triplet = "${dep}:x64-windows-static"
-        $manifestFile = Join-Path $VcpkgInstallDir "info" "$triplet.list"
+        $manifestFile = Join-Path (Join-Path $VcpkgInstallDir "info") "$triplet.list"
         if (-not (Test-Path $manifestFile)) {
             $installed = $false
             break
@@ -293,7 +356,7 @@ function Install-Deps-With-Vcpkg {
     $installedCount = 0
     foreach ($dep in $DepNames) {
         $triplet = "${dep}:x64-windows-static"
-        $manifestFile = Join-Path $VcpkgInstallDir "info" "$triplet.list"
+        $manifestFile = Join-Path (Join-Path $VcpkgInstallDir "info") "$triplet.list"
         if (Test-Path $manifestFile) { $installedCount++ }
     }
 
@@ -592,12 +655,10 @@ function Run-With-LocalPath {
 $ReleaseTag = "deps-v1"  # matches the workflow release tag
 
 function Download-Prebuilt-Deps {
-    $Platform = if ($script:IsWindowsPlatform) { "windows-x64" }
-                elseif ($script:IsMacOSPlatform) { "macos-x64" }
-                else { "linux-x64" }
-
+    $Platform = Get-PrebuiltDepsPlatform
     $assetName = "lua-deps-${Platform}.tar.gz"
     $markerFile = Join-Path $DepsDir ".prebuilt-${assetName}.installed"
+    $localArchivePath = Find-LocalArchive -AssetName $assetName
 
     # Check if already installed
     if (Test-Path $markerFile) {
@@ -605,36 +666,41 @@ function Download-Prebuilt-Deps {
         return $DepsDir
     }
 
-    # Ensure we have curl
-    if (-not (Get-Command "curl.exe" -ErrorAction SilentlyContinue)) {
-        Write-Host "  ==> curl not found, cannot download pre-built deps."
-        return $null
-    }
-
-    Write-Host "  ==> Downloading pre-built deps ($assetName) from GitHub Releases..."
-
-    $apiUrl = "https://api.github.com/repos/$GitHubRepo/releases/tags/$ReleaseTag"
-    try {
-        $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
-    } catch {
-        Write-Host "  ==> GitHub Release not found ($ReleaseTag). Will compile locally." -ForegroundColor Yellow
-        return $null
-    }
-
-    $asset = $release.assets | Where-Object { $_.name -eq $assetName }
-    if (-not $asset) {
-        $available = ($release.assets | ForEach-Object { $_.name }) -join ", "
-        Write-Host "  ==> Pre-built asset '$assetName' not found in release. Available: $available" -ForegroundColor Yellow
-        return $null
-    }
-
     $archivePath = Join-Path $DepsDir "prebuilt.tar.gz"
-    Write-Host "  ==> Downloading $($asset.browser_download_url)..."
-    try {
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archivePath -UseBasicParsing
-    } catch {
-        Write-Host "  ==> Download failed: $_" -ForegroundColor Red
-        return $null
+    if ($localArchivePath) {
+        Write-Host "  ==> Using local pre-built deps package: $localArchivePath"
+        Copy-Item -LiteralPath $localArchivePath -Destination $archivePath -Force
+    } else {
+        # Ensure we have curl
+        if (-not (Get-Command "curl.exe" -ErrorAction SilentlyContinue)) {
+            Write-Host "  ==> curl not found, cannot download pre-built deps." -ForegroundColor Yellow
+            return $null
+        }
+
+        Write-Host "  ==> Downloading pre-built deps ($assetName) from GitHub Releases..."
+
+        $apiUrl = "https://api.github.com/repos/$GitHubRepo/releases/tags/$ReleaseTag"
+        try {
+            $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
+        } catch {
+            Write-Host "  ==> GitHub release '$ReleaseTag' not reachable. It may be missing or the repository may still be private. Will compile locally." -ForegroundColor Yellow
+            return $null
+        }
+
+        $asset = $release.assets | Where-Object { $_.name -eq $assetName }
+        if (-not $asset) {
+            $available = ($release.assets | ForEach-Object { $_.name }) -join ", "
+            Write-Host "  ==> Pre-built asset '$assetName' not found in release. Available: $available" -ForegroundColor Yellow
+            return $null
+        }
+
+        Write-Host "  ==> Downloading $($asset.browser_download_url)..."
+        try {
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archivePath -UseBasicParsing
+        } catch {
+            Write-Host "  ==> Download failed: $_" -ForegroundColor Red
+            return $null
+        }
     }
 
     Write-Host "  ==> Extracting to $DepsDir..."
@@ -966,6 +1032,21 @@ if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
         $DllFound = $true
         Write-Host "==> Found already-built DLL in cargo target"
     } else {
+        if ($script:IsWindowsPlatform) {
+            Write-Host "==> Ensuring LuaJIT DLL build prerequisites (Perl + VS BuildTools)..."
+            $PerlResult = Detect-Tool "perl" { Check-Perl } { Install-Perl } "perl (LuaJIT DLL build)"
+            if (-not $PerlResult) {
+                throw "Perl is required to build LuaJIT DLL on Windows / Windows 下构建 LuaJIT DLL 需要 Perl"
+            }
+
+            $VsResult = Detect-Tool "vs" { Check-VsTools } { Install-VsTools } "VS BuildTools (LuaJIT DLL build)"
+            if (-not $VsResult) {
+                throw "VS BuildTools is required to build LuaJIT DLL on Windows / Windows 下构建 LuaJIT DLL 需要 VS BuildTools"
+            }
+
+            Activate-LocalTools
+        }
+
         Write-Host "==> Building LuaJIT DLL (msvcbuild.bat)..."
         Push-Location $BuildSrcDir
         try {
@@ -979,9 +1060,20 @@ if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $false  # Show window for msvcbuild.bat
             $proc = [System.Diagnostics.Process]::Start($psi)
+            $stdout = $proc.StandardOutput.ReadToEnd()
+            $stderr = $proc.StandardError.ReadToEnd()
             $proc.WaitForExit()
             if (Test-Path (Join-Path $BuildSrcDir "lua51.dll")) {
                 $DllFound = $true
+            } else {
+                if ($stdout) {
+                    Write-Host "--- LuaJIT msvcbuild stdout ---" -ForegroundColor Yellow
+                    Write-Host $stdout.Trim()
+                }
+                if ($stderr) {
+                    Write-Host "--- LuaJIT msvcbuild stderr ---" -ForegroundColor Yellow
+                    Write-Host $stderr.Trim()
+                }
             }
         } finally {
             Pop-Location

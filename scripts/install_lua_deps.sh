@@ -375,30 +375,71 @@ download_extract() {
 GITHUB_REPO="OpenVulcan/vulcan-mcp"
 RELEASE_TAG="deps-v1"
 
+find_local_archive() {
+    # 在 third_party 顶层及其直接子目录中查找匹配的本地压缩包。
+    # Find a matching local archive under third_party and its direct child directories.
+    local asset_name="$1"
+    find "$THIRD_PARTY" -maxdepth 2 -type f -name "$asset_name" | sort -r | head -1
+}
+
+get_prebuilt_deps_platform() {
+    # 根据当前操作系统与架构，推导 lua-deps 预编译资产名后缀。
+    # Derive the lua-deps prebuilt asset suffix for the current OS and architecture.
+    local machine
+    machine="$(uname -m)"
+
+    case "$(uname -s)" in
+        Linux*)
+            case "$machine" in
+                aarch64|arm64) echo "linux-arm64" ;;
+                x86_64|amd64) echo "linux-x64" ;;
+                *) echo "unsupported" ;;
+            esac
+            ;;
+        Darwin*)
+            case "$machine" in
+                aarch64|arm64) echo "macos-arm64" ;;
+                x86_64|amd64) echo "macos-x64" ;;
+                *) echo "unsupported" ;;
+            esac
+            ;;
+        *)
+            echo "unsupported"
+            ;;
+    esac
+}
+
 download_prebuilt_deps() {
     local platform
-    case "$(uname -s)" in
-        Linux*)   platform="linux-x64" ;;
-        Darwin*)  platform="macos-x64" ;;
-        *)        echo "  ==> Unsupported platform."; return 1 ;;
-    esac
+    platform="$(get_prebuilt_deps_platform)"
+    if [ "$platform" = "unsupported" ]; then
+        echo "  ==> Unsupported platform."
+        return 1
+    fi
 
     local asset_name="lua-deps-${platform}.tar.gz"
     local marker="$DEPS_DIR/.prebuilt-${asset_name}.installed"
+    local local_archive=""
 
     [ -f "$marker" ] && { echo "  ==> Pre-built deps already installed ($asset_name)."; return 0; }
 
-    echo "  ==> Checking GitHub Releases for pre-built deps ($asset_name)..."
+    local archive="$DEPS_DIR/prebuilt.tar.gz"
+    local_archive="$(find_local_archive "$asset_name")"
+    if [ -n "$local_archive" ]; then
+        echo "  ==> Using local pre-built deps package: $local_archive"
+        cp "$local_archive" "$archive"
+    else
+        echo "  ==> Checking GitHub Releases for pre-built deps ($asset_name)..."
 
-    local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${RELEASE_TAG}"
-    local release_data
-    release_data=$(curl -fSL -s "$api_url" 2>/dev/null) || {
-        echo "  ==> Release not found. Will compile locally."
-        return 1
-    }
+        local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${RELEASE_TAG}"
+        local release_data
+        release_data=$(curl -fSL -s "$api_url" 2>/dev/null) || {
+            echo "  ==> Release '$RELEASE_TAG' not reachable. It may be missing or the repository may still be private. Will compile locally."
+            return 1
+        }
 
-    local download_url
-    download_url=$(echo "$release_data" | python3 -c "
+        local download_url
+        download_url=$(echo "$release_data" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for a in data.get('assets', []):
@@ -406,18 +447,18 @@ for a in data.get('assets', []):
         print(a['browser_download_url'])
         sys.exit(0)
 " 2>/dev/null) || {
-        echo "  ==> Could not parse release data or asset not found."
-        return 1
-    }
+            echo "  ==> Could not parse release data or asset not found."
+            return 1
+        }
 
-    if [ -z "$download_url" ]; then
-        echo "  ==> Pre-built asset not found in release."
-        return 1
+        if [ -z "$download_url" ]; then
+            echo "  ==> Pre-built asset not found in release."
+            return 1
+        fi
+
+        echo "  ==> Downloading pre-built deps..."
+        curl -fSL "$download_url" -o "$archive" 2>/dev/null || { echo "  ==> Download failed."; return 1; }
     fi
-
-    echo "  ==> Downloading pre-built deps..."
-    local archive="$DEPS_DIR/prebuilt.tar.gz"
-    curl -fSL "$download_url" -o "$archive" 2>/dev/null || { echo "  ==> Download failed."; return 1; }
     tar -xzf "$archive" -C "$DEPS_DIR"
     rm -f "$archive"
     touch "$marker"
