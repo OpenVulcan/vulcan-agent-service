@@ -93,11 +93,15 @@ resolve_config_ref() {
 # Local tool paths (populated by detect_ functions)
 # ============================================================
 declare -A LOCAL_TOOLS
+LOCAL_TOOL_COUNT=0
 
 # Helper: prepend a directory to our local tool PATH
 add_local_tool() {
     if [ -d "$1" ]; then
-        LOCAL_TOOLS["$1"]=1
+        if [ -z "${LOCAL_TOOLS["$1"]+x}" ]; then
+            LOCAL_TOOLS["$1"]=1
+            LOCAL_TOOL_COUNT=$((LOCAL_TOOL_COUNT + 1))
+        fi
         export PATH="$1:$PATH"
     fi
 }
@@ -257,7 +261,7 @@ echo "  Active local tool dirs:"
 for dir in "${!LOCAL_TOOLS[@]}"; do
     echo "    - $dir"
 done
-if [ ${#LOCAL_TOOLS[@]} -eq 0 ]; then
+if [ "$LOCAL_TOOL_COUNT" -eq 0 ]; then
     echo "    (all tools found in system PATH)"
 fi
 
