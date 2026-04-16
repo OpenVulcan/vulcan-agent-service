@@ -1,6 +1,12 @@
 {
   "name": "__demo",
   "debug": true,
+  "lancedb": {
+    "enable": false,
+    "log_level": "info",
+    "slow_log_enabled": false,
+    "slow_log_threshold_ms": 800
+  },
   "groups": [
     {
       "name": "tooling",
@@ -91,7 +97,12 @@
             {
               "name": "target",
               "description": "Target that the copied skill should focus on.",
-              "required": false
+              "required": false,
+              "completions": [
+                "Analyze the current project structure",
+                "Inspect one exact file in detail",
+                "Search a symbol or keyword and find its owner"
+              ]
             }
           ]
         },
@@ -104,12 +115,22 @@
             {
               "name": "target",
               "description": "Target that the copied skill should focus on.",
-              "required": false
+              "required": false,
+              "completions": [
+                "Current workspace",
+                "One selected module",
+                "One selected document"
+              ]
             },
             {
               "name": "goal",
               "description": "Goal that the copied skill should solve.",
-              "required": false
+              "required": false,
+              "completions": [
+                "Summarize the current structure",
+                "Locate the relevant implementation",
+                "Prepare the next editing step"
+              ]
             }
           ]
         }

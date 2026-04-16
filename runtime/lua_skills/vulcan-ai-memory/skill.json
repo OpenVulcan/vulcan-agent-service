@@ -1,0 +1,52 @@
+{
+  "name": "vulcan-ai-memory",
+  "debug": true,
+  "lancedb": {
+    "enable": true,
+    "log_level": "info",
+    "slow_log_enabled": true,
+    "slow_log_threshold_ms": 800
+  },
+  "groups": [
+    {
+      "name": "memory",
+      "description": "LanceDB-backed AI memory experiments for Lua skills.",
+      "tools": [
+        {
+          "name": "vulcan-ai-memory-lancedb-test",
+          "description": "Verify the host-managed LanceDB binding for vulcan-ai-memory by creating a demo table, upserting one vector row, and performing one vector search.",
+          "lua_entry": "main.lua",
+          "lua_module": "vulcan_ai_memory_lancedb_test",
+          "parameters": [
+            {
+              "name": "table_name",
+              "type": "string",
+              "description": "Optional table name used for the test run. Defaults to ai_memory_test.",
+              "required": false
+            },
+            {
+              "name": "record_id",
+              "type": "string",
+              "description": "Optional stable record id. Defaults to memory-test-001.",
+              "required": false
+            },
+            {
+              "name": "memory_text",
+              "type": "string",
+              "description": "Optional memory text stored alongside the embedding. Defaults to a stable bilingual test sentence.",
+              "required": false
+            },
+            {
+              "name": "overwrite_if_exists",
+              "type": "boolean",
+              "description": "Whether to overwrite the demo table if it already exists. Defaults to true for a stable test loop.",
+              "required": false
+            }
+          ],
+          "return_type": "table",
+          "prompt": "Use this to verify that the current skill receives a working host-managed LanceDB instance under __lancedb/vulcan-ai-memory."
+        }
+      ]
+    }
+  ]
+}
