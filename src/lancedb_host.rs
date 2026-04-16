@@ -30,6 +30,9 @@ struct VldbLancedbEngineHandle {
 struct VldbLancedbByteBuffer {
     data: *mut c_uchar,
     len: usize,
+    /// 原始分配容量，仅供动态库在释放时恢复 Vec 布局。
+    /// Original allocation capacity used only by the dynamic library when reconstructing the Vec during free.
+    cap: usize,
 }
 
 /// 中文：LanceDB FFI 运行时选项，需与导出的头文件严格对齐。
@@ -114,7 +117,8 @@ impl LoadedLanceDbApi {
                 continue;
             }
 
-            let library = unsafe { Library::new(&candidate) }.map_err(|error| error.to_string());
+            let library =
+                unsafe { Library::new(&candidate) }.map_err(|error| error.to_string());
             match library {
                 Ok(library) => {
                     return unsafe { Self::from_library(candidate, library) };
@@ -275,6 +279,7 @@ impl LanceDbSkillBinding {
             "skill_name": self.skill_name,
             "skill_dir_name": self.skill_dir_name,
             "database_path": self.database_path,
+            "integration_mode": "dynamic_library",
             "library_path": self.api.library_path.to_string_lossy().to_string(),
             "log_level": self.config.log_level.as_str(),
             "slow_log_enabled": self.config.slow_log_enabled,
@@ -300,8 +305,9 @@ impl LanceDbSkillBinding {
     /// English: Execute vector upsert; callers must provide an already encoded raw payload.
     pub fn vector_upsert_json(&self, input: &Value, data: &[u8]) -> Result<Value, String> {
         let input_text = serde_json::to_string(input).map_err(|error| error.to_string())?;
-        let input_cstr = CString::new(input_text)
-            .map_err(|_| "input json contains interior NUL bytes / 输入 JSON 含有 NUL 字节".to_string())?;
+        let input_cstr = CString::new(input_text).map_err(|_| {
+            "input json contains interior NUL bytes / 输入 JSON 含有 NUL 字节".to_string()
+        })?;
         self.log_info("vector_upsert", Some(format!("payload_bytes={}", data.len())));
         let started_at = Instant::now();
         let guard = self.handles.lock().map_err(|_| {
@@ -329,7 +335,11 @@ impl LanceDbSkillBinding {
                 )
             })?;
             drop(guard);
-            self.log_if_slow("vector_upsert", started_at, Some(format!("payload_bytes={}", data.len())));
+            self.log_if_slow(
+                "vector_upsert",
+                started_at,
+                Some(format!("payload_bytes={}", data.len())),
+            );
             Ok(value)
         }
     }
@@ -338,8 +348,9 @@ impl LanceDbSkillBinding {
     /// English: Execute vector search and return both metadata JSON and raw result bytes.
     pub fn vector_search_json(&self, input: &Value) -> Result<(Value, Vec<u8>), String> {
         let input_text = serde_json::to_string(input).map_err(|error| error.to_string())?;
-        let input_cstr = CString::new(input_text)
-            .map_err(|_| "input json contains interior NUL bytes / 输入 JSON 含有 NUL 字节".to_string())?;
+        let input_cstr = CString::new(input_text).map_err(|_| {
+            "input json contains interior NUL bytes / 输入 JSON 含有 NUL 字节".to_string()
+        })?;
         self.log_info("vector_search", None);
         let started_at = Instant::now();
         let guard = self.handles.lock().map_err(|_| {
@@ -348,13 +359,11 @@ impl LanceDbSkillBinding {
         let mut buffer = VldbLancedbByteBuffer {
             data: ptr::null_mut(),
             len: 0,
+            cap: 0,
         };
         unsafe {
-            let response = (self.api.engine_vector_search)(
-                guard.engine,
-                input_cstr.as_ptr(),
-                &mut buffer,
-            );
+            let response =
+                (self.api.engine_vector_search)(guard.engine, input_cstr.as_ptr(), &mut buffer);
             let text = match self.api.take_owned_string(response) {
                 Ok(text) => text,
                 Err(error) => {
@@ -371,7 +380,11 @@ impl LanceDbSkillBinding {
             })?;
             let bytes = self.api.take_owned_bytes(buffer);
             drop(guard);
-            self.log_if_slow("vector_search", started_at, Some(format!("result_bytes={}", bytes.len())));
+            self.log_if_slow(
+                "vector_search",
+                started_at,
+                Some(format!("result_bytes={}", bytes.len())),
+            );
             Ok((meta, bytes))
         }
     }
@@ -394,13 +407,19 @@ impl LanceDbSkillBinding {
 
     /// 中文：统一执行“输入 JSON -> 返回 JSON 字符串”的 FFI 调用。
     /// English: Execute an FFI call that maps a JSON input into a JSON-string response.
-    fn call_json_string<F>(&self, operation: &str, input: &Value, invoke: F) -> Result<Value, String>
+    fn call_json_string<F>(
+        &self,
+        operation: &str,
+        input: &Value,
+        invoke: F,
+    ) -> Result<Value, String>
     where
         F: Fn(&LoadedLanceDbApi, &SkillHandleState, *const c_char) -> *mut c_char,
     {
         let input_text = serde_json::to_string(input).map_err(|error| error.to_string())?;
-        let input_cstr = CString::new(input_text)
-            .map_err(|_| "input json contains interior NUL bytes / 输入 JSON 含有 NUL 字节".to_string())?;
+        let input_cstr = CString::new(input_text).map_err(|_| {
+            "input json contains interior NUL bytes / 输入 JSON 含有 NUL 字节".to_string()
+        })?;
         self.log_info(operation, None);
         let started_at = Instant::now();
         let guard = self.handles.lock().map_err(|_| {
@@ -553,8 +572,9 @@ impl LanceDbSkillHost {
         let db_path = skills_root.join("__lancedb").join(&skill_dir_name);
         std::fs::create_dir_all(&db_path).map_err(|error| {
             format!(
-                "failed to create LanceDB directory {}: {} / 创建 LanceDB 目录失败",
+                "failed to create LanceDB directory {}: {} / 创建 LanceDB 目录失败: {}",
                 db_path.display(),
+                error,
                 error
             )
         })?;
@@ -616,6 +636,7 @@ pub fn disabled_skill_status_json(skill_name: Option<&str>) -> Value {
         "enabled": false,
         "initialized": false,
         "skill_name": skill_name.unwrap_or(""),
+        "integration_mode": "dynamic_library",
         "reason": "current skill has not enabled lancedb / 当前 skill 未启用 lancedb"
     })
 }
@@ -660,6 +681,7 @@ fn candidate_library_paths() -> Vec<PathBuf> {
 
     if let Ok(current_dir) = std::env::current_dir() {
         paths.push(current_dir.join("output").join("libs").join(file_name));
+        paths.push(current_dir.join("third_party").join("deps").join(file_name));
         paths.push(
             current_dir
                 .join("..")

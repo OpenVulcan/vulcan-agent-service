@@ -33,6 +33,35 @@ impl SkillLanceDbLogLevel {
     }
 }
 
+/// Skill-scoped SQLite logging level.
+/// Skill 级 SQLite 宿主日志级别配置。
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSqliteLogLevel {
+    /// Disable host-side SQLite logs except hard failures.
+    /// 除硬错误外关闭宿主侧 SQLite 日志。
+    Off,
+    /// Emit informational host-side SQLite logs.
+    /// 输出信息级宿主 SQLite 日志。
+    #[default]
+    Info,
+    /// Emit only warning/error host-side SQLite logs.
+    /// 仅输出告警/错误级宿主 SQLite 日志。
+    Warning,
+}
+
+impl SkillSqliteLogLevel {
+    /// Return the stable wire name of the current log level.
+    /// 返回当前日志级别对应的稳定名称。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Info => "info",
+            Self::Warning => "warning",
+        }
+    }
+}
+
 /// Skill-scoped LanceDB configuration object.
 /// Skill 级 LanceDB 配置对象。
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -55,10 +84,38 @@ pub struct SkillLanceDbMeta {
     pub slow_log_threshold_ms: u64,
 }
 
+/// Skill-scoped SQLite configuration object.
+/// Skill 级 SQLite 配置对象。
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct SkillSqliteMeta {
+    /// Whether the current skill should receive a dedicated host-managed SQLite instance.
+    /// 当前 skill 是否需要启用宿主管理的专属 SQLite 实例。
+    #[serde(default)]
+    pub enable: bool,
+    /// Host-side SQLite log level.
+    /// 宿主侧 SQLite 日志级别。
+    #[serde(default)]
+    pub log_level: SkillSqliteLogLevel,
+    /// Whether slow-operation logging is enabled.
+    /// 是否开启慢操作日志。
+    #[serde(default)]
+    pub slow_log_enabled: bool,
+    /// Slow-operation threshold in milliseconds.
+    /// 慢操作阈值（毫秒）。
+    #[serde(default = "default_sqlite_slow_log_threshold_ms")]
+    pub slow_log_threshold_ms: u64,
+}
+
 /// Default slow-operation threshold for host-side LanceDB logs.
 /// 宿主侧 LanceDB 慢操作日志默认阈值。
 fn default_lancedb_slow_log_threshold_ms() -> u64 {
     800
+}
+
+/// Default slow-operation threshold for host-side SQLite logs.
+/// 宿主侧 SQLite 慢操作日志默认阈值。
+fn default_sqlite_slow_log_threshold_ms() -> u64 {
+    500
 }
 
 /// Skill-level metadata shared by all grouped entries.
@@ -80,6 +137,14 @@ pub struct SkillMeta {
     /// 宿主管理的 LanceDB 绑定所使用的结构化配置对象。
     #[serde(default)]
     pub lancedb: SkillLanceDbMeta,
+    /// Legacy boolean switch kept for backward compatibility.
+    /// 兼容旧配置保留的 SQLite 布尔开关。
+    #[serde(default)]
+    pub sqlite_enable: bool,
+    /// Structured SQLite configuration used by the host-managed binding.
+    /// 宿主管理的 SQLite 绑定所使用的结构化配置对象。
+    #[serde(default)]
+    pub sqlite: SkillSqliteMeta,
     /// Grouped MCP entries declared by the skill.
     /// Skill 声明的分组化 MCP 入口集合。
     #[serde(default)]
@@ -282,6 +347,16 @@ impl SkillMeta {
     pub fn effective_lancedb(&self) -> SkillLanceDbMeta {
         let mut config = self.lancedb.clone();
         if self.lancedb_enable {
+            config.enable = true;
+        }
+        config
+    }
+
+    /// Return the effective SQLite configuration after merging legacy and structured fields.
+    /// 合并旧布尔字段与新对象字段后，返回生效的 SQLite 配置。
+    pub fn effective_sqlite(&self) -> SkillSqliteMeta {
+        let mut config = self.sqlite.clone();
+        if self.sqlite_enable {
             config.enable = true;
         }
         config

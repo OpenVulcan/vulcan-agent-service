@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 
 use crate::lancedb_host::{LanceDbSkillBinding, LanceDbSkillHost, disabled_skill_status_json};
 use crate::lua_skill::SkillMeta;
+use crate::sqlite_host::{
+    SqliteSkillBinding, SqliteSkillHost,
+    disabled_skill_status_json as disabled_sqlite_skill_status_json,
+};
 use crate::protocol::{
     Prompt, PromptArgument, PromptGetResult, PromptMessage, RequestContext, Resource,
     ResourceContents, ResourceReadResult, ResourceTemplate, TextContent, Tool, ToolAnnotations,
@@ -26,6 +30,7 @@ struct LoadedSkill {
     meta: SkillMeta,
     dir: std::path::PathBuf,
     lancedb_binding: Option<Arc<LanceDbSkillBinding>>,
+    sqlite_binding: Option<Arc<SqliteSkillBinding>>,
 }
 
 /// Pool sizing configuration for Lua virtual machines.
@@ -88,6 +93,7 @@ pub struct LuaEngine {
     skills: HashMap<String, LoadedSkill>,
     pool: Arc<LuaVmPool>,
     lancedb_host: Option<Arc<LanceDbSkillHost>>,
+    sqlite_host: Option<Arc<SqliteSkillHost>>,
 }
 
 /// Return a stable human-readable Lua value type name.
@@ -1102,6 +1108,7 @@ impl LuaEngine {
             skills: HashMap::new(),
             pool: Arc::new(LuaVmPool::new(pool_config)),
             lancedb_host: None,
+            sqlite_host: None,
         })
     }
 
@@ -1230,12 +1237,43 @@ impl LuaEngine {
             None
         };
 
+        let effective_sqlite = meta.effective_sqlite();
+        let sqlite_binding = if effective_sqlite.enable {
+            if self.sqlite_host.is_none() {
+                self.sqlite_host = Some(Arc::new(SqliteSkillHost::new().map_err(|error| {
+                    format!(
+                        "Failed to initialize SQLite skill host / 初始化 SQLite skill 宿主失败: {}",
+                        error
+                    )
+                })?));
+            }
+
+            let host = self
+                .sqlite_host
+                .as_ref()
+                .ok_or("SQLite skill host missing after initialization / SQLite skill 宿主初始化后丢失")?
+                .clone();
+
+            Some(
+                host.register_skill(&meta.name, dir, effective_sqlite)
+                    .map_err(|error| {
+                        format!(
+                            "Failed to register SQLite for skill {} / 为 skill 注册 SQLite 失败: {}",
+                            meta.name, error
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+
         self.skills.insert(
             meta.name.clone(),
             LoadedSkill {
                 meta,
                 dir: dir.to_path_buf(),
                 lancedb_binding,
+                sqlite_binding,
             },
         );
 
@@ -1249,7 +1287,12 @@ impl LuaEngine {
         Self::setup_package_paths(&lua).map_err(|error| error.to_string())?;
         Self::register_vulcan_module(&lua).map_err(|error| error.to_string())?;
         Self::register_skill_functions(&lua, &self.skills)?;
-        Self::populate_vulcan_call_for_lua(&lua, &self.skills, self.lancedb_host.clone())?;
+        Self::populate_vulcan_call_for_lua(
+            &lua,
+            &self.skills,
+            self.lancedb_host.clone(),
+            self.sqlite_host.clone(),
+        )?;
         Ok(LuaVm {
             lua,
             last_used_at: Instant::now(),
@@ -1783,6 +1826,285 @@ impl LuaEngine {
         Ok(())
     }
 
+    /// Populate the skill-scoped SQLite host interface into the `vulcan` module.
+    /// 将按 skill 作用域隔离的 SQLite 宿主接口注入到 `vulcan` 模块中。
+    fn populate_vulcan_sqlite_context(
+        lua: &Lua,
+        binding: Option<Arc<SqliteSkillBinding>>,
+        current_skill_name: Option<&str>,
+    ) -> Result<(), String> {
+        let vulcan: Table = lua
+            .globals()
+            .get("vulcan")
+            .map_err(|error| format!("Failed to get vulcan module: {}", error))?;
+
+        let sqlite_table = lua
+            .create_table()
+            .map_err(|error| format!("Failed to create vulcan.sqlite table: {}", error))?;
+
+        let current_skill = current_skill_name.unwrap_or("");
+        vulcan
+            .set("__sqlite_skill_name", current_skill)
+            .map_err(|error| format!("Failed to set vulcan.__sqlite_skill_name: {}", error))?;
+
+        if let Some(binding) = binding {
+            sqlite_table
+                .set("enabled", true)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.enabled: {}", error))?;
+
+            let info_binding = binding.clone();
+            let info_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &info_binding.info_json()).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.info: {}", error))?;
+            sqlite_table
+                .set("info", info_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.info: {}", error))?;
+
+            let status_binding = binding.clone();
+            let status_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &status_binding.status_json())
+                        .map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.status: {}", error))?;
+            sqlite_table
+                .set("status", status_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.status: {}", error))?;
+
+            let tokenize_binding = binding.clone();
+            let tokenize_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "sqlite.tokenize_text", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = tokenize_binding
+                        .tokenize_text_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.tokenize_text: {}", error))?;
+            sqlite_table
+                .set("tokenize_text", tokenize_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.tokenize_text: {}", error))?;
+
+            let upsert_word_binding = binding.clone();
+            let upsert_word_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.upsert_custom_word", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = upsert_word_binding
+                        .upsert_custom_word_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.upsert_custom_word: {}", error)
+                })?;
+            sqlite_table
+                .set("upsert_custom_word", upsert_word_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.upsert_custom_word: {}", error)
+                })?;
+
+            let remove_word_binding = binding.clone();
+            let remove_word_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.remove_custom_word", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = remove_word_binding
+                        .remove_custom_word_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.remove_custom_word: {}", error)
+                })?;
+            sqlite_table
+                .set("remove_custom_word", remove_word_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.remove_custom_word: {}", error)
+                })?;
+
+            let list_words_binding = binding.clone();
+            let list_words_fn = lua
+                .create_function(move |lua, ()| {
+                    let result = list_words_binding
+                        .list_custom_words_json()
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.list_custom_words: {}", error)
+                })?;
+            sqlite_table
+                .set("list_custom_words", list_words_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.list_custom_words: {}", error)
+                })?;
+
+            let ensure_index_binding = binding.clone();
+            let ensure_index_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.ensure_fts_index", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = ensure_index_binding
+                        .ensure_fts_index_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.ensure_fts_index: {}", error)
+                })?;
+            sqlite_table
+                .set("ensure_fts_index", ensure_index_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.ensure_fts_index: {}", error)
+                })?;
+
+            let rebuild_index_binding = binding.clone();
+            let rebuild_index_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.rebuild_fts_index", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = rebuild_index_binding
+                        .rebuild_fts_index_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.rebuild_fts_index: {}", error)
+                })?;
+            sqlite_table
+                .set("rebuild_fts_index", rebuild_index_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.rebuild_fts_index: {}", error)
+                })?;
+
+            let upsert_doc_binding = binding.clone();
+            let upsert_doc_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.upsert_fts_document", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = upsert_doc_binding
+                        .upsert_fts_document_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.upsert_fts_document: {}", error)
+                })?;
+            sqlite_table
+                .set("upsert_fts_document", upsert_doc_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.upsert_fts_document: {}", error)
+                })?;
+
+            let delete_doc_binding = binding.clone();
+            let delete_doc_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.delete_fts_document", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = delete_doc_binding
+                        .delete_fts_document_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.delete_fts_document: {}", error)
+                })?;
+            sqlite_table
+                .set("delete_fts_document", delete_doc_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.delete_fts_document: {}", error)
+                })?;
+
+            let search_binding = binding;
+            let search_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "sqlite.search_fts", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = search_binding
+                        .search_fts_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.search_fts: {}", error))?;
+            sqlite_table
+                .set("search_fts", search_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.search_fts: {}", error))?;
+        } else {
+            let disabled_status = disabled_sqlite_skill_status_json(current_skill_name);
+            sqlite_table
+                .set("enabled", false)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.enabled: {}", error))?;
+            let status_value = disabled_status.clone();
+            let status_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &status_value).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create disabled vulcan.sqlite.status: {}", error))?;
+            sqlite_table
+                .set("status", status_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.status: {}", error))?;
+            let info_value = disabled_status.clone();
+            let info_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &info_value).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create disabled vulcan.sqlite.info: {}", error))?;
+            sqlite_table
+                .set("info", info_fn)
+                .map_err(|error| format!("Failed to set disabled vulcan.sqlite.info: {}", error))?;
+            let disabled_error =
+                "current skill has not enabled sqlite / 当前 skill 未启用 sqlite".to_string();
+            for method_name in [
+                "tokenize_text",
+                "upsert_custom_word",
+                "remove_custom_word",
+                "list_custom_words",
+                "ensure_fts_index",
+                "rebuild_fts_index",
+                "upsert_fts_document",
+                "delete_fts_document",
+                "search_fts",
+            ] {
+                let error_text = disabled_error.clone();
+                let fn_value = lua
+                    .create_function(move |_, _: MultiValue| {
+                        Err::<LuaValue, _>(mlua::Error::runtime(error_text.clone()))
+                    })
+                    .map_err(|error| {
+                        format!("Failed to create disabled vulcan.sqlite proxy: {}", error)
+                    })?;
+                sqlite_table
+                    .set(method_name, fn_value)
+                    .map_err(|error| {
+                        format!("Failed to set disabled method {}: {}", method_name, error)
+                    })?;
+            }
+        }
+
+        vulcan
+            .set("sqlite", sqlite_table)
+            .map_err(|error| format!("Failed to set vulcan.sqlite: {}", error))?;
+        Ok(())
+    }
+
     /// Call a loaded Lua skill with the given JSON arguments.
     /// This is synchronous — wrap in spawn_blocking for async contexts.
     pub fn call_skill(
@@ -1815,6 +2137,11 @@ impl LuaEngine {
         Self::populate_vulcan_lancedb_context(
             lua,
             skill.lancedb_binding.clone(),
+            Some(&skill.meta.name),
+        )?;
+        Self::populate_vulcan_sqlite_context(
+            lua,
+            skill.sqlite_binding.clone(),
             Some(&skill.meta.name),
         )?;
 
@@ -1850,6 +2177,7 @@ impl LuaEngine {
 
         Self::populate_vulcan_request_context(lua, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
+        Self::populate_vulcan_sqlite_context(lua, None, None)?;
         call_result
     }
 
@@ -1864,6 +2192,7 @@ impl LuaEngine {
         let lua = lease.lua();
         Self::populate_vulcan_request_context(lua, request_context)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
+        Self::populate_vulcan_sqlite_context(lua, None, None)?;
 
         // Build a wrapper that passes args as a local variable
         let args_table = json_to_lua_table(lua, args)?;
@@ -1888,6 +2217,7 @@ impl LuaEngine {
 
         Self::populate_vulcan_request_context(lua, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
+        Self::populate_vulcan_sqlite_context(lua, None, None)?;
         run_result
     }
 
@@ -2020,6 +2350,11 @@ impl LuaEngine {
             skill.lancedb_binding.clone(),
             Some(&skill.meta.name),
         )?;
+        Self::populate_vulcan_sqlite_context(
+            lua,
+            skill.sqlite_binding.clone(),
+            Some(&skill.meta.name),
+        )?;
         let args_table = json_to_lua_table(lua, args)?;
         let chunk_name = format!("{}::{}", skill.meta.name, relative_path);
         let chunk = lua.load(&helper_source).set_name(&chunk_name);
@@ -2045,6 +2380,7 @@ impl LuaEngine {
         })();
         Self::populate_vulcan_request_context(lua, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
+        Self::populate_vulcan_sqlite_context(lua, None, None)?;
         helper_result
     }
 
@@ -2053,6 +2389,7 @@ impl LuaEngine {
         lua: &Lua,
         skills_map: &HashMap<String, LoadedSkill>,
         lancedb_host: Option<Arc<LanceDbSkillHost>>,
+        sqlite_host: Option<Arc<SqliteSkillHost>>,
     ) -> Result<(), String> {
         let vulcan: Table = lua
             .globals()
@@ -2102,12 +2439,23 @@ impl LuaEngine {
                     .map_err(|error| mlua::Error::runtime(error.to_string()))?;
                 let previous_skill_name: String =
                     vulcan.get("__lancedb_skill_name").unwrap_or_default();
+                let previous_sqlite_skill_name: String =
+                    vulcan.get("__sqlite_skill_name").unwrap_or_default();
                 let target_binding = lancedb_host
+                    .as_ref()
+                    .and_then(|host| host.binding_for_skill(owner_skill_name));
+                let target_sqlite_binding = sqlite_host
                     .as_ref()
                     .and_then(|host| host.binding_for_skill(owner_skill_name));
                 Self::populate_vulcan_lancedb_context(
                     lua,
                     target_binding,
+                    Some(owner_skill_name.as_str()),
+                )
+                .map_err(mlua::Error::runtime)?;
+                Self::populate_vulcan_sqlite_context(
+                    lua,
+                    target_sqlite_binding,
                     Some(owner_skill_name.as_str()),
                 )
                 .map_err(mlua::Error::runtime)?;
@@ -2119,6 +2467,13 @@ impl LuaEngine {
                         .as_ref()
                         .and_then(|host| host.binding_for_skill(&previous_skill_name))
                 };
+                let restore_sqlite_binding = if previous_sqlite_skill_name.trim().is_empty() {
+                    None
+                } else {
+                    sqlite_host
+                        .as_ref()
+                        .and_then(|host| host.binding_for_skill(&previous_sqlite_skill_name))
+                };
                 Self::populate_vulcan_lancedb_context(
                     lua,
                     restore_binding,
@@ -2126,6 +2481,16 @@ impl LuaEngine {
                         None
                     } else {
                         Some(previous_skill_name.as_str())
+                    },
+                )
+                .map_err(mlua::Error::runtime)?;
+                Self::populate_vulcan_sqlite_context(
+                    lua,
+                    restore_sqlite_binding,
+                    if previous_sqlite_skill_name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(previous_sqlite_skill_name.as_str())
                     },
                 )
                 .map_err(mlua::Error::runtime)?;

@@ -1,6 +1,12 @@
 {
   "name": "vulcan-work-memory",
   "debug": true,
+  "sqlite": {
+    "enable": true,
+    "log_level": "info",
+    "slow_log_enabled": true,
+    "slow_log_threshold_ms": 500
+  },
   "groups": [
     {
       "name": "memory",

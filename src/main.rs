@@ -12,6 +12,7 @@ mod server;
 #[allow(dead_code)]
 mod session;
 mod skill_dependency;
+mod sqlite_host;
 mod temp_maintenance;
 mod tool_cache;
 
