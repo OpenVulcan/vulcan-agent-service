@@ -8,6 +8,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::lancedb_host::{LanceDbSkillBinding, LanceDbSkillHost, disabled_skill_status_json};
 use crate::lua_skill::SkillMeta;
 use crate::protocol::{
     Prompt, PromptArgument, PromptGetResult, PromptMessage, RequestContext, Resource,
@@ -24,6 +25,7 @@ use crate::tool_cache::global_tool_cache;
 struct LoadedSkill {
     meta: SkillMeta,
     dir: std::path::PathBuf,
+    lancedb_binding: Option<Arc<LanceDbSkillBinding>>,
 }
 
 /// Pool sizing configuration for Lua virtual machines.
@@ -85,6 +87,7 @@ struct LuaVmPool {
 pub struct LuaEngine {
     skills: HashMap<String, LoadedSkill>,
     pool: Arc<LuaVmPool>,
+    lancedb_host: Option<Arc<LanceDbSkillHost>>,
 }
 
 /// Return a stable human-readable Lua value type name.
@@ -1098,6 +1101,7 @@ impl LuaEngine {
         Ok(Self {
             skills: HashMap::new(),
             pool: Arc::new(LuaVmPool::new(pool_config)),
+            lancedb_host: None,
         })
     }
 
@@ -1196,11 +1200,42 @@ impl LuaEngine {
             }
         }
 
+        let effective_lancedb = meta.effective_lancedb();
+        let lancedb_binding = if effective_lancedb.enable {
+            if self.lancedb_host.is_none() {
+                self.lancedb_host = Some(Arc::new(LanceDbSkillHost::new().map_err(|error| {
+                    format!(
+                        "Failed to initialize LanceDB skill host / 初始化 LanceDB skill 宿主失败: {}",
+                        error
+                    )
+                })?));
+            }
+
+            let host = self
+                .lancedb_host
+                .as_ref()
+                .ok_or("LanceDB skill host missing after initialization / LanceDB skill 宿主初始化后丢失")?
+                .clone();
+
+            Some(
+                host.register_skill(&meta.name, dir, effective_lancedb)
+                    .map_err(|error| {
+                        format!(
+                            "Failed to register LanceDB for skill {} / 为 skill 注册 LanceDB 失败: {}",
+                            meta.name, error
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+
         self.skills.insert(
             meta.name.clone(),
             LoadedSkill {
                 meta,
                 dir: dir.to_path_buf(),
+                lancedb_binding,
             },
         );
 
@@ -1214,7 +1249,7 @@ impl LuaEngine {
         Self::setup_package_paths(&lua).map_err(|error| error.to_string())?;
         Self::register_vulcan_module(&lua).map_err(|error| error.to_string())?;
         Self::register_skill_functions(&lua, &self.skills)?;
-        Self::populate_vulcan_call_for_lua(&lua, &self.skills)?;
+        Self::populate_vulcan_call_for_lua(&lua, &self.skills, self.lancedb_host.clone())?;
         Ok(LuaVm {
             lua,
             last_used_at: Instant::now(),
@@ -1478,6 +1513,276 @@ impl LuaEngine {
         Ok(())
     }
 
+    /// Populate the skill-scoped LanceDB host interface into the `vulcan` module.
+    /// 将按 skill 作用域隔离的 LanceDB 宿主接口注入到 `vulcan` 模块中。
+    fn populate_vulcan_lancedb_context(
+        lua: &Lua,
+        binding: Option<Arc<LanceDbSkillBinding>>,
+        current_skill_name: Option<&str>,
+    ) -> Result<(), String> {
+        let vulcan: Table = lua
+            .globals()
+            .get("vulcan")
+            .map_err(|error| format!("Failed to get vulcan module: {}", error))?;
+
+        let lancedb_table = lua
+            .create_table()
+            .map_err(|error| format!("Failed to create vulcan.lancedb table: {}", error))?;
+
+        let current_skill = current_skill_name.unwrap_or("");
+        vulcan
+            .set("__lancedb_skill_name", current_skill)
+            .map_err(|error| format!("Failed to set vulcan.__lancedb_skill_name: {}", error))?;
+
+        if let Some(binding) = binding {
+            lancedb_table
+                .set("enabled", true)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.enabled: {}", error))?;
+            let info_binding = binding.clone();
+            let info_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &info_binding.info_json()).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.lancedb.info: {}", error))?;
+            lancedb_table
+                .set("info", info_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.info: {}", error))?;
+
+            let status_binding = binding.clone();
+            let status_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &status_binding.status_json())
+                        .map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.lancedb.status: {}", error))?;
+            lancedb_table
+                .set("status", status_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.status: {}", error))?;
+
+            let create_binding = binding.clone();
+            let create_table_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "lancedb.create_table", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = create_binding
+                        .create_table_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.lancedb.create_table: {}", error))?;
+            lancedb_table
+                .set("create_table", create_table_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.create_table: {}", error))?;
+
+            let upsert_binding = binding.clone();
+            let vector_upsert_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "lancedb.vector_upsert", "input")?;
+                    let mut input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let input_object = input_json.as_object_mut().ok_or_else(|| {
+                        mlua::Error::runtime(
+                            "lancedb.vector_upsert input must be an object / 输入必须是对象",
+                        )
+                    })?;
+
+                    let payload_value = if let Some(rows) = input_object.remove("rows") {
+                        input_object
+                            .entry("input_format".to_string())
+                            .or_insert_with(|| Value::String("json".to_string()));
+                        rows
+                    } else if let Some(data) = input_object.remove("data") {
+                        data
+                    } else {
+                        return Err(mlua::Error::runtime(
+                            "lancedb.vector_upsert requires rows or data / 需要 rows 或 data 字段",
+                        ));
+                    };
+
+                    let payload_bytes = match payload_value {
+                        Value::String(text) => {
+                            if !input_object.contains_key("input_format") {
+                                input_object.insert(
+                                    "input_format".to_string(),
+                                    Value::String("arrow_ipc".to_string()),
+                                );
+                            }
+                            text.into_bytes()
+                        }
+                        Value::Array(_) | Value::Object(_) => {
+                            if !input_object.contains_key("input_format") {
+                                input_object.insert(
+                                    "input_format".to_string(),
+                                    Value::String("json".to_string()),
+                                );
+                            }
+                            serde_json::to_vec(&payload_value).map_err(|error| {
+                                mlua::Error::runtime(format!(
+                                    "failed to encode lancedb upsert payload / 编码 LanceDB 写入载荷失败: {}",
+                                    error
+                                ))
+                            })?
+                        }
+                        _ => {
+                            return Err(mlua::Error::runtime(
+                                "lancedb.vector_upsert payload must be string/table / 载荷必须是字符串或表",
+                            ))
+                        }
+                    };
+
+                    let result = upsert_binding
+                        .vector_upsert_json(&input_json, &payload_bytes)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.lancedb.vector_upsert: {}", error))?;
+            lancedb_table
+                .set("vector_upsert", vector_upsert_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.vector_upsert: {}", error))?;
+
+            let search_binding = binding.clone();
+            let vector_search_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "lancedb.vector_search", "input")?;
+                    let mut input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let input_object = input_json.as_object_mut().ok_or_else(|| {
+                        mlua::Error::runtime(
+                            "lancedb.vector_search input must be an object / 输入必须是对象",
+                        )
+                    })?;
+                    input_object
+                        .entry("output_format".to_string())
+                        .or_insert_with(|| Value::String("json".to_string()));
+
+                    let (meta, raw_bytes) = search_binding
+                        .vector_search_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    let result_table = json_to_lua_table_inner(lua, &meta)
+                        .map_err(mlua::Error::external)?;
+
+                    if meta
+                        .get("format")
+                        .and_then(Value::as_str)
+                        .map(|value| value == "json")
+                        .unwrap_or(false)
+                    {
+                        let rows_json: Value =
+                            serde_json::from_slice(&raw_bytes).map_err(|error| {
+                                mlua::Error::runtime(format!(
+                                    "failed to parse LanceDB JSON rows / 解析 LanceDB JSON 行数据失败: {}",
+                                    error
+                                ))
+                            })?;
+                        result_table
+                            .set(
+                                "data_json",
+                                json_value_to_lua(lua, &rows_json)
+                                    .map_err(mlua::Error::external)?,
+                            )
+                            .map_err(mlua::Error::external)?;
+                    } else {
+                        result_table
+                            .set(
+                                "data",
+                                LuaValue::String(
+                                    lua.create_string(&raw_bytes)
+                                        .map_err(mlua::Error::external)?,
+                                ),
+                            )
+                            .map_err(mlua::Error::external)?;
+                    }
+                    Ok(LuaValue::Table(result_table))
+                })
+                .map_err(|error| format!("Failed to create vulcan.lancedb.vector_search: {}", error))?;
+            lancedb_table
+                .set("vector_search", vector_search_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.vector_search: {}", error))?;
+
+            let delete_binding = binding.clone();
+            let delete_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "lancedb.delete", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = delete_binding
+                        .delete_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.lancedb.delete: {}", error))?;
+            lancedb_table
+                .set("delete", delete_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.delete: {}", error))?;
+
+            let drop_binding = binding;
+            let drop_table_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "lancedb.drop_table", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = drop_binding
+                        .drop_table_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.lancedb.drop_table: {}", error))?;
+            lancedb_table
+                .set("drop_table", drop_table_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.drop_table: {}", error))?;
+        } else {
+            let disabled_status = disabled_skill_status_json(current_skill_name);
+            lancedb_table
+                .set("enabled", false)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.enabled: {}", error))?;
+            let status_value = disabled_status.clone();
+            let status_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &status_value).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create disabled vulcan.lancedb.status: {}", error))?;
+            lancedb_table
+                .set("status", status_fn)
+                .map_err(|error| format!("Failed to set vulcan.lancedb.status: {}", error))?;
+            let info_value = disabled_status.clone();
+            let info_fn = lua
+                .create_function(move |lua, ()| {
+                    json_value_to_lua(lua, &info_value).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create disabled vulcan.lancedb.info: {}", error))?;
+            lancedb_table
+                .set("info", info_fn)
+                .map_err(|error| format!("Failed to set disabled vulcan.lancedb.info: {}", error))?;
+            let disabled_error =
+                "current skill has not enabled lancedb / 当前 skill 未启用 lancedb".to_string();
+            for method_name in [
+                "create_table",
+                "vector_upsert",
+                "vector_search",
+                "delete",
+                "drop_table",
+            ] {
+                let error_text = disabled_error.clone();
+                let fn_value = lua
+                    .create_function(move |_, _: MultiValue| {
+                        Err::<LuaValue, _>(mlua::Error::runtime(error_text.clone()))
+                    })
+                    .map_err(|error| {
+                        format!("Failed to create disabled vulcan.lancedb proxy: {}", error)
+                    })?;
+                lancedb_table
+                    .set(method_name, fn_value)
+                    .map_err(|error| format!("Failed to set disabled method {}: {}", method_name, error))?;
+            }
+        }
+
+        vulcan
+            .set("lancedb", lancedb_table)
+            .map_err(|error| format!("Failed to set vulcan.lancedb: {}", error))?;
+        Ok(())
+    }
+
     /// Call a loaded Lua skill with the given JSON arguments.
     /// This is synchronous — wrap in spawn_blocking for async contexts.
     pub fn call_skill(
@@ -1507,6 +1812,11 @@ impl LuaEngine {
         }
 
         Self::populate_vulcan_request_context(lua, request_context)?;
+        Self::populate_vulcan_lancedb_context(
+            lua,
+            skill.lancedb_binding.clone(),
+            Some(&skill.meta.name),
+        )?;
 
         let handler: Function = lua
             .globals()
@@ -1539,6 +1849,7 @@ impl LuaEngine {
         })();
 
         Self::populate_vulcan_request_context(lua, None)?;
+        Self::populate_vulcan_lancedb_context(lua, None, None)?;
         call_result
     }
 
@@ -1552,6 +1863,7 @@ impl LuaEngine {
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
         Self::populate_vulcan_request_context(lua, request_context)?;
+        Self::populate_vulcan_lancedb_context(lua, None, None)?;
 
         // Build a wrapper that passes args as a local variable
         let args_table = json_to_lua_table(lua, args)?;
@@ -1575,6 +1887,7 @@ impl LuaEngine {
         })();
 
         Self::populate_vulcan_request_context(lua, None)?;
+        Self::populate_vulcan_lancedb_context(lua, None, None)?;
         run_result
     }
 
@@ -1702,6 +2015,11 @@ impl LuaEngine {
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
         Self::populate_vulcan_request_context(lua, request_context)?;
+        Self::populate_vulcan_lancedb_context(
+            lua,
+            skill.lancedb_binding.clone(),
+            Some(&skill.meta.name),
+        )?;
         let args_table = json_to_lua_table(lua, args)?;
         let chunk_name = format!("{}::{}", skill.meta.name, relative_path);
         let chunk = lua.load(&helper_source).set_name(&chunk_name);
@@ -1726,6 +2044,7 @@ impl LuaEngine {
             lua_value_to_json(&result)
         })();
         Self::populate_vulcan_request_context(lua, None)?;
+        Self::populate_vulcan_lancedb_context(lua, None, None)?;
         helper_result
     }
 
@@ -1733,6 +2052,7 @@ impl LuaEngine {
     fn populate_vulcan_call_for_lua(
         lua: &Lua,
         skills_map: &HashMap<String, LoadedSkill>,
+        lancedb_host: Option<Arc<LanceDbSkillHost>>,
     ) -> Result<(), String> {
         let vulcan: Table = lua
             .globals()
@@ -1740,19 +2060,26 @@ impl LuaEngine {
             .map_err(|e| format!("vulcan module not found: {}", e))?;
 
         // Create the call dispatcher
-        let skills: Vec<(String, String)> = skills_map
+        let skills: Vec<(String, String, String)> = skills_map
             .iter()
             .flat_map(|(_, skill)| {
                 skill
                     .meta
                     .tools()
-                    .map(|tool| (tool.name.clone(), tool.lua_module.clone()))
-                    .collect::<Vec<(String, String)>>()
+                    .map(|tool| {
+                        (
+                            tool.name.clone(),
+                            tool.lua_module.clone(),
+                            skill.meta.name.clone(),
+                        )
+                    })
+                    .collect::<Vec<(String, String, String)>>()
             })
             .collect();
 
-        let skill_names: Vec<String> = skills.iter().map(|(n, _)| n.clone()).collect();
-        let module_names: Vec<String> = skills.iter().map(|(_, m)| m.clone()).collect();
+        let skill_names: Vec<String> = skills.iter().map(|(n, _, _)| n.clone()).collect();
+        let module_names: Vec<String> = skills.iter().map(|(_, m, _)| m.clone()).collect();
+        let owner_skill_names: Vec<String> = skills.iter().map(|(_, _, s)| s.clone()).collect();
 
         let dispatcher = lua
             .create_function(move |lua, (name, args): (LuaValue, LuaValue)| {
@@ -1764,11 +2091,45 @@ impl LuaEngine {
                     .position(|n| n == &name)
                     .ok_or_else(|| mlua::Error::runtime(format!("Skill '{}' not found", name)))?;
                 let module = &module_names[idx];
+                let owner_skill_name = &owner_skill_names[idx];
                 let func_name = format!("__skill_{}", module);
                 let func: Function = lua.globals().get(func_name.as_str()).map_err(|_| {
                     mlua::Error::runtime(format!("Skill function '{}' not found", module))
                 })?;
-                func.call::<LuaValue>(args)
+                let vulcan: Table = lua
+                    .globals()
+                    .get("vulcan")
+                    .map_err(|error| mlua::Error::runtime(error.to_string()))?;
+                let previous_skill_name: String =
+                    vulcan.get("__lancedb_skill_name").unwrap_or_default();
+                let target_binding = lancedb_host
+                    .as_ref()
+                    .and_then(|host| host.binding_for_skill(owner_skill_name));
+                Self::populate_vulcan_lancedb_context(
+                    lua,
+                    target_binding,
+                    Some(owner_skill_name.as_str()),
+                )
+                .map_err(mlua::Error::runtime)?;
+                let call_result = func.call::<LuaValue>(args);
+                let restore_binding = if previous_skill_name.trim().is_empty() {
+                    None
+                } else {
+                    lancedb_host
+                        .as_ref()
+                        .and_then(|host| host.binding_for_skill(&previous_skill_name))
+                };
+                Self::populate_vulcan_lancedb_context(
+                    lua,
+                    restore_binding,
+                    if previous_skill_name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(previous_skill_name.as_str())
+                    },
+                )
+                .map_err(mlua::Error::runtime)?;
+                call_result
             })
             .map_err(|e| format!("Failed to create vulcan.call dispatcher: {}", e))?;
 
@@ -1807,11 +2168,43 @@ impl LuaEngine {
                         lua_packages.display()
                     );
 
+                    // Build package.cpath entries for C modules (.so on Linux)
+                    // 中文：Linux 下统一使用 lib/lua 目录，并按 .so 扩展名拼接搜索路径。
+                    #[cfg(target_os = "linux")]
+                    let cpath_pattern = format!(
+                        "{}/lib/lua/?.so;{}/lib/lua/?/init.so;{}/lib/lua/loadall.so;{}/?.so;",
+                        lua_packages.display(),
+                        lua_packages.display(),
+                        lua_packages.display(),
+                        lua_packages.display()
+                    );
+
+                    // Build package.cpath entries for C modules (.dylib on macOS)
+                    // 中文：macOS 下统一使用 lib/lua 目录，并按 .dylib 扩展名拼接搜索路径。
+                    #[cfg(target_os = "macos")]
+                    let cpath_pattern = format!(
+                        "{}/lib/lua/?.dylib;{}/lib/lua/?/init.dylib;{}/lib/lua/loadall.dylib;{}/?.dylib;",
+                        lua_packages.display(),
+                        lua_packages.display(),
+                        lua_packages.display(),
+                        lua_packages.display()
+                    );
+
                     // Build package.path entries for Lua modules
                     // 中文：统一使用 share/lua 目录，不再依赖 share/lua/5.1。
                     #[cfg(windows)]
                     let path_pattern = format!(
                         "{}\\share\\lua\\?.lua;{}\\share\\lua\\?\\init.lua;{}\\?.lua;",
+                        lua_packages.display(),
+                        lua_packages.display(),
+                        lua_packages.display()
+                    );
+
+                    // Build package.path entries for Lua modules on Unix-like systems
+                    // 中文：类 Unix 平台同样统一使用 share/lua 目录，不再依赖 share/lua/5.1。
+                    #[cfg(unix)]
+                    let path_pattern = format!(
+                        "{}/share/lua/?.lua;{}/share/lua/?/init.lua;{}/?.lua;",
                         lua_packages.display(),
                         lua_packages.display(),
                         lua_packages.display()
