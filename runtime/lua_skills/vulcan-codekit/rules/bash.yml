@@ -1,0 +1,13 @@
+# Bash 结构规则 / Bash structural rules
+id: bash-function
+language: Bash
+severity: info
+rule:
+  kind: function_definition
+  has:
+    field: name
+    kind: word
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

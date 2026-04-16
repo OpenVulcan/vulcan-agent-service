@@ -1,0 +1,23 @@
+# Haskell 结构规则 / Haskell structural rules
+id: haskell-data
+language: Haskell
+severity: info
+rule:
+  kind: data_type
+metadata:
+  symbol_kind: struct
+  container: true
+message: "data"
+---
+id: haskell-function
+language: Haskell
+severity: info
+rule:
+  kind: function
+  has:
+    field: name
+    kind: variable
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

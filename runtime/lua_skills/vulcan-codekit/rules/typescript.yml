@@ -1,0 +1,154 @@
+# TypeScript 结构规则 / TypeScript structural rules
+id: typescript-class
+language: TypeScript
+severity: info
+rule:
+  kind: class_declaration
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: typescript-interface
+language: TypeScript
+severity: info
+rule:
+  kind: interface_declaration
+metadata:
+  symbol_kind: interface
+  container: true
+message: "interface"
+---
+id: typescript-enum
+language: TypeScript
+severity: info
+rule:
+  kind: enum_declaration
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"
+---
+id: typescript-type
+language: TypeScript
+severity: info
+rule:
+  kind: type_alias_declaration
+metadata:
+  symbol_kind: type
+  container: false
+message: "type"
+---
+id: typescript-export-const-object
+language: TypeScript
+severity: info
+rule:
+  pattern:
+    context: |
+      export const $NAME = {
+        $$$BODY
+      }
+    strictness: signature
+metadata:
+  symbol_kind: constant
+  container: false
+  name_capture: NAME
+message: "constant:$NAME"
+---
+id: typescript-export-const-object-satisfies
+language: TypeScript
+severity: info
+rule:
+  pattern:
+    context: |
+      export const $NAME = {
+        $$$BODY
+      } satisfies $TYPE
+    strictness: signature
+metadata:
+  symbol_kind: constant
+  container: false
+  name_capture: NAME
+message: "constant:$NAME"
+---
+id: typescript-function
+language: TypeScript
+severity: info
+rule:
+  kind: function_declaration
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
+---
+id: typescript-method
+language: TypeScript
+severity: info
+rule:
+  kind: method_definition
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"
+---
+id: typescript-method-signature
+language: TypeScript
+severity: info
+rule:
+  kind: method_signature
+metadata:
+  symbol_kind: method
+  container: false
+message: "method_signature"
+---
+id: typescript-arrow-block
+language: TypeScript
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = ($$$PARAMS) => {
+        $$$BODY
+      }
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"
+---
+id: typescript-arrow-expression
+language: TypeScript
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = ($$$PARAMS) => $BODY
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"
+---
+id: typescript-function-expression
+language: TypeScript
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = function ($$$PARAMS) {
+        $$$BODY
+      }
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"

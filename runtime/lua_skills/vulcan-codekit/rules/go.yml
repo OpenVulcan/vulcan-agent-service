@@ -1,0 +1,56 @@
+# Go 结构规则 / Go structural rules
+id: go-struct
+language: Go
+severity: info
+rule:
+  pattern:
+    context: |
+      package main
+      type $NAME struct {
+        $$$BODY
+      }
+    selector: type_declaration
+    strictness: signature
+metadata:
+  symbol_kind: struct
+  container: true
+  name_capture: NAME
+message: "struct:$NAME"
+---
+id: go-interface
+language: Go
+severity: info
+rule:
+  pattern:
+    context: |
+      package main
+      type $NAME interface {
+        $$$BODY
+      }
+    selector: type_declaration
+    strictness: signature
+metadata:
+  symbol_kind: interface
+  container: true
+  name_capture: NAME
+message: "interface:$NAME"
+---
+id: go-function
+language: Go
+severity: info
+rule:
+  kind: function_declaration
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
+---
+id: go-method
+language: Go
+severity: info
+rule:
+  kind: method_declaration
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"

@@ -1,0 +1,20 @@
+# HCL 结构规则 / HCL structural rules
+id: hcl-block
+language: Hcl
+severity: info
+rule:
+  kind: block
+metadata:
+  symbol_kind: block
+  container: true
+message: "block"
+---
+id: hcl-attribute
+language: Hcl
+severity: info
+rule:
+  kind: attribute
+metadata:
+  symbol_kind: attribute
+  container: false
+message: "attribute"

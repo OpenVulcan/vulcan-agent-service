@@ -1,0 +1,60 @@
+# Rust 结构规则 / Rust structural rules
+id: rust-struct
+language: Rust
+severity: info
+rule:
+  kind: struct_item
+metadata:
+  symbol_kind: struct
+  container: true
+message: "struct"
+---
+id: rust-enum
+language: Rust
+severity: info
+rule:
+  kind: enum_item
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"
+---
+id: rust-trait
+language: Rust
+severity: info
+rule:
+  kind: trait_item
+metadata:
+  symbol_kind: trait
+  container: true
+message: "trait"
+---
+id: rust-impl
+language: Rust
+severity: info
+rule:
+  kind: impl_item
+metadata:
+  symbol_kind: impl
+  container: true
+message: "impl"
+---
+id: rust-type
+language: Rust
+severity: info
+rule:
+  kind: type_item
+metadata:
+  symbol_kind: type
+  container: false
+message: "type"
+---
+id: rust-function
+language: Rust
+severity: info
+rule:
+  kind: function_item
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"

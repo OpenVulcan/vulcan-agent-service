@@ -1,0 +1,56 @@
+# Java 结构规则 / Java structural rules
+id: java-class
+language: Java
+severity: info
+rule:
+  kind: class_declaration
+  has:
+    field: name
+    kind: identifier
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: java-interface
+language: Java
+severity: info
+rule:
+  kind: interface_declaration
+  has:
+    field: name
+    kind: identifier
+metadata:
+  symbol_kind: interface
+  container: true
+message: "interface"
+---
+id: java-enum
+language: Java
+severity: info
+rule:
+  kind: enum_declaration
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"
+---
+id: java-constructor
+language: Java
+severity: info
+rule:
+  kind: constructor_declaration
+metadata:
+  symbol_kind: method
+  container: false
+message: "constructor"
+---
+id: java-method
+language: Java
+severity: info
+rule:
+  kind: method_declaration
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"

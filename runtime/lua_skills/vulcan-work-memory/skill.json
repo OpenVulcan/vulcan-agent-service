@@ -1,0 +1,28 @@
+{
+  "name": "vulcan-work-memory",
+  "debug": true,
+  "groups": [
+    {
+      "name": "memory",
+      "description": "SQLite-backed work memory experiments for Lua skills.",
+      "tools": [
+        {
+          "name": "vulcan-work-memory-sqlite-test",
+          "description": "Create or reuse the shared work-memory SQLite database under __database/vulcan-work-memory, insert one test row, and return the latest database state.",
+          "lua_entry": "main.lua",
+          "lua_module": "vulcan_work_memory_sqlite_test",
+          "parameters": [
+            {
+              "name": "note",
+              "type": "string",
+              "description": "Optional note content inserted into the test table. When omitted, the tool writes a stable default message.",
+              "required": false
+            }
+          ],
+          "return_type": "table",
+          "prompt": "Use this to verify that Lua can create and use the shared work-memory SQLite database under __database/vulcan-work-memory."
+        }
+      ]
+    }
+  ]
+}

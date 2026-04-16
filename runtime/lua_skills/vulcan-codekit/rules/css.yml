@@ -1,0 +1,20 @@
+# CSS 结构规则 / CSS structural rules
+id: css-rule-set
+language: Css
+severity: info
+rule:
+  kind: rule_set
+metadata:
+  symbol_kind: selector
+  container: true
+message: "selector"
+---
+id: css-media
+language: Css
+severity: info
+rule:
+  kind: media_statement
+metadata:
+  symbol_kind: module
+  container: true
+message: "media"

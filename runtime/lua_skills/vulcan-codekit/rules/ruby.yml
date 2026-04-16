@@ -1,0 +1,30 @@
+# Ruby 结构规则 / Ruby structural rules
+id: ruby-class
+language: Ruby
+severity: info
+rule:
+  kind: class
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: ruby-module
+language: Ruby
+severity: info
+rule:
+  kind: module
+metadata:
+  symbol_kind: module
+  container: true
+message: "module"
+---
+id: ruby-method
+language: Ruby
+severity: info
+rule:
+  kind: method
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"

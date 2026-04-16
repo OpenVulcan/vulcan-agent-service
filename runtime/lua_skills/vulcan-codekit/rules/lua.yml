@@ -1,0 +1,10 @@
+# Lua 结构规则 / Lua structural rules
+id: lua-function
+language: Lua
+severity: info
+rule:
+  kind: function_declaration
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
