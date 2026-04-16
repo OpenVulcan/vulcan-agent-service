@@ -3,6 +3,7 @@ mod config;
 mod grpc_client;
 mod grpc_server;
 mod http_server;
+mod lancedb_host;
 mod lua_engine;
 mod lua_skill;
 #[allow(dead_code)]

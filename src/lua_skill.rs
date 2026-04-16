@@ -4,6 +4,63 @@ use serde::Deserialize;
 // Lua Skill metadata (loaded from skill.json)
 // ============================================================
 
+/// Skill-scoped LanceDB logging level.
+/// Skill 级 LanceDB 宿主日志级别配置。
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillLanceDbLogLevel {
+    /// Disable host-side LanceDB logs except hard failures.
+    /// 除硬错误外关闭宿主侧 LanceDB 日志。
+    Off,
+    /// Emit informational host-side LanceDB logs.
+    /// 输出信息级宿主 LanceDB 日志。
+    #[default]
+    Info,
+    /// Emit only warning/error host-side LanceDB logs.
+    /// 仅输出告警/错误级宿主 LanceDB 日志。
+    Warning,
+}
+
+impl SkillLanceDbLogLevel {
+    /// Return the stable wire name of the current log level.
+    /// 返回当前日志级别对应的稳定名称。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Info => "info",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+/// Skill-scoped LanceDB configuration object.
+/// Skill 级 LanceDB 配置对象。
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct SkillLanceDbMeta {
+    /// Whether the current skill should receive a dedicated host-managed LanceDB instance.
+    /// 当前 skill 是否需要启用宿主管理的专属 LanceDB 实例。
+    #[serde(default)]
+    pub enable: bool,
+    /// Host-side LanceDB log level.
+    /// 宿主侧 LanceDB 日志级别。
+    #[serde(default)]
+    pub log_level: SkillLanceDbLogLevel,
+    /// Whether slow-operation logging is enabled.
+    /// 是否开启慢操作日志。
+    #[serde(default)]
+    pub slow_log_enabled: bool,
+    /// Slow-operation threshold in milliseconds.
+    /// 慢操作阈值（毫秒）。
+    #[serde(default = "default_lancedb_slow_log_threshold_ms")]
+    pub slow_log_threshold_ms: u64,
+}
+
+/// Default slow-operation threshold for host-side LanceDB logs.
+/// 宿主侧 LanceDB 慢操作日志默认阈值。
+fn default_lancedb_slow_log_threshold_ms() -> u64 {
+    800
+}
+
 /// Skill-level metadata shared by all grouped entries.
 /// Skill 级元数据，供其下所有分组入口共享。
 #[derive(Deserialize, Debug, Clone)]
@@ -15,6 +72,14 @@ pub struct SkillMeta {
     /// 调试模式：每次调用时都从磁盘热加载 Lua 源文件。
     #[serde(default)]
     pub debug: bool,
+    /// Legacy boolean switch kept for backward compatibility.
+    /// 兼容旧配置保留的布尔开关。
+    #[serde(default)]
+    pub lancedb_enable: bool,
+    /// Structured LanceDB configuration used by the host-managed binding.
+    /// 宿主管理的 LanceDB 绑定所使用的结构化配置对象。
+    #[serde(default)]
+    pub lancedb: SkillLanceDbMeta,
     /// Grouped MCP entries declared by the skill.
     /// Skill 声明的分组化 MCP 入口集合。
     #[serde(default)]
@@ -212,6 +277,16 @@ fn default_prompt_role() -> String {
 }
 
 impl SkillMeta {
+    /// Return the effective LanceDB configuration after merging legacy and structured fields.
+    /// 合并旧布尔字段与新对象字段后，返回生效的 LanceDB 配置。
+    pub fn effective_lancedb(&self) -> SkillLanceDbMeta {
+        let mut config = self.lancedb.clone();
+        if self.lancedb_enable {
+            config.enable = true;
+        }
+        config
+    }
+
     /// Iterate over all tool entries across every group.
     /// 遍历当前 skill 所有分组下的工具入口。
     pub fn tools(&self) -> impl Iterator<Item = &SkillToolMeta> {
