@@ -20,6 +20,14 @@ COMMAND_VARIANT="${2:-}"
 # BUILD_SCRIPT_PATH 用于指向专用的 shell 构建脚本，保证打包逻辑集中维护。
 BUILD_SCRIPT_PATH="${SCRIPT_DIR}/scripts/build.sh"
 
+# HOST_DEPS_SCRIPT_PATH points at the dedicated shell host-dependency bootstrap script.
+# HOST_DEPS_SCRIPT_PATH 用于指向专用的 shell 宿主依赖初始化脚本。
+HOST_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_host_deps.sh"
+
+# LUA_DEPS_SCRIPT_PATH points at the dedicated shell Lua dependency bootstrap script.
+# LUA_DEPS_SCRIPT_PATH 用于指向专用的 shell Lua 依赖初始化脚本。
+LUA_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_lua_deps.sh"
+
 # DEFAULT_BIN_PATH points at the debug artifact location used by the default run flow.
 # DEFAULT_BIN_PATH 用于指向默认运行流程使用的 debug 产物位置。
 DEFAULT_BIN_PATH="${SCRIPT_DIR}/output/debug/vulcan-mcp"
@@ -91,6 +99,33 @@ invoke_run() {
     "${binary_path}"
 }
 
+# invoke_dependency_install delegates dependency bootstrapping to the dedicated shell scripts.
+# invoke_dependency_install 用于把依赖初始化委托给专用的 shell 脚本。
+invoke_dependency_install() {
+    local dependency_kind="$1"
+    local script_path=""
+
+    case "${dependency_kind}" in
+        host)
+            script_path="${HOST_DEPS_SCRIPT_PATH}"
+            ;;
+        lua)
+            script_path="${LUA_DEPS_SCRIPT_PATH}"
+            ;;
+        *)
+            echo "Unsupported dependency kind: '${dependency_kind}'" >&2
+            exit 1
+            ;;
+    esac
+
+    if [ ! -f "${script_path}" ]; then
+        echo "Missing dependency script: ${script_path}" >&2
+        exit 1
+    fi
+
+    bash "${script_path}"
+}
+
 # show_usage prints the supported command forms so invalid input is easy to correct.
 # show_usage 用于输出支持的命令形式，便于快速纠正无效输入。
 show_usage() {
@@ -101,6 +136,8 @@ Usage:
   ./make.sh release     # release build
   ./make.sh run         # run debug build
   ./make.sh run release # run release build
+  ./make.sh deps host   # install host native dependencies
+  ./make.sh deps lua    # install host + lua dependencies
 EOF
 }
 
@@ -132,6 +169,21 @@ case "${NORMALIZED_MODE}" in
         else
             invoke_run "false"
         fi
+        ;;
+    deps)
+        case "${NORMALIZED_VARIANT}" in
+            host)
+                invoke_dependency_install "host"
+                ;;
+            lua)
+                invoke_dependency_install "lua"
+                ;;
+            *)
+                echo "Unsupported deps command: '${COMMAND_VARIANT}'" >&2
+                show_usage
+                exit 1
+                ;;
+        esac
         ;;
     *)
         echo "Unsupported command: '${COMMAND_MODE}'" >&2

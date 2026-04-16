@@ -1078,6 +1078,9 @@ Write-Host "`n=== Step 3: C Dependencies ==="
 Ensure-Dir $DepsDir
 $DepPaths = @{}
 
+Write-Host "  ==> Installing host native dependencies via install_host_deps.ps1"
+& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install_host_deps.ps1")
+
 # Collect unique dep names
 $AllDepNames = @()
 foreach ($pkg in $Packages) {

@@ -624,6 +624,8 @@ LUAEOF
 echo ""
 echo "=== Step 3: C Dependencies ==="
 ensure_dir "$DEPS_DIR"
+echo "  ==> Installing host native dependencies via install_host_deps.sh"
+bash "$SCRIPT_DIR/install_host_deps.sh"
 
 declare -A DEP_INSTALLS BUILT_DEPS
 
