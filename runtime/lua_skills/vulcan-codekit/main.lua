@@ -1507,11 +1507,13 @@ English: Render the `codekit-ast-detail` scan result as plain Markdown text so t
 local function build_ast_detail_text(result)
     local lines = {
         "# AST DETAIL SUMMARY",
-        "",
-        string.format("- files_scanned: %d", result.files_scanned or 0),
-        string.format("- files_with_symbols: %d", result.files_with_symbols or 0),
-        string.format("- items_found: %d", result.items_found or 0),
-        string.format("- errors: %d", #(result.errors or {})),
+        string.format(
+            "- files_scanned: %d | files_with_symbols: %d | items_found: %d | errors: %d",
+            result.files_scanned or 0,
+            result.files_with_symbols or 0,
+            result.items_found or 0,
+            #(result.errors or {})
+        ),
     }
 
     local error_lines = render_error_lines(result.errors)
@@ -1524,20 +1526,23 @@ local function build_ast_detail_text(result)
         end
     end
 
-    for _, file_result in ipairs(result.files or {}) do
-        table.insert(lines, "")
-        table.insert(lines, "## FILE " .. tostring(file_result.file or "unknown"))
-        table.insert(lines, "")
-        table.insert(lines, string.format("- lines: %d", tonumber(file_result.lines) or 0))
-        table.insert(lines, string.format("- symbols: %d", tonumber(file_result.symbol_count) or 0))
-        if trim(file_result.content or "") == "" then
+    for index, file_result in ipairs(result.files or {}) do
+        if index > 1 or #error_lines > 0 then
             table.insert(lines, "")
+        end
+        table.insert(
+            lines,
+            string.format(
+                "[%s Lines:%d Symbols:%d]",
+                tostring(file_result.file or "unknown"),
+                tonumber(file_result.lines) or 0,
+                tonumber(file_result.symbol_count) or 0
+            )
+        )
+        if trim(file_result.content or "") == "" then
             table.insert(lines, "> No AST symbols found in this file.")
         else
-            table.insert(lines, "")
-            table.insert(lines, "```text")
             table.insert(lines, tostring(file_result.content))
-            table.insert(lines, "```")
         end
     end
 

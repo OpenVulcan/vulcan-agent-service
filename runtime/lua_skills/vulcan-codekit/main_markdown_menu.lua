@@ -158,6 +158,26 @@ local function normalize_file_key(path)
 end
 
 --[[
+中文：提取路径对应的父目录，并保留目录末尾分隔符，便于在文件菜单中直接作为目录标题显示。
+English: Extract the parent directory of a path while preserving the trailing separator so it can be rendered directly as a directory heading in the file menu.
+]]
+local function extract_parent_directory(path)
+    local normalized = tostring(path or ""):gsub("[\\/]+$", "")
+    local parent = normalized:match("^(.*[\\/])[^\\/]+$")
+    return parent or ""
+end
+
+--[[
+中文：提取路径中的文件名部分，供 `FILE MENU` 在目录标题下逐行列出文件名使用。
+English: Extract only the file-name portion of a path so `FILE MENU` can list filenames beneath each directory heading.
+]]
+local function extract_file_name(path)
+    local normalized = tostring(path or ""):gsub("[\\/]+$", "")
+    local file_name = normalized:match("([^\\/]+)$")
+    return file_name or normalized
+end
+
+--[[
 中文：判断路径是否为绝对路径，兼容 Windows 盘符、UNC 路径与 Unix 风格绝对路径。
 English: Check whether a path is absolute, supporting Windows drive paths, UNC paths, and Unix-style absolute paths.
 ]]
@@ -402,13 +422,13 @@ local function detect_fence_marker(line)
 end
 
 --[[
-中文：从 Markdown 文件中提取 `#`、`##`、`###` 标题及其行号，并跳过代码围栏区域。
-English: Extract `#`, `##`, and `###` headings with line numbers from a Markdown file while skipping fenced code blocks.
+中文：从 Markdown 文件中提取 `#`、`##`、`###` 标题及其行号，并返回文件总行数，同时跳过代码围栏区域。
+English: Extract `#`, `##`, and `###` headings with line numbers from a Markdown file, return the total line count, and skip fenced code blocks.
 ]]
 local function extract_markdown_headings(file_path)
     local ok, file_content = pcall(vulcan.fs_read, file_path)
     if not ok then
-        return nil, {
+        return nil, 0, {
             error = "markdown_read_failed",
             message = tostring(file_content),
             path = file_path,
@@ -417,7 +437,8 @@ local function extract_markdown_headings(file_path)
 
     local headings = {}
     local active_fence = nil
-    for index, line in ipairs(split_lines(file_content)) do
+    local file_lines = split_lines(file_content)
+    for index, line in ipairs(file_lines) do
         local fence_marker = detect_fence_marker(line)
         if fence_marker then
             if active_fence == nil then
@@ -440,7 +461,7 @@ local function extract_markdown_headings(file_path)
         end
     end
 
-    return headings, nil
+    return headings, #file_lines, nil
 end
 
 --[[
@@ -450,41 +471,83 @@ English: Render scan statistics, the file menu, and heading details into a singl
 local function build_markdown_menu_content(documents, stats)
     local lines = {
         "# SCAN SUMMARY",
-        string.format("- files_scanned: %d", tonumber(stats and stats.files_scanned) or 0),
-        string.format("- files_with_headings: %d", tonumber(stats and stats.files_with_headings) or 0),
-        string.format("- heading_items: %d", tonumber(stats and stats.items_found) or 0),
-        string.format("- errors: %d", tonumber(stats and stats.error_count) or 0),
+        string.format(
+            "- files_scanned: %d | files_with_headings: %d | heading_items: %d | errors: %d",
+            tonumber(stats and stats.files_scanned) or 0,
+            tonumber(stats and stats.files_with_headings) or 0,
+            tonumber(stats and stats.items_found) or 0,
+            tonumber(stats and stats.error_count) or 0
+        ),
         "",
         "# FILE MENU",
+        "If the result is truncated, use the file menu to narrow the path scope and call this tool again with a smaller target set.",
     }
 
     if #(documents or {}) == 0 then
         table.insert(lines, "(no markdown files found)")
     else
-        for index, document in ipairs(documents) do
-            table.insert(lines, string.format("%d. %s", index, tostring(document.path or "")))
+        local grouped_menu_items = {}
+        local grouped_menu_order = {}
+        for _, document in ipairs(documents) do
+            local directory_path = extract_parent_directory(document.path or "")
+            if directory_path == "" then
+                directory_path = "."
+            end
+            local directory_key = normalize_file_key(directory_path)
+            if not grouped_menu_items[directory_key] then
+                grouped_menu_items[directory_key] = {
+                    directory = directory_path,
+                    files = {},
+                }
+                table.insert(grouped_menu_order, directory_key)
+            end
+            table.insert(grouped_menu_items[directory_key].files, extract_file_name(document.path or ""))
+        end
+
+        for order_index, directory_key in ipairs(grouped_menu_order) do
+            local grouped_item = grouped_menu_items[directory_key]
+            table.insert(lines, "> " .. tostring(grouped_item.directory or "."))
+            for _, file_name in ipairs(grouped_item.files or {}) do
+                table.insert(lines, tostring(file_name or ""))
+            end
+            if order_index < #grouped_menu_order then
+                table.insert(lines, "")
+            end
         end
     end
-
-    table.insert(lines, "")
-    table.insert(lines, "如果内容过多产生了截断，可根据目录判断需要的范围，重新调用本工具精确获取。")
-    table.insert(lines, "If the result is truncated, use the file menu to narrow the path scope and call this tool again with a smaller target set.")
     table.insert(lines, "")
     table.insert(lines, "# Markdown Details")
 
     if #(documents or {}) == 0 then
-        table.insert(lines, "> (no markdown headings found)")
+        table.insert(lines, "(no markdown headings found)")
         return table.concat(lines, "\n")
     end
 
     for index, document in ipairs(documents) do
-        table.insert(lines, "")
-        table.insert(lines, string.format("## [%d] %s", index, tostring(document.path or "")))
+        if index > 1 then
+            table.insert(lines, "")
+        end
+        table.insert(
+            lines,
+            string.format(
+                "[%s Lines:%d]",
+                tostring(document.path or ""),
+                tonumber(document.line_count) or 0
+            )
+        )
         if #(document.headings or {}) == 0 then
-            table.insert(lines, "> (no # / ## / ### headings found)")
+            table.insert(lines, "(no # / ## / ### headings found)")
         else
             for _, heading in ipairs(document.headings or {}) do
-                table.insert(lines, string.format("> L%d | %s %s", tonumber(heading.line) or 0, string.rep("#", tonumber(heading.level) or 1), tostring(heading.text or "")))
+                table.insert(
+                    lines,
+                    string.format(
+                        "L%d: %s %s",
+                        tonumber(heading.line) or 0,
+                        string.rep("#", tonumber(heading.level) or 1),
+                        tostring(heading.text or "")
+                    )
+                )
             end
         end
     end
@@ -525,7 +588,7 @@ return function(args)
     local read_errors = clone_array(collection_errors)
 
     for _, file_info in ipairs(markdown_files or {}) do
-        local headings, heading_error = extract_markdown_headings(file_info.path)
+        local headings, line_count, heading_error = extract_markdown_headings(file_info.path)
         if heading_error then
             table.insert(read_errors, heading_error)
         else
@@ -536,6 +599,7 @@ return function(args)
             table.insert(documents, {
                 path = file_info.path,
                 headings = headings or {},
+                line_count = line_count or 0,
             })
         end
     end

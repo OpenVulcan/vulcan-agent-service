@@ -16,7 +16,6 @@ local SHARED_OVERFLOW_HELPERS = nil
 
 -- 缓存的 codekit-ast-detail 助手集合 / Cached codekit-ast-detail helper bundle extracted from the existing skill entry.
 local AST_RUNTIME_HELPERS = nil
-local FILE_SOURCE_CACHE = {}
 
 -- 基础字符串工具 / Basic string helpers shared by validation, parsing, and rendering.
 local function trim(text)
@@ -320,30 +319,6 @@ local function validate_rg_pattern_argument(value)
         }
     end
     return trim(value), nil
-end
-
---[[
-中文：校验“是否展开完整函数源码”的布尔参数。未提供时默认为 false。
-English: Validate the boolean flag that controls whether full function source should be expanded. Defaults to false when omitted.
-
-参数 / Parameters:
-- value(any): 调用方传入的原始参数值 / Raw argument value from the caller.
-
-返回 / Returns:
-- boolean: 是否开启完整函数源码显示 / Whether full function source rendering is enabled.
-- table|nil: 参数非法时返回结构化错误 / Structured error when the argument is invalid.
-]]
-local function validate_show_full_function_argument(value)
-    if value == nil then
-        return false, nil
-    end
-    if type(value) ~= "boolean" then
-        return false, {
-            error = "invalid_show_full_function_argument",
-            message = "show_full_function must be a boolean when provided",
-        }
-    end
-    return value, nil
 end
 
 --[[
@@ -822,85 +797,9 @@ local function append_symbol_match_line(symbol, line_number, line_text)
     })
 end
 
---[[
-中文：标记某个函数/方法节点需要展开完整源码片段，而不是只展示单条命中行。
-English: Mark a function or method node so it renders its full source excerpt instead of only individual hit lines.
-
-参数 / Parameters:
-- symbol(table|nil): 需要展开源码的结构节点 / Symbol node that should render a full source excerpt.
-]]
-local function mark_symbol_expand_source(symbol)
-    if symbol then
-        symbol.__vmcp_rg_expand_source = true
-    end
-end
-
---[[
-中文：按文件路径读取并缓存源码行数组，供函数源码片段渲染复用。
-English: Read and cache source lines by file path so function excerpt rendering can reuse the same content.
-
-参数 / Parameters:
-- file_path(string): 目标源码文件完整路径 / Full path of the source file.
-
-返回 / Returns:
-- table|nil: 文件的逐行数组 / Line array of the file.
-- string|nil: 读取失败时的错误文本 / Error text when reading fails.
-]]
-local function read_file_lines(file_path)
-    if FILE_SOURCE_CACHE[file_path] then
-        return FILE_SOURCE_CACHE[file_path], nil
-    end
-
-    local ok, content = pcall(vulcan.fs_read, file_path)
-    if not ok then
-        return nil, tostring(content)
-    end
-
-    local lines = split_lines(content or "")
-    FILE_SOURCE_CACHE[file_path] = lines
-    return lines, nil
-end
-
---[[
-中文：根据结构节点的起止行号提取完整源码片段，用于“函数命中时展示整段函数代码”的输出。
-English: Extract the full source excerpt of a symbol from its line span, used when a function hit should render the whole function body.
-
-参数 / Parameters:
-- symbol(table): 结构节点，至少包含 file/start_line/end_line。
-  Symbol node containing at least file/start_line/end_line.
-
-返回 / Returns:
-- table: 形如 `{ line, text }` 的源码行数组 / Source line array in `{ line, text }` shape.
-]]
-local function build_source_excerpt_lines(symbol)
-    if not symbol or not symbol.file then
-        return {}
-    end
-
-    local file_lines = read_file_lines(symbol.file)
-    if not file_lines then
-        return {}
-    end
-
-    local excerpt_lines = {}
-    local start_line = math.max(tonumber(symbol.start_line) or 1, 1)
-    local end_line = math.max(tonumber(symbol.end_line) or start_line, start_line)
-    for line_number = start_line, end_line do
-        local line_text = file_lines[line_number]
-        if line_text ~= nil then
-            table.insert(excerpt_lines, {
-                line = line_number,
-                text = line_text,
-            })
-        end
-    end
-    return excerpt_lines
-end
-
 local function clear_symbol_marks(symbols)
     for _, symbol in ipairs(symbols or {}) do
         symbol.__vmcp_rg_include = nil
-        symbol.__vmcp_rg_expand_source = nil
         symbol.__vmcp_rg_line_matches = nil
         symbol.__vmcp_rg_line_match_keys = nil
         clear_symbol_marks(symbol.children or {})
@@ -927,8 +826,26 @@ local function format_symbol_label(symbol)
     return string.format("%s [%s]", display_text, format_line_span(symbol and symbol.start_line, symbol and symbol.end_line))
 end
 
+--[[
+中文：把符号链格式化为单行扁平头部，使用 `@ 父结构 :: 子结构` 形式表达层级，便于模型快速感知命中上下文。
+English: Format a symbol chain into a single flat header line using `@ parent :: child` so models can recognize the hit context without tree prefixes.
+
+参数 / Parameters:
+- symbol_chain(table): 从最外层结构到当前命中结构的符号链 / Symbol chain from the outermost structure to the current matched structure.
+
+返回 / Returns:
+- string: 扁平化后的结构头文本 / Flattened structural header text.
+]]
+local function format_symbol_chain_label(symbol_chain)
+    local parts = {}
+    for _, symbol in ipairs(symbol_chain or {}) do
+        table.insert(parts, format_symbol_label(symbol))
+    end
+    return "@ " .. table.concat(parts, " :: ")
+end
+
 local function format_match_label(match_item)
-    return string.format("L%d | %s", match_item.line, match_item.text)
+    return string.format("L%d: %s", match_item.line, trim(match_item.text))
 end
 
 local function build_tree_prefix(branch_state, is_last)
@@ -947,15 +864,15 @@ end
 local function collect_render_children(symbol)
     local render_children = {}
 
-    local matches = symbol.__vmcp_rg_expand_source and build_source_excerpt_lines(symbol) or (symbol.__vmcp_rg_line_matches or {})
-    local limit = symbol.__vmcp_rg_expand_source and #matches or math.min(#matches, MAX_MATCH_LINES_PER_SYMBOL)
+    local matches = symbol.__vmcp_rg_line_matches or {}
+    local limit = math.min(#matches, MAX_MATCH_LINES_PER_SYMBOL)
     for index = 1, limit do
         table.insert(render_children, {
             type = "match",
             value = matches[index],
         })
     end
-    if (not symbol.__vmcp_rg_expand_source) and #matches > MAX_MATCH_LINES_PER_SYMBOL then
+    if #matches > MAX_MATCH_LINES_PER_SYMBOL then
         table.insert(render_children, {
             type = "overflow",
             value = #matches - MAX_MATCH_LINES_PER_SYMBOL,
@@ -1004,7 +921,7 @@ English: Mark the AST tree according to rg hit lines, retaining only related anc
 - boolean: 若存在可展示的相关结构则返回 true，否则返回 false。
   True when there are relevant structures to render; otherwise false.
 ]]
-local function annotate_tree_with_rg_hits(symbol_roots, rg_hits, show_full_function)
+local function annotate_tree_with_rg_hits(symbol_roots, rg_hits)
     clear_symbol_marks(symbol_roots)
     attach_parent_links(symbol_roots, nil)
 
@@ -1015,11 +932,7 @@ local function annotate_tree_with_rg_hits(symbol_roots, rg_hits, show_full_funct
             local display_symbol = resolve_display_symbol(matched_symbol, hit.line)
             if display_symbol then
                 mark_symbol_chain(display_symbol)
-                if is_function_like(display_symbol) and show_full_function then
-                    mark_symbol_expand_source(display_symbol)
-                else
-                    append_symbol_match_line(display_symbol, hit.line, hit.text)
-                end
+                append_symbol_match_line(display_symbol, hit.line, hit.text)
                 has_relevant_symbol = true
             end
         end
@@ -1031,16 +944,76 @@ end
 
 local function build_filtered_file_content(symbol_roots)
     local lines = {}
-    local included_roots = {}
-    for _, symbol in ipairs(symbol_roots or {}) do
-        if symbol.__vmcp_rg_include then
-            table.insert(included_roots, symbol)
+
+    --[[
+    中文：递归收集命中结构的扁平输出条目，只为真正承载命中行的节点生成 `@ ...` 头部。
+    English: Recursively collect flat render entries and emit `@ ...` headers only for nodes that actually own matched lines.
+
+    参数 / Parameters:
+    - symbols(table): 当前层级的符号列表 / Symbols at the current traversal level.
+    - ancestor_chain(table): 外层已命中的结构链 / Already matched outer structural chain.
+    ]]
+    local function collect_flat_entries(symbols, ancestor_chain)
+        for _, symbol in ipairs(symbols or {}) do
+            if symbol.__vmcp_rg_include then
+                local current_chain = clone_array(ancestor_chain or {})
+                table.insert(current_chain, symbol)
+
+                if #(symbol.__vmcp_rg_line_matches or {}) > 0 then
+                    table.insert(lines, format_symbol_chain_label(current_chain))
+                    for _, match_item in ipairs(symbol.__vmcp_rg_line_matches or {}) do
+                        table.insert(lines, format_match_label(match_item))
+                    end
+                end
+
+                collect_flat_entries(symbol.children or {}, current_chain)
+            end
         end
     end
-    for index, symbol in ipairs(included_roots) do
-        append_symbol_tree(lines, symbol, {}, index == #included_roots)
-    end
+
+    collect_flat_entries(symbol_roots, {})
     return table.concat(lines, "\n")
+end
+
+--[[
+中文：根据预先收集的文件上下文统一生成 rg 文件结果，固定只输出命中结构与命中行，保持结果协议单一稳定。
+English: Build rg file results from pre-collected file contexts and always emit only matched structures plus matched lines so the response protocol stays single and stable.
+
+参数 / Parameters:
+- render_contexts(table): 每个文件的命中、符号与文件元信息 / Per-file hit, symbol, and file metadata contexts.
+- helper_bundle(table): 复用的 codekit-ast-detail 助手集合 / Reused codekit-ast-detail helper bundle.
+
+返回 / Returns:
+- table: 渲染后的文件结果列表 / Rendered file result list.
+- number: 文件级结果条目数量 / File-level rendered item count.
+]]
+local function build_rg_file_results(render_contexts, helper_bundle)
+    local file_results = {}
+    local total_items = 0
+
+    for _, render_context in ipairs(render_contexts or {}) do
+        if #render_context.symbols > 0 and #render_context.file_hits > 0 then
+            local tree = helper_bundle.build_symbol_tree(render_context.symbols)
+            local has_relevant_symbol = annotate_tree_with_rg_hits(tree, render_context.file_hits)
+            if has_relevant_symbol then
+                local content = build_filtered_file_content(tree)
+                if trim(content) ~= "" then
+                    table.insert(file_results, {
+                        file = render_context.file_info.display_file or render_context.file_info.path,
+                        lines = helper_bundle.get_file_line_count(render_context.file_info.path),
+                        content = content,
+                    })
+                    total_items = total_items + 1
+                end
+            end
+        end
+    end
+
+    table.sort(file_results, function(left, right)
+        return left.file < right.file
+    end)
+
+    return file_results, total_items
 end
 
 local function render_error_lines(errors)
@@ -1067,12 +1040,14 @@ English: Render the `codekit-rg` result as plain Markdown text so the model can 
 local function build_rg_markdown(result)
     local lines = {
         "# RG SUMMARY",
-        "",
-        string.format("- files_scanned: %d", result.files_scanned or 0),
-        string.format("- files_with_matches: %d", result.files_with_matches or 0),
-        string.format("- items_found: %d", result.items_found or 0),
-        string.format("- rg_matches: %d", result.rg_matches or 0),
-        string.format("- errors: %d", #(result.errors or {})),
+        string.format(
+            "- files_scanned: %d | files_with_matches: %d | items_found: %d | rg_matches: %d | errors: %d",
+            result.files_scanned or 0,
+            result.files_with_matches or 0,
+            result.items_found or 0,
+            result.rg_matches or 0,
+            #(result.errors or {})
+        ),
     }
 
     local error_lines = render_error_lines(result.errors)
@@ -1085,22 +1060,32 @@ local function build_rg_markdown(result)
         end
     end
 
-    for _, file_result in ipairs(result.files or {}) do
-        table.insert(lines, "")
-        table.insert(lines, "## FILE " .. tostring(file_result.file or "unknown"))
-        table.insert(lines, "")
-        table.insert(lines, string.format("- lines: %d", tonumber(file_result.lines) or 0))
-        table.insert(lines, "")
-        table.insert(lines, "```text")
+    for index, file_result in ipairs(result.files or {}) do
+        if index > 1 or #error_lines > 0 then
+            table.insert(lines, "")
+        end
+        table.insert(
+            lines,
+            string.format("[%s Lines:%d]", tostring(file_result.file or "unknown"), tonumber(file_result.lines) or 0)
+        )
         if trim(file_result.content or "") ~= "" then
             table.insert(lines, tostring(file_result.content))
         end
-        table.insert(lines, "```")
     end
 
     return table.concat(lines, "\n")
 end
 
+--[[
+中文：统一收尾 rg 结果；正常情况下直接返回 Markdown，超出预算时走共享 overflow 协议。
+English: Finalize the rg result uniformly; return inline Markdown when safe, otherwise use the shared overflow protocol.
+
+参数 / Parameters:
+- full_result(table): 已完成统计与渲染内容拼装的最终结果对象 / Final result object with stats and rendered content assembled.
+
+返回 / Returns:
+- string|table: 内联 Markdown 文本或 overflow 指针结果 / Inline Markdown text or an overflow pointer response.
+]]
 local function finalize_rg_result(full_result)
     local markdown_text = build_rg_markdown(full_result)
     local helpers, helper_error = load_shared_overflow_helpers()
@@ -1159,11 +1144,6 @@ return function(args)
     local export_md_error = validate_export_md_absence(args and args.export_md_path)
     if export_md_error then
         return export_md_error
-    end
-
-    local show_full_function, show_full_function_error = validate_show_full_function_argument(args and args.show_full_function)
-    if show_full_function_error then
-        return show_full_function_error
     end
 
     local rg_binary_path, rg_binary_error = find_rg_binary()
@@ -1231,31 +1211,18 @@ return function(args)
         end
     end
 
-    local file_results = {}
-    local total_items = 0
+    local render_contexts = {}
     for _, file_info in ipairs(files or {}) do
         local file_hits = hits_by_file[file_info.path] or {}
         local symbols = helper_bundle.deduplicate_symbols(normalized_by_file[file_info.path] or {})
-        if #symbols > 0 and #file_hits > 0 then
-            local tree = helper_bundle.build_symbol_tree(symbols)
-            local has_relevant_symbol = annotate_tree_with_rg_hits(tree, file_hits, show_full_function)
-            if has_relevant_symbol then
-                local content = build_filtered_file_content(tree)
-                if trim(content) ~= "" then
-                    table.insert(file_results, {
-                        file = file_info.display_file or file_info.path,
-                        lines = helper_bundle.get_file_line_count(file_info.path),
-                        content = content,
-                    })
-                    total_items = total_items + 1
-                end
-            end
-        end
+        table.insert(render_contexts, {
+            file_info = file_info,
+            file_hits = file_hits,
+            symbols = symbols,
+        })
     end
 
-    table.sort(file_results, function(left, right)
-        return left.file < right.file
-    end)
+    local file_results, total_items = build_rg_file_results(render_contexts, helper_bundle)
 
     local meta = {
         files_scanned = #files,

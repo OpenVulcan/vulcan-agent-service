@@ -160,7 +160,7 @@ Use when:
 Remember:
 
 - this is not the first-pass exploration tool
-- keep `show_full_function=false` unless the exact body is needed
+- the output is limited to owner context plus matched lines; it does not expand full function bodies
 - prefer this over plain grep when a clue may need owner context
 
 ### `codekit-markdown-menu`
