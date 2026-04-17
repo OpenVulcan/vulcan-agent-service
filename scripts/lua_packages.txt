@@ -72,9 +72,6 @@ pkg lyaml
   depvar libyaml macos YAML_INCDIR dep:libyaml/include
 pkg lua-toml
 
-# Database
-pkg lsqlite3complete
-
 # Utility
 pkg serpent
 
