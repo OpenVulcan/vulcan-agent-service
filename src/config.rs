@@ -17,14 +17,6 @@ pub struct Config {
     #[serde(default = "default_grpc_addr")]
     pub grpc: Option<String>,
 
-    /// 中文：LanceDb gRPC 服务地址，例如 "http://localhost:50051"。
-    /// English: LanceDb gRPC service endpoint, for example "http://localhost:50051".
-    pub lancedb: Option<String>,
-
-    /// 中文：Sqlite gRPC 服务地址，例如 "http://localhost:50052"。
-    /// English: Sqlite gRPC service endpoint, for example "http://localhost:50052".
-    pub sqlite: Option<String>,
-
     /// 中文：VMM（VulcanMemoryMesh）gRPC 服务地址，例如 "http://localhost:50053"。
     /// English: VMM (VulcanMemoryMesh) gRPC service endpoint, for example "http://localhost:50053".
     pub vmm: Option<String>,

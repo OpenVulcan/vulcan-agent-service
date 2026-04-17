@@ -22,6 +22,50 @@ VLDB_SQLITE_REPO="OpenVulcan/vldb-sqlite"
 
 ensure_dir() { mkdir -p "$1"; }
 
+get_latest_repo_tag() {
+    # 查询仓库当前最新 tag。
+    # Query the latest tag for a repository.
+    local repo="$1"
+    local display_name="$2"
+    local api_url="https://api.github.com/repos/${repo}/tags?per_page=1"
+    echo "==> Querying latest ${display_name} tag..." >&2
+    local tag_name
+    tag_name="$(curl -fSL -s "$api_url" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+if isinstance(data, list) and data and data[0].get("name"):
+    print(data[0]["name"])
+')"
+    if [ -z "$tag_name" ]; then
+        echo "ERROR: latest ${display_name} tag lookup returned no usable tag" >&2
+        return 1
+    fi
+    printf '%s' "$tag_name"
+}
+
+get_release_by_tag_or_null() {
+    # 按 tag 查询 Release；若不存在则返回空字符串而非直接失败。
+    # Query a release by tag and return an empty string when the release does not exist.
+    local repo="$1"
+    local tag_name="$2"
+    local api_url="https://api.github.com/repos/${repo}/releases/tags/${tag_name}"
+    local response_file
+    response_file="$(mktemp)"
+    local http_code
+    http_code="$(curl -sSL -o "$response_file" -w '%{http_code}' "$api_url")"
+    if [ "$http_code" = "200" ]; then
+        cat "$response_file"
+        rm -f "$response_file"
+        return 0
+    fi
+    rm -f "$response_file"
+    if [ "$http_code" = "404" ]; then
+        return 0
+    fi
+    echo "ERROR: release lookup for tag '$tag_name' failed with HTTP $http_code" >&2
+    return 1
+}
+
 get_current_architecture() {
     # 将当前 CPU 架构规范化为发布资产命名所需的键。
     # Normalize the current CPU architecture to the key used by release asset names.
@@ -77,7 +121,6 @@ install_vldb_lancedb_library() {
     local target archive_ext library_name
     IFS='|' read -r target archive_ext library_name <<< "$asset_info"
 
-    local api_url="https://api.github.com/repos/${VLDB_LANCEDB_REPO}/releases/latest"
     local release_data=""
     local tag_name=""
     local asset_name=""
@@ -101,14 +144,7 @@ print(match.group(1) if match else '')
         fi
         marker="$VLDB_LANCEDB_DIR/.installed-${tag_name}-${target}"
     else
-        echo "==> Querying latest vldb-lancedb release..."
-        release_data="$(curl -fSL -s "$api_url")"
-        tag_name="$(printf '%s' "$release_data" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("tag_name",""))')"
-        if [ -z "$tag_name" ]; then
-            echo "ERROR: latest vldb-lancedb release is missing tag_name" >&2
-            return 1
-        fi
-
+        tag_name="$(get_latest_repo_tag "$VLDB_LANCEDB_REPO" "vldb-lancedb")" || return 1
         asset_name="vldb-lancedb-lib-${tag_name}-${target}${archive_ext}"
         marker="$VLDB_LANCEDB_DIR/.installed-${tag_name}-${target}"
         local_archive="$(find "$THIRD_PARTY" -maxdepth 2 -type f -name "$asset_name" | head -1)"
@@ -121,6 +157,18 @@ print(match.group(1) if match else '')
 
     local download_url=""
     if [ -z "$local_archive" ]; then
+        release_data="$(get_release_by_tag_or_null "$VLDB_LANCEDB_REPO" "$tag_name")" || return 1
+        if [ -z "$release_data" ]; then
+            if [ -f "$library_dest" ]; then
+                echo "WARNING: vldb-lancedb release assets are not published for tag $tag_name. Reusing the existing local binary at $library_dest and refreshing the install marker / 当前 tag 未发布 Release 资产，继续复用已有本地动态库并刷新安装标记。" >&2
+                find "$VLDB_LANCEDB_DIR" -maxdepth 1 -type f -name '.installed-*' -delete
+                : > "$marker"
+                return 0
+            fi
+            echo "ERROR: vldb-lancedb tag '$tag_name' currently has no GitHub Release library asset. Please download the Actions artifact '$asset_name' manually and place it under third_party (or one direct child directory) before rerunning / 当前 tag 未发布 GitHub Release 库资产，请先手动下载 Actions artifact '$asset_name' 并放到 third_party（或其一级子目录）后再重试。" >&2
+            return 1
+        fi
+
         download_url="$(printf '%s' "$release_data" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -130,7 +178,7 @@ for asset in data.get('assets', []):
         break
 ")"
         if [ -z "$download_url" ]; then
-            echo "ERROR: vldb-lancedb asset '$asset_name' not found in latest release." >&2
+            echo "ERROR: vldb-lancedb asset '$asset_name' not found in release '$tag_name'." >&2
             return 1
         fi
     fi
@@ -230,7 +278,6 @@ install_vldb_sqlite_library() {
     local target archive_ext library_name
     IFS='|' read -r target archive_ext library_name <<< "$asset_info"
 
-    local api_url="https://api.github.com/repos/${VLDB_SQLITE_REPO}/releases/latest"
     local release_data=""
     local tag_name=""
     local asset_name=""
@@ -254,14 +301,7 @@ print(match.group(1) if match else '')
         fi
         marker="$VLDB_SQLITE_DIR/.installed-${tag_name}-${target}"
     else
-        echo "==> Querying latest vldb-sqlite release..."
-        release_data="$(curl -fSL -s "$api_url")"
-        tag_name="$(printf '%s' "$release_data" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("tag_name",""))')"
-        if [ -z "$tag_name" ]; then
-            echo "ERROR: latest vldb-sqlite release is missing tag_name" >&2
-            return 1
-        fi
-
+        tag_name="$(get_latest_repo_tag "$VLDB_SQLITE_REPO" "vldb-sqlite")" || return 1
         asset_name="vldb-sqlite-lib-${tag_name}-${target}${archive_ext}"
         marker="$VLDB_SQLITE_DIR/.installed-${tag_name}-${target}"
         local_archive="$(find "$THIRD_PARTY" -maxdepth 2 -type f -name "$asset_name" | head -1)"
@@ -274,6 +314,18 @@ print(match.group(1) if match else '')
 
     local download_url=""
     if [ -z "$local_archive" ]; then
+        release_data="$(get_release_by_tag_or_null "$VLDB_SQLITE_REPO" "$tag_name")" || return 1
+        if [ -z "$release_data" ]; then
+            if [ -f "$library_dest" ]; then
+                echo "WARNING: vldb-sqlite release assets are not published for tag $tag_name. Reusing the existing local binary at $library_dest and refreshing the install marker / 当前 tag 未发布 Release 资产，继续复用已有本地动态库并刷新安装标记。" >&2
+                find "$VLDB_SQLITE_DIR" -maxdepth 1 -type f -name '.installed-*' -delete
+                : > "$marker"
+                return 0
+            fi
+            echo "ERROR: vldb-sqlite tag '$tag_name' currently has no GitHub Release library asset. Please download the Actions artifact '$asset_name' manually and place it under third_party (or one direct child directory) before rerunning / 当前 tag 未发布 GitHub Release 库资产，请先手动下载 Actions artifact '$asset_name' 并放到 third_party（或其一级子目录）后再重试。" >&2
+            return 1
+        fi
+
         download_url="$(printf '%s' "$release_data" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -283,7 +335,7 @@ for asset in data.get('assets', []):
         break
 ")"
         if [ -z "$download_url" ]; then
-            echo "ERROR: vldb-sqlite asset '$asset_name' not found in latest release. The latest release may not have published library-mode assets yet / 最新 release 可能尚未发布库模式资产。若当前处于联调阶段，请将本地预编译包放入 third_party 后重试。" >&2
+            echo "ERROR: vldb-sqlite asset '$asset_name' not found in release '$tag_name'. The selected tag may not have published library-mode assets yet / 目标 tag 对应的 Release 中未找到库模式资产。" >&2
             return 1
         fi
     fi

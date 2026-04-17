@@ -12,16 +12,6 @@ http: "127.0.0.1:19201"
 # English: gRPC management service listen address. Default is 127.0.0.1:19202.
 grpc: "127.0.0.1:19202"
 
-# 中文：LanceDb gRPC 服务地址。需要启用 LanceDb 能力时再取消注释。
-# English: LanceDb gRPC service endpoint. Uncomment when LanceDb capability is needed.
-# 示例 / Example:
-lancedb: "http://127.0.0.1:19302"
-
-# 中文：Sqlite gRPC 服务地址。启用后会自动启用共享 scratchpad 能力。
-# English: Sqlite gRPC service endpoint. Enabling it also enables shared scratchpad support.
-# 示例 / Example:
-sqlite: "http://127.0.0.1:19502"
-
 # 中文：VulcanMemoryMesh (VMM) gRPC 服务地址。启用画像、记忆等能力时使用。
 # English: VulcanMemoryMesh (VMM) gRPC service endpoint for memory/profile features.
 # 示例 / Example:

@@ -1,4 +1,4 @@
-# install_host_deps.ps1 — Install host-level native runtime dependencies into third_party/
+﻿# install_host_deps.ps1 — Install host-level native runtime dependencies into third_party/
 # Developer/build use only. End users do not need to invoke this manually.
 # This script currently provisions the vldb-lancedb / vldb-sqlite dynamic library packages.
 # Usage: powershell -ExecutionPolicy Bypass -File scripts/install_host_deps.ps1
@@ -85,6 +85,62 @@ function Get-CurrentArchitectureKey {
     }
 }
 
+function Get-LatestRepoTag {
+    <#
+    .SYNOPSIS
+    查询仓库当前最新 tag / Query the latest tag for a repository.
+    #>
+    param(
+        [string]$Repo,
+        [string]$DisplayName
+    )
+
+    $ApiUrl = "https://api.github.com/repos/$Repo/tags?per_page=1"
+    Write-Host "==> Querying latest $DisplayName tag..."
+    $Tags = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
+    if (-not $Tags) {
+        throw "Latest $DisplayName tag lookup returned no results / 最新 $DisplayName tag 查询结果为空"
+    }
+
+    $FirstTag = @($Tags)[0]
+    if (-not $FirstTag.name) {
+        throw "Latest $DisplayName tag is missing name / 最新 $DisplayName tag 缺少 name 字段"
+    }
+
+    return $FirstTag.name
+}
+
+function Get-ReleaseByTagOrNull {
+    <#
+    .SYNOPSIS
+    按 tag 查询 Release；若不存在则返回 null / Query a release by tag and return null when it does not exist.
+    #>
+    param(
+        [string]$Repo,
+        [string]$TagName
+    )
+
+    $ApiUrl = "https://api.github.com/repos/$Repo/releases/tags/$TagName"
+    try {
+        return Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
+    } catch {
+        $StatusCode = $null
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            try {
+                $StatusCode = [int]$_.Exception.Response.StatusCode
+            } catch {
+                $StatusCode = $null
+            }
+        }
+
+        if ($StatusCode -eq 404) {
+            return $null
+        }
+
+        throw
+    }
+}
+
 function Get-VldbLancedbAssetInfo {
     <#
     .SYNOPSIS
@@ -136,7 +192,6 @@ function Install-VldbLancedbLibrary {
 
     $AssetInfo = Get-VldbLancedbAssetInfo
     $TarPath = Get-AvailableTarPath
-    $ApiUrl = "https://api.github.com/repos/$VldbLancedbRepo/releases/latest"
     $Release = $null
     $TagName = $null
     $AssetName = $null
@@ -162,13 +217,7 @@ function Install-VldbLancedbLibrary {
         $MarkerFile = Join-Path $VldbLancedbDir ".installed-$TagName-$($AssetInfo.target)"
         $LocalArchivePath = $LocalArchive.FullName
     } else {
-        Write-Host "==> Querying latest vldb-lancedb release..."
-        $Release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
-        $TagName = $Release.tag_name
-        if (-not $TagName) {
-            throw "Latest vldb-lancedb release is missing tag_name / 最新 vldb-lancedb release 缺少 tag_name"
-        }
-
+        $TagName = Get-LatestRepoTag -Repo $VldbLancedbRepo -DisplayName "vldb-lancedb"
         $AssetName = "vldb-lancedb-lib-$TagName-$($AssetInfo.target)$($AssetInfo.archive_ext)"
         $MarkerFile = Join-Path $VldbLancedbDir ".installed-$TagName-$($AssetInfo.target)"
         $LocalArchivePath = Find-LocalArchive -AssetName $AssetName
@@ -182,14 +231,26 @@ function Install-VldbLancedbLibrary {
     }
 
     if (-not $LocalArchivePath) {
+        $Release = Get-ReleaseByTagOrNull -Repo $VldbLancedbRepo -TagName $TagName
+        if (-not $Release) {
+            if (Test-Path $LibraryDest) {
+                Write-Warning "vldb-lancedb release assets are not published for tag $TagName. Reusing the existing local binary at $LibraryDest and refreshing the install marker / 当前 tag 未发布 Release 资产，继续复用已有本地动态库并刷新安装标记。"
+                Get-ChildItem -Path $VldbLancedbDir -Filter ".installed-*" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType File -Path $MarkerFile -Force | Out-Null
+                return
+            }
+
+            throw "vldb-lancedb tag '$TagName' currently has no GitHub Release library asset. Please download the Actions artifact '$AssetName' manually and place it under third_party (or one direct child directory) before rerunning / 当前 tag 未发布 GitHub Release 库资产，请先手动下载 Actions artifact '$AssetName' 并放到 third_party（或其一级子目录）后再重试。"
+        }
+
         $Asset = $Release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
         if (-not $Asset) {
             $Available = ($Release.assets | ForEach-Object { $_.name }) -join ", "
-            throw "vldb-lancedb asset '$AssetName' not found in latest release. Available assets: $Available"
+            throw "vldb-lancedb asset '$AssetName' not found in release '$TagName'. Available assets: $Available / 目标 tag 对应的 Release 中未找到该库资产。"
         }
     }
 
-    $TempDir = Join-Path $env:TEMP "vldb_lancedb_$pid"
+    $TempDir = Join-Path $env:TEMP ("vldb_lancedb_{0}" -f $PID)
     if (Test-Path $TempDir) {
         Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -287,7 +348,6 @@ function Install-VldbSqliteLibrary {
 
     $AssetInfo = Get-VldbSqliteAssetInfo
     $TarPath = Get-AvailableTarPath
-    $ApiUrl = "https://api.github.com/repos/$VldbSqliteRepo/releases/latest"
     $Release = $null
     $TagName = $null
     $AssetName = $null
@@ -295,7 +355,9 @@ function Install-VldbSqliteLibrary {
     $LocalArchivePath = $null
 
     $LocalPattern = "vldb-sqlite-lib-v*-$($AssetInfo.target)$($AssetInfo.archive_ext)"
-    $LocalArchive = Get-ChildItem -Path $ThirdParty -File -Filter $LocalPattern -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    $LocalArchive = Get-ChildItem -Path $ThirdParty -File -Filter $LocalPattern -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        Select-Object -First 1
     if (-not $LocalArchive) {
         $LocalArchive = Get-ChildItem -Path $ThirdParty -Directory -ErrorAction SilentlyContinue |
             ForEach-Object { Get-ChildItem -Path $_.FullName -File -Filter $LocalPattern -ErrorAction SilentlyContinue } |
@@ -313,13 +375,7 @@ function Install-VldbSqliteLibrary {
         $MarkerFile = Join-Path $VldbSqliteDir ".installed-$TagName-$($AssetInfo.target)"
         $LocalArchivePath = $LocalArchive.FullName
     } else {
-        Write-Host "==> Querying latest vldb-sqlite release..."
-        $Release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
-        $TagName = $Release.tag_name
-        if (-not $TagName) {
-            throw "Latest vldb-sqlite release is missing tag_name / 最新 vldb-sqlite release 缺少 tag_name"
-        }
-
+        $TagName = Get-LatestRepoTag -Repo $VldbSqliteRepo -DisplayName "vldb-sqlite"
         $AssetName = "vldb-sqlite-lib-$TagName-$($AssetInfo.target)$($AssetInfo.archive_ext)"
         $MarkerFile = Join-Path $VldbSqliteDir ".installed-$TagName-$($AssetInfo.target)"
         $LocalArchivePath = Find-LocalArchive -AssetName $AssetName
@@ -333,14 +389,26 @@ function Install-VldbSqliteLibrary {
     }
 
     if (-not $LocalArchivePath) {
+        $Release = Get-ReleaseByTagOrNull -Repo $VldbSqliteRepo -TagName $TagName
+        if (-not $Release) {
+            if (Test-Path $LibraryDest) {
+                Write-Warning "vldb-sqlite release assets are not published for tag $TagName. Reusing the existing local binary at $LibraryDest and refreshing the install marker / 当前 tag 未发布 Release 资产，继续复用已有本地动态库并刷新安装标记。"
+                Get-ChildItem -Path $VldbSqliteDir -Filter ".installed-*" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType File -Path $MarkerFile -Force | Out-Null
+                return
+            }
+
+            throw "vldb-sqlite tag '$TagName' currently has no GitHub Release library asset. Please download the Actions artifact '$AssetName' manually and place it under third_party (or one direct child directory) before rerunning / 当前 tag 未发布 GitHub Release 库资产，请先手动下载 Actions artifact '$AssetName' 并放到 third_party（或其一级子目录）后再重试。"
+        }
+
         $Asset = $Release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
         if (-not $Asset) {
             $Available = ($Release.assets | ForEach-Object { $_.name }) -join ", "
-            throw "vldb-sqlite asset '$AssetName' not found in latest release. The latest release may not have published library-mode assets yet / 最新 release 可能尚未发布库模式资产。可用资产: $Available。若当前处于联调阶段，请将本地预编译包放入 third_party 后重试。"
+            throw "vldb-sqlite asset '$AssetName' not found in release '$TagName'. Available assets: $Available / 目标 tag 对应的 Release 中未找到该库资产。"
         }
     }
 
-    $TempDir = Join-Path $env:TEMP "vldb_sqlite_$pid"
+    $TempDir = Join-Path $env:TEMP ("vldb_sqlite_{0}" -f $PID)
     if (Test-Path $TempDir) {
         Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -362,24 +430,28 @@ function Install-VldbSqliteLibrary {
             & $TarPath -xzf $ArchivePath -C $TempDir
         }
 
-        $LibrarySource = Get-ChildItem -Path $TempDir -Recurse -File -Filter $AssetInfo.library_name -ErrorAction SilentlyContinue | Select-Object -First 1
+        $LibrarySource = Get-ChildItem -Path $TempDir -Recurse -File -Filter $AssetInfo.library_name -ErrorAction SilentlyContinue |
+            Select-Object -First 1
         if (-not $LibrarySource) {
             throw "Dynamic library '$($AssetInfo.library_name)' not found after extracting $AssetName"
         }
 
         Copy-Item $LibrarySource.FullName $LibraryDest -Force
 
-        $HeaderSource = Get-ChildItem -Path $TempDir -Recurse -File -Filter "vldb_sqlite.h" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $HeaderSource = Get-ChildItem -Path $TempDir -Recurse -File -Filter "vldb_sqlite.h" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
         if ($HeaderSource) {
             Copy-Item $HeaderSource.FullName (Join-Path $VldbSqliteIncludeDir "vldb_sqlite.h") -Force
         }
 
-        $DocSource = Get-ChildItem -Path $TempDir -Recurse -File -Filter "LIBRARY_USAGE.zh-CN.md" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $DocSource = Get-ChildItem -Path $TempDir -Recurse -File -Filter "LIBRARY_USAGE.zh-CN.md" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
         if ($DocSource) {
             Copy-Item $DocSource.FullName (Join-Path $VldbSqliteDocsDir "LIBRARY_USAGE.zh-CN.md") -Force
         }
 
-        Get-ChildItem -Path $VldbSqliteDir -Filter ".installed-*" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path $VldbSqliteDir -Filter ".installed-*" -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
         New-Item -ItemType File -Path $MarkerFile -Force | Out-Null
         Write-Host "==> vldb-sqlite library installed successfully."
     } finally {

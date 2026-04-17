@@ -16,14 +16,6 @@ mod sqlite_host;
 mod temp_maintenance;
 mod tool_cache;
 
-pub mod pb_lancedb {
-    tonic::include_proto!("vldb.lancedb.v1");
-}
-
-pub mod pb_sqlite {
-    tonic::include_proto!("vldb.sqlite.v1");
-}
-
 pub mod pb_vmm {
     tonic::include_proto!("vmm.v1");
 }
@@ -155,15 +147,7 @@ fn is_reserved_cli_flag(value: &str) -> bool {
 async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Error>> {
     let mut server = McpServer::new();
 
-    // Connect gRPC clients if configured
-    if let Some(endpoint) = &cfg.lancedb {
-        server = server.with_lancedb(endpoint).await?;
-    }
-    if let Some(endpoint) = &cfg.sqlite {
-        server = server.with_sqlite(endpoint).await?;
-        // Auto-enable scratchpad when sqlite is available
-        server = server.with_scratchpad_from_sqlite().await?;
-    }
+    // Connect VMM gRPC client if configured.
     if let Some(endpoint) = &cfg.vmm {
         server = server.with_vmm(endpoint).await?;
     }

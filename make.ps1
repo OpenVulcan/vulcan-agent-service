@@ -116,7 +116,13 @@ function Invoke-DependencyInstall {
         throw "Missing dependency script: $ScriptPath"
     }
 
-    & powershell -ExecutionPolicy Bypass -File $ScriptPath
+    $PowerShellCommand = Get-Command "pwsh" -ErrorAction SilentlyContinue
+    if ($PowerShellCommand) {
+        & $PowerShellCommand.Source -NoProfile -ExecutionPolicy Bypass -File $ScriptPath
+    }
+    else {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath
+    }
     exit $LASTEXITCODE
 }
 

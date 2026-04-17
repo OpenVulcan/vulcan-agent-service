@@ -1,15 +1,8 @@
 use std::sync::Arc;
+
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
-use crate::pb_lancedb::{
-    ColumnDef, CreateTableRequest, DeleteRequest, DropTableRequest, InputFormat, OutputFormat,
-    SearchRequest, UpsertRequest, lance_db_service_client::LanceDbServiceClient,
-};
-use crate::pb_sqlite::{
-    ExecuteBatchItem, ExecuteBatchRequest, ExecuteRequest, QueryRequest, SqliteValue,
-    sqlite_service_client::SqliteServiceClient, sqlite_value,
-};
 use crate::pb_vmm::{
     ApplyProfileInstructionRequest, ChatCompactRequest, DeleteProjectRequest, DeleteUserRequest,
     EnsureProjectRequest, GetProfileBundleRequest, GetProfileNodesRequest, GetTurnDetailsRequest,
@@ -20,941 +13,31 @@ use crate::pb_vmm::{
     vmm_service_client::VmmServiceClient,
 };
 
-// ============================================================
-// LanceDb gRPC client
-// ============================================================
-
-#[derive(Clone)]
-pub struct LanceDbClient {
-    client: Arc<Mutex<LanceDbServiceClient<Channel>>>,
-    pub endpoint: String,
-}
-
-impl LanceDbClient {
-    pub async fn connect(endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = LanceDbServiceClient::connect(endpoint.to_string()).await?;
-        Ok(Self {
-            client: Arc::new(Mutex::new(client)),
-            endpoint: endpoint.to_string(),
-        })
-    }
-
-    pub async fn create_table(
-        &self,
-        table_name: &str,
-        columns: Vec<ColumnDef>,
-        overwrite: bool,
-    ) -> Result<String, String> {
-        let req = tonic::Request::new(CreateTableRequest {
-            table_name: table_name.to_string(),
-            columns,
-            overwrite_if_exists: overwrite,
-        });
-        let mut client = self.client.lock().await;
-        let resp = client.create_table(req).await.map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        if inner.success {
-            Ok(inner.message)
-        } else {
-            Err(inner.message)
-        }
-    }
-
-    pub async fn vector_upsert(
-        &self,
-        table_name: &str,
-        input_format: InputFormat,
-        data: Vec<u8>,
-        key_columns: Vec<String>,
-    ) -> Result<String, String> {
-        let req = tonic::Request::new(UpsertRequest {
-            table_name: table_name.to_string(),
-            input_format: input_format.into(),
-            data,
-            key_columns,
-        });
-        let mut client = self.client.lock().await;
-        let resp = client.vector_upsert(req).await.map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        if inner.success {
-            Ok(format!(
-                "version={}, rows={}, inserted={}, updated={}",
-                inner.version, inner.input_rows, inner.inserted_rows, inner.updated_rows
-            ))
-        } else {
-            Err(inner.message)
-        }
-    }
-
-    pub async fn vector_search(
-        &self,
-        table_name: &str,
-        vector: Vec<f32>,
-        limit: u32,
-        filter: String,
-        vector_column: String,
-        output_format: OutputFormat,
-    ) -> Result<Vec<u8>, String> {
-        let req = tonic::Request::new(SearchRequest {
-            table_name: table_name.to_string(),
-            vector,
-            limit,
-            filter,
-            vector_column,
-            output_format: output_format.into(),
-        });
-        let mut client = self.client.lock().await;
-        let resp = client.vector_search(req).await.map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        if inner.success {
-            Ok(inner.data)
-        } else {
-            Err(inner.message)
-        }
-    }
-
-    pub async fn delete(&self, table_name: &str, condition: String) -> Result<String, String> {
-        let req = tonic::Request::new(DeleteRequest {
-            table_name: table_name.to_string(),
-            condition,
-        });
-        let mut client = self.client.lock().await;
-        let resp = client.delete(req).await.map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        if inner.success {
-            Ok(format!(
-                "version={}, deleted={}",
-                inner.version, inner.deleted_rows
-            ))
-        } else {
-            Err(inner.message)
-        }
-    }
-
-    pub async fn drop_table(&self, table_name: &str) -> Result<String, String> {
-        let req = tonic::Request::new(DropTableRequest {
-            table_name: table_name.to_string(),
-        });
-        let mut client = self.client.lock().await;
-        let resp = client.drop_table(req).await.map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        if inner.success {
-            Ok(inner.message)
-        } else {
-            Err(inner.message)
-        }
-    }
-}
-
-// ============================================================
-// Sqlite gRPC client
-// ============================================================
-
-#[derive(Clone)]
-pub struct SqliteClient {
-    client: Arc<Mutex<SqliteServiceClient<Channel>>>,
-    pub endpoint: String,
-}
-
-impl SqliteClient {
-    pub async fn connect(endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = SqliteServiceClient::connect(endpoint.to_string()).await?;
-        Ok(Self {
-            client: Arc::new(Mutex::new(client)),
-            endpoint: endpoint.to_string(),
-        })
-    }
-
-    pub async fn execute_script(
-        &self,
-        sql: &str,
-        params: Vec<SqliteValue>,
-    ) -> Result<String, String> {
-        let req = tonic::Request::new(ExecuteRequest {
-            sql: sql.to_string(),
-            params_json: String::new(),
-            params,
-        });
-        let mut client = self.client.lock().await;
-        let resp = client
-            .execute_script(req)
-            .await
-            .map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        if inner.success {
-            Ok(format!(
-                "rows_changed={}, last_insert_rowid={}",
-                inner.rows_changed, inner.last_insert_rowid
-            ))
-        } else {
-            Err(inner.message)
-        }
-    }
-
-    pub async fn execute_batch(
-        &self,
-        sql: &str,
-        items: Vec<Vec<SqliteValue>>,
-    ) -> Result<String, String> {
-        let items = items
-            .into_iter()
-            .map(|params| ExecuteBatchItem { params })
-            .collect();
-        let req = tonic::Request::new(ExecuteBatchRequest {
-            sql: sql.to_string(),
-            items,
-        });
-        let mut client = self.client.lock().await;
-        let resp = client.execute_batch(req).await.map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        if inner.success {
-            Ok(format!(
-                "rows_changed={}, statements={}",
-                inner.rows_changed, inner.statements_executed
-            ))
-        } else {
-            Err(inner.message)
-        }
-    }
-
-    pub async fn query_json(&self, sql: &str, params: Vec<SqliteValue>) -> Result<String, String> {
-        let req = tonic::Request::new(QueryRequest {
-            sql: sql.to_string(),
-            params_json: String::new(),
-            params,
-        });
-        let mut client = self.client.lock().await;
-        let resp = client.query_json(req).await.map_err(|e| e.to_string())?;
-        let inner = resp.into_inner();
-        Ok(inner.json_data)
-    }
-
-    pub async fn query_stream(
-        &self,
-        sql: &str,
-        params: Vec<SqliteValue>,
-    ) -> Result<Vec<u8>, String> {
-        let req = tonic::Request::new(QueryRequest {
-            sql: sql.to_string(),
-            params_json: String::new(),
-            params,
-        });
-        let mut client = self.client.lock().await;
-        let mut stream = client
-            .query_stream(req)
-            .await
-            .map_err(|e| e.to_string())?
-            .into_inner();
-
-        let mut data = Vec::new();
-        while let Some(chunk) = stream.message().await.map_err(|e| e.to_string())? {
-            data.extend(chunk.arrow_ipc_chunk);
-        }
-        Ok(data)
-    }
-}
-
-// ============================================================
-// Helper functions for SqliteValue construction
-// ============================================================
-
-pub fn sqlite_int64(v: i64) -> SqliteValue {
-    SqliteValue {
-        kind: Some(sqlite_value::Kind::Int64Value(v)),
-    }
-}
-
-pub fn sqlite_float64(v: f64) -> SqliteValue {
-    SqliteValue {
-        kind: Some(sqlite_value::Kind::Float64Value(v)),
-    }
-}
-
-pub fn sqlite_string(v: &str) -> SqliteValue {
-    SqliteValue {
-        kind: Some(sqlite_value::Kind::StringValue(v.to_string())),
-    }
-}
-
-pub fn sqlite_bool(v: bool) -> SqliteValue {
-    SqliteValue {
-        kind: Some(sqlite_value::Kind::BoolValue(v)),
-    }
-}
-
-pub fn sqlite_null() -> SqliteValue {
-    SqliteValue {
-        kind: Some(sqlite_value::Kind::NullValue(
-            crate::pb_sqlite::NullValue {},
-        )),
-    }
-}
-
-pub fn sqlite_bytes(v: Vec<u8>) -> SqliteValue {
-    SqliteValue {
-        kind: Some(sqlite_value::Kind::BytesValue(v)),
-    }
-}
-
-// ============================================================
-// VMCP Scratchpad Store (uses vldb_sqlite gRPC with vmcp_ tables)
-// ============================================================
-
-use serde_json::json;
-
-// Table DDL (created lazily via CREATE TABLE IF NOT EXISTS)
-const SCRATCHPAD_PLAN_DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS vmcp_scratchpad_plans (
-  id INTEGER PRIMARY KEY,
-  project_id INTEGER NOT NULL,
-  user_id INTEGER NOT NULL,
-  session_key TEXT NOT NULL,
-  plan_name TEXT NOT NULL,
-  plan_name_norm TEXT NOT NULL,
-  created_timestamp INTEGER NOT NULL,
-  updated_timestamp INTEGER NOT NULL,
-  UNIQUE(project_id, user_id, session_key)
-)"#;
-
-const SCRATCHPAD_NODE_DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS vmcp_scratchpad_nodes (
-  id INTEGER PRIMARY KEY,
-  plan_id INTEGER NOT NULL,
-  item_key TEXT NOT NULL,
-  item_value TEXT NOT NULL,
-  created_timestamp INTEGER NOT NULL,
-  updated_timestamp INTEGER NOT NULL,
-  UNIQUE(plan_id, item_key)
-)"#;
-
-// Validation constants
-const SCRATCHPAD_PLAN_NAME_MAX_LEN: usize = 128;
-const SCRATCHPAD_ITEM_KEY_MAX_LEN: usize = 128;
-const SCRATCHPAD_ITEM_VALUE_MAX_LEN: usize = 16000;
-const SCRATCHPAD_BATCH_ITEM_LIMIT: usize = 32;
-const SCRATCHPAD_SESSION_KEY_MAX_LEN: usize = 128;
-
+/// 中文：跨 VMM gRPC 接口复用的 scratchpad 键值项结构。
+/// English: Shared scratchpad key/value item used by the VMM gRPC wrapper.
 #[derive(Clone, Debug)]
 pub struct ScratchpadItem {
+    /// 中文：Scratchpad 条目的键名。
+    /// English: Key of the scratchpad entry.
     pub key: String,
+    /// 中文：Scratchpad 条目的文本值。
+    /// English: Text value of the scratchpad entry.
     pub value: String,
 }
 
-fn now_unix_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-/// Format a u64 as a SQL-safe integer literal (no quotes needed).
-fn sql_int(n: i64) -> String {
-    n.to_string()
-}
-
-/// Format a string as a SQL-safe hex literal using X'...' syntax.
-/// This is injection-proof because hex encoding cannot contain SQL metacharacters.
-fn sql_hex(s: &str) -> String {
-    let hex: String = s.bytes().map(|b| format!("{:02x}", b)).collect();
-    format!("X'{}'", hex)
-}
-
-fn validate_scope(project_id: u64, user_id: u64, session_id: &str) -> Result<(), String> {
-    if project_id == 0 {
-        return Err("project_id must be a numeric id".into());
-    }
-    if user_id == 0 {
-        return Err("user_id must be a numeric id".into());
-    }
-    let trimmed = session_id.trim();
-    if trimmed.is_empty() {
-        return Err("session_id is required".into());
-    }
-    if trimmed.len() > SCRATCHPAD_SESSION_KEY_MAX_LEN {
-        return Err(format!(
-            "session_id must be <= {} characters",
-            SCRATCHPAD_SESSION_KEY_MAX_LEN
-        ));
-    }
-    Ok(())
-}
-
-fn validate_plan_name(name: &str) -> Result<(), String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("plan_name is required".into());
-    }
-    if trimmed.len() > SCRATCHPAD_PLAN_NAME_MAX_LEN {
-        return Err(format!(
-            "plan_name must be <= {} characters",
-            SCRATCHPAD_PLAN_NAME_MAX_LEN
-        ));
-    }
-    Ok(())
-}
-
-fn normalize_items(items: &[ScratchpadItem]) -> Result<Vec<ScratchpadItem>, String> {
-    if items.is_empty() {
-        return Err("items must contain at least one item".into());
-    }
-    if items.len() > SCRATCHPAD_BATCH_ITEM_LIMIT {
-        return Err(format!(
-            "items must contain <= {} items",
-            SCRATCHPAD_BATCH_ITEM_LIMIT
-        ));
-    }
-    // Deduplicate: keep last value for same key
-    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for (idx, item) in items.iter().enumerate() {
-        let key = item.key.trim().to_string();
-        let value = item.value.trim().to_string();
-        if key.is_empty() {
-            return Err(format!("items[{}].key is required", idx));
-        }
-        if key.len() > SCRATCHPAD_ITEM_KEY_MAX_LEN {
-            return Err(format!(
-                "items[{}].key must be <= {} characters",
-                idx, SCRATCHPAD_ITEM_KEY_MAX_LEN
-            ));
-        }
-        if value.is_empty() {
-            return Err(format!("items[{}].value is required", idx));
-        }
-        if value.len() > SCRATCHPAD_ITEM_VALUE_MAX_LEN {
-            return Err(format!(
-                "items[{}].value must be <= {} characters",
-                idx, SCRATCHPAD_ITEM_VALUE_MAX_LEN
-            ));
-        }
-        map.insert(key, value);
-    }
-    let mut out: Vec<ScratchpadItem> = map
-        .into_iter()
-        .map(|(k, v)| ScratchpadItem { key: k, value: v })
-        .collect();
-    out.sort_by(|a, b| a.key.cmp(&b.key));
-    Ok(out)
-}
-
-fn normalize_keys(keys: &[String]) -> Result<Vec<String>, String> {
-    if keys.is_empty() {
-        return Err("keys must contain at least one key".into());
-    }
-    let mut set = std::collections::HashSet::new();
-    for (idx, key) in keys.iter().enumerate() {
-        let trimmed = key.trim().to_string();
-        if trimmed.is_empty() {
-            return Err(format!("keys[{}] is required", idx));
-        }
-        if trimmed.len() > SCRATCHPAD_ITEM_KEY_MAX_LEN {
-            return Err(format!(
-                "keys[{}] must be <= {} characters",
-                idx, SCRATCHPAD_ITEM_KEY_MAX_LEN
-            ));
-        }
-        set.insert(trimmed);
-    }
-    let mut out: Vec<String> = set.into_iter().collect();
-    out.sort();
-    Ok(out)
-}
-
-// ============================================================
-// Database migration system
-// ============================================================
-
-const SCHEMA_VERSION_DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS vmcp_schema_version (
-  version INTEGER NOT NULL,
-  applied_at INTEGER NOT NULL,
-  description TEXT NOT NULL
-)"#;
-
-const LATEST_SCHEMA_VERSION: i64 = 1;
-
-/// Run all pending migrations in order. Returns the final version.
-async fn run_migrations(client: &SqliteClient) -> Result<i64, Box<dyn std::error::Error>> {
-    // Ensure version table exists
-    client
-        .execute_script(SCHEMA_VERSION_DDL, vec![])
-        .await
-        .map_err(|e| format!("Failed to create version table: {}", e))?;
-
-    // Read current version
-    let current = match client
-        .query_json(
-            "SELECT version FROM vmcp_schema_version ORDER BY version DESC LIMIT 1",
-            vec![],
-        )
-        .await
-    {
-        Ok(json_str) => {
-            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
-            rows.first()
-                .and_then(|v| v.get("version"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-        }
-        Err(_) => 0,
-    };
-
-    // Backward compat: if no version table row but tables exist, infer version 1
-    if current == 0 {
-        let plans_exist = table_exists(client, "vmcp_scratchpad_plans").await?;
-        let nodes_exist = table_exists(client, "vmcp_scratchpad_nodes").await?;
-        if plans_exist && nodes_exist {
-            eprintln!(
-                "[MCP] Detected existing scratchpad tables without version record, setting version to 1"
-            );
-            let now = now_unix_millis();
-            client.execute_script(
-                &format!("INSERT INTO vmcp_schema_version (version, applied_at, description) VALUES (1, {}, 'auto-detected existing tables')", now),
-                vec![],
-            ).await.map_err(|e| format!("Failed to write version record: {}", e))?;
-            eprintln!("[MCP] SQLite schema at version 1");
-            return Ok(1);
-        }
-    }
-
-    if current >= LATEST_SCHEMA_VERSION {
-        eprintln!("[MCP] SQLite schema at version {}", current);
-        return Ok(current);
-    }
-
-    // Run pending migrations in order
-    if current < 1 {
-        eprintln!(
-            "[MCP] Migrating SQLite schema: v{} -> v1 (initial schema: plans + nodes tables)",
-            current
-        );
-        migrate_v1(client)
-            .await
-            .map_err(|e| format!("Migration v1 failed: {}", e))?;
-        let now = now_unix_millis();
-        client.execute_script(
-            &format!("INSERT OR REPLACE INTO vmcp_schema_version (version, applied_at, description) VALUES (1, {}, 'initial schema: plans + nodes tables')", now),
-            vec![],
-        ).await.map_err(|e| format!("Failed to update version record: {}", e))?;
-        eprintln!("[MCP] SQLite schema migrated to version 1");
-    }
-
-    // Future migrations:
-    // if current < 2 { migrate_v2(client).await?; ... }
-
-    Ok(LATEST_SCHEMA_VERSION)
-}
-
-async fn table_exists(
-    client: &SqliteClient,
-    table: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let sql = format!(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='{}'",
-        table
-    );
-    match client.query_json(&sql, vec![]).await {
-        Ok(json_str) => {
-            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
-            Ok(!rows.is_empty())
-        }
-        Err(_) => Ok(false),
-    }
-}
-
-async fn migrate_v1(client: &SqliteClient) -> Result<(), String> {
-    client.execute_script(SCRATCHPAD_PLAN_DDL, vec![]).await?;
-    client.execute_script(SCRATCHPAD_NODE_DDL, vec![]).await?;
-    Ok(())
-}
-
-// ============================================================
-// Scratchpad Store
-// ============================================================
-
-#[derive(Clone)]
-pub struct ScratchpadStore {
-    sqlite: SqliteClient,
-}
-
-impl ScratchpadStore {
-    pub async fn create(sqlite: SqliteClient) -> Result<Self, Box<dyn std::error::Error>> {
-        run_migrations(&sqlite).await?;
-        Ok(Self { sqlite })
-    }
-
-    pub fn sqlite_client(&self) -> &SqliteClient {
-        &self.sqlite
-    }
-
-    async fn load_plan(
-        &self,
-        project_id: u64,
-        user_id: u64,
-        session_key: &str,
-    ) -> Result<Option<serde_json::Value>, String> {
-        let sql = "SELECT id, project_id, user_id, session_key, plan_name, plan_name_norm, created_timestamp, updated_timestamp FROM vmcp_scratchpad_plans WHERE project_id = ? AND user_id = ? AND session_key = ? LIMIT 1";
-        let json_str = self
-            .sqlite
-            .query_json(
-                sql,
-                vec![
-                    sqlite_int64(project_id as i64),
-                    sqlite_int64(user_id as i64),
-                    sqlite_string(session_key.trim()),
-                ],
-            )
-            .await?;
-        let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
-        Ok(arr.into_iter().next())
-    }
-
-    async fn create_plan(
-        &self,
-        project_id: u64,
-        user_id: u64,
-        session_key: &str,
-        plan_name: &str,
-        now_ms: i64,
-    ) -> Result<serde_json::Value, String> {
-        // Re-check under lock: get next id
-        let id_json = self
-            .sqlite
-            .query_json(
-                "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmcp_scratchpad_plans",
-                vec![],
-            )
-            .await?;
-        let id_arr: Vec<serde_json::Value> = serde_json::from_str(&id_json).unwrap_or_default();
-        let next_id = id_arr
-            .first()
-            .and_then(|v| v.get("next_id"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1);
-
-        let plan_name_trimmed = plan_name.trim();
-        let sql = format!(
-            "INSERT INTO vmcp_scratchpad_plans (id, project_id, user_id, session_key, plan_name, plan_name_norm, created_timestamp, updated_timestamp) VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
-            next_id,
-            project_id,
-            user_id,
-            sql_hex(session_key.trim()),
-            sql_hex(plan_name_trimmed),
-            sql_hex(&plan_name_trimmed.to_lowercase()),
-            now_ms,
-            now_ms
-        );
-        self.sqlite.execute_script(&sql, vec![]).await?;
-        Ok(json!({
-            "id": next_id,
-            "project_id": project_id,
-            "user_id": user_id,
-            "session_key": session_key.trim(),
-            "plan_name": plan_name_trimmed,
-            "plan_name_norm": plan_name_trimmed.to_lowercase(),
-            "created_timestamp": now_ms,
-            "updated_timestamp": now_ms,
-        }))
-    }
-
-    /// Upsert items into scratchpad
-    pub async fn upsert(
-        &self,
-        project_id: u64,
-        user_id: u64,
-        session_id: &str,
-        plan_name: &str,
-        items: Vec<ScratchpadItem>,
-    ) -> Result<String, String> {
-        validate_scope(project_id, user_id, session_id)?;
-        validate_plan_name(plan_name)?;
-        let items = normalize_items(&items)?;
-
-        let plan = self.load_plan(project_id, user_id, session_id).await?;
-        if let Some(ref p) = plan {
-            let canonical = p
-                .get("plan_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let input = plan_name.trim();
-            if canonical.to_lowercase() != input.to_lowercase() {
-                return Ok(format!(
-                    "status=failed, msg=The input plan_name does not match the current scratchpad plan. Check whether the plan_name is misspelled or call Clean before switching to a new plan. Current plan: {}. Input plan: {}",
-                    canonical, input
-                ));
-            }
-        }
-
-        let now_ms = now_unix_millis();
-        let plan = if let Some(p) = plan {
-            p
-        } else {
-            // Concurrent re-check: try loading again (simplified, no mutex needed since unique constraint handles it)
-            self.create_plan(project_id, user_id, session_id, plan_name, now_ms)
-                .await?
-        };
-
-        let plan_id = plan.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        // Load existing nodes for insert/update counting
-        let existing_keys: Vec<String> = items.iter().map(|i| i.key.clone()).collect();
-        let existing_json = if !existing_keys.is_empty() {
-            let placeholders = existing_keys
-                .iter()
-                .map(|k| sql_hex(k))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "SELECT item_key FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({})",
-                plan_id, placeholders
-            );
-            let j = self.sqlite.query_json(&sql, vec![]).await?;
-            serde_json::from_str::<Vec<serde_json::Value>>(&j).unwrap_or_default()
-        } else {
-            vec![]
-        };
-        let existing_set: std::collections::HashSet<String> = existing_json
-            .iter()
-            .filter_map(|v| v.get("item_key").and_then(|v| v.as_str()).map(String::from))
-            .collect();
-
-        let mut inserted = 0i64;
-        let mut updated = 0i64;
-        let mut statements = String::from("BEGIN IMMEDIATE;\n");
-        for item in &items {
-            if existing_set.contains(&item.key) {
-                updated += 1;
-                statements.push_str(&format!(
-                    "INSERT INTO vmcp_scratchpad_nodes (plan_id, item_key, item_value, created_timestamp, updated_timestamp) VALUES ({}, {}, {}, {}, {}) ON CONFLICT(plan_id, item_key) DO UPDATE SET item_value = excluded.item_value, updated_timestamp = excluded.updated_timestamp;\n",
-                    plan_id, sql_hex(&item.key), sql_hex(&item.value), now_ms, now_ms
-                ));
-            } else {
-                inserted += 1;
-                statements.push_str(&format!(
-                    "INSERT INTO vmcp_scratchpad_nodes (plan_id, item_key, item_value, created_timestamp, updated_timestamp) VALUES ({}, {}, {}, {}, {});\n",
-                    plan_id, sql_hex(&item.key), sql_hex(&item.value), now_ms, now_ms
-                ));
-            }
-        }
-        statements.push_str(&format!(
-            "UPDATE vmcp_scratchpad_plans SET updated_timestamp = {} WHERE id = {};\n",
-            now_ms, plan_id
-        ));
-        statements.push_str("COMMIT;\n");
-
-        self.sqlite.execute_script(&statements, vec![]).await?;
-        let total = inserted + updated;
-        Ok(format!(
-            "status=success, msg=Upserted {} scratchpad record(s)., plan_name={}, affected={}, inserted={}, updated={}",
-            total,
-            plan_name.trim(),
-            total,
-            inserted,
-            updated
-        ))
-    }
-
-    /// Delete keys from scratchpad
-    pub async fn delete(
-        &self,
-        project_id: u64,
-        user_id: u64,
-        session_id: &str,
-        plan_name: &str,
-        keys: Vec<String>,
-    ) -> Result<String, String> {
-        validate_scope(project_id, user_id, session_id)?;
-        validate_plan_name(plan_name)?;
-        let keys = normalize_keys(&keys)?;
-
-        let plan = self.load_plan(project_id, user_id, session_id).await?;
-        let Some(p) = plan else {
-            return Ok("status=success, msg=No scratchpad plan exists for the current session. Create records first., affected=0".into());
-        };
-
-        let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let canonical = p
-            .get("plan_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let input = plan_name.trim();
-        if canonical.to_lowercase() != input.to_lowercase() {
-            return Ok(format!(
-                "status=failed, msg=The input plan_name does not match the current scratchpad plan. Current plan: {}. Input plan: {}",
-                canonical, input
-            ));
-        }
-
-        let now_ms = now_unix_millis();
-        let key_list = keys
-            .iter()
-            .map(|k| sql_hex(k))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let delete_sql = format!(
-            "BEGIN IMMEDIATE;\nDELETE FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({});\nUPDATE vmcp_scratchpad_plans SET updated_timestamp = {} WHERE id = {};\nCOMMIT;\n",
-            plan_id, key_list, now_ms, plan_id
-        );
-        self.sqlite.execute_script(&delete_sql, vec![]).await?;
-
-        Ok(format!(
-            "status=success, msg=Deleted {} scratchpad record(s)., plan_name={}, affected={}",
-            keys.len(),
-            canonical,
-            keys.len()
-        ))
-    }
-
-    /// Get scratchpad items
-    pub async fn get(
-        &self,
-        project_id: u64,
-        user_id: u64,
-        session_id: &str,
-        keys: Vec<String>,
-    ) -> Result<String, String> {
-        validate_scope(project_id, user_id, session_id)?;
-
-        let plan = self.load_plan(project_id, user_id, session_id).await?;
-        let Some(p) = plan else {
-            return Ok(r#"{"status":"success","msg":"No scratchpad records found for the current session.","items":[],"item_count":0}"#.into());
-        };
-
-        let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let plan_name = p
-            .get("plan_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let updated = p
-            .get("updated_timestamp")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-
-        let items_json = if keys.is_empty() {
-            let sql = format!(
-                "SELECT item_key, item_value FROM vmcp_scratchpad_nodes WHERE plan_id = {} ORDER BY item_key ASC, id ASC",
-                plan_id
-            );
-            self.sqlite
-                .query_json(&sql, vec![])
-                .await
-                .unwrap_or_else(|_| "[]".into())
-        } else {
-            let validated_keys = normalize_keys(&keys)?;
-            let key_list = validated_keys
-                .iter()
-                .map(|k| sql_hex(k))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "SELECT item_key, item_value FROM vmcp_scratchpad_nodes WHERE plan_id = {} AND item_key IN ({}) ORDER BY item_key ASC, id ASC",
-                plan_id, key_list
-            );
-            self.sqlite
-                .query_json(&sql, vec![])
-                .await
-                .unwrap_or_else(|_| "[]".into())
-        };
-
-        let items: Vec<serde_json::Value> = serde_json::from_str(&items_json).unwrap_or_default();
-        Ok(serde_json::to_string(&json!({
-            "status": "success",
-            "msg": format!("Retrieved {} scratchpad record(s).", items.len()),
-            "plan_name": plan_name,
-            "updated_timestamp": updated,
-            "item_count": items.len(),
-            "items": items,
-        }))
-        .unwrap_or_default())
-    }
-
-    /// List scratchpad keys
-    pub async fn list_keys(
-        &self,
-        project_id: u64,
-        user_id: u64,
-        session_id: &str,
-    ) -> Result<String, String> {
-        validate_scope(project_id, user_id, session_id)?;
-
-        let plan = self.load_plan(project_id, user_id, session_id).await?;
-        let Some(p) = plan else {
-            return Ok(r#"{"status":"success","msg":"No scratchpad records found for the current session.","keys":[],"key_count":0}"#.into());
-        };
-
-        let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let plan_name = p
-            .get("plan_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let updated = p
-            .get("updated_timestamp")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-
-        let keys_json = self.sqlite.query_json(
-            &format!("SELECT item_key FROM vmcp_scratchpad_nodes WHERE plan_id = {} ORDER BY item_key ASC, id ASC", plan_id),
-            vec![],
-        ).await.unwrap_or_else(|_| "[]".into());
-        let rows: Vec<serde_json::Value> = serde_json::from_str(&keys_json).unwrap_or_default();
-        let keys: Vec<String> = rows
-            .iter()
-            .filter_map(|r| r.get("item_key").and_then(|v| v.as_str()).map(String::from))
-            .collect();
-
-        Ok(serde_json::to_string(&json!({
-            "status": "success",
-            "msg": format!("Listed {} scratchpad key(s).", keys.len()),
-            "plan_name": plan_name,
-            "updated_timestamp": updated,
-            "key_count": keys.len(),
-            "keys": keys,
-        }))
-        .unwrap_or_default())
-    }
-
-    /// Clean entire scratchpad scope
-    pub async fn clean(
-        &self,
-        project_id: u64,
-        user_id: u64,
-        session_id: &str,
-    ) -> Result<String, String> {
-        validate_scope(project_id, user_id, session_id)?;
-
-        let plan = self.load_plan(project_id, user_id, session_id).await?;
-        let Some(p) = plan else {
-            return Ok(
-                "status=success, msg=The current scratchpad is already empty., affected=0".into(),
-            );
-        };
-
-        let plan_id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let clean_sql = format!(
-            "BEGIN IMMEDIATE;\nDELETE FROM vmcp_scratchpad_nodes WHERE plan_id = {};\nDELETE FROM vmcp_scratchpad_plans WHERE id = {};\nCOMMIT;\n",
-            plan_id, plan_id
-        );
-        self.sqlite.execute_script(&clean_sql, vec![]).await?;
-
-        Ok("status=success, msg=Scratchpad history has been cleared.".into())
-    }
-}
-
-// ============================================================
-// Vmm gRPC client (wraps tonic-generated VmmServiceClient)
-// ============================================================
-
+/// 中文：VulcanMemoryMesh gRPC 客户端包装器，负责串行化底层 tonic 客户端访问。
+/// English: VulcanMemoryMesh gRPC client wrapper that serializes access to the underlying tonic client.
 #[derive(Clone)]
 pub struct VmmClient {
     client: Arc<Mutex<VmmServiceClient<Channel>>>,
+    /// 中文：当前 VMM 服务端点，仅用于日志与诊断展示。
+    /// English: Current VMM service endpoint, used for logging and diagnostics only.
     pub endpoint: String,
 }
 
 impl VmmClient {
+    /// 中文：连接指定的 VMM gRPC 服务端点。
+    /// English: Connect to the specified VMM gRPC service endpoint.
     pub async fn connect(endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = VmmServiceClient::connect(endpoint.to_string()).await?;
         Ok(Self {
@@ -963,7 +46,8 @@ impl VmmClient {
         })
     }
 
-    // 1. Healthz
+    /// 中文：执行 VMM 健康检查并返回简要状态字符串。
+    /// English: Execute the VMM health check and return a brief status string.
     pub async fn healthz(&self) -> Result<String, String> {
         let req = tonic::Request::new(());
         let mut client = self.client.lock().await;
@@ -975,7 +59,8 @@ impl VmmClient {
         ))
     }
 
-    // 2. ListProjects
+    /// 中文：列出 VMM 中已登记的项目路径。
+    /// English: List project paths registered in VMM.
     pub async fn list_projects(&self) -> Result<String, String> {
         let req = tonic::Request::new(());
         let mut client = self.client.lock().await;
@@ -993,7 +78,8 @@ impl VmmClient {
         ))
     }
 
-    // 3. ResolveProject
+    /// 中文：解析项目引用并返回项目信息摘要。
+    /// English: Resolve a project reference and return a summarized project description.
     pub async fn resolve_project(&self, project_ref: &str) -> Result<String, String> {
         let req = tonic::Request::new(ResolveProjectRequest {
             project_ref: project_ref.to_string(),
@@ -1015,7 +101,8 @@ impl VmmClient {
         ))
     }
 
-    // 4. EnsureProject
+    /// 中文：确保项目存在，必要时按确认参数创建项目。
+    /// English: Ensure a project exists and create it if confirmation is granted.
     pub async fn ensure_project(
         &self,
         project_path: &str,
@@ -1042,7 +129,8 @@ impl VmmClient {
         ))
     }
 
-    // 5. DeleteProject
+    /// 中文：删除指定项目及其派生数据。
+    /// English: Delete the specified project and its derived data.
     pub async fn delete_project(
         &self,
         project_path: &str,
@@ -1070,7 +158,8 @@ impl VmmClient {
         ))
     }
 
-    // 6. MigrateProject
+    /// 中文：迁移项目数据到新路径。
+    /// English: Migrate project data to a new path.
     pub async fn migrate_project(
         &self,
         source: &str,
@@ -1100,7 +189,8 @@ impl VmmClient {
         ))
     }
 
-    // 7. ResolveUser
+    /// 中文：解析用户引用并可选创建用户。
+    /// English: Resolve a user reference and optionally create the user.
     pub async fn resolve_user(
         &self,
         user_ref: &str,
@@ -1124,7 +214,8 @@ impl VmmClient {
         ))
     }
 
-    // 8. ListUsers
+    /// 中文：列出所有用户摘要。
+    /// English: List all user summaries.
     pub async fn list_users(&self) -> Result<String, String> {
         let req = tonic::Request::new(());
         let mut client = self.client.lock().await;
@@ -1142,7 +233,8 @@ impl VmmClient {
         ))
     }
 
-    // 9. DeleteUser
+    /// 中文：删除用户及其相关数据。
+    /// English: Delete a user and its related data.
     pub async fn delete_user(
         &self,
         user_ref: &str,
@@ -1173,7 +265,8 @@ impl VmmClient {
         ))
     }
 
-    // 10. GetProfileNodes
+    /// 中文：读取画像节点。
+    /// English: Fetch profile nodes.
     pub async fn get_profile_nodes(
         &self,
         target: i32,
@@ -1200,7 +293,8 @@ impl VmmClient {
         ))
     }
 
-    // 11. GetProfileBundle
+    /// 中文：读取画像聚合文本。
+    /// English: Fetch the aggregated profile bundle text.
     pub async fn get_profile_bundle(
         &self,
         user_id: u64,
@@ -1227,7 +321,8 @@ impl VmmClient {
         ))
     }
 
-    // 12. ApplyProfileInstruction
+    /// 中文：写入画像指令。
+    /// English: Apply a profile instruction.
     pub async fn apply_profile_instruction(
         &self,
         target: i32,
@@ -1256,7 +351,8 @@ impl VmmClient {
         ))
     }
 
-    // 13. SearchMemoryEvents
+    /// 中文：执行记忆事件检索。
+    /// English: Execute memory-event search.
     pub async fn search_memory_events(
         &self,
         user_id: u64,
@@ -1285,7 +381,8 @@ impl VmmClient {
         ))
     }
 
-    // 14. GetTurnDetails
+    /// 中文：按 turn_id 批量读取对话详情。
+    /// English: Load conversation details by turn ids.
     pub async fn get_turn_details(&self, turn_ids: Vec<u64>) -> Result<String, String> {
         let req = tonic::Request::new(GetTurnDetailsRequest { turn_ids });
         let mut client = self.client.lock().await;
@@ -1301,7 +398,8 @@ impl VmmClient {
         ))
     }
 
-    // 15. WriteMemories
+    /// 中文：写入结构化记忆。
+    /// English: Write structured memories.
     pub async fn write_memories(
         &self,
         session_id: &str,
@@ -1330,7 +428,8 @@ impl VmmClient {
         ))
     }
 
-    // 16. ScratchpadUpsert
+    /// 中文：向 VMM scratchpad 写入键值项。
+    /// English: Upsert scratchpad key/value items into VMM.
     pub async fn scratchpad_upsert(
         &self,
         session_id: &str,
@@ -1339,7 +438,7 @@ impl VmmClient {
         plan_name: &str,
         key: Option<String>,
         value: Option<String>,
-        items: Vec<crate::grpc_client::ScratchpadItem>,
+        items: Vec<ScratchpadItem>,
     ) -> Result<String, String> {
         let req = tonic::Request::new(ScratchpadUpsertRequest {
             session_id: session_id.to_string(),
@@ -1372,7 +471,8 @@ impl VmmClient {
         ))
     }
 
-    // 17. ScratchpadDelete
+    /// 中文：删除 VMM scratchpad 中的键。
+    /// English: Delete keys from the VMM scratchpad.
     pub async fn scratchpad_delete(
         &self,
         session_id: &str,
@@ -1402,7 +502,8 @@ impl VmmClient {
         ))
     }
 
-    // 18. ScratchpadGet
+    /// 中文：读取 VMM scratchpad 中的记录。
+    /// English: Read records from the VMM scratchpad.
     pub async fn scratchpad_get(
         &self,
         session_id: &str,
@@ -1428,7 +529,8 @@ impl VmmClient {
         ))
     }
 
-    // 19. ScratchpadListKeys
+    /// 中文：列出 VMM scratchpad 中的全部键。
+    /// English: List all keys stored in the VMM scratchpad.
     pub async fn scratchpad_list_keys(
         &self,
         session_id: &str,
@@ -1452,7 +554,8 @@ impl VmmClient {
         ))
     }
 
-    // 20. ScratchpadClean
+    /// 中文：清空 VMM scratchpad。
+    /// English: Clean the VMM scratchpad scope.
     pub async fn scratchpad_clean(
         &self,
         session_id: &str,
@@ -1473,7 +576,8 @@ impl VmmClient {
         Ok(format!("status={:?}, msg={}", inner.status, inner.msg))
     }
 
-    // 21. ChatCompact
+    /// 中文：触发对话压缩。
+    /// English: Trigger conversation compaction.
     pub async fn chat_compact(
         &self,
         session_id: &str,
@@ -1494,7 +598,8 @@ impl VmmClient {
         ))
     }
 
-    // 22. PreCheck
+    /// 中文：执行 PreCheck。
+    /// English: Execute the PreCheck flow.
     pub async fn pre_check(
         &self,
         session_id: &str,
@@ -1522,7 +627,8 @@ impl VmmClient {
         ))
     }
 
-    // 23. PostAction
+    /// 中文：执行 PostAction。
+    /// English: Execute the PostAction flow.
     pub async fn post_action(
         &self,
         session_id: &str,
