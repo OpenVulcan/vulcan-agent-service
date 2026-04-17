@@ -32,6 +32,7 @@ flate2 = "1"
 tar = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libloading = "0.8"
+base64 = "0.22"
 
 [build-dependencies]
 tonic-prost-build = "0.14"

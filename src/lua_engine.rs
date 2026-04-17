@@ -1889,6 +1889,139 @@ impl LuaEngine {
                 .set("tokenize_text", tokenize_fn)
                 .map_err(|error| format!("Failed to set vulcan.sqlite.tokenize_text: {}", error))?;
 
+            let execute_script_binding = binding.clone();
+            let execute_script_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "sqlite.execute_script", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = execute_script_binding
+                        .execute_script(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.execute_script: {}", error))?;
+            sqlite_table
+                .set("execute_script", execute_script_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.execute_script: {}", error))?;
+
+            let execute_batch_binding = binding.clone();
+            let execute_batch_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "sqlite.execute_batch", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = execute_batch_binding
+                        .execute_batch(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.execute_batch: {}", error))?;
+            sqlite_table
+                .set("execute_batch", execute_batch_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.execute_batch: {}", error))?;
+
+            let query_json_binding = binding.clone();
+            let query_json_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "sqlite.query_json", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = query_json_binding
+                        .query_json(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.query_json: {}", error))?;
+            sqlite_table
+                .set("query_json", query_json_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.query_json: {}", error))?;
+
+            let query_stream_binding = binding.clone();
+            let query_stream_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table = require_table_arg(input, "sqlite.query_stream", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = query_stream_binding
+                        .query_stream(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| format!("Failed to create vulcan.sqlite.query_stream: {}", error))?;
+            sqlite_table
+                .set("query_stream", query_stream_fn)
+                .map_err(|error| format!("Failed to set vulcan.sqlite.query_stream: {}", error))?;
+
+            let query_stream_wait_metrics_binding = binding.clone();
+            let query_stream_wait_metrics_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.query_stream_wait_metrics", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = query_stream_wait_metrics_binding
+                        .query_stream_wait_metrics(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!(
+                        "Failed to create vulcan.sqlite.query_stream_wait_metrics: {}",
+                        error
+                    )
+                })?;
+            sqlite_table
+                .set("query_stream_wait_metrics", query_stream_wait_metrics_fn)
+                .map_err(|error| {
+                    format!(
+                        "Failed to set vulcan.sqlite.query_stream_wait_metrics: {}",
+                        error
+                    )
+                })?;
+
+            let query_stream_chunk_binding = binding.clone();
+            let query_stream_chunk_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.query_stream_chunk", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = query_stream_chunk_binding
+                        .query_stream_chunk(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.query_stream_chunk: {}", error)
+                })?;
+            sqlite_table
+                .set("query_stream_chunk", query_stream_chunk_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.query_stream_chunk: {}", error)
+                })?;
+
+            let query_stream_close_binding = binding.clone();
+            let query_stream_close_fn = lua
+                .create_function(move |lua, input: LuaValue| {
+                    let input_table =
+                        require_table_arg(input, "sqlite.query_stream_close", "input")?;
+                    let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                        .map_err(mlua::Error::runtime)?;
+                    let result = query_stream_close_binding
+                        .query_stream_close(&input_json)
+                        .map_err(mlua::Error::runtime)?;
+                    json_value_to_lua(lua, &result).map_err(mlua::Error::external)
+                })
+                .map_err(|error| {
+                    format!("Failed to create vulcan.sqlite.query_stream_close: {}", error)
+                })?;
+            sqlite_table
+                .set("query_stream_close", query_stream_close_fn)
+                .map_err(|error| {
+                    format!("Failed to set vulcan.sqlite.query_stream_close: {}", error)
+                })?;
+
             let upsert_word_binding = binding.clone();
             let upsert_word_fn = lua
                 .create_function(move |lua, input: LuaValue| {
@@ -2073,6 +2206,13 @@ impl LuaEngine {
             let disabled_error =
                 "current skill has not enabled sqlite / 当前 skill 未启用 sqlite".to_string();
             for method_name in [
+                "execute_script",
+                "execute_batch",
+                "query_json",
+                "query_stream",
+                "query_stream_wait_metrics",
+                "query_stream_chunk",
+                "query_stream_close",
                 "tokenize_text",
                 "upsert_custom_word",
                 "remove_custom_word",

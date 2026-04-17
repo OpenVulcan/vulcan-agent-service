@@ -33,8 +33,8 @@ local function get_sqlite_status()
     return status
 end
 
---- 中文：工具主入口，验证宿主管理 SQLite 的状态、建索引、写入文档与检索闭环。
---- English: Main tool entry that verifies the host-managed SQLite status plus the full ensure-index, document-upsert, and search loop.
+--- 中文：工具主入口，验证宿主管理 SQLite 的通用 SQL 与 FTS 能力闭环。
+--- English: Main tool entry that verifies both generic SQL and FTS flows for the host-managed SQLite integration.
 --- @param args table|nil 工具参数 / Tool arguments.
 --- @return table
 return function(args)
@@ -58,6 +58,49 @@ return function(args)
     local file_path = "/skills/vulcan-work-memory"
     local title = "Work Memory Entry"
     local content = note .. " @ " .. created_at
+    local sql_table = "work_memory_notes"
+
+    local execute_result = vulcan.sqlite.execute_script({
+        sql = [[
+            CREATE TABLE IF NOT EXISTS work_memory_notes(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        ]],
+    })
+
+    local batch_result = vulcan.sqlite.execute_batch({
+        sql = "INSERT INTO work_memory_notes(note, created_at) VALUES (?1, ?2)",
+        items = {
+            { note, created_at },
+        },
+    })
+
+    local query_json_result = vulcan.sqlite.query_json({
+        sql = "SELECT id, note, created_at FROM work_memory_notes ORDER BY id DESC LIMIT 5",
+    })
+
+    local stream_result = vulcan.sqlite.query_stream({
+        sql = "SELECT id, note, created_at FROM work_memory_notes ORDER BY id DESC LIMIT 5",
+        chunk_bytes = 4096,
+    })
+
+    local stream_chunk_result = nil
+    local stream_metrics_result = nil
+    local stream_close_result = nil
+    if type(stream_result) == "table" and stream_result.success then
+        stream_chunk_result = vulcan.sqlite.query_stream_chunk({
+            stream_id = stream_result.stream_id,
+            index = 0,
+        })
+        stream_metrics_result = vulcan.sqlite.query_stream_wait_metrics({
+            stream_id = stream_result.stream_id,
+        })
+        stream_close_result = vulcan.sqlite.query_stream_close({
+            stream_id = stream_result.stream_id,
+        })
+    end
 
     local ensure_result = vulcan.sqlite.ensure_fts_index({
         index_name = index_name,
@@ -85,13 +128,21 @@ return function(args)
 
     return {
         ok = true,
-        message = "Host-managed SQLite test completed for vulcan-work-memory.",
+        message = "Host-managed SQLite generic SQL and FTS test completed for vulcan-work-memory.",
         status = status,
+        execute_result = execute_result,
+        batch_result = batch_result,
+        query_json_result = query_json_result,
+        query_stream_result = stream_result,
+        query_stream_chunk_result = stream_chunk_result,
+        query_stream_metrics_result = stream_metrics_result,
+        query_stream_close_result = stream_close_result,
         ensure_result = ensure_result,
         upsert_result = upsert_result,
         search_result = search_result,
         dictionary_result = dictionary_result,
         inserted = {
+            table = sql_table,
             id = document_id,
             file_path = file_path,
             title = title,

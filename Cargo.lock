@@ -2452,6 +2452,7 @@ dependencies = [
  "async-stream",
  "axum",
  "axum-extra",
+ "base64",
  "bytes",
  "chrono",
  "flate2",

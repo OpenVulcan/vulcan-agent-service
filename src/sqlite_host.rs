@@ -1,3 +1,5 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use libloading::Library;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -41,6 +43,27 @@ struct VldbSqliteCustomWordListHandle {
 /// English: Forward declaration of the FFI search-result handle.
 #[repr(C)]
 struct VldbSqliteSearchResultHandle {
+    _private: [u8; 0],
+}
+
+/// 中文：FFI 通用 SQL 执行结果句柄前置声明。
+/// English: Forward declaration of the FFI shared SQL execute-result handle.
+#[repr(C)]
+struct VldbSqliteExecuteResultHandle {
+    _private: [u8; 0],
+}
+
+/// 中文：FFI JSON 查询结果句柄前置声明。
+/// English: Forward declaration of the FFI JSON-query result handle.
+#[repr(C)]
+struct VldbSqliteQueryJsonResultHandle {
+    _private: [u8; 0],
+}
+
+/// 中文：FFI QueryStream 结果句柄前置声明。
+/// English: Forward declaration of the FFI QueryStream result handle.
+#[repr(C)]
+struct VldbSqliteQueryStreamHandle {
     _private: [u8; 0],
 }
 
@@ -98,6 +121,60 @@ struct VldbSqliteFtsMutationResultPod {
     affected_rows: u64,
 }
 
+/// 中文：FFI 字节视图结构，供 bytes 参数使用。
+/// English: FFI byte-view structure used for bytes parameters.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct VldbSqliteByteView {
+    data: *const u8,
+    len: u64,
+}
+
+/// 中文：FFI 可释放字节缓冲区，供 QueryStream chunk getter 返回。
+/// English: FFI releasable byte buffer returned by QueryStream chunk getters.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct VldbSqliteByteBuffer {
+    data: *mut u8,
+    len: u64,
+    cap: u64,
+}
+
+/// 中文：FFI SQL 值类型枚举，必须与头文件定义保持一致。
+/// English: FFI SQL value-kind enum kept ABI-compatible with the exported header.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VldbSqliteFfiValueKind {
+    Null = 0,
+    Int64 = 1,
+    Float64 = 2,
+    String = 3,
+    Bytes = 4,
+    Bool = 5,
+}
+
+/// 中文：FFI SQL 参数值结构。
+/// English: FFI SQL parameter value structure.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct VldbSqliteFfiValue {
+    kind: VldbSqliteFfiValueKind,
+    int64_value: i64,
+    float64_value: f64,
+    string_value: *const c_char,
+    bytes_value: VldbSqliteByteView,
+    bool_value: u8,
+}
+
+/// 中文：FFI SQL 参数切片结构，用于批量执行。
+/// English: FFI SQL parameter-slice structure used by batch execution.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct VldbSqliteFfiValueSlice {
+    values: *const VldbSqliteFfiValue,
+    len: u64,
+}
+
 type RuntimeCreateDefaultFn = unsafe extern "C" fn() -> *mut VldbSqliteRuntimeHandle;
 type RuntimeDestroyFn = unsafe extern "C" fn(*mut VldbSqliteRuntimeHandle);
 type RuntimeOpenDatabaseFn = unsafe extern "C" fn(
@@ -109,6 +186,57 @@ type DatabaseDbPathFn = unsafe extern "C" fn(*mut VldbSqliteDatabaseHandle) -> *
 type StringFreeFn = unsafe extern "C" fn(*mut c_char);
 type LastErrorMessageFn = unsafe extern "C" fn() -> *const c_char;
 type ClearLastErrorFn = unsafe extern "C" fn();
+type LibraryInfoJsonFn = unsafe extern "C" fn() -> *mut c_char;
+type DatabaseExecuteScriptFn = unsafe extern "C" fn(
+    *mut VldbSqliteDatabaseHandle,
+    *const c_char,
+    *const VldbSqliteFfiValue,
+    u64,
+    *const c_char,
+) -> *mut VldbSqliteExecuteResultHandle;
+type DatabaseExecuteBatchFn = unsafe extern "C" fn(
+    *mut VldbSqliteDatabaseHandle,
+    *const c_char,
+    *const VldbSqliteFfiValueSlice,
+    u64,
+) -> *mut VldbSqliteExecuteResultHandle;
+type DatabaseQueryJsonFn = unsafe extern "C" fn(
+    *mut VldbSqliteDatabaseHandle,
+    *const c_char,
+    *const VldbSqliteFfiValue,
+    u64,
+    *const c_char,
+) -> *mut VldbSqliteQueryJsonResultHandle;
+type DatabaseQueryStreamFn = unsafe extern "C" fn(
+    *mut VldbSqliteDatabaseHandle,
+    *const c_char,
+    *const VldbSqliteFfiValue,
+    u64,
+    *const c_char,
+    u64,
+) -> *mut VldbSqliteQueryStreamHandle;
+type ExecuteResultDestroyFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle);
+type ExecuteResultSuccessFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> u8;
+type ExecuteResultMessageFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> *mut c_char;
+type ExecuteResultRowsChangedFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> i64;
+type ExecuteResultLastInsertRowIdFn =
+    unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> i64;
+type ExecuteResultStatementsExecutedFn =
+    unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> i64;
+type QueryJsonResultDestroyFn = unsafe extern "C" fn(*mut VldbSqliteQueryJsonResultHandle);
+type QueryJsonResultJsonDataFn =
+    unsafe extern "C" fn(*mut VldbSqliteQueryJsonResultHandle) -> *mut c_char;
+type QueryJsonResultRowCountFn =
+    unsafe extern "C" fn(*mut VldbSqliteQueryJsonResultHandle) -> u64;
+type QueryStreamDestroyFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle);
+type QueryStreamChunkCountFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle) -> u64;
+type QueryStreamRowCountFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle) -> u64;
+type QueryStreamTotalBytesFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle) -> u64;
+type QueryStreamGetChunkFn = unsafe extern "C" fn(
+    *mut VldbSqliteQueryStreamHandle,
+    u64,
+) -> VldbSqliteByteBuffer;
+type BytesFreeFn = unsafe extern "C" fn(VldbSqliteByteBuffer);
 type DatabaseTokenizeTextFn = unsafe extern "C" fn(
     *mut VldbSqliteDatabaseHandle,
     VldbSqliteFfiTokenizerMode,
@@ -214,6 +342,26 @@ struct LoadedSqliteApi {
     string_free: StringFreeFn,
     last_error_message: LastErrorMessageFn,
     clear_last_error: ClearLastErrorFn,
+    library_info_json: LibraryInfoJsonFn,
+    database_execute_script: DatabaseExecuteScriptFn,
+    database_execute_batch: DatabaseExecuteBatchFn,
+    database_query_json: DatabaseQueryJsonFn,
+    database_query_stream: DatabaseQueryStreamFn,
+    execute_result_destroy: ExecuteResultDestroyFn,
+    execute_result_success: ExecuteResultSuccessFn,
+    execute_result_message: ExecuteResultMessageFn,
+    execute_result_rows_changed: ExecuteResultRowsChangedFn,
+    execute_result_last_insert_rowid: ExecuteResultLastInsertRowIdFn,
+    execute_result_statements_executed: ExecuteResultStatementsExecutedFn,
+    query_json_result_destroy: QueryJsonResultDestroyFn,
+    query_json_result_json_data: QueryJsonResultJsonDataFn,
+    query_json_result_row_count: QueryJsonResultRowCountFn,
+    query_stream_destroy: QueryStreamDestroyFn,
+    query_stream_chunk_count: QueryStreamChunkCountFn,
+    query_stream_row_count: QueryStreamRowCountFn,
+    query_stream_total_bytes: QueryStreamTotalBytesFn,
+    query_stream_get_chunk: QueryStreamGetChunkFn,
+    bytes_free: BytesFreeFn,
     database_tokenize_text: DatabaseTokenizeTextFn,
     tokenize_result_destroy: TokenizeResultDestroyFn,
     tokenize_result_normalized_text: TokenizeResultNormalizedTextFn,
@@ -318,6 +466,83 @@ impl LoadedSqliteApi {
                 LastErrorMessageFn
             ),
             clear_last_error: load_symbol!("vldb_sqlite_clear_last_error", ClearLastErrorFn),
+            library_info_json: load_symbol!("vldb_sqlite_library_info_json", LibraryInfoJsonFn),
+            database_execute_script: load_symbol!(
+                "vldb_sqlite_database_execute_script",
+                DatabaseExecuteScriptFn
+            ),
+            database_execute_batch: load_symbol!(
+                "vldb_sqlite_database_execute_batch",
+                DatabaseExecuteBatchFn
+            ),
+            database_query_json: load_symbol!(
+                "vldb_sqlite_database_query_json",
+                DatabaseQueryJsonFn
+            ),
+            database_query_stream: load_symbol!(
+                "vldb_sqlite_database_query_stream",
+                DatabaseQueryStreamFn
+            ),
+            execute_result_destroy: load_symbol!(
+                "vldb_sqlite_execute_result_destroy",
+                ExecuteResultDestroyFn
+            ),
+            execute_result_success: load_symbol!(
+                "vldb_sqlite_execute_result_success",
+                ExecuteResultSuccessFn
+            ),
+            execute_result_message: load_symbol!(
+                "vldb_sqlite_execute_result_message",
+                ExecuteResultMessageFn
+            ),
+            execute_result_rows_changed: load_symbol!(
+                "vldb_sqlite_execute_result_rows_changed",
+                ExecuteResultRowsChangedFn
+            ),
+            execute_result_last_insert_rowid: load_symbol!(
+                "vldb_sqlite_execute_result_last_insert_rowid",
+                ExecuteResultLastInsertRowIdFn
+            ),
+            execute_result_statements_executed: load_symbol!(
+                "vldb_sqlite_execute_result_statements_executed",
+                ExecuteResultStatementsExecutedFn
+            ),
+            query_json_result_destroy: load_symbol!(
+                "vldb_sqlite_query_json_result_destroy",
+                QueryJsonResultDestroyFn
+            ),
+            query_json_result_json_data: load_symbol!(
+                "vldb_sqlite_query_json_result_json_data",
+                QueryJsonResultJsonDataFn
+            ),
+            query_json_result_row_count: load_symbol!(
+                "vldb_sqlite_query_json_result_row_count",
+                QueryJsonResultRowCountFn
+            ),
+            query_stream_destroy: load_symbol!(
+                "vldb_sqlite_query_stream_destroy",
+                QueryStreamDestroyFn
+            ),
+            query_stream_chunk_count: load_symbol!(
+                "vldb_sqlite_query_stream_chunk_count",
+                QueryStreamChunkCountFn
+            ),
+            query_stream_row_count: load_symbol!(
+                "vldb_sqlite_query_stream_row_count",
+                QueryStreamRowCountFn
+            ),
+            query_stream_total_bytes: load_symbol!(
+                "vldb_sqlite_query_stream_total_bytes",
+                QueryStreamTotalBytesFn
+            ),
+            query_stream_get_chunk: load_symbol!(
+                "vldb_sqlite_query_stream_get_chunk",
+                QueryStreamGetChunkFn
+            ),
+            bytes_free: load_symbol!(
+                "vldb_sqlite_bytes_free",
+                BytesFreeFn
+            ),
             database_tokenize_text: load_symbol!(
                 "vldb_sqlite_database_tokenize_text",
                 DatabaseTokenizeTextFn
@@ -485,6 +710,40 @@ impl LoadedSqliteApi {
             Some(text)
         }
     }
+
+    /// 中文：调用无参 JSON FFI 接口并解析成 `serde_json::Value`。
+    /// English: Invoke a zero-argument JSON FFI entrypoint and parse the response into `serde_json::Value`.
+    fn call_json_noarg(&self, function: LibraryInfoJsonFn, operation: &str) -> Result<Value, String> {
+        unsafe {
+            let response_ptr = function();
+            let response_text = self.take_owned_string(response_ptr)?;
+            serde_json::from_str(&response_text).map_err(|error| {
+                format!(
+                    "{} returned invalid JSON: {} / {} 返回了无效 JSON: {}",
+                    operation, error, operation, error
+                )
+            })
+        }
+    }
+
+    /// 中文：把 QueryStream 返回的字节缓冲区复制成宿主拥有的 `Vec<u8>`，并回收底层分配。
+    /// English: Copy a QueryStream byte buffer into a host-owned `Vec<u8>` and free the underlying allocation.
+    fn take_chunk_bytes(&self, buffer: VldbSqliteByteBuffer) -> Result<Vec<u8>, String> {
+        if buffer.data.is_null() {
+            if buffer.len == 0 {
+                return Ok(Vec::new());
+            }
+            return Err(self.take_last_error_message());
+        }
+
+        let len = usize::try_from(buffer.len)
+            .map_err(|_| "chunk length exceeds usize / chunk 长度超过 usize".to_string())?;
+        unsafe {
+            let bytes = std::slice::from_raw_parts(buffer.data, len).to_vec();
+            (self.bytes_free)(buffer);
+            Ok(bytes)
+        }
+    }
 }
 
 /// 中文：单个 skill 的 SQLite 句柄集合，由宿主统一管理生命周期。
@@ -492,6 +751,8 @@ impl LoadedSqliteApi {
 struct SkillHandleState {
     runtime: *mut VldbSqliteRuntimeHandle,
     database: *mut VldbSqliteDatabaseHandle,
+    query_streams: HashMap<u64, *mut VldbSqliteQueryStreamHandle>,
+    next_stream_id: u64,
 }
 
 /// 中文：FFI 句柄仅通过宿主互斥量串行访问，跨线程共享由宿主统一控制。
@@ -513,6 +774,18 @@ impl SqliteSkillBinding {
     /// 中文：返回当前 skill 的稳定 SQLite 状态信息；无论启用与否，结构都保持稳定。
     /// English: Return the stable SQLite status payload for the current skill; the response shape stays stable whether enabled or disabled.
     pub fn status_json(&self) -> Value {
+        let library_info = self
+            .api
+            .call_json_noarg(self.api.library_info_json, "library_info_json")
+            .unwrap_or_else(|error| {
+                json!({
+                    "name": "vldb-sqlite",
+                    "version": "unknown",
+                    "ffi_stage": "unknown",
+                    "capabilities": [],
+                    "warning": error,
+                })
+            });
         json!({
             "enabled": true,
             "initialized": true,
@@ -521,6 +794,10 @@ impl SqliteSkillBinding {
             "database_path": self.database_path,
             "integration_mode": "dynamic_library",
             "library_path": self.api.library_path.to_string_lossy().to_string(),
+            "library_name": library_info.get("name").cloned().unwrap_or(Value::String("vldb-sqlite".to_string())),
+            "library_version": library_info.get("version").cloned().unwrap_or(Value::String("unknown".to_string())),
+            "ffi_stage": library_info.get("ffi_stage").cloned().unwrap_or(Value::String("unknown".to_string())),
+            "capabilities": library_info.get("capabilities").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
             "log_level": self.config.log_level.as_str(),
             "slow_log_enabled": self.config.slow_log_enabled,
             "slow_log_threshold_ms": self.config.slow_log_threshold_ms,
@@ -530,7 +807,314 @@ impl SqliteSkillBinding {
     /// 中文：返回当前 skill 所绑定 SQLite 的基础信息。
     /// English: Return basic information about the SQLite binding for the current skill.
     pub fn info_json(&self) -> Value {
-        self.status_json()
+        let mut status = self.status_json();
+        if let Some(status_object) = status.as_object_mut() {
+            let library_info = self
+                .api
+                .call_json_noarg(self.api.library_info_json, "library_info_json")
+                .unwrap_or_else(|error| {
+                    json!({
+                        "name": "vldb-sqlite",
+                        "version": "unknown",
+                        "ffi_stage": "unknown",
+                        "capabilities": [],
+                        "warning": error,
+                    })
+                });
+            status_object.insert("library_info".to_string(), library_info);
+        }
+        status
+    }
+
+    /// 中文：通过非 JSON 主接口执行脚本或单条 SQL。
+    /// English: Execute a script or single SQL statement through the non-JSON primary interface.
+    pub fn execute_script(&self, input: &Value) -> Result<Value, String> {
+        let sql = require_string_field(input, "sql")?;
+        let params = parse_single_sql_params(input)?;
+        let owned_params = build_owned_ffi_values(&params)?;
+        self.log_info("execute_script", None);
+        let started_at = Instant::now();
+        let guard = self.lock_handles()?;
+        let sql_cstr = to_cstring(sql, "sql")?;
+        unsafe {
+            let result_handle = (self.api.database_execute_script)(
+                guard.database,
+                sql_cstr.as_ptr(),
+                if owned_params.values.is_empty() {
+                    ptr::null()
+                } else {
+                    owned_params.as_ptr()
+                },
+                owned_params.len_u64(),
+                ptr::null(),
+            );
+            if result_handle.is_null() {
+                drop(guard);
+                let error = self.api.take_last_error_message();
+                self.log_warning("execute_script", &error);
+                return Err(error);
+            }
+
+            let result = json!({
+                "success": u8_to_bool((self.api.execute_result_success)(result_handle)),
+                "message": self.api.take_optional_string((self.api.execute_result_message)(result_handle)).unwrap_or_default(),
+                "rows_changed": (self.api.execute_result_rows_changed)(result_handle),
+                "last_insert_rowid": (self.api.execute_result_last_insert_rowid)(result_handle),
+                "statements_executed": (self.api.execute_result_statements_executed)(result_handle),
+            });
+            (self.api.execute_result_destroy)(result_handle);
+            drop(guard);
+            self.log_if_slow("execute_script", started_at, None);
+            Ok(result)
+        }
+    }
+
+    /// 中文：通过非 JSON 主接口批量执行 SQL。
+    /// English: Execute batch SQL through the non-JSON primary interface.
+    pub fn execute_batch(&self, input: &Value) -> Result<Value, String> {
+        let sql = require_string_field(input, "sql")?;
+        let rows = parse_batch_sql_params(input)?;
+        let owned_rows = build_owned_ffi_value_matrix(&rows)?;
+        self.log_info("execute_batch", None);
+        let started_at = Instant::now();
+        let guard = self.lock_handles()?;
+        let sql_cstr = to_cstring(sql, "sql")?;
+        unsafe {
+            let result_handle = (self.api.database_execute_batch)(
+                guard.database,
+                sql_cstr.as_ptr(),
+                owned_rows.as_ptr(),
+                owned_rows.len_u64(),
+            );
+            if result_handle.is_null() {
+                drop(guard);
+                let error = self.api.take_last_error_message();
+                self.log_warning("execute_batch", &error);
+                return Err(error);
+            }
+
+            let result = json!({
+                "success": u8_to_bool((self.api.execute_result_success)(result_handle)),
+                "message": self.api.take_optional_string((self.api.execute_result_message)(result_handle)).unwrap_or_default(),
+                "rows_changed": (self.api.execute_result_rows_changed)(result_handle),
+                "last_insert_rowid": (self.api.execute_result_last_insert_rowid)(result_handle),
+                "statements_executed": (self.api.execute_result_statements_executed)(result_handle),
+            });
+            (self.api.execute_result_destroy)(result_handle);
+            drop(guard);
+            self.log_if_slow("execute_batch", started_at, None);
+            Ok(result)
+        }
+    }
+
+    /// 中文：通过非 JSON 主接口执行 JSON 行集查询。
+    /// English: Execute a JSON row-set query through the non-JSON primary interface.
+    pub fn query_json(&self, input: &Value) -> Result<Value, String> {
+        let sql = require_string_field(input, "sql")?;
+        let params = parse_single_sql_params(input)?;
+        let owned_params = build_owned_ffi_values(&params)?;
+        self.log_info("query_json", None);
+        let started_at = Instant::now();
+        let guard = self.lock_handles()?;
+        let sql_cstr = to_cstring(sql, "sql")?;
+        unsafe {
+            let result_handle = (self.api.database_query_json)(
+                guard.database,
+                sql_cstr.as_ptr(),
+                if owned_params.values.is_empty() {
+                    ptr::null()
+                } else {
+                    owned_params.as_ptr()
+                },
+                owned_params.len_u64(),
+                ptr::null(),
+            );
+            if result_handle.is_null() {
+                drop(guard);
+                let error = self.api.take_last_error_message();
+                self.log_warning("query_json", &error);
+                return Err(error);
+            }
+
+            let row_count = (self.api.query_json_result_row_count)(result_handle);
+            let json_data = self
+                .api
+                .take_owned_string((self.api.query_json_result_json_data)(result_handle))?;
+            let rows = serde_json::from_str::<Value>(&json_data).map_err(|error| {
+                format!(
+                    "query_json returned invalid json_data: {} / query_json 返回的 json_data 非法: {}",
+                    error, error
+                )
+            })?;
+            (self.api.query_json_result_destroy)(result_handle);
+            drop(guard);
+            self.log_if_slow("query_json", started_at, Some(format!("rows={}", row_count)));
+            Ok(json!({
+                "success": true,
+                "row_count": row_count,
+                "json_data": json_data,
+                "rows": rows,
+            }))
+        }
+    }
+
+    /// 中文：通过非 JSON 主接口创建 QueryStream 句柄。
+    /// English: Create a QueryStream handle through the non-JSON primary interface.
+    pub fn query_stream(&self, input: &Value) -> Result<Value, String> {
+        let sql = require_string_field(input, "sql")?;
+        let params = parse_single_sql_params(input)?;
+        let owned_params = build_owned_ffi_values(&params)?;
+        let chunk_bytes = input
+            .get("chunk_bytes")
+            .or_else(|| input.get("chunk_size"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        self.log_info("query_stream", None);
+        let started_at = Instant::now();
+        let mut guard = self.lock_handles()?;
+        let sql_cstr = to_cstring(sql, "sql")?;
+        unsafe {
+            let result_handle = (self.api.database_query_stream)(
+                guard.database,
+                sql_cstr.as_ptr(),
+                if owned_params.values.is_empty() {
+                    ptr::null()
+                } else {
+                    owned_params.as_ptr()
+                },
+                owned_params.len_u64(),
+                ptr::null(),
+                chunk_bytes,
+            );
+            if result_handle.is_null() {
+                drop(guard);
+                let error = self.api.take_last_error_message();
+                self.log_warning("query_stream", &error);
+                return Err(error);
+            }
+
+            let stream_id = guard.next_stream_id;
+            guard.next_stream_id = guard.next_stream_id.saturating_add(1).max(1);
+            guard.query_streams.insert(stream_id, result_handle);
+            drop(guard);
+            self.log_if_slow(
+                "query_stream",
+                started_at,
+                Some(format!("stream_id={} metrics_ready=false", stream_id)),
+            );
+            Ok(json!({
+                "success": true,
+                "stream_id": stream_id,
+                "metrics_ready": false,
+            }))
+        }
+    }
+
+    /// 中文：等待 QueryStream 最终统计信息就绪，并返回终态指标。
+    /// English: Wait for final QueryStream metrics and return terminal statistics.
+    pub fn query_stream_wait_metrics(&self, input: &Value) -> Result<Value, String> {
+        let stream_id = input
+            .get("stream_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "stream_id is required / 必须提供 stream_id".to_string())?;
+        self.log_info("query_stream_wait_metrics", None);
+        let started_at = Instant::now();
+        let guard = self.lock_handles()?;
+        let stream_handle = *guard.query_streams.get(&stream_id).ok_or_else(|| {
+            format!(
+                "query stream handle not found: {} / QueryStream 句柄不存在: {}",
+                stream_id, stream_id
+            )
+        })?;
+        unsafe {
+            let row_count = (self.api.query_stream_row_count)(stream_handle);
+            let chunk_count = (self.api.query_stream_chunk_count)(stream_handle);
+            let total_bytes = (self.api.query_stream_total_bytes)(stream_handle);
+            drop(guard);
+            self.log_if_slow(
+                "query_stream_wait_metrics",
+                started_at,
+                Some(format!(
+                    "stream_id={} chunks={} rows={} bytes={}",
+                    stream_id, chunk_count, row_count, total_bytes
+                )),
+            );
+            Ok(json!({
+                "success": true,
+                "stream_id": stream_id,
+                "metrics_ready": true,
+                "row_count": row_count,
+                "chunk_count": chunk_count,
+                "total_bytes": total_bytes,
+            }))
+        }
+    }
+
+    /// 中文：读取单个 QueryStream chunk，并以 base64 形式返回。
+    /// English: Read a single QueryStream chunk and return it as base64 text.
+    pub fn query_stream_chunk(&self, input: &Value) -> Result<Value, String> {
+        let stream_id = input
+            .get("stream_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "stream_id is required / 必须提供 stream_id".to_string())?;
+        let index = input
+            .get("index")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "index is required / 必须提供 index".to_string())?;
+        self.log_info("query_stream_chunk", None);
+        let started_at = Instant::now();
+        let guard = self.lock_handles()?;
+        let stream_handle = *guard.query_streams.get(&stream_id).ok_or_else(|| {
+            format!(
+                "query stream handle not found: {} / QueryStream 句柄不存在: {}",
+                stream_id, stream_id
+            )
+        })?;
+        unsafe {
+            let buffer = (self.api.query_stream_get_chunk)(stream_handle, index);
+            let chunk = self.api.take_chunk_bytes(buffer)?;
+            drop(guard);
+            self.log_if_slow(
+                "query_stream_chunk",
+                started_at,
+                Some(format!("stream_id={} index={} bytes={}", stream_id, index, chunk.len())),
+            );
+            Ok(json!({
+                "success": true,
+                "stream_id": stream_id,
+                "index": index,
+                "byte_count": u64::try_from(chunk.len()).unwrap_or(u64::MAX),
+                "chunk_base64": BASE64_STANDARD.encode(chunk),
+            }))
+        }
+    }
+
+    /// 中文：关闭 QueryStream 句柄并释放宿主缓存的流结果。
+    /// English: Close a QueryStream handle and release the host-cached stream result.
+    pub fn query_stream_close(&self, input: &Value) -> Result<Value, String> {
+        let stream_id = input
+            .get("stream_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "stream_id is required / 必须提供 stream_id".to_string())?;
+        self.log_info("query_stream_close", None);
+        let started_at = Instant::now();
+        let mut guard = self.lock_handles()?;
+        let stream_handle = guard.query_streams.remove(&stream_id).ok_or_else(|| {
+            format!(
+                "query stream handle not found: {} / QueryStream 句柄不存在: {}",
+                stream_id, stream_id
+            )
+        })?;
+        unsafe {
+            (self.api.query_stream_destroy)(stream_handle);
+            drop(guard);
+            self.log_if_slow("query_stream_close", started_at, Some(format!("stream_id={}", stream_id)));
+            Ok(json!({
+                "success": true,
+                "stream_id": stream_id,
+                "message": format!("query_stream handle {} closed successfully", stream_id),
+            }))
+        }
     }
 
     /// 中文：执行文本分词，并返回标准化结果。
@@ -1009,6 +1593,11 @@ impl Drop for SqliteSkillBinding {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.handles.lock() {
             unsafe {
+                for (_, stream_handle) in guard.query_streams.drain() {
+                    if !stream_handle.is_null() {
+                        (self.api.query_stream_destroy)(stream_handle);
+                    }
+                }
                 if !guard.database.is_null() {
                     (self.api.database_destroy)(guard.database);
                     guard.database = ptr::null_mut();
@@ -1109,7 +1698,12 @@ impl SqliteSkillHost {
             skill_dir_name,
             database_path: resolved_path,
             config,
-            handles: Mutex::new(SkillHandleState { runtime, database }),
+            handles: Mutex::new(SkillHandleState {
+                runtime,
+                database,
+                query_streams: HashMap::new(),
+                next_stream_id: 1,
+            }),
         });
         guard.insert(skill_name.to_string(), binding.clone());
         Ok(binding)
@@ -1178,6 +1772,368 @@ fn bool_to_u8(value: bool) -> u8 {
 /// English: Convert an FFI `u8` boolean into a Rust boolean.
 fn u8_to_bool(value: u8) -> bool {
     value != 0
+}
+
+/// 中文：宿主内部使用的 SQLite 参数值表示，负责在 Lua/JSON 与 FFI ABI 之间做稳定过渡。
+/// English: Host-side SQLite parameter representation used as a stable bridge between Lua/JSON and the FFI ABI.
+enum HostSqliteParamValue {
+    Null,
+    Int64(i64),
+    Float64(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    Bool(bool),
+}
+
+/// 中文：一组已拥有生命周期的 FFI 参数数组，确保字符串和字节缓冲在调用期间保持有效。
+/// English: One owned FFI parameter array that keeps strings and byte buffers alive for the entire call.
+struct OwnedSqliteFfiValues {
+    values: Vec<VldbSqliteFfiValue>,
+    _strings: Vec<CString>,
+    _bytes: Vec<Vec<u8>>,
+}
+
+impl OwnedSqliteFfiValues {
+    /// 中文：返回 FFI 参数数组首指针。
+    /// English: Return the pointer to the first FFI parameter value.
+    fn as_ptr(&self) -> *const VldbSqliteFfiValue {
+        self.values.as_ptr()
+    }
+
+    /// 中文：返回 FFI 参数数组长度。
+    /// English: Return the length of the FFI parameter array.
+    fn len_u64(&self) -> u64 {
+        u64::try_from(self.values.len()).unwrap_or(u64::MAX)
+    }
+}
+
+/// 中文：批量 SQL 所使用的已拥有生命周期的二维参数矩阵。
+/// English: Owned two-dimensional parameter matrix used by batch SQL execution.
+struct OwnedSqliteFfiValueMatrix {
+    _rows: Vec<OwnedSqliteFfiValues>,
+    slices: Vec<VldbSqliteFfiValueSlice>,
+}
+
+impl OwnedSqliteFfiValueMatrix {
+    /// 中文：返回批量参数切片首指针。
+    /// English: Return the pointer to the first batch-parameter slice.
+    fn as_ptr(&self) -> *const VldbSqliteFfiValueSlice {
+        self.slices.as_ptr()
+    }
+
+    /// 中文：返回批量参数切片数量。
+    /// English: Return the number of batch-parameter slices.
+    fn len_u64(&self) -> u64 {
+        u64::try_from(self.slices.len()).unwrap_or(u64::MAX)
+    }
+}
+
+/// 中文：把宿主参数值数组转换成拥有生命周期的 FFI 参数数组。
+/// English: Convert host parameter values into an owned FFI parameter array.
+fn build_owned_ffi_values(values: &[HostSqliteParamValue]) -> Result<OwnedSqliteFfiValues, String> {
+    let mut ffi_values = Vec::with_capacity(values.len());
+    let mut strings = Vec::new();
+    let mut bytes = Vec::new();
+
+    for value in values {
+        match value {
+            HostSqliteParamValue::Null => ffi_values.push(VldbSqliteFfiValue {
+                kind: VldbSqliteFfiValueKind::Null,
+                int64_value: 0,
+                float64_value: 0.0,
+                string_value: ptr::null(),
+                bytes_value: VldbSqliteByteView::default(),
+                bool_value: 0,
+            }),
+            HostSqliteParamValue::Int64(number) => ffi_values.push(VldbSqliteFfiValue {
+                kind: VldbSqliteFfiValueKind::Int64,
+                int64_value: *number,
+                float64_value: 0.0,
+                string_value: ptr::null(),
+                bytes_value: VldbSqliteByteView::default(),
+                bool_value: 0,
+            }),
+            HostSqliteParamValue::Float64(number) => ffi_values.push(VldbSqliteFfiValue {
+                kind: VldbSqliteFfiValueKind::Float64,
+                int64_value: 0,
+                float64_value: *number,
+                string_value: ptr::null(),
+                bytes_value: VldbSqliteByteView::default(),
+                bool_value: 0,
+            }),
+            HostSqliteParamValue::String(text) => {
+                let c_text = to_cstring(text, "params[*].string")?;
+                let ptr = c_text.as_ptr();
+                strings.push(c_text);
+                ffi_values.push(VldbSqliteFfiValue {
+                    kind: VldbSqliteFfiValueKind::String,
+                    int64_value: 0,
+                    float64_value: 0.0,
+                    string_value: ptr,
+                    bytes_value: VldbSqliteByteView::default(),
+                    bool_value: 0,
+                });
+            }
+            HostSqliteParamValue::Bytes(blob) => {
+                let owned = blob.clone();
+                let view = if owned.is_empty() {
+                    VldbSqliteByteView::default()
+                } else {
+                    VldbSqliteByteView {
+                        data: owned.as_ptr(),
+                        len: u64::try_from(owned.len()).unwrap_or(u64::MAX),
+                    }
+                };
+                bytes.push(owned);
+                ffi_values.push(VldbSqliteFfiValue {
+                    kind: VldbSqliteFfiValueKind::Bytes,
+                    int64_value: 0,
+                    float64_value: 0.0,
+                    string_value: ptr::null(),
+                    bytes_value: view,
+                    bool_value: 0,
+                });
+            }
+            HostSqliteParamValue::Bool(flag) => ffi_values.push(VldbSqliteFfiValue {
+                kind: VldbSqliteFfiValueKind::Bool,
+                int64_value: 0,
+                float64_value: 0.0,
+                string_value: ptr::null(),
+                bytes_value: VldbSqliteByteView::default(),
+                bool_value: bool_to_u8(*flag),
+            }),
+        }
+    }
+
+    Ok(OwnedSqliteFfiValues {
+        values: ffi_values,
+        _strings: strings,
+        _bytes: bytes,
+    })
+}
+
+/// 中文：把批量参数矩阵转换成拥有生命周期的 FFI 批量参数切片。
+/// English: Convert a batch parameter matrix into owned FFI batch-parameter slices.
+fn build_owned_ffi_value_matrix(
+    rows: &[Vec<HostSqliteParamValue>],
+) -> Result<OwnedSqliteFfiValueMatrix, String> {
+    let owned_rows = rows
+        .iter()
+        .map(|row| build_owned_ffi_values(row))
+        .collect::<Result<Vec<_>, _>>()?;
+    let slices = owned_rows
+        .iter()
+        .map(|row| VldbSqliteFfiValueSlice {
+            values: row.as_ptr(),
+            len: row.len_u64(),
+        })
+        .collect::<Vec<_>>();
+    Ok(OwnedSqliteFfiValueMatrix {
+        _rows: owned_rows,
+        slices,
+    })
+}
+
+/// 中文：把 JSON/ Lua 标量参数转换为宿主内部 SQLite 参数值。
+/// English: Convert a JSON/Lua scalar parameter into the host-side SQLite parameter representation.
+fn parse_scalar_sqlite_param(value: &Value, field_name: &str) -> Result<HostSqliteParamValue, String> {
+    match value {
+        Value::Null => Ok(HostSqliteParamValue::Null),
+        Value::Bool(flag) => Ok(HostSqliteParamValue::Bool(*flag)),
+        Value::Number(number) => {
+            if let Some(int_value) = number.as_i64() {
+                Ok(HostSqliteParamValue::Int64(int_value))
+            } else if let Some(unsigned) = number.as_u64() {
+                let converted = i64::try_from(unsigned).map_err(|_| {
+                    format!(
+                        "{} contains an unsigned integer larger than i64 / {} 包含超过 i64 范围的无符号整数",
+                        field_name, field_name
+                    )
+                })?;
+                Ok(HostSqliteParamValue::Int64(converted))
+            } else if let Some(float_value) = number.as_f64() {
+                Ok(HostSqliteParamValue::Float64(float_value))
+            } else {
+                Err(format!(
+                    "{} contains an unsupported numeric value / {} 包含不支持的数值",
+                    field_name, field_name
+                ))
+            }
+        }
+        Value::String(text) => Ok(HostSqliteParamValue::String(text.clone())),
+        _ => Err(format!(
+            "{} must contain only scalar values / {} 只能包含标量值",
+            field_name, field_name
+        )),
+    }
+}
+
+/// 中文：把 typed 参数对象转换为宿主内部 SQLite 参数值。
+/// English: Convert a typed parameter object into the host-side SQLite parameter representation.
+fn parse_typed_sqlite_param(
+    object: &serde_json::Map<String, Value>,
+    field_name: &str,
+) -> Result<HostSqliteParamValue, String> {
+    let kind = object
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "{}.kind is required for typed parameters / typed 参数必须提供 {}.kind",
+                field_name, field_name
+            )
+        })?;
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "null" => Ok(HostSqliteParamValue::Null),
+        "bool" => object
+            .get("value")
+            .and_then(Value::as_bool)
+            .map(HostSqliteParamValue::Bool)
+            .ok_or_else(|| format!("{}.value must be a bool / {}.value 必须是布尔值", field_name, field_name)),
+        "int64" => object
+            .get("value")
+            .and_then(Value::as_i64)
+            .map(HostSqliteParamValue::Int64)
+            .ok_or_else(|| format!("{}.value must be an int64 / {}.value 必须是 int64", field_name, field_name)),
+        "float64" => object
+            .get("value")
+            .and_then(Value::as_f64)
+            .map(HostSqliteParamValue::Float64)
+            .ok_or_else(|| format!("{}.value must be a float64 / {}.value 必须是 float64", field_name, field_name)),
+        "string" => object
+            .get("value")
+            .and_then(Value::as_str)
+            .map(|value| HostSqliteParamValue::String(value.to_string()))
+            .ok_or_else(|| format!("{}.value must be a string / {}.value 必须是字符串", field_name, field_name)),
+        "bytes" => {
+            if let Some(base64_value) = object.get("base64").and_then(Value::as_str) {
+                let decoded = BASE64_STANDARD.decode(base64_value).map_err(|error| {
+                    format!(
+                        "{}.base64 is invalid: {} / {}.base64 非法: {}",
+                        field_name, error, field_name, error
+                    )
+                })?;
+                return Ok(HostSqliteParamValue::Bytes(decoded));
+            }
+            let array = object
+                .get("value")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    format!(
+                        "{}.value must be a byte array or provide base64 / {}.value 必须是字节数组或提供 base64",
+                        field_name, field_name
+                    )
+                })?;
+            let mut bytes = Vec::with_capacity(array.len());
+            for (index, item) in array.iter().enumerate() {
+                let byte = item.as_u64().ok_or_else(|| {
+                    format!(
+                        "{}.value[{}] must be an unsigned integer / {}.value[{}] 必须是无符号整数",
+                        field_name, index, field_name, index
+                    )
+                })?;
+                let converted = u8::try_from(byte).map_err(|_| {
+                    format!(
+                        "{}.value[{}] exceeds u8 / {}.value[{}] 超出 u8 范围",
+                        field_name, index, field_name, index
+                    )
+                })?;
+                bytes.push(converted);
+            }
+            Ok(HostSqliteParamValue::Bytes(bytes))
+        }
+        other => Err(format!(
+            "{}.kind={} is unsupported / {}.kind={} 不受支持",
+            field_name, other, field_name, other
+        )),
+    }
+}
+
+/// 中文：把 JSON 参数值统一转换为宿主内部 SQLite 参数值。
+/// English: Normalize a JSON parameter value into the host-side SQLite parameter representation.
+fn parse_sqlite_param(value: &Value, field_name: &str) -> Result<HostSqliteParamValue, String> {
+    match value {
+        Value::Object(object) if object.contains_key("kind") => {
+            parse_typed_sqlite_param(object, field_name)
+        }
+        other => parse_scalar_sqlite_param(other, field_name),
+    }
+}
+
+/// 中文：解析 legacy `params_json` 字符串，只允许标量数组。
+/// English: Parse legacy `params_json` text, allowing scalar arrays only.
+fn parse_legacy_params_json_text(params_json: &str) -> Result<Vec<HostSqliteParamValue>, String> {
+    if params_json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let parsed: Value = serde_json::from_str(params_json).map_err(|error| {
+        format!(
+            "params_json must be a JSON array of scalar values: {} / params_json 必须是标量数组: {}",
+            error, error
+        )
+    })?;
+    let items = parsed.as_array().ok_or_else(|| {
+        "params_json must be a JSON array of scalar values / params_json 必须是标量数组".to_string()
+    })?;
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| parse_scalar_sqlite_param(item, &format!("params_json[{}]", index)))
+        .collect()
+}
+
+/// 中文：从统一输入对象中解析单条 SQL 的参数列表。
+/// English: Parse the parameter list for a single SQL request from the unified input object.
+fn parse_single_sql_params(input: &Value) -> Result<Vec<HostSqliteParamValue>, String> {
+    let params_json = input.get("params_json").and_then(Value::as_str).unwrap_or("");
+    if let Some(params_value) = input.get("params") {
+        if !params_json.trim().is_empty() {
+            return Err(
+                "provide either params or params_json, but not both / 不能同时提供 params 与 params_json"
+                    .to_string(),
+            );
+        }
+        let params_array = params_value.as_array().ok_or_else(|| {
+            "params must be an array / params 必须是数组".to_string()
+        })?;
+        return params_array
+            .iter()
+            .enumerate()
+            .map(|(index, item)| parse_sqlite_param(item, &format!("params[{}]", index)))
+            .collect();
+    }
+    parse_legacy_params_json_text(params_json)
+}
+
+/// 中文：从统一输入对象中解析批量 SQL 的参数矩阵。
+/// English: Parse the parameter matrix for batch SQL from the unified input object.
+fn parse_batch_sql_params(input: &Value) -> Result<Vec<Vec<HostSqliteParamValue>>, String> {
+    let items = input
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "items must be an array of arrays / items 必须是二维数组".to_string())?;
+    if items.is_empty() {
+        return Err("items must not be empty / items 不能为空".to_string());
+    }
+    items
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let row_items = row.as_array().ok_or_else(|| {
+                format!(
+                    "items[{}] must be an array / items[{}] 必须是数组",
+                    row_index, row_index
+                )
+            })?;
+            row_items
+                .iter()
+                .enumerate()
+                .map(|(col_index, item)| {
+                    parse_sqlite_param(item, &format!("items[{}][{}]", row_index, col_index))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// 中文：确保 JSON 请求中存在指定字符串字段。
