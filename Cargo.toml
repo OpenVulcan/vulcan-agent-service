@@ -26,7 +26,7 @@ arrow-schema = "57"
 mlua = { git = "https://github.com/mlua-rs/mlua", features = ["luajit52", "vendored", "serialize", "send"] }
 bytes = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-indicatif = "0.17"
+indicatif = "0.18.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
