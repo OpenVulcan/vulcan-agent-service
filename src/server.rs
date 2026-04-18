@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::client_budget::reload_client_budget_config;
 use crate::grpc_client::VmmClient;
 use crate::lua_engine::{LuaEngine, LuaVmPoolConfig};
 use crate::protocol::*;
+use crate::tool_config::reload_tool_configs;
 
 /// 中文：将 Lua/JSON 返回值格式化为 MCP 文本内容；基础标量原样输出，数组和对象按 JSON 输出。
 /// English: Format a Lua/JSON result into MCP text content; emit scalar values verbatim and serialize arrays/objects as JSON.
@@ -124,6 +126,23 @@ impl McpServer {
                     destructive_hint: Some(true),
                     user_confirmation_required: Some(false),
                     idempotent_hint: Some(false),
+                },
+            ),
+        );
+
+        // --- reload_vulcan_mcp_configs: hot reload runtime client budget / tool config files ---
+        inner.tools.insert(
+            "reload_vulcan_mcp_configs".to_string(),
+            Tool::with_annotations(
+                "reload_vulcan_mcp_configs",
+                "Reload hot-reloadable Vulcan MCP runtime config files. This refreshes client_budgets.yaml and tool_configs.yaml, but does not reload config.yaml or restart-bound transport settings. Use this only when the user explicitly asks to reload runtime configs; do not call it proactively during normal tool execution. / 热重载 Vulcan MCP 的运行时配置文件。当前会刷新 client_budgets.yaml 与 tool_configs.yaml，但不会重载 config.yaml 或需要重启才能生效的传输配置。仅在用户明确要求重载运行时配置时使用，常规工具执行过程中不要主动调用。",
+                json!({}),
+                vec![],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
                 },
             ),
         );
@@ -406,6 +425,25 @@ impl McpServer {
                         content: vec![TextContent::text(&e)],
                         is_error: Some(true),
                     },
+                }
+            }
+
+            "reload_vulcan_mcp_configs" => {
+                let client_budget_report = reload_client_budget_config()
+                    .map_err(|error| (-32603, format!("reload client budgets failed: {}", error)))?;
+                let tool_config_report = reload_tool_configs()
+                    .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
+
+                ToolCallResult {
+                    content: vec![TextContent::text(&format_json_value_for_text(&json!({
+                        "ok": true,
+                        "config_yaml_reloaded": false,
+                        "reloaded": {
+                            "client_budgets": client_budget_report,
+                            "tool_configs": tool_config_report,
+                        }
+                    })))],
+                    is_error: None,
                 }
             }
 

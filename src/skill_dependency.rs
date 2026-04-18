@@ -166,11 +166,6 @@ fn ensure_one_dependency(
     let install_name = target_install_name(dependency, current_system)?;
     let install_path = tools_bin_dir.join(&install_name);
     if install_path.exists() {
-        eprintln!(
-            "[LuaSkill:deps] Skip {} because {} already exists",
-            dependency.name,
-            install_path.display()
-        );
         return Ok(());
     }
 

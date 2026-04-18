@@ -116,53 +116,6 @@ local function starts_with(text, prefix)
 end
 
 --[[
-中文：从 `vulcan` 请求上下文中提取当前客户端名称，用于后续做客户端差异化策略。
-English: Extract the current client name from the `vulcan` request context for client-specific behavior.
-]]
-local function resolve_current_client_name()
-    local vulcan_context = type(vulcan) == "table" and vulcan or nil
-    if not vulcan_context then
-        return nil
-    end
-
-    local client_info = vulcan_context.client_info
-    if type(client_info) ~= "table" and type(vulcan_context.context) == "table" then
-        client_info = vulcan_context.context.client_info
-    end
-
-    if type(client_info) ~= "table" then
-        return nil
-    end
-
-    local client_name = trim(client_info.name)
-    if client_name == "" then
-        return nil
-    end
-    return client_name:lower()
-end
-
---[[
-中文：按 MCP 客户端名称决定当前 AST 处理的字符预算上限，仅做初始化映射，不处理超限逻辑。
-English: Resolve the AST character budget for the current MCP client name. This only initializes the mapping and does not perform overflow handling.
-]]
-local function resolve_ast_client_char_limit(client_name)
-    local normalized_name = trim(client_name or ""):lower()
-    if normalized_name == "" then
-        return DEFAULT_AST_CLIENT_CHAR_LIMIT
-    end
-    if starts_with(normalized_name, "qwen-code-mcp-client") or normalized_name:find("qwen", 1, true) then
-        return 25000
-    end
-    if normalized_name == "codex-mcp-client" then
-        return 10000
-    end
-    if normalized_name:find("opencode", 1, true) or normalized_name:find("claude-code", 1, true) then
-        return 50000
-    end
-    return DEFAULT_AST_CLIENT_CHAR_LIMIT
-end
-
---[[
 中文：在单次工具调用开始时初始化当前客户端的 AST 字符预算。
 English: Initialize the current client's AST character budget at the start of each tool call.
 ]]

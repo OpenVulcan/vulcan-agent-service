@@ -1,3 +1,4 @@
+mod client_budget;
 mod config;
 #[allow(dead_code)]
 mod grpc_client;
@@ -14,6 +15,7 @@ mod session;
 mod skill_dependency;
 mod sqlite_host;
 mod temp_maintenance;
+mod tool_config;
 mod tool_cache;
 
 pub mod pb_vmm {
@@ -24,11 +26,13 @@ pub mod pb_mcp {
     tonic::include_proto!("vulcan.mcp.v1");
 }
 
+use client_budget::preload_client_budget_config;
 use config::Config;
 use lua_engine::{LuaEngine, LuaVmPoolConfig};
 use serde_json::{Value, json};
 use server::McpServer;
 use temp_maintenance::{CleanupTrigger, maintain_runtime_temp_dir, spawn_cross_day_cleanup_task};
+use tool_config::preload_tool_configs;
 use tool_cache::ToolCacheConfig;
 use tool_cache::configure_global_tool_cache;
 
@@ -43,6 +47,76 @@ fn print_call_tools_result(value: &Value) -> Result<(), Box<dyn std::error::Erro
         Value::Array(_) | Value::Object(_) => println!("{}", serde_json::to_string_pretty(value)?),
     }
     Ok(())
+}
+
+/// 中文：把客户端预算预解析摘要格式化成人可直接阅读的启动日志。
+/// English: Format the resolved client-budget preview into startup logs that are easy for humans to read directly.
+fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadReport) {
+    for (client_pattern, preview) in &report.resolved_previews {
+        let Some(scope_object) = preview.as_object() else {
+            continue;
+        };
+        for (scope_name, scope_value) in scope_object {
+            let Some(scope_detail) = scope_value.as_object() else {
+                continue;
+            };
+            let bytes = scope_detail.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+            let source_summary = scope_detail
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let raw_tokens = scope_detail.get("raw_tokens").and_then(Value::as_u64);
+            let raw_bytes = scope_detail.get("raw_bytes").and_then(Value::as_u64);
+            let raw_lines = scope_detail.get("raw_lines").and_then(Value::as_i64);
+
+            let mut output_parts = Vec::new();
+            if let Some(tokens) = raw_tokens {
+                let converted_bytes = tokens.saturating_mul(report.estimation.bytes_per_token);
+                let displayed_bytes = if raw_bytes.is_some() {
+                    converted_bytes
+                } else {
+                    bytes
+                };
+                output_parts.push(format!(
+                    "tokens:{} rate:{} => bytes:{}",
+                    tokens, report.estimation.bytes_per_token, displayed_bytes
+                ));
+            }
+            if let Some(raw_bytes_value) = raw_bytes {
+                output_parts.push(format!("bytes:{}", raw_bytes_value));
+            } else if raw_tokens.is_none() {
+                output_parts.push(format!("bytes:{}", bytes));
+            }
+            if let Some(raw_lines_value) = raw_lines {
+                output_parts.push(format!("lines:{}", raw_lines_value));
+            }
+            if raw_tokens.is_some() && raw_bytes.is_some() && raw_bytes != Some(bytes) {
+                output_parts.push(format!("effective_bytes:{}", bytes));
+            }
+
+            eprintln!(
+                "[mcp_output_limit]client:{} {}({}) src={}",
+                client_pattern,
+                scope_name,
+                output_parts.join(", "),
+                source_summary
+            );
+        }
+    }
+}
+
+/// 中文：把工具配置预载摘要格式化成人可直接阅读的启动日志。
+/// English: Format the preloaded tool-config summary into startup logs that are directly readable by humans.
+fn print_tool_config_preload_log(report: &tool_config::ToolConfigLoadReport) {
+    if report.tool_count == 0 {
+        eprintln!("[tools_config]loaded none configs,count=0");
+        return;
+    }
+
+    for tool_name in &report.tool_names {
+        let count = report.config_counts.get(tool_name).copied().unwrap_or(0);
+        eprintln!("[tools_config]loaded {} configs,count={}", tool_name, count);
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,6 +141,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
+    preload_runtime_mcp_configs()?;
 
     configure_global_tool_cache(ToolCacheConfig {
         max_entries: cfg
@@ -214,6 +289,7 @@ fn run_call_tool_mode(tool_name: &str, arguments: Value) -> Result<(), Box<dyn s
     let cfg = Config::load()?;
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
+    preload_runtime_mcp_configs()?;
 
     configure_global_tool_cache(ToolCacheConfig {
         max_entries: cfg
@@ -281,6 +357,19 @@ fn find_lua_skill_dirs(
     });
 
     Some((base_dir, override_path))
+}
+
+/// 中文：在宿主启动前预载可热重载的运行时配置文件，避免首次请求时才暴露配置问题。
+/// English: Preload hot-reloadable runtime config files before the host starts so configuration issues surface before the first request.
+fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
+    let client_budget_report = preload_client_budget_config()
+        .map_err(|error| format!("Failed to preload client budgets: {}", error))?;
+    let tool_config_report =
+        preload_tool_configs().map_err(|error| format!("Failed to preload tool configs: {}", error))?;
+
+    print_client_budget_preload_log(&client_budget_report);
+    print_tool_config_preload_log(&tool_config_report);
+    Ok(())
 }
 
 /// Prepend output/libs/ to PATH so C dependency DLLs (zlib1.dll, etc.)

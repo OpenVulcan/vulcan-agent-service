@@ -8,6 +8,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::client_budget::resolve_client_budget_value;
 use crate::lancedb_host::{LanceDbSkillBinding, LanceDbSkillHost, disabled_skill_status_json};
 use crate::lua_skill::SkillMeta;
 use crate::sqlite_host::{
@@ -20,6 +21,7 @@ use crate::protocol::{
 };
 use crate::skill_dependency::ensure_skill_dependencies;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
+use crate::tool_config::resolve_tool_config_value;
 use crate::tool_cache::global_tool_cache;
 
 // ============================================================
@@ -1132,7 +1134,6 @@ impl LuaEngine {
 
             let skill_name = entry.file_name().to_string_lossy().to_string();
             if skill_name.starts_with("__") {
-                eprintln!("[LuaSkill] Internal template skipped: {}", skill_name);
                 continue;
             }
 
@@ -1517,6 +1518,8 @@ impl LuaEngine {
     fn populate_vulcan_request_context(
         lua: &Lua,
         request_context: Option<&RequestContext>,
+        tool_name: Option<&str>,
+        skill_name: Option<&str>,
     ) -> Result<(), String> {
         let vulcan: Table = lua
             .globals()
@@ -1544,6 +1547,13 @@ impl LuaEngine {
             .map_err(|error| format!("Failed to convert client_info to Lua: {}", error))?;
         let client_capabilities_lua = json_value_to_lua(lua, &client_capabilities_value)
             .map_err(|error| format!("Failed to convert client_capabilities to Lua: {}", error))?;
+        let client_budget_value = resolve_client_budget_value(request_context, tool_name, skill_name);
+        let client_budget_lua = json_value_to_lua(lua, &client_budget_value)
+            .map_err(|error| format!("Failed to convert client_budget to Lua: {}", error))?;
+        let tool_config_value = resolve_tool_config_value(skill_name);
+        let tool_config_lua = json_value_to_lua(lua, &tool_config_value)
+            .map_err(|error| format!("Failed to convert tool_config to Lua: {}", error))?;
+
         vulcan
             .set("context", context_lua)
             .map_err(|error| format!("Failed to set vulcan.context: {}", error))?;
@@ -1553,6 +1563,12 @@ impl LuaEngine {
         vulcan
             .set("client_capabilities", client_capabilities_lua)
             .map_err(|error| format!("Failed to set vulcan.client_capabilities: {}", error))?;
+        vulcan
+            .set("client_budget", client_budget_lua)
+            .map_err(|error| format!("Failed to set vulcan.client_budget: {}", error))?;
+        vulcan
+            .set("tool_config", tool_config_lua)
+            .map_err(|error| format!("Failed to set vulcan.tool_config: {}", error))?;
         Ok(())
     }
 
@@ -2273,7 +2289,7 @@ impl LuaEngine {
             Self::compile_skill_into_lua(lua, skill, tool, true)?;
         }
 
-        Self::populate_vulcan_request_context(lua, request_context)?;
+        Self::populate_vulcan_request_context(lua, request_context, Some(tool_name), Some(&skill.meta.name))?;
         Self::populate_vulcan_lancedb_context(
             lua,
             skill.lancedb_binding.clone(),
@@ -2315,7 +2331,7 @@ impl LuaEngine {
             })
         })();
 
-        Self::populate_vulcan_request_context(lua, None)?;
+        Self::populate_vulcan_request_context(lua, None, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
         call_result
@@ -2330,7 +2346,7 @@ impl LuaEngine {
     ) -> Result<Value, String> {
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
-        Self::populate_vulcan_request_context(lua, request_context)?;
+        Self::populate_vulcan_request_context(lua, request_context, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
 
@@ -2355,7 +2371,7 @@ impl LuaEngine {
             lua_value_to_json(&result)
         })();
 
-        Self::populate_vulcan_request_context(lua, None)?;
+        Self::populate_vulcan_request_context(lua, None, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
         run_result
@@ -2484,7 +2500,7 @@ impl LuaEngine {
         })?;
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
-        Self::populate_vulcan_request_context(lua, request_context)?;
+        Self::populate_vulcan_request_context(lua, request_context, None, Some(&skill.meta.name))?;
         Self::populate_vulcan_lancedb_context(
             lua,
             skill.lancedb_binding.clone(),
@@ -2518,7 +2534,7 @@ impl LuaEngine {
             })?;
             lua_value_to_json(&result)
         })();
-        Self::populate_vulcan_request_context(lua, None)?;
+        Self::populate_vulcan_request_context(lua, None, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
         helper_result
@@ -2724,11 +2740,6 @@ impl LuaEngine {
                     let old_path: mlua::String = package.get("path")?;
                     let new_path = format!("{}{}", path_pattern, old_path.to_str()?.to_string());
                     package.set("path", lua.create_string(&new_path)?)?;
-
-                    eprintln!(
-                        "[LuaEngine] package.cpath prepended: {}",
-                        lua_packages.display()
-                    );
                 }
             }
         }
@@ -2925,12 +2936,14 @@ impl LuaEngine {
             })?;
         vulcan.set("cache_delete", cache_delete_fn)?;
 
-        // vulcan.context / vulcan.client_info / vulcan.client_capabilities
+        // vulcan.context / vulcan.client_info / vulcan.client_capabilities / vulcan.client_budget / vulcan.tool_config
         // These fields are refreshed for every request before Lua execution.
-        // 这些字段会在每次 Lua 执行前刷新，用于暴露当前请求的客户端上下文。
+        // 这些字段会在每次 Lua 执行前刷新，用于暴露当前请求的客户端上下文、预算信息以及工具配置。
         vulcan.set("context", lua.create_table()?)?;
         vulcan.set("client_info", LuaValue::Nil)?;
         vulcan.set("client_capabilities", lua.create_table()?)?;
+        vulcan.set("client_budget", lua.create_table()?)?;
+        vulcan.set("tool_config", lua.create_table()?)?;
 
         // Placeholder for call (populated after skills load)
         let call_stub = lua.create_function(|_, _: (LuaValue, LuaValue)| {

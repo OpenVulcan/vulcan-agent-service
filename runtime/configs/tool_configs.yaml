@@ -1,0 +1,15 @@
+# 中文：工具级独立配置文件。顶层 key 必须是 skill 目录名（例如 vulcan-codekit）。
+# English: Standalone tool-level config file. The top-level key must be the skill directory name (for example vulcan-codekit).
+#
+# 中文：每个工具配置只允许一层字段，值可以是标量或标量数组，不允许嵌套对象。
+# English: Each tool config may only contain one level of fields, and values may be scalars or scalar arrays only.
+
+vulcan-codekit:
+  bytes_per_token: 3
+  bytes_per_line: 120
+  unlimited_bytes_cap: 204800
+  budget_scope: "tool_output"
+  preview_fields:
+    - "inline_bytes_limit"
+    - "bytes"
+    - "lines"

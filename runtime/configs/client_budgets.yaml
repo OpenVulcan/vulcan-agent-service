@@ -1,0 +1,85 @@
+# 中文：客户端预算解析规则。
+# English: Client budget resolution rules.
+
+defaults:
+  estimation:
+    # 中文：默认 tokens -> bytes 折算倍率；工具若需要覆盖，可在 tool_configs.yaml 中声明同名字段。
+    # English: Default tokens -> bytes multiplier. Tools may override it in tool_configs.yaml using the same field name.
+    bytes_per_token: 3
+    # 中文：默认 lines -> bytes 折算倍率；工具若需要覆盖，可在 tool_configs.yaml 中声明同名字段。
+    # English: Default lines -> bytes multiplier. Tools may override it in tool_configs.yaml using the same field name.
+    bytes_per_line: 120
+    # 中文：当外部配置显式“不限”时，实际对 Lua 暴露的字节上限封顶；工具若需要覆盖，可在 tool_configs.yaml 中声明同名字段。
+    # English: Hard byte cap exposed to Lua when an external config explicitly says "unlimited". Tools may override it in tool_configs.yaml using the same field name.
+    unlimited_bytes_cap: 204800
+  budgets:
+    tool_output:
+      bytes:
+        default:
+          state: limited
+          value: 10000
+
+clients:
+  # 中文：以下客户端匹配规则复刻自 vulcan-codekit 原始已验证逻辑。
+  # English: The client match rules below replicate the original validated logic from vulcan-codekit.
+  - pattern: "*qwen*"
+    budgets:
+      tool_output:
+        bytes:
+          default:
+            state: limited
+            value: 25000
+          config_sources:
+            - type: json
+              path: "~/.qwen/settings.json"
+              field: "tools.truncateToolOutputThreshold"
+        lines:
+          default:
+            state: unset
+          config_sources:
+            - type: json
+              path: "~/.qwen/settings.json"
+              field: "tools.truncateToolOutputLines"
+
+  - pattern: "codex-mcp-client"
+    budgets:
+      tool_output:
+        tokens:
+          default:
+            state: limited
+            value: 3334
+          config_sources:
+            - type: toml
+              path: "~/.codex/config.toml"
+              field: "tool_output_token_limit"
+
+  - pattern: "*claude-code*"
+    budgets:
+      tool_output:
+        tokens:
+          default:
+            state: limited
+            value: 16667
+          config_sources:
+            - type: env
+              key: "MAX_MCP_OUTPUT_TOKENS"
+      file_read:
+        tokens:
+          default:
+            state: limited
+            value: 16667
+          config_sources:
+            - type: env
+              key: "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"
+
+  - pattern: "*opencode*"
+    budgets:
+      tool_output:
+        lines:
+          default:
+            state: limited
+            value: 2000
+        bytes:
+          default:
+            state: limited
+            value: 51200
