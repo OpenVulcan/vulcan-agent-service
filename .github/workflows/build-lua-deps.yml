@@ -30,9 +30,9 @@ on:
       macos_x64_runner:
         description: "macOS x64 runner (off to disable)"
         required: true
-        default: "off"
+        default: "macos-15-intel"
         type: choice
-        options: ["off", "macos-13", "9950x", "proart"]
+        options: ["off", "macos-15-intel", "macos-26-intel", "9950x", "proart"]
       windows_x64_runner:
         description: "Windows x64 runner (off to disable)"
         required: true
