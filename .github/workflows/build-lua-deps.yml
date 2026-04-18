@@ -20,13 +20,19 @@ on:
         required: true
         default: "off"
         type: choice
-        options: ["off", "9950x", "proart", "ubuntu-24.04"]
+        options: ["off", "9950x", "proart", "ubuntu-24.04-arm", "ubuntu-22.04-arm"]
       macos_arm64_runner:
         description: "macOS ARM64 runner (off to disable)"
         required: true
         default: "macos-15"
         type: choice
         options: ["off", "macos-15", "9950x", "proart"]
+      macos_x64_runner:
+        description: "macOS x64 runner (off to disable)"
+        required: true
+        default: "off"
+        type: choice
+        options: ["off", "macos-13", "9950x", "proart"]
       windows_x64_runner:
         description: "Windows x64 runner (off to disable)"
         required: true
@@ -72,6 +78,7 @@ jobs:
           INPUT_LINUX_X64_RUNNER: ${{ inputs.linux_x64_runner }}
           INPUT_LINUX_ARM64_RUNNER: ${{ inputs.linux_arm64_runner }}
           INPUT_MACOS_ARM64_RUNNER: ${{ inputs.macos_arm64_runner }}
+          INPUT_MACOS_X64_RUNNER: ${{ inputs.macos_x64_runner }}
           INPUT_WINDOWS_X64_RUNNER: ${{ inputs.windows_x64_runner }}
         run: |
           # Add-Target appends one enabled platform entry and ignores the explicit "off" state.
@@ -102,6 +109,7 @@ jobs:
           Add-Target -Targets $targets -Platform "linux-x64" -Runner $env:INPUT_LINUX_X64_RUNNER -OperatingSystem "Linux"
           Add-Target -Targets $targets -Platform "linux-arm64" -Runner $env:INPUT_LINUX_ARM64_RUNNER -OperatingSystem "Linux"
           Add-Target -Targets $targets -Platform "macos-arm64" -Runner $env:INPUT_MACOS_ARM64_RUNNER -OperatingSystem "macOS"
+          Add-Target -Targets $targets -Platform "macos-x64" -Runner $env:INPUT_MACOS_X64_RUNNER -OperatingSystem "macOS"
           Add-Target -Targets $targets -Platform "windows-x64" -Runner $env:INPUT_WINDOWS_X64_RUNNER -OperatingSystem "Windows"
 
           $matrixJson = @{ include = @($targets) } | ConvertTo-Json -Compress -Depth 4
