@@ -504,6 +504,18 @@ local http = require "socket.http"
 local body, code = http.request("https://api.example.com/data")
 ```
 
+### `luacurl` — libcurl 绑定
+
+提供基于 libcurl 的网络请求能力，适合需要直接使用 curl 语义的场景。
+
+```lua
+local curl = require "luacurl"
+local easy = curl.new()
+easy:setopt(curl.OPT_URL, "https://example.com")
+easy:perform()
+easy:close()
+```
+
 ### `openssl` — 加密库
 
 ```lua

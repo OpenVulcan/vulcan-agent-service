@@ -575,38 +575,73 @@ fi
 
 if ! { [ -f "$LUAJIT_SO" ] || [ -f "$LUAJIT_DYLIB" ] || [ -f "$LUAJIT_BIN" ]; } || [ ! -d "$LUA_INCLUDE" ]; then
     echo "==> Searching cargo target for LuaJIT build output..."
-    BUILD_OUT=""
+    select_luajit_build_out() {
+        # Prefer candidates that already contain built artifacts, then sort by artifact timestamp before directory freshness.
+        # 优先选择已经带构建产物的候选目录，再按产物时间排序，最后才回退到目录时间。
+        python3 - "$PROJECT_DIR" <<'PY'
+import os
+import sys
+
+project_dir = sys.argv[1]
+target_dir = os.path.join(project_dir, "target")
+lib_names = [
+    "libluajit-5.1.so",
+    "libluajit-5.1.a",
+    "libluajit-5.1.dylib",
+    "libluajit.so",
+    "libluajit.a",
+    "libluajit.dylib",
+    "lua51.dll",
+]
+candidates = []
+
+for root, dirs, files in os.walk(target_dir):
+    if os.path.basename(root) != "out" or "mlua-sys" not in root:
+        continue
+    src = os.path.join(root, "luajit-build", "src")
+    include = os.path.join(root, "include")
+    lib = os.path.join(root, "lib")
+    has_header = os.path.isfile(os.path.join(include, "lua.h")) or os.path.isfile(os.path.join(src, "lua.h"))
+    if not has_header:
+        continue
+
+    artifact_paths = []
+    for base in (lib, src):
+        for name in lib_names:
+            candidate = os.path.join(base, name)
+            if os.path.isfile(candidate):
+                artifact_paths.append(candidate)
+
+    has_artifact = bool(artifact_paths)
+    artifact_time = max((os.path.getmtime(path) for path in artifact_paths), default=0.0)
+    dir_time = os.path.getmtime(root)
+    candidates.append((1 if has_artifact else 0, artifact_time, dir_time, root))
+
+if candidates:
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    print(candidates[0][3])
+PY
+    }
+
+    BUILD_OUT="$(select_luajit_build_out)"
     BUILD_SRC=""
     BUILD_LIB=""
     BUILD_INCLUDE=""
-    while IFS= read -r out_dir; do
-        src="$out_dir/luajit-build/src"
-        lib="$out_dir/lib"
-        include="$out_dir/include"
-        if [ -f "$include/lua.h" ] || [ -f "$src/lua.h" ]; then
-            BUILD_OUT="$out_dir"
-            BUILD_SRC="$src"
-            BUILD_LIB="$lib"
-            BUILD_INCLUDE="$include"
-            break
-        fi
-    done < <(find "$PROJECT_DIR/target" -path "*/mlua-sys*/out" -type d 2>/dev/null | sort -r)
+    if [ -n "$BUILD_OUT" ]; then
+        BUILD_SRC="$BUILD_OUT/luajit-build/src"
+        BUILD_LIB="$BUILD_OUT/lib"
+        BUILD_INCLUDE="$BUILD_OUT/include"
+    fi
 
     if [ -z "$BUILD_OUT" ]; then
         echo "==> LuaJIT build output not found. Running cargo build..."
         cargo build
-        while IFS= read -r out_dir; do
-            src="$out_dir/luajit-build/src"
-            lib="$out_dir/lib"
-            include="$out_dir/include"
-            if [ -f "$include/lua.h" ] || [ -f "$src/lua.h" ]; then
-                BUILD_OUT="$out_dir"
-                BUILD_SRC="$src"
-                BUILD_LIB="$lib"
-                BUILD_INCLUDE="$include"
-                break
-            fi
-        done < <(find "$PROJECT_DIR/target" -path "*/mlua-sys*/out" -type d 2>/dev/null | sort -r)
+        BUILD_OUT="$(select_luajit_build_out)"
+        if [ -n "$BUILD_OUT" ]; then
+            BUILD_SRC="$BUILD_OUT/luajit-build/src"
+            BUILD_LIB="$BUILD_OUT/lib"
+            BUILD_INCLUDE="$BUILD_OUT/include"
+        fi
     fi
 
     [ -z "$BUILD_OUT" ] && { echo "ERROR: LuaJIT build artifacts not found." >&2; exit 1; }

@@ -1003,22 +1003,45 @@ $LuaIncludeDir = Join-Path $LuaJITDir "include"
 if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
     Write-Host "==> LuaJIT SDK already exists at $LuaJITDir (reusing)"
 } else {
-    $MluaOutDirs = Get-ChildItem -Path "$ProjectDir\target" -Recurse -Directory -Filter "luajit-build" -ErrorAction SilentlyContinue |
+    # Prefer candidates that already contain a built DLL, then sort by DLL timestamp before falling back to directory freshness.
+    # 优先选择已经带有 DLL 的候选目录，再按 DLL 时间排序，最后才回退到目录时间。
+    $MluaCandidates = Get-ChildItem -Path "$ProjectDir\target" -Recurse -Directory -Filter "luajit-build" -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match "mlua-sys" } |
-        Sort-Object LastWriteTime -Descending
+        ForEach-Object {
+            $Dir = $_
+            $SrcDir = Join-Path $Dir.FullName "src"
+            $HeaderFile = Join-Path $SrcDir "lua.h"
+            $LibFile = Join-Path $Dir.FullName "lib\lua51.lib"
+            if (-not (Test-Path $LibFile)) {
+                $LibFile = Join-Path $SrcDir "lua51.lib"
+            }
+            $DllFile = Join-Path $SrcDir "lua51.dll"
+            [PSCustomObject]@{
+                Dir = $Dir
+                SrcDir = $SrcDir
+                HeaderFile = $HeaderFile
+                LibFile = $LibFile
+                DllFile = $DllFile
+                HasHeader = (Test-Path $HeaderFile)
+                HasLib = (Test-Path $LibFile)
+                HasDll = (Test-Path $DllFile)
+                DllTime = if (Test-Path $DllFile) { (Get-Item $DllFile).LastWriteTimeUtc } else { [datetime]::MinValue }
+                DirTime = $Dir.LastWriteTimeUtc
+            }
+        } |
+        Where-Object { $_.HasHeader -and $_.HasLib } |
+        Sort-Object @{ Expression = { if ($_.HasDll) { 1 } else { 0 } }; Descending = $true },
+                    @{ Expression = { $_.DllTime }; Descending = $true },
+                    @{ Expression = { $_.DirTime }; Descending = $true }
 
     $BuildSrcDir = $null
     $LibFile = $null
-    foreach ($d in $MluaOutDirs) {
-        $SrcDir = Join-Path $d.FullName "src"
-        $LibFile = Join-Path $d.FullName "lib\lua51.lib"
-        if (-not (Test-Path $LibFile)) {
-            $LibFile = Join-Path $SrcDir "lua51.lib"
-        }
-        if ((Test-Path (Join-Path $SrcDir "lua.h")) -and (Test-Path $LibFile)) {
-            $BuildSrcDir = $SrcDir
-            break
-        }
+    $DllFile = $null
+    $SelectedCandidate = $MluaCandidates | Select-Object -First 1
+    if ($SelectedCandidate) {
+        $BuildSrcDir = $SelectedCandidate.SrcDir
+        $LibFile = $SelectedCandidate.LibFile
+        $DllFile = $SelectedCandidate.DllFile
     }
 
     if (-not $BuildSrcDir) {
@@ -1028,7 +1051,7 @@ if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
     Write-Host "==> Found LuaJIT source at $BuildSrcDir"
 
     $DllFound = $false
-    if (Test-Path (Join-Path $BuildSrcDir "lua51.dll")) {
+    if ($DllFile -and (Test-Path $DllFile)) {
         $DllFound = $true
         Write-Host "==> Found already-built DLL in cargo target"
     } else {
@@ -1065,6 +1088,7 @@ if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
             $proc.WaitForExit()
             if (Test-Path (Join-Path $BuildSrcDir "lua51.dll")) {
                 $DllFound = $true
+                $DllFile = Join-Path $BuildSrcDir "lua51.dll"
             } else {
                 if ($stdout) {
                     Write-Host "--- LuaJIT msvcbuild stdout ---" -ForegroundColor Yellow
@@ -1088,7 +1112,7 @@ if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
     Ensure-Dir $LuaJITDir
     Ensure-Dir $LuaIncludeDir
 
-    Copy-Item (Join-Path $BuildSrcDir "lua51.dll") $LuaJITDir -Force
+    Copy-Item $DllFile $LuaJITDir -Force
     if ($LibFile -and (Test-Path $LibFile)) {
         Copy-Item $LibFile $LuaJITDir -Force
     }

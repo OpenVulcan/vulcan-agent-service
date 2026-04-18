@@ -68,6 +68,7 @@ local function package_module_hints(rock_name)
         ["luafilesystem"] = "lfs",
         ["luasocket"] = "socket / socket.http / ltn12",
         ["luasec"] = "ssl / ssl.https",
+        ["luacurl"] = "luacurl",
         ["lrexlib-pcre2"] = "rex_pcre2",
         ["luaossl"] = "openssl",
         ["lyaml"] = "yaml",
