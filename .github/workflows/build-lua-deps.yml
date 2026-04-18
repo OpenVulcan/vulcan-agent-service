@@ -381,7 +381,7 @@ jobs:
           $buildDir = "build"
           New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
           Push-Location $buildDir
-          cmake .. -GNinja "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_INSTALL_PREFIX=$env:DEPS_DIR\curl" "-DBUILD_SHARED_LIBS=ON" "-DBUILD_STATIC_LIBS=OFF" "-DBUILD_CURL_EXE=OFF" "-DBUILD_TESTING=OFF" "-DBUILD_LIBCURL_DOCS=OFF" "-DCURL_USE_OPENSSL=ON" "-DCURL_ZLIB=ON" "-DCURL_USE_LIBPSL=OFF" "-DOPENSSL_ROOT_DIR=$env:DEPS_DIR\openssl" "-DZLIB_ROOT=$env:DEPS_DIR\zlib"
+          cmake .. -GNinja "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_INSTALL_PREFIX=$env:DEPS_DIR\curl" "-DBUILD_SHARED_LIBS=OFF" "-DBUILD_STATIC_LIBS=ON" "-DBUILD_CURL_EXE=OFF" "-DBUILD_TESTING=OFF" "-DBUILD_LIBCURL_DOCS=OFF" "-DCURL_USE_OPENSSL=ON" "-DCURL_ZLIB=ON" "-DCURL_USE_LIBPSL=OFF" "-DOPENSSL_ROOT_DIR=$env:DEPS_DIR\openssl" "-DZLIB_ROOT=$env:DEPS_DIR\zlib"
           ninja install
           Pop-Location
           Pop-Location
@@ -509,7 +509,7 @@ jobs:
 
           curl -fSL "https://curl.se/download/curl-$CURL_VERSION.tar.gz" | tar xz
           cd "curl-$CURL_VERSION"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/curl" -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF -DBUILD_LIBCURL_DOCS=OFF -DCURL_USE_OPENSSL=ON -DCURL_ZLIB=ON -DCURL_USE_LIBPSL=OFF -DOPENSSL_ROOT_DIR="$DEPS_DIR/openssl" -DZLIB_ROOT="$DEPS_DIR/zlib"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/curl" -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF -DBUILD_LIBCURL_DOCS=OFF -DCURL_USE_OPENSSL=ON -DCURL_ZLIB=ON -DCURL_USE_LIBPSL=OFF -DOPENSSL_ROOT_DIR="$DEPS_DIR/openssl" -DZLIB_ROOT="$DEPS_DIR/zlib"
           cmake --build build --parallel "$jobs"
           cmake --install build
           cd ..
@@ -576,7 +576,7 @@ jobs:
 
           curl -fSL "https://curl.se/download/curl-$CURL_VERSION.tar.gz" | tar xz
           cd "curl-$CURL_VERSION"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/curl" -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF -DBUILD_LIBCURL_DOCS=OFF -DCURL_USE_OPENSSL=ON -DCURL_ZLIB=ON -DCURL_USE_LIBPSL=OFF -DOPENSSL_ROOT_DIR="$DEPS_DIR/openssl" -DZLIB_ROOT="$DEPS_DIR/zlib"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/curl" -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF -DBUILD_LIBCURL_DOCS=OFF -DCURL_USE_OPENSSL=ON -DCURL_ZLIB=ON -DCURL_USE_LIBPSL=OFF -DOPENSSL_ROOT_DIR="$DEPS_DIR/openssl" -DZLIB_ROOT="$DEPS_DIR/zlib"
           cmake --build build --parallel "$jobs"
           cmake --install build
           cd ..
