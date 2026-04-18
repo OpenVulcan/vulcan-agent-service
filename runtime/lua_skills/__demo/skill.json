@@ -14,7 +14,7 @@
       "tools": [
         {
           "name": "demo_template_tool",
-          "description": "Demo skill template that shows how to define one tool entry inside a grouped skill.",
+          "description": "Demo skill template that shows one grouped tool entry and returns Markdown string output.",
           "lua_entry": "tools/demo_template_tool.lua",
           "lua_module": "demo_template_primary",
           "parameters": [
@@ -31,11 +31,11 @@
               "required": false
             }
           ],
-          "prompt": "Demo-only tool prompt hint. Copy this directory, rename the skill, and then replace each file with your real logic."
+          "prompt": "Demo-only tool prompt hint. Copy this directory, rename the skill, return one string result, and then replace each file with your real logic."
         },
         {
           "name": "demo_template_summary",
-          "description": "Second tool entry example that uses a dedicated Lua file to demonstrate a clean multi-tool layout.",
+          "description": "Second tool entry example that shows string output plus the optional overflow multi-return protocol.",
           "lua_entry": "tools/demo_template_summary.lua",
           "lua_module": "demo_template_summary",
           "parameters": [
@@ -46,7 +46,7 @@
               "required": false
             }
           ],
-          "prompt": "Second grouped tool example. Replace this with your own additional tool entry."
+          "prompt": "Second grouped tool example. Replace this with your own additional tool entry and keep the current string-return convention."
         }
       ]
     },

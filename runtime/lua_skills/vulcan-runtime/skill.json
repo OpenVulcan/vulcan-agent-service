@@ -1,0 +1,86 @@
+{
+  "name": "vulcan-runtime",
+  "debug": true,
+  "groups": [
+    {
+      "name": "runtime",
+      "description": "Runtime execution tools exposed through the vulcan-runtime skill.",
+      "tools": [
+        {
+          "name": "vulcan-lua-help",
+          "description": "Show the current vulcan-runtime manual, available runtime APIs, installed Lua packages, output rules, and execution constraints.",
+          "lua_entry": "tools/vulcan-lua-help.lua",
+          "lua_module": "vulcan_lua_help",
+          "parameters": [],
+          "prompt": "Use this tool before calling `vulcan-lua-exec` or `vulcan-lua-file` whenever you need the latest runtime manual, supported Lua package list, return rules, timeout rules, or disabled capability notes."
+        },
+        {
+          "name": "vulcan-lua-exec",
+          "description": "Execute short ad-hoc Lua runtime code for loops, one-off file generation, lightweight network or command orchestration, and data transformation. Before execution, call `vulcan-lua-help` to read the current runtime manual and supported package list.",
+          "lua_entry": "tools/vulcan-lua-exec.lua",
+          "lua_module": "vulcan_lua_exec",
+          "parameters": [
+            {
+              "name": "task",
+              "type": "string",
+              "description": "Optional human-readable task summary shown in the execution result header.",
+              "required": false
+            },
+            {
+              "name": "code",
+              "type": "string",
+              "description": "Lua source code executed inside the isolated luaexec runtime VM.",
+              "required": true
+            },
+            {
+              "name": "args",
+              "type": "object",
+              "description": "Optional structured arguments exposed to the script as the local variable `args`.",
+              "required": false
+            },
+            {
+              "name": "timeout_ms",
+              "type": "number",
+              "description": "Optional execution timeout in milliseconds. Defaults to 60000.",
+              "required": false
+            }
+          ],
+          "prompt": "Use this tool when you need quick ad-hoc Lua execution such as loops, one-off data processing, temporary file generation, regex handling, network probing, or command orchestration. You must call `vulcan-lua-help` first to read the current runtime manual, supported Lua libraries, return rules, and timeout guidance. This tool executes through vulcan.luaexec, captures `print(...)`, converts table returns into formatted JSON text, enforces a default 60000ms timeout unless timeout_ms is provided, and always returns a Markdown string."
+        },
+        {
+          "name": "vulcan-lua-file",
+          "description": "Execute an existing Lua script file with cwd automatically switched to that file's directory. Before execution, call `vulcan-lua-help` to read the current runtime manual and supported package list.",
+          "lua_entry": "tools/vulcan-lua-file.lua",
+          "lua_module": "vulcan_lua_file",
+          "parameters": [
+            {
+              "name": "task",
+              "type": "string",
+              "description": "Optional human-readable task summary shown in the execution result header.",
+              "required": false
+            },
+            {
+              "name": "file",
+              "type": "string",
+              "description": "Lua file path executed inside the isolated luaexec runtime VM. During execution the cwd automatically switches to the file directory.",
+              "required": true
+            },
+            {
+              "name": "args",
+              "type": "object",
+              "description": "Optional structured arguments exposed to the script as the local variable `args`.",
+              "required": false
+            },
+            {
+              "name": "timeout_ms",
+              "type": "number",
+              "description": "Optional execution timeout in milliseconds. Defaults to 60000.",
+              "required": false
+            }
+          ],
+          "prompt": "Use this tool when you already have a Lua script file and want it executed directly, especially when the script needs file-relative paths or multi-step logic that is clearer in a standalone file. You must call `vulcan-lua-help` first to read the current runtime manual, supported Lua libraries, return rules, and timeout guidance. This tool executes through vulcan.luaexec, automatically switches cwd to the file directory, captures `print(...)`, converts table returns into formatted JSON text, enforces a default 60000ms timeout unless timeout_ms is provided, and always returns a Markdown string."
+        }
+      ]
+    }
+  ]
+}

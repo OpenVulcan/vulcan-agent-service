@@ -1,19 +1,21 @@
-use mlua::{Function, Lua, MultiValue, Table, Value as LuaValue};
+use mlua::{Function, HookTriggers, Lua, MultiValue, Table, Value as LuaValue, VmState};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::client_budget::resolve_client_budget_value;
 use crate::lancedb_host::{LanceDbSkillBinding, LanceDbSkillHost, disabled_skill_status_json};
 use crate::lua_skill::SkillMeta;
 use crate::protocol::{
-    Prompt, PromptArgument, PromptGetResult, PromptMessage, RequestContext, Resource,
-    ResourceContents, ResourceReadResult, ResourceTemplate, TextContent, Tool, ToolAnnotations,
+    ClientInfo, PROTOCOL_VERSION_LATEST, Prompt, PromptArgument, PromptGetResult, PromptMessage,
+    RequestContext, Resource, ResourceContents, ResourceReadResult, ResourceTemplate, TextContent,
+    Tool, ToolAnnotations,
 };
 use crate::runtime_logging::{error as log_error, info as log_info, warn as log_warn};
 use crate::skill_dependency::ensure_skill_dependencies;
@@ -117,6 +119,82 @@ fn lua_value_type_name(value: &LuaValue) -> &'static str {
         LuaValue::Error(_) => "error",
         LuaValue::Other(_) => "other",
     }
+}
+
+/// RunLua execution request accepted by `vulcan.luaexec`.
+/// `vulcan.luaexec` 接收的 RunLua 执行请求结构。
+#[derive(Debug, Deserialize, Serialize)]
+struct RunLuaExecRequest {
+    /// Human-readable task summary echoed in the result header.
+    /// 展示在结果头部的人类可读任务摘要。
+    #[serde(default)]
+    task: String,
+    /// Inline Lua source code executed inside the isolated runtime VM.
+    /// 在隔离运行时虚拟机中执行的内联 Lua 源代码。
+    #[serde(default)]
+    code: Option<String>,
+    /// Lua file path executed inside the isolated runtime VM.
+    /// 在隔离运行时虚拟机中执行的 Lua 文件路径。
+    #[serde(default)]
+    file: Option<String>,
+    /// Structured arguments exposed to Lua as `args`.
+    /// 以 `args` 变量形式暴露给 Lua 的结构化参数。
+    #[serde(default = "default_runlua_exec_args")]
+    args: Value,
+    /// Maximum execution time in milliseconds. Defaults to 60 seconds.
+    /// 最大执行时长（毫秒），默认 60 秒。
+    #[serde(default = "default_runlua_timeout_ms")]
+    timeout_ms: u64,
+    /// Internal caller tool name used to enforce luaexec reentrancy guards.
+    /// 用于执行 luaexec 重入保护的内部调用者工具名称。
+    #[serde(default)]
+    caller_tool_name: Option<String>,
+}
+
+/// Return the default empty args object for runlua execution.
+/// 返回 runlua 执行默认使用的空参数对象。
+fn default_runlua_exec_args() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+/// Return the default timeout for runlua execution in milliseconds.
+/// 返回 runlua 执行的默认超时时间（毫秒）。
+fn default_runlua_timeout_ms() -> u64 {
+    60_000
+}
+
+/// Return the process-wide current-directory guard used by lua file execution.
+/// 返回 Lua 文件执行期间用于保护进程工作目录切换的全局互斥锁。
+fn runlua_cwd_guard() -> &'static Mutex<()> {
+    static RUNLUA_CWD_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    RUNLUA_CWD_GUARD.get_or_init(|| Mutex::new(()))
+}
+
+/// Build the restricted simulated request context used by internal luaexec tool calls.
+/// 构建内部 luaexec 工具调用使用的受限模拟请求上下文。
+fn build_luaexec_call_request_context() -> RequestContext {
+    RequestContext {
+        transport: Some("luaexec_call".to_string()),
+        session_id: Some("luaexec-call-internal".to_string()),
+        protocol_version: Some(PROTOCOL_VERSION_LATEST.to_string()),
+        client_info: Some(ClientInfo {
+            name: "luaexec_call".to_string(),
+            version: "internal-runtime".to_string(),
+        }),
+        client_capabilities: json!({}),
+    }
+}
+
+/// One captured renderable runlua return item.
+/// 一项已捕获并可渲染的 runlua 返回值。
+#[derive(Debug)]
+struct RunLuaRenderedValue {
+    /// Render format of the current item, such as `text` or `json`.
+    /// 当前项的渲染格式，例如 `text` 或 `json`。
+    format: &'static str,
+    /// Rendered payload already formatted for Markdown code fences.
+    /// 已格式化好的载荷文本，可直接写入 Markdown 代码块。
+    content: String,
 }
 
 /// Detect whether a string looks like Lua's debug-style coercion output.
@@ -826,6 +904,24 @@ fn tool_entry_path(skill_dir: &Path, tool: &crate::lua_skill::SkillToolMeta) -> 
     skill_dir.join(&tool.lua_entry)
 }
 
+/// Internal per-VM Vulcan execution markers used for tool dispatch guards.
+/// 用于工具分发保护的每个虚拟机内部 Vulcan 执行标记。
+#[derive(Debug, Clone, Default)]
+struct VulcanInternalExecutionContext {
+    /// Current tool name executing inside this Lua VM.
+    /// 当前 Lua 虚拟机内正在执行的工具名称。
+    tool_name: Option<String>,
+    /// Current owner skill name executing inside this Lua VM.
+    /// 当前 Lua 虚拟机内正在执行的所属 skill 名称。
+    skill_name: Option<String>,
+    /// Whether the current Lua VM is the isolated luaexec runtime environment.
+    /// 当前 Lua 虚拟机是否处于隔离的 luaexec 运行环境。
+    luaexec_active: bool,
+    /// Original tool name that launched the current luaexec request.
+    /// 发起当前 luaexec 请求的原始工具名称。
+    luaexec_caller_tool_name: Option<String>,
+}
+
 /// Capture the current Lua entry context stored on `vulcan`.
 /// 捕获当前存放在 `vulcan` 上的 Lua 入口文件上下文。
 fn capture_vulcan_file_context(
@@ -889,6 +985,112 @@ fn populate_vulcan_file_context(
     }
 
     Ok(())
+}
+
+/// Capture the internal execution markers currently stored on `vulcan`.
+/// 捕获当前存放在 `vulcan` 上的内部执行标记。
+fn capture_vulcan_internal_execution_context(
+    lua: &Lua,
+) -> Result<VulcanInternalExecutionContext, String> {
+    let vulcan: Table = lua
+        .globals()
+        .get("vulcan")
+        .map_err(|error| format!("Failed to get vulcan module: {}", error))?;
+    let tool_name: Option<String> = vulcan
+        .get("__tool_name")
+        .map_err(|error| format!("Failed to read vulcan.__tool_name: {}", error))?;
+    let skill_name: Option<String> = vulcan
+        .get("__skill_name")
+        .map_err(|error| format!("Failed to read vulcan.__skill_name: {}", error))?;
+    let luaexec_active: bool = vulcan
+        .get("__luaexec_active")
+        .map_err(|error| format!("Failed to read vulcan.__luaexec_active: {}", error))?;
+    let luaexec_caller_tool_name: Option<String> =
+        vulcan.get("__luaexec_caller_tool_name").map_err(|error| {
+            format!(
+                "Failed to read vulcan.__luaexec_caller_tool_name: {}",
+                error
+            )
+        })?;
+    Ok(VulcanInternalExecutionContext {
+        tool_name,
+        skill_name,
+        luaexec_active,
+        luaexec_caller_tool_name,
+    })
+}
+
+/// Populate the internal execution markers stored on `vulcan`.
+/// 填充存放在 `vulcan` 上的内部执行标记。
+fn populate_vulcan_internal_execution_context(
+    lua: &Lua,
+    context: &VulcanInternalExecutionContext,
+) -> Result<(), String> {
+    let vulcan: Table = lua
+        .globals()
+        .get("vulcan")
+        .map_err(|error| format!("Failed to get vulcan module: {}", error))?;
+
+    match context.tool_name.as_deref() {
+        Some(tool_name) => vulcan
+            .set("__tool_name", tool_name)
+            .map_err(|error| format!("Failed to set vulcan.__tool_name: {}", error))?,
+        None => vulcan
+            .set("__tool_name", LuaValue::Nil)
+            .map_err(|error| format!("Failed to clear vulcan.__tool_name: {}", error))?,
+    }
+
+    match context.skill_name.as_deref() {
+        Some(skill_name) => vulcan
+            .set("__skill_name", skill_name)
+            .map_err(|error| format!("Failed to set vulcan.__skill_name: {}", error))?,
+        None => vulcan
+            .set("__skill_name", LuaValue::Nil)
+            .map_err(|error| format!("Failed to clear vulcan.__skill_name: {}", error))?,
+    }
+
+    vulcan
+        .set("__luaexec_active", context.luaexec_active)
+        .map_err(|error| format!("Failed to set vulcan.__luaexec_active: {}", error))?;
+
+    match context.luaexec_caller_tool_name.as_deref() {
+        Some(tool_name) => vulcan
+            .set("__luaexec_caller_tool_name", tool_name)
+            .map_err(|error| {
+                format!("Failed to set vulcan.__luaexec_caller_tool_name: {}", error)
+            })?,
+        None => vulcan
+            .set("__luaexec_caller_tool_name", LuaValue::Nil)
+            .map_err(|error| {
+                format!(
+                    "Failed to clear vulcan.__luaexec_caller_tool_name: {}",
+                    error
+                )
+            })?,
+    }
+
+    Ok(())
+}
+
+/// Resolve the runtime resources directory for Lua skills and helper tools.
+/// 解析供 Lua skill 与帮助工具使用的运行时资源目录。
+fn resolve_runtime_resources_dir() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+    let exe_parent = exe_dir.parent().unwrap_or(exe_dir);
+    let runtime_resources_dir = exe_parent.join("resources");
+    if runtime_resources_dir.exists() {
+        return Some(runtime_resources_dir);
+    }
+
+    let repository_resources_dir = std::env::current_dir()
+        .ok()?
+        .join(Path::new("output").join("resources"));
+    if repository_resources_dir.exists() {
+        return Some(repository_resources_dir);
+    }
+
+    None
 }
 
 /// Replace `{{key}}` placeholders using the provided variable map.
@@ -1248,7 +1450,15 @@ fn parse_tool_call_output(
                 )
             })?
             .to_string(),
-        _ => return Err(NON_STRING_TOOL_RESULT_ERROR.to_string()),
+        other => {
+            return Err(format!(
+                "{} (skill='{}::{}', actual_type='{}')",
+                NON_STRING_TOOL_RESULT_ERROR,
+                skill_name,
+                group_name,
+                lua_value_type_name(other)
+            ));
+        }
     };
 
     let overflow_mode = match values_vec.get(1) {
@@ -1518,6 +1728,7 @@ impl LuaEngine {
         let lua = unsafe { Lua::unsafe_new() };
         Self::setup_package_paths(&lua).map_err(|error| error.to_string())?;
         Self::register_vulcan_module(&lua).map_err(|error| error.to_string())?;
+        Self::populate_vulcan_luaexec_bridge(&lua)?;
         Self::register_skill_functions(&lua, &self.skills)?;
         Self::populate_vulcan_call_for_lua(
             &lua,
@@ -1535,6 +1746,45 @@ impl LuaEngine {
     /// 从虚拟机池借出一个 Lua 实例执行一次操作。
     fn acquire_vm(&self) -> Result<LuaVmLease, String> {
         self.pool.acquire(|| self.create_vm())
+    }
+
+    /// Populate the `vulcan.luaexec` bridge for normal skill VMs.
+    /// 为普通 skill 虚拟机注入 `vulcan.luaexec` 桥接函数。
+    fn populate_vulcan_luaexec_bridge(lua: &Lua) -> Result<(), String> {
+        let vulcan: Table = lua
+            .globals()
+            .get("vulcan")
+            .map_err(|error| format!("Failed to get vulcan module: {}", error))?;
+
+        let exec_fn = lua
+            .create_function(|lua, input: LuaValue| {
+                let input_table = require_table_arg(input, "luaexec", "input")?;
+                let input_json = lua_value_to_json(&LuaValue::Table(input_table))
+                    .map_err(mlua::Error::runtime)?;
+                let mut request: RunLuaExecRequest =
+                    serde_json::from_value(input_json).map_err(|error| {
+                        mlua::Error::runtime(format!(
+                            "luaexec input is invalid / 输入无效: {}",
+                            error
+                        ))
+                    })?;
+                let vulcan: Table = lua.globals().get("vulcan").map_err(mlua::Error::runtime)?;
+                let caller_tool_name: Option<String> =
+                    vulcan.get("__tool_name").map_err(mlua::Error::runtime)?;
+                request.caller_tool_name = caller_tool_name
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                let rendered =
+                    LuaEngine::execute_runlua_request(&request).map_err(mlua::Error::runtime)?;
+                Ok(LuaValue::String(
+                    lua.create_string(&rendered).map_err(mlua::Error::runtime)?,
+                ))
+            })
+            .map_err(|error| format!("Failed to create vulcan.luaexec: {}", error))?;
+        vulcan
+            .set("luaexec", exec_fn)
+            .map_err(|error| format!("Failed to set vulcan.luaexec: {}", error))?;
+        Ok(())
     }
 
     /// Register all tool-bearing skill entries into a specific Lua VM.
@@ -2571,6 +2821,15 @@ impl LuaEngine {
             Some(tool_name),
             Some(&skill.meta.name),
         )?;
+        populate_vulcan_internal_execution_context(
+            lua,
+            &VulcanInternalExecutionContext {
+                tool_name: Some(tool_name.to_string()),
+                skill_name: Some(skill.meta.name.clone()),
+                luaexec_active: false,
+                luaexec_caller_tool_name: None,
+            },
+        )?;
         let entry_path = tool_entry_path(&skill.dir, tool);
         populate_vulcan_file_context(lua, Some(&skill.dir), Some(&entry_path))?;
         Self::populate_vulcan_lancedb_context(
@@ -2610,6 +2869,10 @@ impl LuaEngine {
         })();
 
         Self::populate_vulcan_request_context(lua, None, None, None)?;
+        populate_vulcan_internal_execution_context(
+            lua,
+            &VulcanInternalExecutionContext::default(),
+        )?;
         populate_vulcan_file_context(lua, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
@@ -2626,6 +2889,10 @@ impl LuaEngine {
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
         Self::populate_vulcan_request_context(lua, request_context, None, None)?;
+        populate_vulcan_internal_execution_context(
+            lua,
+            &VulcanInternalExecutionContext::default(),
+        )?;
         populate_vulcan_file_context(lua, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
@@ -2652,10 +2919,517 @@ impl LuaEngine {
         })();
 
         Self::populate_vulcan_request_context(lua, None, None, None)?;
+        populate_vulcan_internal_execution_context(
+            lua,
+            &VulcanInternalExecutionContext::default(),
+        )?;
         populate_vulcan_file_context(lua, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
         run_result
+    }
+
+    /// Execute one isolated runlua request and render it into Markdown text.
+    /// 执行一次隔离的 runlua 请求，并将结果渲染为 Markdown 文本。
+    fn execute_runlua_request(request: &RunLuaExecRequest) -> Result<String, String> {
+        Self::execute_runlua_request_in_subprocess(request)
+    }
+
+    /// Execute one isolated runlua request inside a dedicated subprocess.
+    /// 在独立子进程中执行一次隔离 runlua 请求。
+    fn execute_runlua_request_in_subprocess(request: &RunLuaExecRequest) -> Result<String, String> {
+        let temp_root = ensure_runtime_temp_dir()
+            .map_err(|error| format!("Failed to prepare runtime temp dir: {}", error))?;
+        let luaexec_dir = temp_root.join("luaexec");
+        std::fs::create_dir_all(&luaexec_dir)
+            .map_err(|error| format!("Failed to create luaexec temp dir: {}", error))?;
+
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let request_file = luaexec_dir.join(format!(
+            "luaexec_request_{}_{}.json",
+            std::process::id(),
+            unique_suffix
+        ));
+        let request_json = serde_json::to_string(request)
+            .map_err(|error| format!("Failed to serialize luaexec request: {}", error))?;
+        std::fs::write(&request_file, request_json)
+            .map_err(|error| format!("Failed to write luaexec request file: {}", error))?;
+
+        let current_exe = std::env::current_exe()
+            .map_err(|error| format!("Failed to resolve current executable: {}", error))?;
+        let exec_request = ExecRequest {
+            mode: ExecMode::Program {
+                program: current_exe.to_string_lossy().to_string(),
+                args: vec![
+                    "--internal-luaexec-request".to_string(),
+                    request_file.to_string_lossy().to_string(),
+                ],
+            },
+            cwd: None,
+            env: HashMap::new(),
+            stdin: None,
+            timeout_ms: Some(request.timeout_ms),
+        };
+        let exec_result = execute_exec_request(exec_request);
+        let _ = std::fs::remove_file(&request_file);
+
+        if exec_result.timed_out {
+            return Ok(Self::render_runlua_error_markdown(
+                request,
+                &[],
+                format!(
+                    "luaexec execution timed out after {} ms / luaexec 执行超时（{} 毫秒）",
+                    request.timeout_ms, request.timeout_ms
+                )
+                .as_str(),
+            ));
+        }
+
+        if exec_result.success {
+            let rendered = exec_result
+                .stdout
+                .trim_end_matches(['\r', '\n'])
+                .to_string();
+            if rendered.trim().is_empty() {
+                return Err(
+                    "luaexec subprocess returned empty output / luaexec 子进程返回了空输出"
+                        .to_string(),
+                );
+            }
+            return Ok(rendered);
+        }
+
+        let stderr = if exec_result.stderr.trim().is_empty() {
+            exec_result
+                .error
+                .unwrap_or_else(|| "luaexec subprocess failed / luaexec 子进程执行失败".to_string())
+        } else {
+            exec_result.stderr
+        };
+        Err(format!(
+            "luaexec subprocess failed: {} / luaexec 子进程执行失败: {}",
+            stderr, stderr
+        ))
+    }
+
+    /// Execute one isolated runlua request inside the current process.
+    /// 在当前进程内执行一次隔离 runlua 请求。
+    fn execute_runlua_request_inline(&self, request: &RunLuaExecRequest) -> Result<String, String> {
+        if request.timeout_ms == 0 {
+            return Err(
+                "luaexec timeout_ms must be greater than 0 / luaexec 的 timeout_ms 必须大于 0"
+                    .to_string(),
+            );
+        }
+        let (resolved_code, entry_file) = Self::resolve_runlua_source(request)?;
+        let lua = unsafe { Lua::unsafe_new() };
+        Self::setup_package_paths(&lua).map_err(|error| error.to_string())?;
+        Self::register_vulcan_module(&lua).map_err(|error| error.to_string())?;
+        Self::register_skill_functions(&lua, &self.skills)?;
+        Self::populate_vulcan_call_for_lua(
+            &lua,
+            &self.skills,
+            self.lancedb_host.clone(),
+            self.sqlite_host.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        let simulated_request_context = build_luaexec_call_request_context();
+        Self::populate_vulcan_request_context(&lua, Some(&simulated_request_context), None, None)?;
+        populate_vulcan_internal_execution_context(
+            &lua,
+            &VulcanInternalExecutionContext {
+                tool_name: None,
+                skill_name: None,
+                luaexec_active: true,
+                luaexec_caller_tool_name: request.caller_tool_name.clone(),
+            },
+        )?;
+        populate_vulcan_file_context(&lua, None, entry_file.as_deref())?;
+        Self::populate_vulcan_lancedb_context(&lua, None, None)?;
+        Self::populate_vulcan_sqlite_context(&lua, None, None)?;
+
+        let captured_output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        Self::configure_runlua_execution_environment(&lua, captured_output.clone())?;
+
+        let args_table = json_to_lua_table(&lua, &request.args)?;
+        lua.globals()
+            .set("__runlua_args", args_table)
+            .map_err(|error| format!("Failed to set runlua args: {}", error))?;
+
+        let wrapper = format!(
+            "return (function()\n  local args = __runlua_args\n  return table.pack((function()\n{}\nend)())\nend)()",
+            resolved_code
+        );
+
+        Self::install_runlua_timeout_guard(&lua, request.timeout_ms)
+            .map_err(|error| error.to_string())?;
+        let execution_result = Self::execute_runlua_wrapper(&lua, &wrapper, entry_file.as_deref());
+        Self::remove_runlua_timeout_guard(&lua);
+        let printed_output = captured_output
+            .lock()
+            .map_err(|_| "Failed to lock runlua output capture".to_string())?
+            .clone();
+
+        match execution_result {
+            Ok(returned_values) => {
+                let rendered_values = Self::collect_runlua_return_values(&returned_values)?;
+                Ok(Self::render_runlua_success_markdown(
+                    request,
+                    &printed_output,
+                    &rendered_values,
+                ))
+            }
+            Err(error) => Ok(Self::render_runlua_error_markdown(
+                request,
+                &printed_output,
+                error.to_string().as_str(),
+            )),
+        }
+    }
+
+    /// Resolve one runlua request into concrete source text and optional entry file context.
+    /// 将一次 runlua 请求解析成具体源代码文本及可选入口文件上下文。
+    fn resolve_runlua_source(
+        request: &RunLuaExecRequest,
+    ) -> Result<(String, Option<PathBuf>), String> {
+        let inline_code = request
+            .code
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        let file_path = request
+            .file
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+
+        match (inline_code, file_path) {
+            (Some(_), Some(_)) => Err(
+                "luaexec accepts either code or file, but not both / luaexec 只能接收 code 或 file 之一，不能同时提供"
+                    .to_string(),
+            ),
+            (None, None) => Err(
+                "luaexec requires code or file / luaexec 必须提供 code 或 file".to_string(),
+            ),
+            (Some(code), None) => Ok((code, None)),
+            (None, Some(file_text)) => {
+                validate_path_text(&file_text, "luaexec", "file")
+                    .map_err(|error| error.to_string())?;
+                let raw_file_path = PathBuf::from(&file_text);
+                let file_path = if raw_file_path.is_absolute() {
+                    raw_file_path
+                } else {
+                    std::env::current_dir()
+                        .map_err(|error| {
+                            format!(
+                                "Failed to resolve luaexec relative file path: {} / 解析 luaexec 相对文件路径失败: {}",
+                                error, error
+                            )
+                        })?
+                        .join(raw_file_path)
+                };
+                let source = std::fs::read_to_string(&file_path).map_err(|error| {
+                    format!(
+                        "Failed to read luaexec file {}: {} / 读取 luaexec 文件失败: {}",
+                        file_path.display(),
+                        error,
+                        error
+                    )
+                })?;
+                Ok((source, Some(file_path)))
+            }
+        }
+    }
+
+    /// Execute one inline runlua request from raw JSON text.
+    /// 从原始 JSON 文本执行一次进程内 runlua 请求。
+    pub(crate) fn execute_runlua_request_json_inline(
+        &self,
+        request_json: &str,
+    ) -> Result<String, String> {
+        let request: RunLuaExecRequest = serde_json::from_str(request_json).map_err(|error| {
+            format!(
+                "Invalid luaexec request JSON: {} / 无效的 luaexec 请求 JSON: {}",
+                error, error
+            )
+        })?;
+        self.execute_runlua_request_inline(&request)
+    }
+
+    /// Execute the runlua wrapper, optionally switching the process current directory to the entry file directory.
+    /// 执行 runlua 包装器，并在需要时临时切换进程工作目录到入口文件目录。
+    fn execute_runlua_wrapper(
+        lua: &Lua,
+        wrapper: &str,
+        entry_file: Option<&Path>,
+    ) -> Result<Table, mlua::Error> {
+        match entry_file.and_then(Path::parent) {
+            Some(entry_dir) => {
+                let _cwd_guard = runlua_cwd_guard()
+                    .lock()
+                    .map_err(|_| mlua::Error::runtime("luaexec cwd guard lock poisoned"))?;
+                let original_dir = std::env::current_dir()
+                    .map_err(|error| mlua::Error::runtime(format!("luaexec cwd: {}", error)))?;
+                std::env::set_current_dir(entry_dir)
+                    .map_err(|error| mlua::Error::runtime(format!("luaexec set cwd: {}", error)))?;
+                let execution = lua.load(wrapper).eval::<Table>();
+                let restore_result = std::env::set_current_dir(&original_dir).map_err(|error| {
+                    mlua::Error::runtime(format!("luaexec restore cwd: {}", error))
+                });
+                match (execution, restore_result) {
+                    (Ok(table), Ok(())) => Ok(table),
+                    (Err(error), Ok(())) => Err(error),
+                    (_, Err(error)) => Err(error),
+                }
+            }
+            None => lua.load(wrapper).eval::<Table>(),
+        }
+    }
+
+    /// Configure the isolated runlua execution VM.
+    /// 配置隔离 runlua 执行虚拟机的运行时环境。
+    fn configure_runlua_execution_environment(
+        lua: &Lua,
+        captured_output: Arc<Mutex<Vec<String>>>,
+    ) -> Result<(), String> {
+        let vulcan: Table = lua
+            .globals()
+            .get("vulcan")
+            .map_err(|error| format!("Failed to get vulcan module: {}", error))?;
+
+        let print_capture = captured_output.clone();
+        let print_fn = lua
+            .create_function(move |_, args: MultiValue| {
+                let mut parts = Vec::new();
+                for value in args.into_iter() {
+                    parts.push(LuaEngine::render_lua_value_inline(&value));
+                }
+                let mut guard = print_capture
+                    .lock()
+                    .map_err(|_| mlua::Error::runtime("runlua print capture lock poisoned"))?;
+                guard.push(parts.join("\t"));
+                Ok(())
+            })
+            .map_err(|error| format!("Failed to create runlua print capture: {}", error))?;
+        lua.globals()
+            .set("print", print_fn)
+            .map_err(|error| format!("Failed to override global print for runlua: {}", error))?;
+
+        lua.load(
+            r#"
+if jit and type(jit.off) == "function" then
+    jit.off(true, true)
+end
+if jit and type(jit.flush) == "function" then
+    jit.flush()
+end
+"#,
+        )
+        .exec()
+        .map_err(|error| format!("Failed to disable JIT for runlua: {}", error))?;
+
+        vulcan
+            .set("log", LuaValue::Nil)
+            .map_err(|error| format!("Failed to clear vulcan.log for runlua: {}", error))?;
+        vulcan
+            .set("cache_put", LuaValue::Nil)
+            .map_err(|error| format!("Failed to clear vulcan.cache_put for runlua: {}", error))?;
+        vulcan
+            .set("cache_get", LuaValue::Nil)
+            .map_err(|error| format!("Failed to clear vulcan.cache_get for runlua: {}", error))?;
+        vulcan.set("cache_delete", LuaValue::Nil).map_err(|error| {
+            format!("Failed to clear vulcan.cache_delete for runlua: {}", error)
+        })?;
+        vulcan
+            .set("luaexec", LuaValue::Nil)
+            .map_err(|error| format!("Failed to clear vulcan.luaexec for runlua: {}", error))?;
+        Ok(())
+    }
+
+    /// Install a hard timeout guard for the isolated luaexec VM.
+    /// 为隔离 luaexec 虚拟机安装硬超时保护。
+    fn install_runlua_timeout_guard(lua: &Lua, timeout_ms: u64) -> mlua::Result<()> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let timeout_text = format!(
+            "luaexec execution timed out after {} ms / luaexec 执行超时（{} 毫秒）",
+            timeout_ms, timeout_ms
+        );
+
+        lua.set_hook(
+            HookTriggers::new().every_nth_instruction(1_000),
+            move |_, _| {
+                if Instant::now() >= deadline {
+                    return Err(mlua::Error::runtime(timeout_text.clone()));
+                }
+                Ok(VmState::Continue)
+            },
+        )
+    }
+
+    /// Remove the previously installed timeout guard from the isolated luaexec VM.
+    /// 移除隔离 luaexec 虚拟机上已安装的超时保护。
+    fn remove_runlua_timeout_guard(lua: &Lua) {
+        lua.remove_hook();
+    }
+
+    /// Collect packed Lua return values from the isolated runlua wrapper.
+    /// 从隔离 runlua 包装器返回的打包结果中提取所有返回值。
+    fn collect_runlua_return_values(
+        result_table: &Table,
+    ) -> Result<Vec<RunLuaRenderedValue>, String> {
+        let value_count = result_table
+            .get::<i64>("n")
+            .map_err(|error| format!("Failed to read runlua return count: {}", error))?
+            .max(0) as usize;
+
+        let mut rendered_values = Vec::new();
+        if value_count == 0 {
+            rendered_values.push(RunLuaRenderedValue {
+                format: "json",
+                content: "null".to_string(),
+            });
+            return Ok(rendered_values);
+        }
+
+        for index in 1..=value_count {
+            let value: LuaValue = result_table.raw_get(index).map_err(|error| {
+                format!("Failed to read runlua return value {}: {}", index, error)
+            })?;
+            rendered_values.push(Self::render_runlua_value(&value));
+        }
+
+        Ok(rendered_values)
+    }
+
+    /// Render one Lua return value into a Markdown-ready block payload.
+    /// 将单个 Lua 返回值渲染为可直接写入 Markdown 代码块的载荷。
+    fn render_runlua_value(value: &LuaValue) -> RunLuaRenderedValue {
+        match value {
+            LuaValue::String(text) => RunLuaRenderedValue {
+                format: "text",
+                content: text
+                    .to_str()
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            },
+            _ => match lua_value_to_json(value) {
+                Ok(json_value) => RunLuaRenderedValue {
+                    format: "json",
+                    content: serde_json::to_string_pretty(&json_value)
+                        .unwrap_or_else(|_| "null".to_string()),
+                },
+                Err(_) => RunLuaRenderedValue {
+                    format: "text",
+                    content: Self::render_lua_value_inline(value),
+                },
+            },
+        }
+    }
+
+    /// Render one Lua value into a compact single-line textual form.
+    /// 将单个 Lua 值渲染为紧凑的单行文本形式。
+    fn render_lua_value_inline(value: &LuaValue) -> String {
+        match value {
+            LuaValue::String(text) => text
+                .to_str()
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            LuaValue::Integer(number) => number.to_string(),
+            LuaValue::Number(number) => number.to_string(),
+            LuaValue::Boolean(flag) => flag.to_string(),
+            LuaValue::Nil => "nil".to_string(),
+            _ => format!("{:?}", value),
+        }
+    }
+
+    /// Render a successful runlua execution result into Markdown text.
+    /// 将成功的 runlua 执行结果渲染为 Markdown 文本。
+    fn render_runlua_success_markdown(
+        request: &RunLuaExecRequest,
+        printed_output: &[String],
+        rendered_values: &[RunLuaRenderedValue],
+    ) -> String {
+        let mut lines = vec![
+            "# Runtime Execution Result".to_string(),
+            "".to_string(),
+            "## Task".to_string(),
+            if request.task.trim().is_empty() {
+                "Execute Lua runtime code".to_string()
+            } else {
+                request.task.trim().to_string()
+            },
+            "".to_string(),
+            "## Status".to_string(),
+            "SUCCESS".to_string(),
+        ];
+
+        if !printed_output.is_empty() {
+            lines.extend([
+                "".to_string(),
+                "## Printed Output".to_string(),
+                "```text".to_string(),
+                printed_output.join("\n"),
+                "```".to_string(),
+            ]);
+        }
+
+        lines.extend(["".to_string(), "## Returned Values".to_string()]);
+
+        for (index, value) in rendered_values.iter().enumerate() {
+            lines.push(format!("{}. ", index + 1));
+            lines.push(format!("```{}", value.format));
+            lines.push(value.content.clone());
+            lines.push("```".to_string());
+            if index + 1 < rendered_values.len() {
+                lines.push("".to_string());
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    /// Render a failed runlua execution result into Markdown text.
+    /// 将失败的 runlua 执行结果渲染为 Markdown 文本。
+    fn render_runlua_error_markdown(
+        request: &RunLuaExecRequest,
+        printed_output: &[String],
+        error_text: &str,
+    ) -> String {
+        let mut lines = vec![
+            "# Runtime Execution Error".to_string(),
+            "".to_string(),
+            "## Task".to_string(),
+            if request.task.trim().is_empty() {
+                "Execute Lua runtime code".to_string()
+            } else {
+                request.task.trim().to_string()
+            },
+            "".to_string(),
+            "## Status".to_string(),
+            "FAILED".to_string(),
+            "".to_string(),
+            "## Error".to_string(),
+            "```text".to_string(),
+            error_text.to_string(),
+            "```".to_string(),
+        ];
+
+        if !printed_output.is_empty() {
+            lines.extend([
+                "".to_string(),
+                "## Printed Output".to_string(),
+                "```text".to_string(),
+                printed_output.join("\n"),
+                "```".to_string(),
+            ]);
+        }
+
+        lines.join("\n")
     }
 
     /// Read a skill-provided resource or expand a skill resource template by URI.
@@ -2782,6 +3556,15 @@ impl LuaEngine {
         let lease = self.acquire_vm()?;
         let lua = lease.lua();
         Self::populate_vulcan_request_context(lua, request_context, None, Some(&skill.meta.name))?;
+        populate_vulcan_internal_execution_context(
+            lua,
+            &VulcanInternalExecutionContext {
+                tool_name: None,
+                skill_name: Some(skill.meta.name.clone()),
+                luaexec_active: false,
+                luaexec_caller_tool_name: None,
+            },
+        )?;
         populate_vulcan_file_context(lua, Some(&skill.dir), Some(&helper_path))?;
         Self::populate_vulcan_lancedb_context(
             lua,
@@ -2817,6 +3600,10 @@ impl LuaEngine {
             lua_value_to_json(&result)
         })();
         Self::populate_vulcan_request_context(lua, None, None, None)?;
+        populate_vulcan_internal_execution_context(
+            lua,
+            &VulcanInternalExecutionContext::default(),
+        )?;
         populate_vulcan_file_context(lua, None, None)?;
         Self::populate_vulcan_lancedb_context(lua, None, None)?;
         Self::populate_vulcan_sqlite_context(lua, None, None)?;
@@ -2902,6 +3689,9 @@ impl LuaEngine {
                     vulcan.get("__lancedb_skill_name").unwrap_or_default();
                 let previous_sqlite_skill_name: String =
                     vulcan.get("__sqlite_skill_name").unwrap_or_default();
+                let previous_internal_context =
+                    capture_vulcan_internal_execution_context(lua)
+                        .map_err(mlua::Error::runtime)?;
                 let previous_file_context =
                     capture_vulcan_file_context(lua).map_err(mlua::Error::runtime)?;
                 let current_request_context_json =
@@ -2912,6 +3702,24 @@ impl LuaEngine {
                         serde_json::from_value::<RequestContext>(current_request_context_json).ok()
                     }
                 };
+                if previous_internal_context.luaexec_active {
+                    if previous_internal_context
+                        .luaexec_caller_tool_name
+                        .as_deref()
+                        == Some(name.as_str())
+                    {
+                        return Err(mlua::Error::runtime(format!(
+                            "vulcan.call cannot call the current luaexec caller tool '{}' / vulcan.call 不能调用当前发起 luaexec 的工具 '{}'",
+                            name, name
+                        )));
+                    }
+                    if name == "vulcan-lua-exec" || name == "vulcan-lua-file" {
+                        return Err(mlua::Error::runtime(format!(
+                            "vulcan.call cannot invoke '{}' inside luaexec / vulcan.call 不能在 luaexec 环境内再次调用 '{}'",
+                            name, name
+                        )));
+                    }
+                }
                 let target_binding = lancedb_host
                     .as_ref()
                     .and_then(|host| host.binding_for_skill(owner_skill_name));
@@ -2923,6 +3731,18 @@ impl LuaEngine {
                     current_request_context.as_ref(),
                     Some(name.as_str()),
                     Some(owner_skill_name.as_str()),
+                )
+                .map_err(mlua::Error::runtime)?;
+                populate_vulcan_internal_execution_context(
+                    lua,
+                    &VulcanInternalExecutionContext {
+                        tool_name: Some(name.clone()),
+                        skill_name: Some(owner_skill_name.clone()),
+                        luaexec_active: previous_internal_context.luaexec_active,
+                        luaexec_caller_tool_name: previous_internal_context
+                            .luaexec_caller_tool_name
+                            .clone(),
+                    },
                 )
                 .map_err(mlua::Error::runtime)?;
                 populate_vulcan_file_context(
@@ -2993,6 +3813,8 @@ impl LuaEngine {
                 vulcan
                     .set("tool_config", previous_tool_config)
                     .map_err(|error| mlua::Error::runtime(error.to_string()))?;
+                populate_vulcan_internal_execution_context(lua, &previous_internal_context)
+                    .map_err(mlua::Error::runtime)?;
                 populate_vulcan_file_context(
                     lua,
                     previous_file_context.0.as_deref().map(Path::new),
@@ -3116,7 +3938,8 @@ impl LuaEngine {
         })?;
         vulcan.set("log", log_fn)?;
 
-        // vulcan.print(...) — convenience varargs logger, like Lua's print()
+        // global print(...) — host-managed logger shared by regular Lua skill VMs
+        // 全局 print(...) —— 普通 Lua skill 虚拟机共用的宿主管理日志出口
         let print_fn = lua.create_function(|_, args: MultiValue| {
             let mut parts = Vec::new();
             for val in args.into_iter() {
@@ -3133,7 +3956,7 @@ impl LuaEngine {
             log_info(format!("[LuaSkill:info] {}", parts.join("\t")));
             Ok(())
         })?;
-        vulcan.set("print", print_fn)?;
+        lua.globals().set("print", print_fn)?;
 
         // vulcan.fs_list(dir) -> array of filenames
         let fs_list_fn = lua.create_function(|_, dir: LuaValue| {
@@ -3304,6 +4127,10 @@ impl LuaEngine {
         vulcan.set("skill_dir", LuaValue::Nil)?;
         vulcan.set("entry_dir", LuaValue::Nil)?;
         vulcan.set("entry_file", LuaValue::Nil)?;
+        match resolve_runtime_resources_dir() {
+            Some(path) => vulcan.set("resources_dir", path.to_string_lossy().to_string())?,
+            None => vulcan.set("resources_dir", LuaValue::Nil)?,
+        }
         let overflow_type = lua.create_table()?;
         overflow_type.set("truncate", "truncate")?;
         overflow_type.set("page", "page")?;

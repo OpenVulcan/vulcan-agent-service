@@ -151,6 +151,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             arguments,
             simulated_client_name,
         } => run_call_tool_mode(&tool_name, arguments, &simulated_client_name),
+        RuntimeMode::InternalLuaexecRequest { request_file } => {
+            run_internal_luaexec_request_mode(&request_file)
+        }
         RuntimeMode::Serve => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -207,6 +210,9 @@ enum RuntimeMode {
         arguments: Value,
         simulated_client_name: String,
     },
+    /// 中文：内部专用的 luaexec 子进程执行模式。
+    /// English: Internal-only luaexec subprocess execution mode.
+    InternalLuaexecRequest { request_file: String },
 }
 
 /// 中文：`--call-tools` 调试模式使用的默认模拟客户端名称。
@@ -223,6 +229,15 @@ const DEFAULT_CALL_TOOL_CLIENT_NAME: &str = "VulcanMcpTest";
 /// - `--call-client-name <name>`: set the simulated client name
 fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    for index in 0..args.len() {
+        if args[index] == "--internal-luaexec-request" {
+            let request_file = args
+                .get(index + 1)
+                .ok_or("--internal-luaexec-request requires a file path")?
+                .clone();
+            return Ok(RuntimeMode::InternalLuaexecRequest { request_file });
+        }
+    }
     for index in 0..args.len() {
         if args[index] == "--call-tools" {
             let tool_name = args
@@ -359,16 +374,7 @@ fn run_call_tool_mode(
     });
 
     add_libs_to_path();
-
-    let (base_dir, override_dir) = find_lua_skill_dirs_for_call_tools()
-        .ok_or("Lua skill directory not found for --call-tools mode")?;
-
-    let mut engine = LuaEngine::new(LuaVmPoolConfig {
-        min_size: 1,
-        max_size: 1,
-        idle_ttl_secs: 300,
-    })?;
-    engine.load_from_dirs(&base_dir, override_dir.as_deref())?;
+    let engine = build_single_vm_lua_engine_for_local_mode()?;
 
     if !engine.is_skill(tool_name) {
         return Err(format!("Unknown Lua skill tool for --call-tools: {}", tool_name).into());
@@ -386,6 +392,45 @@ fn run_call_tool_mode(
         Some(tool_name),
         Some(&request_context),
     )
+}
+
+/// 中文：在本地调试模式下构建一个完整加载 skills 的单虚拟机 LuaEngine。
+/// English: Build a single-VM LuaEngine with fully loaded skills for local debug modes.
+fn build_single_vm_lua_engine_for_local_mode() -> Result<LuaEngine, Box<dyn std::error::Error>> {
+    let (base_dir, override_dir) = find_lua_skill_dirs_for_call_tools()
+        .ok_or("Lua skill directory not found for local debug mode")?;
+
+    let mut engine = LuaEngine::new(LuaVmPoolConfig {
+        min_size: 1,
+        max_size: 1,
+        idle_ttl_secs: 300,
+    })?;
+    engine.load_from_dirs(&base_dir, override_dir.as_deref())?;
+    Ok(engine)
+}
+
+/// 中文：内部 luaexec 子进程模式，按本地完整运行时初始化后执行单次隔离请求。
+/// English: Internal luaexec subprocess mode that initializes the full local runtime before executing one isolated request.
+fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    set_non_error_logging_enabled(false);
+    maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
+    preload_runtime_mcp_configs()?;
+
+    configure_global_tool_cache(ToolCacheConfig {
+        max_entries: tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES,
+        default_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS,
+        max_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS,
+    });
+
+    add_libs_to_path();
+
+    let request_json = std::fs::read_to_string(request_file)?;
+    let engine = build_single_vm_lua_engine_for_local_mode()?;
+    let rendered = engine
+        .execute_runlua_request_json_inline(&request_json)
+        .map_err(|error| format!("internal luaexec failed: {}", error))?;
+    println!("{}", rendered);
+    Ok(())
 }
 
 /// Find Lua skill base and override directories.

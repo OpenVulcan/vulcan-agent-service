@@ -35,6 +35,19 @@ clients:
         lines:
           default: -1
 
+  - pattern: "luaexec_call"
+    budgets:
+      tool_result:
+        bytes:
+          default: 10000
+        lines:
+          default: -1
+      file_read:
+        bytes:
+          default: 10000
+        lines:
+          default: -1
+
   - pattern: "*qwen*"
     budgets:
       tool_result:

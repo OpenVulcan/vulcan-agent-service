@@ -2,11 +2,11 @@
 
 这份目录是当前 `lua_skills` 的复制模板，用来给开发者快速起一个新的 skill。
 
-因为 `skill.json` 必须保持标准 JSON，文件本身不能写注释，所以这份 `README.md` 专门承担“贴着模板解释字段”的职责。复制 `__demo` 时，建议把这份文件一起看完，再开始改 `skill.json`。
+因为 `skill.json` 必须保持标准 JSON，文件本身不能写注释，所以这份 `README.md` 专门承担“贴着模板解释字段”的职责。复制 `__demo` 时，建议把这份文件一起看完，再开始改 `skill.json` 与 `tools/` 目录里的 Lua 文件。
 
 ## 当前模板已同步的最新能力
 
-这份模板现在已经包含下面这些最新约定：
+这份模板现在已经对齐了下面这些新规则：
 
 - `groups` 分组结构
 - 多 `tool` 入口
@@ -15,6 +15,30 @@
 - `prompts`
 - `prompt.arguments[].completions`
 - 顶层 `lancedb` 配置对象
+- tool 入口统一放在 `tools/` 目录
+- 工具返回值统一改为字符串，不再返回 Lua table
+- 工具可选使用多返回值超限协议
+- `skill.json` 不再使用 `return_type`
+
+## 当前目录结构建议
+
+复制模板后，建议继续沿用下面这类结构：
+
+- `tools/`
+  - 存放工具入口 Lua 文件
+- `resources/`
+  - 存放静态资源或资源生成器
+- `templates/`
+  - 存放资源模板或模板生成器
+- `prompts/`
+  - 存放静态或动态提示词文件
+
+说明：
+
+- tool 的 `lua_entry` 必须位于 `tools/` 下
+- prompt 的 `file` 建议位于 `prompts/` 下
+- resource 的 `file` 建议位于 `resources/` 下
+- resource template 的 `file` 建议位于 `templates/` 下
 
 ## `skill.json` 顶层字段说明
 
@@ -114,6 +138,55 @@ Lua 文件路径，相对于当前 skill 目录，且工具入口必须位于 `t
 
 即使多个 tool 共用一个 Lua 文件，也建议使用不同的 `lua_module`，避免宿主侧注册混淆。
 
+### 当前工具返回规则
+
+普通工具现在必须直接返回字符串。
+
+当前推荐：
+
+- 返回 Markdown 字符串
+- 不再返回 Lua table 给宿主
+- 如需让宿主接管超限处理，可使用多返回值协议
+
+可选写法示例：
+
+```lua
+return content
+```
+
+```lua
+return content, vulcan.overflow_type.truncate
+```
+
+```lua
+return content, vulcan.overflow_type.page
+```
+
+```lua
+return content, vulcan.overflow_type.page, "overflow_page.md"
+```
+
+含义说明：
+
+- 只返回 `content`
+  - 由宿主按默认截断策略处理
+- `truncate`
+  - 超长时按截断模式处理
+- `page`
+  - 超长时按分页目录模式处理
+- 第三个返回值
+  - 指定模板名，宿主会优先查 skill 本地模板，再查公共模板
+
+### 已取消的旧规则
+
+这些旧规则不应该再在新 skill 中继续使用：
+
+- `return_type`
+- tool 直接返回 Lua table 给宿主
+- tool 自己拼宿主级分页/截断最终文案
+
+如果你看到历史 skill 里还留着这些写法，复制新模板时不要继续沿用。
+
 ## `parameters` 结构说明
 
 每个参数支持：
@@ -150,6 +223,31 @@ Lua 文件路径，相对于当前 skill 目录，且工具入口必须位于 `t
 ```
 
 这类候选项会被宿主读取，用于 prompt 参数补全。
+
+## `vulcan-runtime` 相关新能力
+
+当前仓库已经内置 `vulcan-runtime` skill，主要提供：
+
+- `vulcan-lua-help`
+- `vulcan-lua-exec`
+- `vulcan-lua-file`
+
+如果你复制模板后需要：
+
+- 临时执行一段 Lua 代码
+- 执行一个现成 Lua 文件
+- 先查看当前支持的扩展库与宿主 API
+
+可以直接调用这些工具，而不需要在自己的 skill 中重复造一套执行器。
+
+建议理解：
+
+- `vulcan-lua-help`
+  - 查看帮助与支持库清单
+- `vulcan-lua-exec`
+  - 执行临时 Lua 代码
+- `vulcan-lua-file`
+  - 执行一个 Lua 文件，并自动切换工作目录
 
 ## 推荐复制流程
 

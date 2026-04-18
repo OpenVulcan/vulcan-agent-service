@@ -1,5 +1,6 @@
 /target
 /output
+/temp
 /third_party
 /mcp_server
 /.qwen

@@ -236,13 +236,13 @@ vulcan.log("warn", "file not found")
 vulcan.log("error", "parse failed")
 ```
 
-### `vulcan.print(...)`
+### `print(...)`
 
-类似 Lua `print()`，支持多参数、自动类型转换，输出到 stderr。
+Lua 全局标准输出函数。常规 skill 环境下会进入宿主日志链路；`luaexec` 隔离执行环境下会被捕获到最终返回结果中。
 
 ```lua
-vulcan.print("found:", #files, "files")
-vulcan.print(fn_name, line_num, kind)
+print("found:", #files, "files")
+print(fn_name, line_num, kind)
 ```
 
 ### `vulcan.fs_list(dir) -> table`
@@ -252,7 +252,7 @@ vulcan.print(fn_name, line_num, kind)
 ```lua
 local entries = vulcan.fs_list("src/")
 for _, name in ipairs(entries) do
-    vulcan.print(name)
+    print(name)
 end
 ```
 
@@ -298,7 +298,7 @@ end
 
 ```lua
 local info = vulcan.osinfo()
-vulcan.print(info.os, info.arch)
+print(info.os, info.arch)
 -- windows  x86_64
 ```
 
@@ -327,7 +327,7 @@ JSON 字符串转 Lua table。
 
 ```lua
 local t = vulcan.json_decode('{"name":"test","count":42}')
-vulcan.print(t.name)  -- test
+print(t.name)  -- test
 ```
 
 ### `vulcan.call(skill_name, args) -> any`
@@ -336,7 +336,7 @@ vulcan.print(t.name)  -- test
 
 ```lua
 local result = vulcan.call("codekit-ast-detail", { paths = "src/main.rs" })
-vulcan.print(result)
+print(result)
 ```
 
 ### `vulcan.lancedb`
@@ -370,7 +370,7 @@ vulcan.print(result)
 
 ```lua
 local spill_root = vulcan.path_join(vulcan.temp_dir, "mcp", "cache")
-vulcan.print("temp spill root:", spill_root)
+print("temp spill root:", spill_root)
 ```
 
 ## LuaJIT 标准库
@@ -490,7 +490,7 @@ local lfs = require "lfs"
 for entry in lfs.dir("/tmp") do
     local attr = lfs.attributes("/tmp/" .. entry)
     if attr.mode == "directory" then
-        vulcan.print("dir:", entry)
+        print("dir:", entry)
     end
 end
 ```
@@ -614,13 +614,28 @@ return function(args)
 
     -- 处理逻辑
     local results = {}
+    local content = table.concat({
+        "# My Skill Result",
+        "",
+        "- dir: `" .. dir .. "`",
+        "- recursive: `" .. tostring(recursive) .. "`",
+        "- count: `" .. tostring(#results) .. "`",
+    }, "\n")
 
-    return {
-        success = true,
-        count = #results,
-        items = results,
-    }
+    return content
 end
+```
+
+如需让宿主接管超限处理，可改为：
+
+```lua
+return content, vulcan.overflow_type.truncate
+```
+
+或：
+
+```lua
+return content, vulcan.overflow_type.page, "overflow_page.md"
 ```
 
 ```json
@@ -706,3 +721,125 @@ dependencies: []
 - 一个 skill 也可以声明多个 tool 入口，共享同一个目录与依赖声明文件
 - 如果多个 tool 复用同一个 Lua 文件，请确保它们的 `lua_module` 唯一
 - 建议始终保留 `__demo` 目录作为“多 group、多入口”的复制模板
+
+## `vulcan-runtime` 工具说明
+
+`vulcan-runtime` 是当前仓库内置的运行时执行 skill，主要提供三个工具：
+
+- `vulcan-lua-help`
+- `vulcan-lua-exec`
+- `vulcan-lua-file`
+
+它们都遵循当前工具返回规则：
+
+- tool 必须返回字符串
+- `vulcan-runtime` 的执行结果固定返回 Markdown 字符串
+- `print(...)` 会被捕获到返回结果中
+- `return table` 会转成格式化 JSON 文本
+- 多返回值会按顺序逐项展示
+- 长输出只允许截断，不分页
+
+### `vulcan-lua-help`
+
+无参数帮助工具，用来查看当前运行时能力边界。
+
+它负责说明：
+
+- 什么时候该用 `vulcan-lua-exec`
+- 什么时候该用 `vulcan-lua-file`
+- 当前支持的 `vulcan.*` API
+- 当前禁用能力
+- 输出规则
+- 超时规则
+- 当前构建实际带上的 Lua 扩展库清单
+
+推荐约束：
+
+- 在调用 `vulcan-lua-exec` 或 `vulcan-lua-file` 前，先调用一次 `vulcan-lua-help`
+- 帮助工具不需要重复讲解 Lua 标准库本身；重点应放在宿主扩展能力和工具边界
+
+### `vulcan-lua-exec`
+
+用于执行一段临时 Lua 代码。
+
+输入结构：
+
+```json
+{
+  "task": "可选任务说明",
+  "code": "必填，Lua 源码",
+  "args": {},
+  "timeout_ms": 60000
+}
+```
+
+字段语义：
+
+- `task`
+  - 可选
+  - 仅用于结果头部展示
+- `code`
+  - 必填
+  - 真正执行的 Lua 代码
+- `args`
+  - 可选
+  - 会在执行环境中以局部变量 `args` 暴露
+- `timeout_ms`
+  - 可选
+  - 默认 `60000`
+
+适用场景建议：
+
+- 短循环
+- 临时文件生成
+- 一次性数据转换
+- 快速网络探测
+- 命令编排
+
+### `vulcan-lua-file`
+
+用于执行一个已有 Lua 文件。
+
+输入结构：
+
+```json
+{
+  "task": "可选任务说明",
+  "file": "必填，Lua 文件路径",
+  "args": {},
+  "timeout_ms": 60000
+}
+```
+
+字段语义：
+
+- `file`
+  - 必填
+  - 指向要执行的 Lua 文件
+- 其余字段与 `vulcan-lua-exec` 一致
+
+运行时行为：
+
+- 执行期间自动把 `cwd` 切换到目标文件目录
+- 同时注入：
+  - `vulcan.entry_file`
+  - `vulcan.entry_dir`
+
+适用场景建议：
+
+- 逻辑已经沉淀成独立脚本
+- 需要文件相对路径能力
+- 多步骤逻辑写成独立文件更清晰
+
+### `vulcan-runtime` 的额外边界
+
+- 执行环境内 `vulcan.luaexec` 会被移除，因此不允许递归再次进入执行器
+- 执行环境内 `vulcan.log` 与 `vulcan.cache_*` 不注册
+- 执行环境内允许 `vulcan.call(name, args)` 调用其它工具，但它主要是兼容与组合能力，不推荐作为常规主路径
+- 内部工具调用会以受限模拟客户端 `luaexec_call` 执行，目前默认预算是：
+  - `tool_result.bytes = 10000`
+  - `tool_result.lines = -1`
+- 宿主对字节预算会再应用安全比例，因此 Lua 实际拿到的最终 `bytes` 可能小于配置原值
+- 同时仍禁止：
+  - 调用当前发起 `luaexec` 的工具自身
+  - 在 `vulcan-lua-exec` / `vulcan-lua-file` 中再次调用这两个执行工具

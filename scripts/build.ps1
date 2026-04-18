@@ -45,6 +45,7 @@ $LibsOut = "$BaseOutDir\libs"
 $SkillsOut = "$BaseOutDir\lua_skills"
 $PkgOut = "$BaseOutDir\lua_packages"
 $ConfigOut = "$BaseOutDir\configs"
+$ResourcesOut = "$BaseOutDir\resources"
 
 # Ensure output directories exist
 if (-not (Test-Path $BaseOutDir)) { New-Item -ItemType Directory -Path $BaseOutDir -Force | Out-Null }
@@ -78,6 +79,17 @@ if (Test-Path "runtime\configs") {
     Write-Host "==> Runtime configs synced to $ConfigOut\"
 } else {
     Write-Host "==> No runtime/configs directory found"
+}
+
+# Sync build-time runtime resource manifests to output/resources/
+# 中文：将脚本侧维护的 Lua 扩展能力清单复制到输出目录，供运行时动态读取能力列表。
+$LuaPackagesManifestSource = Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt"
+if (Test-Path -LiteralPath (Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt")) {
+    if (-not (Test-Path $ResourcesOut)) { New-Item -ItemType Directory -Path $ResourcesOut -Force | Out-Null }
+    Copy-Item -Force -LiteralPath (Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt") -Destination (Join-Path $ResourcesOut "lua_packages.txt")
+    Write-Host "==> Runtime resources synced to $ResourcesOut\"
+} else {
+    Write-Host "==> No scripts/lua_packages.txt manifest found"
 }
 
 # Sync runtime Lua skills to output/lua_skills/
