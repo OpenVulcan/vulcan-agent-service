@@ -15,7 +15,7 @@
         {
           "name": "demo_template_tool",
           "description": "Demo skill template that shows how to define one tool entry inside a grouped skill.",
-          "lua_entry": "main.lua",
+          "lua_entry": "tools/demo_template_tool.lua",
           "lua_module": "demo_template_primary",
           "parameters": [
             {
@@ -31,13 +31,12 @@
               "required": false
             }
           ],
-          "return_type": "table",
           "prompt": "Demo-only tool prompt hint. Copy this directory, rename the skill, and then replace each file with your real logic."
         },
         {
           "name": "demo_template_summary",
           "description": "Second tool entry example that uses a dedicated Lua file to demonstrate a clean multi-tool layout.",
-          "lua_entry": "main_summary.lua",
+          "lua_entry": "tools/demo_template_summary.lua",
           "lua_module": "demo_template_summary",
           "parameters": [
             {
@@ -47,7 +46,6 @@
               "required": false
             }
           ],
-          "return_type": "table",
           "prompt": "Second grouped tool example. Replace this with your own additional tool entry."
         }
       ]

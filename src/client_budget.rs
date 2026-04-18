@@ -15,9 +15,9 @@ const DEFAULT_INLINE_BYTES_LIMIT: u64 = 10_000;
 /// English: Default token-to-byte multiplier. Per user requirement this defaults to 3.
 const DEFAULT_BYTES_PER_TOKEN: u64 = 3;
 
-/// 中文：按行折算为字节时的默认倍率，用于仅提供 lines 限额时估算可安全内联的字节数。
-/// English: Default line-to-byte multiplier used to estimate inline-safe bytes when only line limits are available.
-const DEFAULT_BYTES_PER_LINE: u64 = 120;
+/// 中文：宿主在向 Lua 暴露实际字节预算前预留的安全比例，默认保留 5% 冗余。
+/// English: Safety ratio applied by the host before exposing effective byte budgets to Lua, reserving 5% headroom by default.
+const DEFAULT_SAFE_BYTES_RATIO: f64 = 0.95;
 
 /// 中文：当客户端配置显式“不限”时，对 Lua 暴露的实际字节上限默认封顶 200KB。
 /// English: Default hard byte cap exposed to Lua when a client configuration explicitly declares "unlimited".
@@ -72,50 +72,33 @@ pub struct ClientBudgetDefaults {
 pub struct ClientBudgetRule {
     pub pattern: String,
     #[serde(default)]
+    pub estimation: BudgetEstimationConfig,
+    #[serde(default)]
     pub budgets: BudgetScopesConfig,
 }
 
-/// 中文：预算估算倍率配置，支持 tokens→bytes、lines→bytes 以及 unlimited→bytes cap 的统一控制。
-/// English: Budget estimation config that controls tokens-to-bytes, lines-to-bytes, and unlimited-to-bytes-cap conversion.
+/// 中文：预算估算倍率配置，仅保留 tokens→bytes、安全比例与 unlimited→bytes cap 三类统一控制。
+/// English: Budget estimation config that only keeps tokens-to-bytes, safety ratio, and unlimited-to-bytes-cap conversion controls.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BudgetEstimationConfig {
     pub bytes_per_token: Option<u64>,
-    pub bytes_per_line: Option<u64>,
+    pub safe_bytes_ratio: Option<f64>,
     pub unlimited_bytes_cap: Option<u64>,
 }
 
-/// 中文：预算场景配置，第一层 key 为场景名（如 tool_output、file_read），第二层 key 为度量名（如 tokens、lines、bytes）。
-/// English: Budget scope config. The first key is the budget scope (such as tool_output or file_read), and the second key is the metric (such as tokens, lines, or bytes).
+/// 中文：预算场景配置，第一层 key 为场景名（如 tool_result、file_read），第二层 key 为度量名（如 tokens、lines、bytes）。
+/// English: Budget scope config. The first key is the budget scope (such as tool_result or file_read), and the second key is the metric (such as tokens, lines, or bytes).
 pub type BudgetScopesConfig = BTreeMap<String, BTreeMap<String, BudgetMetricConfig>>;
 
 /// 中文：单个预算度量配置，包含默认值与外部配置源解析列表。
 /// English: Configuration for one budget metric, including a default value and an ordered list of external config sources.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BudgetMetricConfig {
-    #[serde(default)]
-    pub default: BudgetMetricDefaultConfig,
+    pub default: Option<i64>,
     #[serde(default)]
     pub config_sources: Vec<BudgetConfigSource>,
     #[serde(skip)]
     resolved_source_value: Option<ResolvedMetricValue>,
-}
-
-/// 中文：单个预算度量的默认状态，可表达 limited / unlimited / unset。
-/// English: Default state for one budget metric, able to express limited / unlimited / unset.
-#[derive(Debug, Clone, Deserialize)]
-pub struct BudgetMetricDefaultConfig {
-    #[serde(default = "default_budget_state")]
-    pub state: BudgetValueState,
-    pub value: Option<i64>,
-}
-
-impl Default for BudgetMetricDefaultConfig {
-    fn default() -> Self {
-        Self {
-            state: default_budget_state(),
-            value: None,
-        }
-    }
 }
 
 /// 中文：预算配置外部来源，支持 env / json / toml 三类输入。
@@ -129,34 +112,28 @@ pub struct BudgetConfigSource {
     pub field: Option<String>,
 }
 
-/// 中文：预算状态枚举，用于表达未设置、有限制和显式不限。
-/// English: Budget state enum used to represent unset, limited, and explicitly unlimited values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BudgetValueState {
-    Unset,
-    Limited,
-    Unlimited,
-}
-
-/// 中文：已解析预算值的内部表示，保留来源与原始状态，供后续折算和序列化使用。
-/// English: Internal resolved budget value that preserves source and raw state for later conversion and serialization.
+/// 中文：已解析预算值的内部表示，仅保留原始数值与来源。
+/// `-1` 代表外部配置显式不限，`None` 代表该度量未提供。
+/// English: Internal resolved budget value that preserves only the raw numeric value and its source.
+/// `-1` means an external config explicitly declares unlimited, while `None` means the metric is absent.
 #[derive(Debug, Clone)]
 struct ResolvedMetricValue {
-    state: BudgetValueState,
-    value: Option<u64>,
+    value: Option<i64>,
     source: String,
 }
 
 /// 中文：最终暴露给 Lua 的客户端预算快照。
+/// 直接提供 `tool_result/file_read` 两个 scope，不再继续兼容旧的 `budgets` 嵌套旧结构。
 /// English: Final client-budget snapshot exposed to Lua.
+/// It directly exposes the `tool_result/file_read` scopes and no longer keeps the old nested `budgets` compatibility structure.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientBudgetSnapshot {
     pub client_name: Option<String>,
     pub tool_name: Option<String>,
     pub skill_name: Option<String>,
     pub matched_client_pattern: Option<String>,
-    pub budgets: BTreeMap<String, EffectiveBudgetScope>,
+    pub tool_result: EffectiveBudgetScope,
+    pub file_read: EffectiveBudgetScope,
     pub tool_config: Value,
 }
 
@@ -165,7 +142,7 @@ pub struct ClientBudgetSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct EffectiveBudgetEstimation {
     pub bytes_per_token: u64,
-    pub bytes_per_line: u64,
+    pub safe_bytes_ratio: f64,
     pub unlimited_bytes_cap: u64,
 }
 
@@ -177,12 +154,6 @@ pub struct EffectiveBudgetEstimation {
 pub struct EffectiveBudgetScope {
     pub bytes: u64,
     pub lines: i64,
-}
-
-/// 中文：返回默认预算状态 `unset`。
-/// English: Return the default budget state `unset`.
-fn default_budget_state() -> BudgetValueState {
-    BudgetValueState::Unset
 }
 
 /// 中文：确保客户端预算缓存已初始化；若尚未初始化则立即从磁盘加载。
@@ -199,9 +170,9 @@ fn client_budget_runtime() -> &'static RwLock<ClientBudgetRuntime> {
 pub fn preload_client_budget_config() -> Result<ClientBudgetLoadReport, String> {
     let runtime = load_client_budget_runtime()?;
     let report = build_client_budget_load_report(&runtime);
-    let mut guard = client_budget_runtime()
-        .write()
-        .map_err(|_| "client budget runtime lock poisoned / 客户端预算缓存写锁已损坏".to_string())?;
+    let mut guard = client_budget_runtime().write().map_err(|_| {
+        "client budget runtime lock poisoned / 客户端预算缓存写锁已损坏".to_string()
+    })?;
     *guard = runtime;
     Ok(report)
 }
@@ -240,6 +211,7 @@ pub fn resolve_client_budget_snapshot(
 
     let estimation = merge_effective_estimation(
         &config.defaults.estimation,
+        matched_client_rule.map(|rule| &rule.estimation),
         normalized_skill_name.as_deref(),
     );
 
@@ -255,19 +227,33 @@ pub fn resolve_client_budget_snapshot(
     }
 
     if !budgets.contains_key("file_read") {
-        if let Some(tool_output_scope) = budgets.get("tool_output").cloned() {
-            budgets.insert("file_read".to_string(), tool_output_scope);
+        if let Some(tool_result_scope) = budgets.get("tool_result").cloned() {
+            budgets.insert("file_read".to_string(), tool_result_scope);
         }
     }
 
-    let tool_config = crate::tool_config::resolve_tool_config_value(normalized_skill_name.as_deref());
+    let tool_result = budgets
+        .get("tool_result")
+        .cloned()
+        .unwrap_or_else(|| EffectiveBudgetScope {
+            bytes: DEFAULT_INLINE_BYTES_LIMIT,
+            lines: -1,
+        });
+    let file_read = budgets
+        .get("file_read")
+        .cloned()
+        .unwrap_or_else(|| tool_result.clone());
+
+    let tool_config =
+        crate::tool_config::resolve_tool_config_value(normalized_skill_name.as_deref());
 
     ClientBudgetSnapshot {
         client_name,
         tool_name: normalized_tool_name.clone(),
         skill_name: normalized_skill_name,
         matched_client_pattern: matched_client_rule.map(|rule| rule.pattern.clone()),
-        budgets,
+        tool_result,
+        file_read,
         tool_config,
     }
 }
@@ -284,21 +270,23 @@ pub fn resolve_client_budget_value(
         tool_name,
         skill_name,
     ))
-        .unwrap_or_else(|_| {
-            json!({
-                "client_name": null,
-                "tool_name": tool_name,
-                "skill_name": skill_name,
-                "matched_client_pattern": null,
-                "budgets": {
-                    "tool_output": {
-                        "bytes": DEFAULT_INLINE_BYTES_LIMIT,
-                        "lines": -1
-                    }
-                },
-                "tool_config": {}
-            })
+    .unwrap_or_else(|_| {
+        json!({
+            "client_name": null,
+            "tool_name": tool_name,
+            "skill_name": skill_name,
+            "matched_client_pattern": null,
+            "tool_result": {
+                "bytes": DEFAULT_INLINE_BYTES_LIMIT,
+                "lines": -1
+            },
+            "file_read": {
+                "bytes": DEFAULT_INLINE_BYTES_LIMIT,
+                "lines": -1
+            },
+            "tool_config": {}
         })
+    })
 }
 
 /// 中文：加载客户端预算配置；优先读取缓存，其次从运行时配置文件中解析。
@@ -375,7 +363,7 @@ fn build_client_budget_load_report(runtime: &ClientBudgetRuntime) -> ClientBudge
             .iter()
             .map(|rule| rule.pattern.clone())
             .collect(),
-        estimation: merge_effective_estimation(&runtime.config.defaults.estimation, None),
+        estimation: merge_effective_estimation(&runtime.config.defaults.estimation, None, None),
         resolved_previews: build_resolved_preview_map(&runtime.config),
     }
 }
@@ -406,8 +394,12 @@ fn resolve_scope_sources_in_place(scopes: &mut BudgetScopesConfig) {
 /// English: Build a preview of the pre-resolved client budgets so startup and reload can print the actual loaded values directly.
 fn build_resolved_preview_map(config: &ClientBudgetConfig) -> BTreeMap<String, Value> {
     let mut previews = BTreeMap::new();
-    let estimation = merge_effective_estimation(&config.defaults.estimation, None);
     for client_rule in &config.clients {
+        let estimation = merge_effective_estimation(
+            &config.defaults.estimation,
+            Some(&client_rule.estimation),
+            None,
+        );
         previews.insert(
             client_rule.pattern.clone(),
             build_scope_preview_value(&client_rule.budgets, &estimation),
@@ -426,8 +418,8 @@ fn build_scope_preview_value(
     for (scope_name, metric_configs) in scopes {
         let mut source_set = BTreeMap::<String, ()>::new();
         let mut byte_candidates = Vec::new();
-        let mut raw_tokens: Option<u64> = None;
-        let mut raw_bytes: Option<u64> = None;
+        let mut raw_tokens: Option<i64> = None;
+        let mut raw_bytes: Option<i64> = None;
         let mut raw_lines: Option<i64> = None;
 
         for (metric_name, metric_config) in metric_configs {
@@ -437,54 +429,55 @@ fn build_scope_preview_value(
                 .unwrap_or_else(|| default_resolved_metric_value(metric_config));
             source_set.insert(resolved.source.clone(), ());
             match metric_name.as_str() {
-                "tokens" => match resolved.state {
-                    BudgetValueState::Limited => {
-                        if let Some(value) = resolved.value {
-                            raw_tokens = Some(value);
-                            let bytes = value.saturating_mul(estimation.bytes_per_token);
-                            byte_candidates.push(bytes);
+                "tokens" => {
+                    if let Some(value) = resolved.value {
+                        raw_tokens = Some(value);
+                        if value == -1 {
+                            byte_candidates.push(estimation.unlimited_bytes_cap);
+                        } else if value >= 0 {
+                            byte_candidates
+                                .push((value as u64).saturating_mul(estimation.bytes_per_token));
                         }
                     }
-                    BudgetValueState::Unlimited => {
-                        byte_candidates.push(estimation.unlimited_bytes_cap);
-                    }
-                    BudgetValueState::Unset => {}
-                },
-                "bytes" => match resolved.state {
-                    BudgetValueState::Limited => {
-                        if let Some(value) = resolved.value {
-                            raw_bytes = Some(value);
-                            byte_candidates.push(value);
+                }
+                "bytes" => {
+                    if let Some(value) = resolved.value {
+                        raw_bytes = Some(value);
+                        if value == -1 {
+                            byte_candidates.push(estimation.unlimited_bytes_cap);
+                        } else if value >= 0 {
+                            byte_candidates.push(value as u64);
                         }
                     }
-                    BudgetValueState::Unlimited => {
-                        raw_bytes = Some(estimation.unlimited_bytes_cap);
-                        byte_candidates.push(estimation.unlimited_bytes_cap);
+                }
+                "lines" => {
+                    if let Some(value) = resolved.value {
+                        raw_lines = Some(if value > 0 { value } else { -1 });
                     }
-                    BudgetValueState::Unset => {}
-                },
-                "lines" => match resolved.state {
-                    BudgetValueState::Limited => {
-                        if let Some(value) = resolved.value {
-                            raw_lines = Some(value as i64);
-                        }
-                    }
-                    BudgetValueState::Unlimited => {
-                        raw_lines = Some(-1);
-                    }
-                    BudgetValueState::Unset => {}
-                },
+                }
                 _ => {}
             }
         }
 
-        let effective_bytes = byte_candidates.into_iter().min().unwrap_or(DEFAULT_INLINE_BYTES_LIMIT);
+        let effective_bytes = apply_safe_bytes_ratio(
+            byte_candidates
+                .into_iter()
+                .min()
+                .unwrap_or(DEFAULT_INLINE_BYTES_LIMIT),
+            estimation.safe_bytes_ratio,
+        );
         let source = if source_set.is_empty() {
             "default".to_string()
         } else if source_set.len() == 1 {
-            source_set.into_keys().next().unwrap_or_else(|| "default".to_string())
+            source_set
+                .into_keys()
+                .next()
+                .unwrap_or_else(|| "default".to_string())
         } else {
-            format!("mixed({})", source_set.into_keys().collect::<Vec<_>>().join(","))
+            format!(
+                "mixed({})",
+                source_set.into_keys().collect::<Vec<_>>().join(",")
+            )
         };
 
         scope_map.insert(
@@ -517,20 +510,25 @@ fn match_client_budget_rule<'a>(
 /// English: Merge the default estimation config with budget-estimation overrides extracted from tool config.
 fn merge_effective_estimation(
     defaults: &BudgetEstimationConfig,
+    client_override: Option<&BudgetEstimationConfig>,
     skill_name: Option<&str>,
 ) -> EffectiveBudgetEstimation {
     let tool_override = resolve_tool_estimation_override(skill_name);
     EffectiveBudgetEstimation {
         bytes_per_token: tool_override
             .bytes_per_token
+            .or(client_override.and_then(|override_config| override_config.bytes_per_token))
             .or(defaults.bytes_per_token)
             .unwrap_or(DEFAULT_BYTES_PER_TOKEN),
-        bytes_per_line: tool_override
-            .bytes_per_line
-            .or(defaults.bytes_per_line)
-            .unwrap_or(DEFAULT_BYTES_PER_LINE),
+        safe_bytes_ratio: normalize_safe_bytes_ratio(
+            client_override
+                .and_then(|override_config| override_config.safe_bytes_ratio)
+                .or(defaults.safe_bytes_ratio)
+                .unwrap_or(DEFAULT_SAFE_BYTES_RATIO),
+        ),
         unlimited_bytes_cap: tool_override
             .unlimited_bytes_cap
+            .or(client_override.and_then(|override_config| override_config.unlimited_bytes_cap))
             .or(defaults.unlimited_bytes_cap)
             .unwrap_or(DEFAULT_UNLIMITED_BYTES_CAP),
     }
@@ -553,20 +551,20 @@ fn resolve_scope_budget(
 
         match metric_name.as_str() {
             "tokens" => {
-                let effective_numeric = effective_metric_value(&resolved_metric, estimation, metric_name);
+                let effective_numeric =
+                    effective_metric_value(&resolved_metric, estimation, metric_name);
                 if let Some(tokens) = effective_numeric.metric_value {
                     inline_byte_candidates.push(tokens.saturating_mul(estimation.bytes_per_token));
                 }
             }
             "lines" => {
-                let effective_numeric = effective_metric_value(&resolved_metric, estimation, metric_name);
+                let effective_numeric =
+                    effective_metric_value(&resolved_metric, estimation, metric_name);
                 scope.lines = effective_numeric.line_value;
-                if let Some(lines) = effective_numeric.metric_value {
-                    inline_byte_candidates.push(lines.saturating_mul(estimation.bytes_per_line));
-                }
             }
             "bytes" => {
-                let effective_numeric = effective_metric_value(&resolved_metric, estimation, metric_name);
+                let effective_numeric =
+                    effective_metric_value(&resolved_metric, estimation, metric_name);
                 if let Some(bytes) = effective_numeric.metric_value {
                     inline_byte_candidates.push(bytes);
                 }
@@ -575,16 +573,37 @@ fn resolve_scope_budget(
         }
     }
 
-    scope.bytes = inline_byte_candidates
-        .into_iter()
-        .min()
-        .unwrap_or(DEFAULT_INLINE_BYTES_LIMIT);
+    scope.bytes = apply_safe_bytes_ratio(
+        inline_byte_candidates
+            .into_iter()
+            .min()
+            .unwrap_or(DEFAULT_INLINE_BYTES_LIMIT),
+        estimation.safe_bytes_ratio,
+    );
 
     scope
 }
 
-/// 中文：解析单个预算度量的最终状态和值，优先使用外部配置源，其次回退到 YAML 默认值。
-/// English: Resolve the final state and value for one budget metric, preferring external config sources and falling back to the YAML default.
+/// 中文：把名义字节预算折算成宿主实际暴露给 Lua 的安全字节预算，始终保留至少 1 字节。
+/// English: Convert a nominal byte budget into the host-exposed safe byte budget for Lua, always keeping at least 1 byte.
+fn apply_safe_bytes_ratio(bytes: u64, ratio: f64) -> u64 {
+    let normalized_ratio = normalize_safe_bytes_ratio(ratio);
+    let adjusted = ((bytes as f64) * normalized_ratio).floor() as u64;
+    adjusted.max(1)
+}
+
+/// 中文：归一化安全比例，非法值统一回退到默认的 0.95。
+/// English: Normalize the safety ratio, falling back to the default 0.95 when the input is invalid.
+fn normalize_safe_bytes_ratio(ratio: f64) -> f64 {
+    if !ratio.is_finite() || ratio <= 0.0 || ratio > 1.0 {
+        DEFAULT_SAFE_BYTES_RATIO
+    } else {
+        ratio
+    }
+}
+
+/// 中文：解析单个预算度量的最终值，优先使用外部配置源，其次回退到 YAML 默认值。
+/// English: Resolve the final value for one budget metric, preferring external config sources and then falling back to the YAML default.
 fn resolve_metric_value(metric_config: &BudgetMetricConfig) -> ResolvedMetricValue {
     if let Some(parsed) = metric_config.resolved_source_value.clone() {
         return parsed;
@@ -594,27 +613,13 @@ fn resolve_metric_value(metric_config: &BudgetMetricConfig) -> ResolvedMetricVal
 }
 
 /// 中文：把默认配置转换成统一的已解析预算值表示。
-/// English: Convert the YAML default into the unified resolved budget-value representation.
+/// 缺省值表示该度量未配置；`-1` 保留为“显式不限”的原始语义，后续再根据度量类型折算。
+/// English: Convert the YAML default into the unified resolved budget representation.
+/// A missing default means the metric is absent, while `-1` preserves the raw "explicit unlimited" meaning for later conversion.
 fn default_resolved_metric_value(metric_config: &BudgetMetricConfig) -> ResolvedMetricValue {
-    match metric_config.default.state {
-        BudgetValueState::Limited => ResolvedMetricValue {
-            state: BudgetValueState::Limited,
-            value: metric_config
-                .default
-                .value
-                .and_then(|value| if value >= 0 { Some(value as u64) } else { None }),
-            source: "default".to_string(),
-        },
-        BudgetValueState::Unlimited => ResolvedMetricValue {
-            state: BudgetValueState::Unlimited,
-            value: None,
-            source: "default".to_string(),
-        },
-        BudgetValueState::Unset => ResolvedMetricValue {
-            state: BudgetValueState::Unset,
-            value: None,
-            source: "default".to_string(),
-        },
+    ResolvedMetricValue {
+        value: metric_config.default,
+        source: "default".to_string(),
     }
 }
 
@@ -648,28 +653,29 @@ fn read_metric_from_source(source: &BudgetConfigSource) -> Option<ResolvedMetric
     }
 }
 
-/// 中文：将解析后的度量状态折算成对 Lua 暴露的实际数值；其中 unlimited 不再直接暴露。
-/// English: Convert a resolved metric state into the actual numeric value exposed to Lua, without exposing unlimited directly.
+/// 中文：将解析后的度量值折算成对 Lua 暴露的实际数值。
+/// - `bytes` / `tokens` 若为 `-1`，统一收敛到安全字节上限。
+/// - `lines` 若 `<= 0`，统一暴露为 `-1`。
+/// English: Convert a resolved metric value into the actual numeric value exposed to Lua.
+/// - `bytes` / `tokens` use the safe byte cap when the raw value is `-1`.
+/// - `lines` become `-1` when the raw value is `<= 0`.
 fn effective_metric_value(
     resolved: &ResolvedMetricValue,
     estimation: &EffectiveBudgetEstimation,
     metric_name: &str,
 ) -> EffectiveMetricNumericValue {
-    let metric_value = match resolved.state {
-        BudgetValueState::Limited => resolved.value,
-        BudgetValueState::Unlimited => match metric_name {
+    let metric_value = match resolved.value {
+        Some(value) if value == -1 => match metric_name {
             "bytes" | "tokens" => Some(estimation.unlimited_bytes_cap),
             "lines" => None,
             _ => None,
         },
-        BudgetValueState::Unset => None,
+        Some(value) if value >= 0 => Some(value as u64),
+        _ => None,
     };
 
-    let line_value = match resolved.state {
-        BudgetValueState::Limited if metric_name == "lines" => {
-            resolved.value.map(|value| value as i64).unwrap_or(-1)
-        }
-        BudgetValueState::Unlimited if metric_name == "lines" => -1,
+    let line_value = match resolved.value {
+        Some(value) if metric_name == "lines" && value > 0 => value,
         _ => -1,
     };
 
@@ -686,8 +692,8 @@ struct EffectiveMetricNumericValue {
     line_value: i64,
 }
 
-/// 中文：解析单个文本字面量预算值；`-1` 代表显式不限，非负整数代表有限额度。
-/// English: Parse one textual budget literal. `-1` means explicit unlimited, while non-negative integers mean limited values.
+/// 中文：解析单个文本字面量预算值；`-1` 代表显式不限，非负整数代表具体额度。
+/// English: Parse one textual budget literal. `-1` means explicit unlimited, while non-negative integers mean concrete limits.
 fn parse_metric_literal(raw_value: &str, source_name: &str) -> Option<ResolvedMetricValue> {
     let trimmed = raw_value.trim();
     if trimmed.is_empty() {
@@ -695,20 +701,12 @@ fn parse_metric_literal(raw_value: &str, source_name: &str) -> Option<ResolvedMe
     }
 
     let numeric = trimmed.parse::<i64>().ok()?;
-    if numeric == -1 {
-        return Some(ResolvedMetricValue {
-            state: BudgetValueState::Unlimited,
-            value: None,
-            source: source_name.to_string(),
-        });
-    }
     if numeric < -1 {
         return None;
     }
 
     Some(ResolvedMetricValue {
-        state: BudgetValueState::Limited,
-        value: Some(numeric as u64),
+        value: Some(numeric),
         source: source_name.to_string(),
     })
 }
@@ -796,8 +794,7 @@ mod tests {
     #[test]
     fn parse_metric_literal_treats_minus_one_as_unlimited() {
         let parsed = parse_metric_literal("-1", "env").expect("expected unlimited metric");
-        assert_eq!(parsed.state, BudgetValueState::Unlimited);
-        assert_eq!(parsed.value, None);
+        assert_eq!(parsed.value, Some(-1));
         assert_eq!(parsed.source, "env");
     }
 
@@ -807,7 +804,7 @@ mod tests {
     fn resolve_scope_budget_uses_lowest_effective_inline_bytes() {
         let estimation = EffectiveBudgetEstimation {
             bytes_per_token: 3,
-            bytes_per_line: 120,
+            safe_bytes_ratio: 1.0,
             unlimited_bytes_cap: 200 * 1024,
         };
 
@@ -815,10 +812,7 @@ mod tests {
         metrics.insert(
             "tokens".to_string(),
             BudgetMetricConfig {
-                default: BudgetMetricDefaultConfig {
-                    state: BudgetValueState::Limited,
-                    value: Some(50_000),
-                },
+                default: Some(50_000),
                 config_sources: Vec::new(),
                 resolved_source_value: None,
             },
@@ -826,10 +820,7 @@ mod tests {
         metrics.insert(
             "bytes".to_string(),
             BudgetMetricConfig {
-                default: BudgetMetricDefaultConfig {
-                    state: BudgetValueState::Limited,
-                    value: Some(120_000),
-                },
+                default: Some(120_000),
                 config_sources: Vec::new(),
                 resolved_source_value: None,
             },
@@ -840,13 +831,13 @@ mod tests {
         assert_eq!(scope.lines, -1);
     }
 
-    /// 中文：验证显式不限时不会把 unlimited 暴露给 Lua，而是回退到配置化的安全字节封顶。
-    /// English: Verify that explicit unlimited is not exposed to Lua and instead falls back to the configured safety byte cap.
+    /// 中文：验证宿主会先按安全比例收缩最终字节预算，再把结果暴露给 Lua。
+    /// English: Verify that the host shrinks the final byte budget with the safety ratio before exposing it to Lua.
     #[test]
-    fn resolve_scope_budget_caps_unlimited_bytes_to_safe_limit() {
+    fn resolve_scope_budget_applies_safe_bytes_ratio_before_exposing_to_lua() {
         let estimation = EffectiveBudgetEstimation {
             bytes_per_token: 3,
-            bytes_per_line: 120,
+            safe_bytes_ratio: 0.95,
             unlimited_bytes_cap: 200 * 1024,
         };
 
@@ -854,10 +845,57 @@ mod tests {
         metrics.insert(
             "bytes".to_string(),
             BudgetMetricConfig {
-                default: BudgetMetricDefaultConfig {
-                    state: BudgetValueState::Unlimited,
-                    value: None,
-                },
+                default: Some(100),
+                config_sources: Vec::new(),
+                resolved_source_value: None,
+            },
+        );
+
+        let scope = resolve_scope_budget(&metrics, &estimation);
+        assert_eq!(scope.bytes, 95);
+        assert_eq!(scope.lines, -1);
+    }
+
+    /// 中文：验证仅提供 lines 时不会再反向估算 bytes，最终字节预算保持默认值。
+    /// English: Verify that lines alone no longer back-compute bytes and the final byte budget remains on the default fallback.
+    #[test]
+    fn resolve_scope_budget_does_not_estimate_bytes_from_lines() {
+        let estimation = EffectiveBudgetEstimation {
+            bytes_per_token: 3,
+            safe_bytes_ratio: 1.0,
+            unlimited_bytes_cap: 200 * 1024,
+        };
+
+        let mut metrics = BTreeMap::new();
+        metrics.insert(
+            "lines".to_string(),
+            BudgetMetricConfig {
+                default: Some(2000),
+                config_sources: Vec::new(),
+                resolved_source_value: None,
+            },
+        );
+
+        let scope = resolve_scope_budget(&metrics, &estimation);
+        assert_eq!(scope.bytes, DEFAULT_INLINE_BYTES_LIMIT);
+        assert_eq!(scope.lines, 2000);
+    }
+
+    /// 中文：验证显式不限时不会把 unlimited 暴露给 Lua，而是回退到配置化的安全字节封顶。
+    /// English: Verify that explicit unlimited is not exposed to Lua and instead falls back to the configured safety byte cap.
+    #[test]
+    fn resolve_scope_budget_caps_unlimited_bytes_to_safe_limit() {
+        let estimation = EffectiveBudgetEstimation {
+            bytes_per_token: 3,
+            safe_bytes_ratio: 1.0,
+            unlimited_bytes_cap: 200 * 1024,
+        };
+
+        let mut metrics = BTreeMap::new();
+        metrics.insert(
+            "bytes".to_string(),
+            BudgetMetricConfig {
+                default: Some(-1),
                 config_sources: Vec::new(),
                 resolved_source_value: None,
             },
@@ -865,10 +903,7 @@ mod tests {
         metrics.insert(
             "lines".to_string(),
             BudgetMetricConfig {
-                default: BudgetMetricDefaultConfig {
-                    state: BudgetValueState::Unlimited,
-                    value: None,
-                },
+                default: Some(-1),
                 config_sources: Vec::new(),
                 resolved_source_value: None,
             },
@@ -885,7 +920,7 @@ mod tests {
     fn resolve_scope_budget_always_exposes_numeric_bytes_and_lines() {
         let estimation = EffectiveBudgetEstimation {
             bytes_per_token: 3,
-            bytes_per_line: 120,
+            safe_bytes_ratio: 1.0,
             unlimited_bytes_cap: 200 * 1024,
         };
 
@@ -901,13 +936,13 @@ mod tests {
     fn merge_effective_estimation_uses_defaults_without_override() {
         let defaults = BudgetEstimationConfig {
             bytes_per_token: Some(3),
-            bytes_per_line: Some(120),
+            safe_bytes_ratio: Some(0.95),
             unlimited_bytes_cap: Some(200 * 1024),
         };
 
-        let estimation = merge_effective_estimation(&defaults, None);
+        let estimation = merge_effective_estimation(&defaults, None, None);
         assert_eq!(estimation.bytes_per_token, 3);
-        assert_eq!(estimation.bytes_per_line, 120);
+        assert!((estimation.safe_bytes_ratio - 0.95).abs() < f64::EPSILON);
         assert_eq!(estimation.unlimited_bytes_cap, 200 * 1024);
     }
 
@@ -939,10 +974,10 @@ mod tests {
         );
     }
 
-    /// 中文：验证当客户端未显式配置 file_read 时，会自动回退复用同客户端的 tool_output 预算。
-    /// English: Verify that when a client does not explicitly define file_read, it falls back to the same client's tool_output budget.
+    /// 中文：验证当客户端未显式配置 file_read 时，会自动回退复用同客户端的 tool_result 预算。
+    /// English: Verify that when a client does not explicitly define file_read, it falls back to the same client's tool_result budget.
     #[test]
-    fn resolve_client_budget_snapshot_falls_back_file_read_to_tool_output() {
+    fn resolve_client_budget_snapshot_falls_back_file_read_to_tool_result() {
         let yaml = include_str!("../runtime/configs/client_budgets.yaml");
         let parsed: ClientBudgetConfig = from_str(yaml).expect("client_budgets.yaml should parse");
 
@@ -952,25 +987,28 @@ mod tests {
             .find(|rule| rule.pattern == "codex-mcp-client")
             .expect("codex rule should exist");
 
-        let estimation = merge_effective_estimation(&parsed.defaults.estimation, None);
+        let estimation = merge_effective_estimation(&parsed.defaults.estimation, None, None);
         let mut budgets = BTreeMap::new();
         for (scope_name, metric_configs) in &codex_rule.budgets {
-            budgets.insert(scope_name.clone(), resolve_scope_budget(metric_configs, &estimation));
+            budgets.insert(
+                scope_name.clone(),
+                resolve_scope_budget(metric_configs, &estimation),
+            );
         }
 
         if !budgets.contains_key("file_read") {
-            if let Some(tool_output_scope) = budgets.get("tool_output").cloned() {
-                budgets.insert("file_read".to_string(), tool_output_scope);
+            if let Some(tool_result_scope) = budgets.get("tool_result").cloned() {
+                budgets.insert("file_read".to_string(), tool_result_scope);
             }
         }
 
-        let tool_output = budgets
-            .get("tool_output")
-            .expect("tool_output budget should exist");
+        let tool_result = budgets
+            .get("tool_result")
+            .expect("tool_result budget should exist");
         let file_read = budgets
             .get("file_read")
             .expect("file_read fallback budget should exist");
-        assert_eq!(tool_output.bytes, file_read.bytes);
-        assert_eq!(tool_output.lines, file_read.lines);
+        assert_eq!(tool_result.bytes, file_read.bytes);
+        assert_eq!(tool_result.lines, file_read.lines);
     }
 }

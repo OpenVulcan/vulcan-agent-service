@@ -194,8 +194,8 @@ python scripts/verify_vmcp_ast_comment_notes.py
 
 推荐模板目录至少包含：
 
-- `main.lua`：工具入口示例
-- `main_summary.lua`：第二个工具入口示例（演示多 tool 拆分）
+- `tools/demo_template_tool.lua`：工具入口示例
+- `tools/demo_template_summary.lua`：第二个工具入口示例（演示多 tool 拆分）
 - `skill.json`：最小完整配置
 - `dependencies.yaml`：外部依赖声明模板
 - `resources/`：静态与动态资源示例
@@ -600,13 +600,13 @@ dependencies:
 
 源码变化时输出日志：
 ```
-[LuaSkill] Hot reload codekit_ast_detail: D:\projects\vulcan-mcp-client\output\lua_skills\vulcan-codekit\main.lua
+[LuaSkill] Hot reload codekit_ast_detail: D:\projects\vulcan-mcp-client\output\lua_skills\vulcan-codekit\tools\codekit-ast-detail.lua
 ```
 
 ## Skill 模板
 
 ```lua
--- my_skill/main.lua
+-- my_skill/tools/my_skill.lua
 
 return function(args)
     local dir = args.dir or "."
@@ -636,7 +636,7 @@ end
         {
           "name": "my_skill",
           "description": "Tool description for tools/list",
-          "lua_entry": "main.lua",
+          "lua_entry": "tools/my_skill.lua",
           "lua_module": "my_skill",
           "parameters": [
             {
@@ -646,16 +646,14 @@ end
               "required": true
             }
           ],
-          "return_type": "table",
           "prompt": "AI usage hint for the tool"
         },
         {
           "name": "my_skill_summary",
           "description": "Second tool entry example in the same skill",
-          "lua_entry": "main.lua",
+          "lua_entry": "tools/my_skill_summary.lua",
           "lua_module": "my_skill_summary",
           "parameters": [],
-          "return_type": "table",
           "prompt": "Optional hint for another grouped tool"
         }
       ],

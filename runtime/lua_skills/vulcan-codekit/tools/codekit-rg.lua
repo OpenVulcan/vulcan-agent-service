@@ -7,12 +7,8 @@ English: Perform ripgrep text matching first, then reuse codekit-ast-detail stru
 -- 工具常量 / Tool constants for rg execution and response shaping.
 local RG_TIMEOUT_MS = 30000
 local MAX_MATCH_LINES_PER_SYMBOL = 12
-local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
 local LFS_MODULE = nil
-local DEFAULT_AST_CLIENT_CHAR_LIMIT = 10000
-local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
 local SHARED_LENGTH_HELPERS = nil
-local SHARED_OVERFLOW_HELPERS = nil
 
 -- 缓存的 codekit-ast-detail 助手集合 / Cached codekit-ast-detail helper bundle extracted from the existing skill entry.
 local AST_RUNTIME_HELPERS = nil
@@ -83,8 +79,8 @@ local function format_line_span(start_line, end_line)
 end
 
 --[[
-中文：获取当前 skill 目录，优先使用宿主注入的 `__skill_dir_codekit_rg`，缺失时回退到当前目录。
-English: Resolve the current skill directory. Prefer the host-injected `__skill_dir_codekit_rg` and fall back to the current directory when absent.
+中文：获取宿主注入的当前 skill 目录。
+English: Resolve the current skill directory injected by the host.
 
 参数 / Parameters:
 - 无 / None.
@@ -93,19 +89,27 @@ English: Resolve the current skill directory. Prefer the host-injected `__skill_
 - string: 当前 skill 目录 / Current skill directory.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_rg or "."
+    return tostring(vulcan.skill_dir or ".")
+end
+
+local function get_entry_dir()
+    return tostring(vulcan.entry_dir or get_skill_dir())
+end
+
+local function get_entry_file()
+    return tostring(vulcan.entry_file or vulcan.path_join(get_entry_dir(), "codekit-rg.lua"))
 end
 
 --[[
-中文：懒加载共享长度规则模块，让 rg/detail/tree 复用同一套客户端字符预算映射。
-English: Lazily load the shared length-policy module so rg/detail/tree reuse the same client budget mapping.
+中文：懒加载共享预算模块，让 rg/detail/tree 复用同一套 MCP 输出/读取预算映射。
+English: Lazily load the shared budget module so rg/detail/tree reuse the same MCP output/read budget mapping.
 ]]
 local function load_shared_length_helpers()
     if SHARED_LENGTH_HELPERS then
         return SHARED_LENGTH_HELPERS, nil
     end
 
-    local helper_path = vulcan.path_join(get_skill_dir(), "shared_length.lua")
+    local helper_path = vulcan.path_join(get_entry_dir(), "shared_length.lua")
     local chunk, load_error = loadfile(helper_path)
     if not chunk then
         return nil, {
@@ -129,48 +133,15 @@ local function load_shared_length_helpers()
 end
 
 --[[
-中文：懒加载共享 overflow 模块，让 rg/tree/detail 复用一致的大结果 raw file pointer 协议。
-English: Lazily load the shared overflow module so rg/tree/detail reuse one oversized raw-file pointer protocol.
+中文：在单次工具调用开始时初始化当前客户端的 RG 预算。
+English: Initialize the current RG budget at the start of each tool call.
 ]]
-local function load_shared_overflow_helpers()
-    if SHARED_OVERFLOW_HELPERS then
-        return SHARED_OVERFLOW_HELPERS, nil
-    end
-
-    local helper_path = vulcan.path_join(get_skill_dir(), "shared_overflow.lua")
-    local chunk, load_error = loadfile(helper_path)
-    if not chunk then
-        return nil, {
-            error = "shared_overflow_load_failed",
-            message = tostring(load_error),
-            path = helper_path,
-        }
-    end
-
-    local ok, helpers = pcall(chunk)
-    if not ok or type(helpers) ~= "table" then
-        return nil, {
-            error = "shared_overflow_invalid",
-            message = ok and "shared_overflow.lua did not return a table" or tostring(helpers),
-            path = helper_path,
-        }
-    end
-
-    SHARED_OVERFLOW_HELPERS = helpers
-    return SHARED_OVERFLOW_HELPERS, nil
-end
-
---[[
-中文：在单次工具调用开始时初始化当前客户端的 RG 字符预算。
-English: Initialize the current client's RG character budget at the start of each tool call.
-]]
-local function initialize_rg_client_char_limit()
+local function initialize_rg_client_budget()
     local helpers, helper_error = load_shared_length_helpers()
     if helper_error then
         return nil, helper_error
     end
-    CURRENT_AST_CLIENT_CHAR_LIMIT = helpers.initialize_client_char_limit(vulcan)
-    return CURRENT_AST_CLIENT_CHAR_LIMIT, nil
+    return helpers.initialize_client_budget(vulcan)
 end
 
 --[[
@@ -215,7 +186,7 @@ local function load_ast_runtime_helpers()
         return AST_RUNTIME_HELPERS, nil
     end
 
-    local ast_entry_path = vulcan.path_join(get_skill_dir(), "main.lua")
+    local ast_entry_path = vulcan.path_join(get_entry_dir(), "codekit-ast-detail.lua")
     local chunk, load_error = loadfile(ast_entry_path)
     if not chunk then
         return nil, {
@@ -483,45 +454,6 @@ local function ensure_directory(directory_path)
         end
     end
     return true, nil
-end
-
-local function write_text_file(file_path, content)
-    local parent_directory = get_parent_directory(file_path)
-    if parent_directory then
-        local ensured, ensure_error = ensure_directory(parent_directory)
-        if not ensured then
-            return nil, ensure_error
-        end
-    end
-
-    local ok, write_error = pcall(vulcan.fs_write, file_path, tostring(content or ""))
-    if not ok then
-        return nil, {
-            error = "file_write_failed",
-            message = tostring(write_error),
-            file = file_path,
-        }
-    end
-    return file_path, nil
-end
-
-local function resolve_large_result_directory()
-    local temp_root = trim(vulcan.temp_dir or "")
-    if temp_root == "" then
-        return nil, {
-            error = "temp_dir_unavailable",
-            message = "vulcan.temp_dir is unavailable; cannot spill large outputs",
-        }
-    end
-    return vulcan.path_join(temp_root, "mcp", "cache"), nil
-end
-
-local function build_spill_file_id(prefix)
-    return string.format("%s_%d_%06d", tostring(prefix or "result"), os.time(), math.floor((os.clock() % 1) * 1000000))
-end
-
-local function build_large_result_notice(full_output_path)
-    return string.format(LARGE_RESULT_NOTICE_TEMPLATE, full_output_path)
 end
 
 local function shallow_copy_object(source)
@@ -1084,34 +1016,17 @@ English: Finalize the rg result uniformly; return inline Markdown when safe, oth
 - full_result(table): 已完成统计与渲染内容拼装的最终结果对象 / Final result object with stats and rendered content assembled.
 
 返回 / Returns:
-- string|table: 内联 Markdown 文本或 overflow 指针结果 / Inline Markdown text or an overflow pointer response.
+- string: 完整 Markdown 正文，后续是否原样返回、截断还是分页由宿主统一决定。
+  Full Markdown body; the host later decides whether it stays inline, gets truncated, or turns into a paging index.
 ]]
 local function finalize_rg_result(full_result)
     local markdown_text = build_rg_markdown(full_result)
-    local helpers, helper_error = load_shared_overflow_helpers()
-    if helper_error then
-        return helper_error
-    end
-
-    return helpers.finalize_large_result({
-        content = markdown_text,
-        client_char_limit = CURRENT_AST_CLIENT_CHAR_LIMIT,
-        file_prefix = "codekit_rg",
-        resolve_large_result_directory = resolve_large_result_directory,
-        build_spill_file_id = build_spill_file_id,
-        write_text_file = write_text_file,
-        summary_lines = {
-            string.format("files_scanned: %d", full_result.files_scanned or 0),
-            string.format("files_with_matches: %d", full_result.files_with_matches or 0),
-            string.format("items_found: %d", full_result.items_found or 0),
-            string.format("rg_matches: %d", full_result.rg_matches or 0),
-        },
-    })
+    return tostring(markdown_text or ""), vulcan.overflow_type.page
 end
 
 -- 工具入口 / Tool entry point invoked by the MCP runtime.
 return function(args)
-    local _, client_limit_error = initialize_rg_client_char_limit()
+    local _, client_limit_error = initialize_rg_client_budget()
     if client_limit_error then
         return client_limit_error
     end

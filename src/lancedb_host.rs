@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::lua_skill::{SkillLanceDbLogLevel, SkillLanceDbMeta};
+use crate::runtime_logging::{info as log_info, warn as log_warn};
 
 /// 中文：FFI 运行时句柄前置声明，仅用于跨动态库传递裸指针。
 /// English: Forward declaration of the FFI runtime handle used only for raw cross-library pointers.
@@ -117,8 +118,7 @@ impl LoadedLanceDbApi {
                 continue;
             }
 
-            let library =
-                unsafe { Library::new(&candidate) }.map_err(|error| error.to_string());
+            let library = unsafe { Library::new(&candidate) }.map_err(|error| error.to_string());
             match library {
                 Ok(library) => {
                     return unsafe { Self::from_library(candidate, library) };
@@ -182,10 +182,7 @@ impl LoadedLanceDbApi {
                 "vldb_lancedb_engine_vector_search",
                 EngineVectorSearchFn
             ),
-            engine_delete_json: load_symbol!(
-                "vldb_lancedb_engine_delete_json",
-                EngineDeleteJsonFn
-            ),
+            engine_delete_json: load_symbol!("vldb_lancedb_engine_delete_json", EngineDeleteJsonFn),
             engine_drop_table_json: load_symbol!(
                 "vldb_lancedb_engine_drop_table_json",
                 EngineDropTableJsonFn
@@ -193,10 +190,7 @@ impl LoadedLanceDbApi {
             engine_destroy: load_symbol!("vldb_lancedb_engine_destroy", EngineDestroyFn),
             bytes_free: load_symbol!("vldb_lancedb_bytes_free", BytesFreeFn),
             string_free: load_symbol!("vldb_lancedb_string_free", StringFreeFn),
-            last_error_message: load_symbol!(
-                "vldb_lancedb_last_error_message",
-                LastErrorMessageFn
-            ),
+            last_error_message: load_symbol!("vldb_lancedb_last_error_message", LastErrorMessageFn),
             clear_last_error: load_symbol!("vldb_lancedb_clear_last_error", ClearLastErrorFn),
             _library: library,
             library_path,
@@ -308,7 +302,10 @@ impl LanceDbSkillBinding {
         let input_cstr = CString::new(input_text).map_err(|_| {
             "input json contains interior NUL bytes / 输入 JSON 含有 NUL 字节".to_string()
         })?;
-        self.log_info("vector_upsert", Some(format!("payload_bytes={}", data.len())));
+        self.log_info(
+            "vector_upsert",
+            Some(format!("payload_bytes={}", data.len())),
+        );
         let started_at = Instant::now();
         let guard = self.handles.lock().map_err(|_| {
             "failed to acquire LanceDB handle lock / 获取 LanceDB 句柄锁失败".to_string()
@@ -450,14 +447,14 @@ impl LanceDbSkillBinding {
     fn log_info(&self, operation: &str, extra: Option<String>) {
         if self.config.log_level == SkillLanceDbLogLevel::Info {
             match extra {
-                Some(extra) => eprintln!(
+                Some(extra) => log_info(format!(
                     "[LanceDb:info] skill={} db={} op={} {}",
                     self.skill_name, self.skill_dir_name, operation, extra
-                ),
-                None => eprintln!(
+                )),
+                None => log_info(format!(
                     "[LanceDb:info] skill={} db={} op={}",
                     self.skill_name, self.skill_dir_name, operation
-                ),
+                )),
             }
         }
     }
@@ -475,14 +472,14 @@ impl LanceDbSkillBinding {
         }
 
         match extra {
-            Some(extra) => eprintln!(
+            Some(extra) => log_info(format!(
                 "[LanceDb:slow] skill={} db={} op={} elapsed_ms={} {}",
                 self.skill_name, self.skill_dir_name, operation, elapsed_ms, extra
-            ),
-            None => eprintln!(
+            )),
+            None => log_info(format!(
                 "[LanceDb:slow] skill={} db={} op={} elapsed_ms={}",
                 self.skill_name, self.skill_dir_name, operation, elapsed_ms
-            ),
+            )),
         }
     }
 
@@ -493,10 +490,10 @@ impl LanceDbSkillBinding {
             self.config.log_level,
             SkillLanceDbLogLevel::Info | SkillLanceDbLogLevel::Warning
         ) {
-            eprintln!(
+            log_warn(format!(
                 "[LanceDb:warn] skill={} db={} op={} message={}",
                 self.skill_name, self.skill_dir_name, operation, message
-            );
+            ));
         }
     }
 }
@@ -546,7 +543,8 @@ impl LanceDbSkillHost {
         config: SkillLanceDbMeta,
     ) -> Result<Arc<LanceDbSkillBinding>, String> {
         let mut guard = self.skills.lock().map_err(|_| {
-            "failed to acquire LanceDB skill registry lock / 获取 LanceDB 技能注册表锁失败".to_string()
+            "failed to acquire LanceDB skill registry lock / 获取 LanceDB 技能注册表锁失败"
+                .to_string()
         })?;
         if let Some(existing) = guard.get(skill_name) {
             return Ok(existing.clone());
@@ -600,10 +598,11 @@ impl LanceDbSkillHost {
         }
 
         let resolved_path = unsafe {
-            self.api.take_owned_string((self.api.runtime_database_path_for_name)(
-                runtime,
-                ptr::null(),
-            ))
+            self.api
+                .take_owned_string((self.api.runtime_database_path_for_name)(
+                    runtime,
+                    ptr::null(),
+                ))
         }
         .unwrap_or(database_path.clone());
 

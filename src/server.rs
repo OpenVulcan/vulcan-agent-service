@@ -3,23 +3,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::client_budget::reload_client_budget_config;
+use crate::client_budget::{reload_client_budget_config, resolve_client_budget_snapshot};
 use crate::grpc_client::VmmClient;
 use crate::lua_engine::{LuaEngine, LuaVmPoolConfig};
 use crate::protocol::*;
 use crate::tool_config::reload_tool_configs;
-
-/// 中文：将 Lua/JSON 返回值格式化为 MCP 文本内容；基础标量原样输出，数组和对象按 JSON 输出。
-/// English: Format a Lua/JSON result into MCP text content; emit scalar values verbatim and serialize arrays/objects as JSON.
-fn format_json_value_for_text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Number(number) => number.to_string(),
-        Value::Bool(flag) => flag.to_string(),
-        Value::Null => "null".to_string(),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
-    }
-}
+use crate::tool_result_format::{ToolCallOutput, render_tool_result_text};
 
 // ============================================================
 // Shared MCP Server state
@@ -411,16 +400,39 @@ impl McpServer {
                 let call_args = args.get("args").cloned().unwrap_or(json!({}));
                 let engine_clone = engine.clone();
                 let request_context = request_context.clone();
+                let budget_request_context = request_context.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     engine_clone.run_lua(&code, &call_args, Some(&request_context))
                 })
                 .await
                 .map_err(|e| (-32603, format!("runlua spawn error: {}", e)))?;
                 match result {
-                    Ok(val) => ToolCallResult {
-                        content: vec![TextContent::text(&format_json_value_for_text(&val))],
-                        is_error: None,
-                    },
+                    Ok(val) => {
+                        let client_budget = resolve_client_budget_snapshot(
+                            Some(&budget_request_context),
+                            Some("runlua"),
+                            None,
+                        );
+                        let output = match val {
+                            Value::String(text) => ToolCallOutput::plain(text),
+                            _ => {
+                                return Ok(json!(ToolCallResult {
+                                    content: vec![TextContent::text(
+                                        crate::tool_result_format::NON_STRING_TOOL_RESULT_ERROR,
+                                    )],
+                                    is_error: Some(true),
+                                }));
+                            }
+                        };
+                        ToolCallResult {
+                            content: vec![TextContent::text(&render_tool_result_text(
+                                &output,
+                                None,
+                                Some(&client_budget),
+                            ))],
+                            is_error: None,
+                        }
+                    }
                     Err(e) => ToolCallResult {
                         content: vec![TextContent::text(&e)],
                         is_error: Some(true),
@@ -429,20 +441,28 @@ impl McpServer {
             }
 
             "reload_vulcan_mcp_configs" => {
-                let client_budget_report = reload_client_budget_config()
-                    .map_err(|error| (-32603, format!("reload client budgets failed: {}", error)))?;
+                let client_budget_report = reload_client_budget_config().map_err(|error| {
+                    (-32603, format!("reload client budgets failed: {}", error))
+                })?;
                 let tool_config_report = reload_tool_configs()
                     .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
 
+                let reload_message = format!(
+                    "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded",
+                    client_budget_report.client_count,
+                    client_budget_report
+                        .source_path
+                        .as_deref()
+                        .unwrap_or("unavailable"),
+                    tool_config_report.tool_count,
+                    tool_config_report
+                        .source_path
+                        .as_deref()
+                        .unwrap_or("unavailable")
+                );
+
                 ToolCallResult {
-                    content: vec![TextContent::text(&format_json_value_for_text(&json!({
-                        "ok": true,
-                        "config_yaml_reloaded": false,
-                        "reloaded": {
-                            "client_budgets": client_budget_report,
-                            "tool_configs": tool_config_report,
-                        }
-                    })))],
+                    content: vec![TextContent::text(&reload_message)],
                     is_error: None,
                 }
             }
@@ -453,18 +473,31 @@ impl McpServer {
                     if engine.is_skill(&tool.name) {
                         let engine_clone = engine.clone();
                         let tool_name = tool.name.clone();
+                        let skill_name = engine.skill_name_for_tool(&tool.name);
                         let args_clone = args.clone();
                         let request_context = request_context.clone();
+                        let budget_request_context = request_context.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             engine_clone.call_skill(&tool_name, &args_clone, Some(&request_context))
                         })
                         .await
                         .map_err(|e| (-32603, format!("Lua skill spawn error: {}", e)))?;
                         match result {
-                            Ok(val) => ToolCallResult {
-                                content: vec![TextContent::text(&format_json_value_for_text(&val))],
-                                is_error: None,
-                            },
+                            Ok(val) => {
+                                let client_budget = resolve_client_budget_snapshot(
+                                    Some(&budget_request_context),
+                                    Some(&tool.name),
+                                    skill_name.as_deref(),
+                                );
+                                ToolCallResult {
+                                    content: vec![TextContent::text(&render_tool_result_text(
+                                        &val,
+                                        skill_name.as_deref(),
+                                        Some(&client_budget),
+                                    ))],
+                                    is_error: None,
+                                }
+                            }
                             Err(e) => ToolCallResult {
                                 content: vec![TextContent::text(&e)],
                                 is_error: Some(true),

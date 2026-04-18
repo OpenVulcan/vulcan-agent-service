@@ -118,26 +118,26 @@ end
 --- 中文：工具主入口，验证当前 skill 的 LanceDB 绑定是否可正常完成建表、写入与检索闭环。
 --- English: Main tool entry that verifies the current skill's LanceDB binding can complete the full create-table, upsert, and search loop.
 --- @param args table|nil 工具参数 / Tool arguments.
---- @return table
+--- @return string
 return function(args)
     local ready, status = check_lancedb_ready()
     if not ready then
-        return {
+        return vulcan.json_encode({
             ok = false,
             error = "lancedb_not_ready",
             message = tostring(status.reason or "current skill has not enabled lancedb"),
             lancedb_status = status,
-        }
+        })
     end
 
     local info_ok, info_result = pcall(vulcan.lancedb.info)
     if not info_ok then
-        return {
+        return vulcan.json_encode({
             ok = false,
             error = "lancedb_info_failed",
             message = tostring(info_result),
             lancedb_status = status,
-        }
+        })
     end
 
     local config = resolve_test_config(args)
@@ -163,7 +163,7 @@ return function(args)
         output_format = "json",
     })
 
-    return {
+    return vulcan.json_encode({
         ok = true,
         message = "LanceDB test completed for vulcan-ai-memory.",
         lancedb_status = status,
@@ -173,5 +173,5 @@ return function(args)
         create_table = create_result,
         vector_upsert = upsert_result,
         vector_search = search_result,
-    }
+    })
 end

@@ -7,7 +7,7 @@ English: Scan directories, files, or mixed path sets for Markdown files and extr
 local MAX_MATCHED_FILES = 5000
 local LFS_MODULE = nil
 local AST_RUNTIME_HELPERS = nil
-
+local SHARED_LENGTH_HELPERS = nil
 --[[
 中文：去除字符串首尾空白，作为最基础的文本规整工具。
 English: Trim leading and trailing whitespace as the most basic text-normalization helper.
@@ -57,7 +57,55 @@ end
 English: Resolve the current skill directory, preferring the host-injected path.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_markdown_menu or "."
+    return tostring(vulcan.skill_dir or ".")
+end
+
+local function get_entry_dir()
+    return tostring(vulcan.entry_dir or get_skill_dir())
+end
+
+--[[
+中文：懒加载共享长度规则模块，让 markdown-menu 与其他 codekit 工具复用同一套预算模型。
+English: Lazily load the shared length-policy module so markdown-menu reuses the same budget model as other codekit tools.
+]]
+local function load_shared_length_helpers()
+    if SHARED_LENGTH_HELPERS then
+        return SHARED_LENGTH_HELPERS, nil
+    end
+
+    local helper_path = vulcan.path_join(get_entry_dir(), "shared_length.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        return nil, {
+            error = "shared_length_load_failed",
+            message = tostring(load_error),
+            path = helper_path,
+        }
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        return nil, {
+            error = "shared_length_invalid",
+            message = ok and "shared_length.lua did not return a table" or tostring(helpers),
+            path = helper_path,
+        }
+    end
+
+    SHARED_LENGTH_HELPERS = helpers
+    return SHARED_LENGTH_HELPERS, nil
+end
+
+--[[
+中文：在单次工具调用开始时初始化 markdown-menu 当前使用的预算。
+English: Initialize the current budget used by markdown-menu at the start of one tool call.
+]]
+local function initialize_markdown_menu_budget()
+    local helpers, helper_error = load_shared_length_helpers()
+    if helper_error then
+        return nil, helper_error
+    end
+    return helpers.initialize_client_budget(vulcan)
 end
 
 --[[
@@ -87,7 +135,7 @@ local function load_ast_runtime_helpers()
         return AST_RUNTIME_HELPERS, nil
     end
 
-    local ast_entry_path = vulcan.path_join(get_skill_dir(), "main.lua")
+    local ast_entry_path = vulcan.path_join(get_entry_dir(), "codekit-ast-detail.lua")
     local chunk, load_error = loadfile(ast_entry_path)
     if not chunk then
         return nil, {
@@ -555,8 +603,21 @@ local function build_markdown_menu_content(documents, stats)
     return table.concat(lines, "\n")
 end
 
+--[[
+中文：完成 markdown-menu 正文输出；是否直接返回原文还是按统一截断策略处理，由宿主统一决定。
+English: Finalize the markdown-menu body; whether it stays inline or is truncated under the unified policy is decided by the host.
+]]
+local function finalize_markdown_menu_content(markdown_text)
+    return tostring(markdown_text or "")
+end
+
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
+    local _, budget_error = initialize_markdown_menu_budget()
+    if budget_error then
+        return budget_error
+    end
+
     local helpers, helpers_error = load_ast_runtime_helpers()
     if helpers_error then
         return helpers_error
@@ -604,10 +665,10 @@ return function(args)
         end
     end
 
-    return build_markdown_menu_content(documents, {
+    return finalize_markdown_menu_content(build_markdown_menu_content(documents, {
         files_scanned = #(markdown_files or {}),
         files_with_headings = files_with_headings,
         items_found = headings_found,
         error_count = #(read_errors or {}),
-    })
+    }))
 end

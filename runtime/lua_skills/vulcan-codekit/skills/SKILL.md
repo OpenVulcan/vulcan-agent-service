@@ -92,7 +92,8 @@ CodeKit is the required default path for source-code analysis.
 - `codekit-ast-tree` returns a grouped Markdown tree with compact metrics such as lines, types, impl blocks, and functions.
 - `codekit-rg` returns matched lines together with the owning function, method, impl, or class context.
 - `codekit-ast-detail` returns a structured symbol tree with nesting, signatures, and line ownership.
-- If output exceeds the safe inline limit, you will receive a `raw_file` pointer together with host-safe `offset` / `limit` read chunks. Follow that chunk plan directly.
+- Tools return plain strings. If the result exceeds the current client budget, the MCP host will decide whether to keep it inline, truncate it, or turn it into a paged read directory.
+- When the host switches to page mode, you will receive a `raw_file` path together with host-safe line-based `offset` / `limit` read chunks. Follow that chunk plan directly.
 
 ## Main-Agent Rule
 

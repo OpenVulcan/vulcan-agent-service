@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::lua_skill::{SkillSqliteLogLevel, SkillSqliteMeta};
+use crate::runtime_logging::{info as log_info, warn as log_warn};
 
 /// 中文：FFI runtime 句柄前置声明，仅用于跨动态库传递裸指针。
 /// English: Forward declaration of the FFI runtime handle used only for raw cross-library pointers.
@@ -217,7 +218,8 @@ type DatabaseQueryStreamFn = unsafe extern "C" fn(
 ) -> *mut VldbSqliteQueryStreamHandle;
 type ExecuteResultDestroyFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle);
 type ExecuteResultSuccessFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> u8;
-type ExecuteResultMessageFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> *mut c_char;
+type ExecuteResultMessageFn =
+    unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> *mut c_char;
 type ExecuteResultRowsChangedFn = unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> i64;
 type ExecuteResultLastInsertRowIdFn =
     unsafe extern "C" fn(*mut VldbSqliteExecuteResultHandle) -> i64;
@@ -226,16 +228,13 @@ type ExecuteResultStatementsExecutedFn =
 type QueryJsonResultDestroyFn = unsafe extern "C" fn(*mut VldbSqliteQueryJsonResultHandle);
 type QueryJsonResultJsonDataFn =
     unsafe extern "C" fn(*mut VldbSqliteQueryJsonResultHandle) -> *mut c_char;
-type QueryJsonResultRowCountFn =
-    unsafe extern "C" fn(*mut VldbSqliteQueryJsonResultHandle) -> u64;
+type QueryJsonResultRowCountFn = unsafe extern "C" fn(*mut VldbSqliteQueryJsonResultHandle) -> u64;
 type QueryStreamDestroyFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle);
 type QueryStreamChunkCountFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle) -> u64;
 type QueryStreamRowCountFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle) -> u64;
 type QueryStreamTotalBytesFn = unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle) -> u64;
-type QueryStreamGetChunkFn = unsafe extern "C" fn(
-    *mut VldbSqliteQueryStreamHandle,
-    u64,
-) -> VldbSqliteByteBuffer;
+type QueryStreamGetChunkFn =
+    unsafe extern "C" fn(*mut VldbSqliteQueryStreamHandle, u64) -> VldbSqliteByteBuffer;
 type BytesFreeFn = unsafe extern "C" fn(VldbSqliteByteBuffer);
 type DatabaseTokenizeTextFn = unsafe extern "C" fn(
     *mut VldbSqliteDatabaseHandle,
@@ -248,8 +247,7 @@ type TokenizeResultNormalizedTextFn =
     unsafe extern "C" fn(*mut VldbSqliteTokenizeResultHandle) -> *mut c_char;
 type TokenizeResultFtsQueryFn =
     unsafe extern "C" fn(*mut VldbSqliteTokenizeResultHandle) -> *mut c_char;
-type TokenizeResultTokenCountFn =
-    unsafe extern "C" fn(*mut VldbSqliteTokenizeResultHandle) -> u64;
+type TokenizeResultTokenCountFn = unsafe extern "C" fn(*mut VldbSqliteTokenizeResultHandle) -> u64;
 type TokenizeResultGetTokenFn =
     unsafe extern "C" fn(*mut VldbSqliteTokenizeResultHandle, u64) -> *mut c_char;
 type DatabaseUpsertCustomWordFn = unsafe extern "C" fn(
@@ -310,8 +308,7 @@ type DatabaseSearchFtsFn = unsafe extern "C" fn(
 type SearchResultDestroyFn = unsafe extern "C" fn(*mut VldbSqliteSearchResultHandle);
 type SearchResultTotalFn = unsafe extern "C" fn(*mut VldbSqliteSearchResultHandle) -> u64;
 type SearchResultLenFn = unsafe extern "C" fn(*mut VldbSqliteSearchResultHandle) -> u64;
-type SearchResultSourceFn =
-    unsafe extern "C" fn(*mut VldbSqliteSearchResultHandle) -> *mut c_char;
+type SearchResultSourceFn = unsafe extern "C" fn(*mut VldbSqliteSearchResultHandle) -> *mut c_char;
 type SearchResultQueryModeFn =
     unsafe extern "C" fn(*mut VldbSqliteSearchResultHandle) -> *mut c_char;
 type SearchResultGetIdFn =
@@ -410,8 +407,7 @@ impl LoadedSqliteApi {
                 continue;
             }
 
-            let library =
-                unsafe { Library::new(&candidate) }.map_err(|error| error.to_string());
+            let library = unsafe { Library::new(&candidate) }.map_err(|error| error.to_string());
             match library {
                 Ok(library) => {
                     return unsafe { Self::from_library(candidate, library) };
@@ -461,10 +457,7 @@ impl LoadedSqliteApi {
             database_destroy: load_symbol!("vldb_sqlite_database_destroy", DatabaseDestroyFn),
             database_db_path: load_symbol!("vldb_sqlite_database_db_path", DatabaseDbPathFn),
             string_free: load_symbol!("vldb_sqlite_string_free", StringFreeFn),
-            last_error_message: load_symbol!(
-                "vldb_sqlite_last_error_message",
-                LastErrorMessageFn
-            ),
+            last_error_message: load_symbol!("vldb_sqlite_last_error_message", LastErrorMessageFn),
             clear_last_error: load_symbol!("vldb_sqlite_clear_last_error", ClearLastErrorFn),
             library_info_json: load_symbol!("vldb_sqlite_library_info_json", LibraryInfoJsonFn),
             database_execute_script: load_symbol!(
@@ -539,10 +532,7 @@ impl LoadedSqliteApi {
                 "vldb_sqlite_query_stream_get_chunk",
                 QueryStreamGetChunkFn
             ),
-            bytes_free: load_symbol!(
-                "vldb_sqlite_bytes_free",
-                BytesFreeFn
-            ),
+            bytes_free: load_symbol!("vldb_sqlite_bytes_free", BytesFreeFn),
             database_tokenize_text: load_symbol!(
                 "vldb_sqlite_database_tokenize_text",
                 DatabaseTokenizeTextFn
@@ -713,7 +703,11 @@ impl LoadedSqliteApi {
 
     /// 中文：调用无参 JSON FFI 接口并解析成 `serde_json::Value`。
     /// English: Invoke a zero-argument JSON FFI entrypoint and parse the response into `serde_json::Value`.
-    fn call_json_noarg(&self, function: LibraryInfoJsonFn, operation: &str) -> Result<Value, String> {
+    fn call_json_noarg(
+        &self,
+        function: LibraryInfoJsonFn,
+        operation: &str,
+    ) -> Result<Value, String> {
         unsafe {
             let response_ptr = function();
             let response_text = self.take_owned_string(response_ptr)?;
@@ -948,7 +942,11 @@ impl SqliteSkillBinding {
             })?;
             (self.api.query_json_result_destroy)(result_handle);
             drop(guard);
-            self.log_if_slow("query_json", started_at, Some(format!("rows={}", row_count)));
+            self.log_if_slow(
+                "query_json",
+                started_at,
+                Some(format!("rows={}", row_count)),
+            );
             Ok(json!({
                 "success": true,
                 "row_count": row_count,
@@ -1077,7 +1075,12 @@ impl SqliteSkillBinding {
             self.log_if_slow(
                 "query_stream_chunk",
                 started_at,
-                Some(format!("stream_id={} index={} bytes={}", stream_id, index, chunk.len())),
+                Some(format!(
+                    "stream_id={} index={} bytes={}",
+                    stream_id,
+                    index,
+                    chunk.len()
+                )),
             );
             Ok(json!({
                 "success": true,
@@ -1108,7 +1111,11 @@ impl SqliteSkillBinding {
         unsafe {
             (self.api.query_stream_destroy)(stream_handle);
             drop(guard);
-            self.log_if_slow("query_stream_close", started_at, Some(format!("stream_id={}", stream_id)));
+            self.log_if_slow(
+                "query_stream_close",
+                started_at,
+                Some(format!("stream_id={}", stream_id)),
+            );
             Ok(json!({
                 "success": true,
                 "stream_id": stream_id,
@@ -1121,7 +1128,8 @@ impl SqliteSkillBinding {
     /// English: Execute text tokenization and return a normalized result payload.
     pub fn tokenize_text_json(&self, input: &Value) -> Result<Value, String> {
         let tokenizer_mode = parse_tokenizer_mode(
-            input.get("tokenizer_mode")
+            input
+                .get("tokenizer_mode")
                 .or_else(|| input.get("mode"))
                 .and_then(Value::as_str)
                 .unwrap_or("none"),
@@ -1157,18 +1165,18 @@ impl SqliteSkillBinding {
                 return Err(error);
             }
 
-            let normalized_text = self
-                .api
-                .take_owned_string((self.api.tokenize_result_normalized_text)(handle))?;
+            let normalized_text =
+                self.api
+                    .take_owned_string((self.api.tokenize_result_normalized_text)(handle))?;
             let fts_query = self
                 .api
                 .take_owned_string((self.api.tokenize_result_fts_query)(handle))?;
             let token_count = (self.api.tokenize_result_token_count)(handle);
             let mut tokens = Vec::with_capacity(token_count as usize);
             for index in 0..token_count {
-                if let Some(token) = self
-                    .api
-                    .take_optional_string((self.api.tokenize_result_get_token)(handle, index))
+                if let Some(token) =
+                    self.api
+                        .take_optional_string((self.api.tokenize_result_get_token)(handle, index))
                 {
                     tokens.push(Value::String(token));
                 }
@@ -1273,7 +1281,11 @@ impl SqliteSkillBinding {
             }
             (self.api.custom_word_list_destroy)(list_handle);
             drop(guard);
-            self.log_if_slow("list_custom_words", started_at, Some(format!("count={}", len)));
+            self.log_if_slow(
+                "list_custom_words",
+                started_at,
+                Some(format!("count={}", len)),
+            );
             Ok(json!({
                 "success": true,
                 "total": len,
@@ -1287,12 +1299,16 @@ impl SqliteSkillBinding {
     pub fn ensure_fts_index_json(&self, input: &Value) -> Result<Value, String> {
         let index_name = require_string_field(input, "index_name")?;
         let tokenizer_mode = parse_tokenizer_mode(
-            input.get("tokenizer_mode")
+            input
+                .get("tokenizer_mode")
                 .or_else(|| input.get("mode"))
                 .and_then(Value::as_str)
                 .unwrap_or("none"),
         )?;
-        self.log_info("ensure_fts_index", Some(format!("index_name={}", index_name)));
+        self.log_info(
+            "ensure_fts_index",
+            Some(format!("index_name={}", index_name)),
+        );
         let started_at = Instant::now();
         let guard = self.lock_handles()?;
         let index_cstr = to_cstring(index_name, "index_name")?;
@@ -1323,12 +1339,16 @@ impl SqliteSkillBinding {
     pub fn rebuild_fts_index_json(&self, input: &Value) -> Result<Value, String> {
         let index_name = require_string_field(input, "index_name")?;
         let tokenizer_mode = parse_tokenizer_mode(
-            input.get("tokenizer_mode")
+            input
+                .get("tokenizer_mode")
                 .or_else(|| input.get("mode"))
                 .and_then(Value::as_str)
                 .unwrap_or("none"),
         )?;
-        self.log_info("rebuild_fts_index", Some(format!("index_name={}", index_name)));
+        self.log_info(
+            "rebuild_fts_index",
+            Some(format!("index_name={}", index_name)),
+        );
         let started_at = Instant::now();
         let guard = self.lock_handles()?;
         let index_cstr = to_cstring(index_name, "index_name")?;
@@ -1361,7 +1381,8 @@ impl SqliteSkillBinding {
     pub fn upsert_fts_document_json(&self, input: &Value) -> Result<Value, String> {
         let index_name = require_string_field(input, "index_name")?;
         let tokenizer_mode = parse_tokenizer_mode(
-            input.get("tokenizer_mode")
+            input
+                .get("tokenizer_mode")
                 .or_else(|| input.get("mode"))
                 .and_then(Value::as_str)
                 .unwrap_or("none"),
@@ -1449,7 +1470,8 @@ impl SqliteSkillBinding {
     pub fn search_fts_json(&self, input: &Value) -> Result<Value, String> {
         let index_name = require_string_field(input, "index_name")?;
         let tokenizer_mode = parse_tokenizer_mode(
-            input.get("tokenizer_mode")
+            input
+                .get("tokenizer_mode")
                 .or_else(|| input.get("mode"))
                 .and_then(Value::as_str)
                 .unwrap_or("none"),
@@ -1530,14 +1552,14 @@ impl SqliteSkillBinding {
     fn log_info(&self, operation: &str, extra: Option<String>) {
         if self.config.log_level == SkillSqliteLogLevel::Info {
             match extra {
-                Some(extra) => eprintln!(
+                Some(extra) => log_info(format!(
                     "[Sqlite:info] skill={} db={} op={} {}",
                     self.skill_name, self.skill_dir_name, operation, extra
-                ),
-                None => eprintln!(
+                )),
+                None => log_info(format!(
                     "[Sqlite:info] skill={} db={} op={}",
                     self.skill_name, self.skill_dir_name, operation
-                ),
+                )),
             }
         }
     }
@@ -1553,14 +1575,14 @@ impl SqliteSkillBinding {
             return;
         }
         match extra {
-            Some(extra) => eprintln!(
+            Some(extra) => log_info(format!(
                 "[Sqlite:slow] skill={} db={} op={} elapsed_ms={} {}",
                 self.skill_name, self.skill_dir_name, operation, elapsed_ms, extra
-            ),
-            None => eprintln!(
+            )),
+            None => log_info(format!(
                 "[Sqlite:slow] skill={} db={} op={} elapsed_ms={}",
                 self.skill_name, self.skill_dir_name, operation, elapsed_ms
-            ),
+            )),
         }
     }
 
@@ -1571,10 +1593,10 @@ impl SqliteSkillBinding {
             self.config.log_level,
             SkillSqliteLogLevel::Info | SkillSqliteLogLevel::Warning
         ) {
-            eprintln!(
+            log_warn(format!(
                 "[Sqlite:warn] skill={} db={} op={} message={}",
                 self.skill_name, self.skill_dir_name, operation, message
-            );
+            ));
         }
     }
 
@@ -1637,7 +1659,8 @@ impl SqliteSkillHost {
         config: SkillSqliteMeta,
     ) -> Result<Arc<SqliteSkillBinding>, String> {
         let mut guard = self.skills.lock().map_err(|_| {
-            "failed to acquire SQLite skill registry lock / 获取 SQLite 技能注册表锁失败".to_string()
+            "failed to acquire SQLite skill registry lock / 获取 SQLite 技能注册表锁失败"
+                .to_string()
         })?;
         if let Some(existing) = guard.get(skill_name) {
             return Ok(existing.clone());
@@ -1688,9 +1711,11 @@ impl SqliteSkillHost {
             return Err(self.api.take_last_error_message());
         }
 
-        let resolved_path =
-            unsafe { self.api.take_owned_string((self.api.database_db_path)(database)) }
-                .unwrap_or(database_path.clone());
+        let resolved_path = unsafe {
+            self.api
+                .take_owned_string((self.api.database_db_path)(database))
+        }
+        .unwrap_or(database_path.clone());
 
         let binding = Arc::new(SqliteSkillBinding {
             api: self.api.clone(),
@@ -1936,7 +1961,10 @@ fn build_owned_ffi_value_matrix(
 
 /// 中文：把 JSON/ Lua 标量参数转换为宿主内部 SQLite 参数值。
 /// English: Convert a JSON/Lua scalar parameter into the host-side SQLite parameter representation.
-fn parse_scalar_sqlite_param(value: &Value, field_name: &str) -> Result<HostSqliteParamValue, String> {
+fn parse_scalar_sqlite_param(
+    value: &Value,
+    field_name: &str,
+) -> Result<HostSqliteParamValue, String> {
     match value {
         Value::Null => Ok(HostSqliteParamValue::Null),
         Value::Bool(flag) => Ok(HostSqliteParamValue::Bool(*flag)),
@@ -1974,37 +2002,54 @@ fn parse_typed_sqlite_param(
     object: &serde_json::Map<String, Value>,
     field_name: &str,
 ) -> Result<HostSqliteParamValue, String> {
-    let kind = object
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            format!(
-                "{}.kind is required for typed parameters / typed 参数必须提供 {}.kind",
-                field_name, field_name
-            )
-        })?;
+    let kind = object.get("kind").and_then(Value::as_str).ok_or_else(|| {
+        format!(
+            "{}.kind is required for typed parameters / typed 参数必须提供 {}.kind",
+            field_name, field_name
+        )
+    })?;
     match kind.trim().to_ascii_lowercase().as_str() {
         "null" => Ok(HostSqliteParamValue::Null),
         "bool" => object
             .get("value")
             .and_then(Value::as_bool)
             .map(HostSqliteParamValue::Bool)
-            .ok_or_else(|| format!("{}.value must be a bool / {}.value 必须是布尔值", field_name, field_name)),
+            .ok_or_else(|| {
+                format!(
+                    "{}.value must be a bool / {}.value 必须是布尔值",
+                    field_name, field_name
+                )
+            }),
         "int64" => object
             .get("value")
             .and_then(Value::as_i64)
             .map(HostSqliteParamValue::Int64)
-            .ok_or_else(|| format!("{}.value must be an int64 / {}.value 必须是 int64", field_name, field_name)),
+            .ok_or_else(|| {
+                format!(
+                    "{}.value must be an int64 / {}.value 必须是 int64",
+                    field_name, field_name
+                )
+            }),
         "float64" => object
             .get("value")
             .and_then(Value::as_f64)
             .map(HostSqliteParamValue::Float64)
-            .ok_or_else(|| format!("{}.value must be a float64 / {}.value 必须是 float64", field_name, field_name)),
+            .ok_or_else(|| {
+                format!(
+                    "{}.value must be a float64 / {}.value 必须是 float64",
+                    field_name, field_name
+                )
+            }),
         "string" => object
             .get("value")
             .and_then(Value::as_str)
             .map(|value| HostSqliteParamValue::String(value.to_string()))
-            .ok_or_else(|| format!("{}.value must be a string / {}.value 必须是字符串", field_name, field_name)),
+            .ok_or_else(|| {
+                format!(
+                    "{}.value must be a string / {}.value 必须是字符串",
+                    field_name, field_name
+                )
+            }),
         "bytes" => {
             if let Some(base64_value) = object.get("base64").and_then(Value::as_str) {
                 let decoded = BASE64_STANDARD.decode(base64_value).map_err(|error| {
@@ -2085,7 +2130,10 @@ fn parse_legacy_params_json_text(params_json: &str) -> Result<Vec<HostSqlitePara
 /// 中文：从统一输入对象中解析单条 SQL 的参数列表。
 /// English: Parse the parameter list for a single SQL request from the unified input object.
 fn parse_single_sql_params(input: &Value) -> Result<Vec<HostSqliteParamValue>, String> {
-    let params_json = input.get("params_json").and_then(Value::as_str).unwrap_or("");
+    let params_json = input
+        .get("params_json")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if let Some(params_value) = input.get("params") {
         if !params_json.trim().is_empty() {
             return Err(
@@ -2093,9 +2141,9 @@ fn parse_single_sql_params(input: &Value) -> Result<Vec<HostSqliteParamValue>, S
                     .to_string(),
             );
         }
-        let params_array = params_value.as_array().ok_or_else(|| {
-            "params must be an array / params 必须是数组".to_string()
-        })?;
+        let params_array = params_value
+            .as_array()
+            .ok_or_else(|| "params must be an array / params 必须是数组".to_string())?;
         return params_array
             .iter()
             .enumerate()

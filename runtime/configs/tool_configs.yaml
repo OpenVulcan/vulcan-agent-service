@@ -6,10 +6,5 @@
 
 vulcan-codekit:
   bytes_per_token: 3
-  bytes_per_line: 120
   unlimited_bytes_cap: 204800
-  budget_scope: "tool_output"
-  preview_fields:
-    - "inline_bytes_limit"
-    - "bytes"
-    - "lines"
+  budget_scope: "tool_result"

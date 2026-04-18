@@ -97,17 +97,16 @@ skill 名称。
 - `lua_entry`
 - `lua_module`
 - `parameters`
-- `return_type`
 - `prompt`
 
 ### `lua_entry`
 
-Lua 文件路径，相对于当前 skill 目录。
+Lua 文件路径，相对于当前 skill 目录，且工具入口必须位于 `tools/` 目录。
 
 例如：
 
-- `main.lua`
-- `main_summary.lua`
+- `tools/demo_template_tool.lua`
+- `tools/demo_template_summary.lua`
 
 ### `lua_module`
 
@@ -162,7 +161,7 @@ Lua 文件路径，相对于当前 skill 目录。
    - group 名称
    - tool 名称
    - prompt/resource/template 名称
-3. 再替换 `main.lua` / `main_summary.lua`
+3. 再替换 `tools/demo_template_tool.lua` / `tools/demo_template_summary.lua`
 4. 最后删掉不需要的演示文件
 
 ## 什么时候再考虑 YAML

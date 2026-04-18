@@ -70,14 +70,18 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：获取当前 skill 目录，优先使用宿主注入的 `__skill_dir_codekit_patch`。
-English: Resolve the current skill directory, preferring the host-injected `__skill_dir_codekit_patch`.
+中文：获取宿主注入的当前 skill 目录。
+English: Resolve the current skill directory injected by the host.
 
 返回 / Returns:
 - string: 当前 skill 目录 / Current skill directory.
 ]]
 local function get_skill_dir()
-    return __skill_dir_codekit_patch or "."
+    return tostring(vulcan.skill_dir or ".")
+end
+
+local function get_entry_dir()
+    return tostring(vulcan.entry_dir or get_skill_dir())
 end
 
 --[[
@@ -93,7 +97,7 @@ local function load_ast_runtime_helpers()
         return AST_RUNTIME_HELPERS, nil
     end
 
-    local ast_entry_path = vulcan.path_join(get_skill_dir(), "main.lua")
+    local ast_entry_path = vulcan.path_join(get_entry_dir(), "codekit-ast-detail.lua")
     local chunk, load_error = loadfile(ast_entry_path)
     if not chunk then
         return nil, {
@@ -205,6 +209,113 @@ local function validate_mode_absence(value)
         }
     end
     return nil
+end
+
+--[[
+中文：把结构化错误对象渲染成适合 AI 直接消费的 Markdown 文本，避免宿主再看到 Lua table。
+English: Render a structured error object into AI-friendly Markdown text so the host never receives a Lua table.
+
+参数 / Parameters:
+- error_payload(table|nil): 内部错误对象 / Internal structured error object.
+
+返回 / Returns:
+- string: Markdown 格式的错误文本 / Markdown-formatted error text.
+]]
+local function render_patch_error(error_payload)
+    local payload = type(error_payload) == "table" and error_payload or {
+        error = "unknown_patch_error",
+        message = tostring(error_payload or "unknown patch error"),
+    }
+
+    local lines = {
+        "# PATCH ERROR",
+        string.format("- error: `%s`", tostring(payload.error or "unknown_patch_error")),
+        string.format("- message: %s", tostring(payload.message or "unknown patch error")),
+    }
+
+    if payload.file then
+        table.insert(lines, string.format("- file: `%s`", tostring(payload.file)))
+    end
+    if payload.selector then
+        table.insert(lines, string.format("- selector: `%s`", tostring(payload.selector)))
+    end
+    if payload.helper then
+        table.insert(lines, string.format("- helper: `%s`", tostring(payload.helper)))
+    end
+    if payload.path then
+        table.insert(lines, string.format("- path: `%s`", tostring(payload.path)))
+    end
+    if payload.temp_file then
+        table.insert(lines, string.format("- temp_file: `%s`", tostring(payload.temp_file)))
+    end
+    if payload.backup_file then
+        table.insert(lines, string.format("- backup_file: `%s`", tostring(payload.backup_file)))
+    end
+
+    if type(payload.candidates) == "table" and #payload.candidates > 0 then
+        table.insert(lines, "")
+        table.insert(lines, "## Candidates")
+        for _, candidate in ipairs(payload.candidates) do
+            local descriptor = tostring((candidate and candidate.path) or "unknown")
+            local signature = trim((candidate and candidate.signature) or "")
+            local start_line = tonumber(candidate and candidate.start_line)
+            local end_line = tonumber(candidate and candidate.end_line)
+            local location = nil
+            if start_line and end_line then
+                location = string.format("L%d-%d", start_line, end_line)
+            elseif start_line then
+                location = string.format("L%d", start_line)
+            end
+            if signature ~= "" then
+                descriptor = string.format("%s | `%s`", descriptor, signature)
+            end
+            if location then
+                descriptor = string.format("%s | %s", descriptor, location)
+            end
+            table.insert(lines, string.format("- %s", descriptor))
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+--[[
+中文：把成功 patch 的结构化结果渲染成 Markdown 文本，便于 AI 直接理解修改落点。
+English: Render the successful patch result into Markdown text so the AI can immediately understand what was changed.
+
+参数 / Parameters:
+- result_payload(table|nil): patch 成功后的结构化结果 / Structured success payload after patching.
+
+返回 / Returns:
+- string: Markdown 格式的成功文本 / Markdown-formatted success text.
+]]
+local function render_patch_success(result_payload)
+    local payload = type(result_payload) == "table" and result_payload or {}
+    local patched_node = type(payload.patched_node) == "table" and payload.patched_node or {}
+
+    local lines = {
+        "# PATCH APPLIED",
+        string.format("- success: `%s`", tostring(payload.success == true)),
+    }
+
+    if payload.file then
+        table.insert(lines, string.format("- file: `%s`", tostring(payload.file)))
+    end
+    if payload.selector then
+        table.insert(lines, string.format("- selector: `%s`", tostring(payload.selector)))
+    end
+
+    table.insert(lines, "")
+    table.insert(lines, "## Patched Node")
+    table.insert(lines, string.format("- path: `%s`", tostring(patched_node.path or "unknown")))
+    table.insert(lines, string.format("- signature: `%s`", tostring(patched_node.signature or "")))
+    if patched_node.start_line and patched_node.end_line then
+        table.insert(lines, string.format("- lines: `L%d-%d`", tonumber(patched_node.start_line) or 0, tonumber(patched_node.end_line) or 0))
+    elseif patched_node.start_line then
+        table.insert(lines, string.format("- lines: `L%d`", tonumber(patched_node.start_line) or 0))
+    end
+
+    return table.concat(lines, "\n")
 end
 
 --[[
@@ -981,42 +1092,42 @@ end
 return function(args)
     local helper_bundle, helper_error = load_ast_runtime_helpers()
     if helper_error then
-        return helper_error
+        return render_patch_error(helper_error)
     end
 
     local file_path, file_error = validate_file_argument(args and args.file)
     if file_error then
-        return file_error
+        return render_patch_error(file_error)
     end
 
     local selector, selector_error = validate_selector_argument(args and args.selector)
     if selector_error then
-        return selector_error
+        return render_patch_error(selector_error)
     end
 
     local replacement_text, replacement_error = validate_replacement_argument(args and args.replacement)
     if replacement_error then
-        return replacement_error
+        return render_patch_error(replacement_error)
     end
 
     local mode_error = validate_mode_absence(args and args.mode)
     if mode_error then
-        return mode_error
+        return render_patch_error(mode_error)
     end
 
     local symbol_roots, _, ast_error = collect_ast_for_file(file_path, helper_bundle)
     if ast_error then
-        return ast_error
+        return render_patch_error(ast_error)
     end
 
     local matches = find_matching_patch_targets(symbol_roots, selector)
     if #matches == 0 then
-        return {
+        return render_patch_error({
             error = "selector_not_found",
             message = "no patchable function matched the selector",
             file = file_path,
             selector = selector,
-        }
+        })
     end
 
     if #matches > 1 then
@@ -1033,18 +1144,18 @@ return function(args)
             end
             return (left.start_line or 0) < (right.start_line or 0)
         end)
-        return {
+        return render_patch_error({
             error = "ambiguous_selector",
             message = "multiple patchable functions matched the selector; retry with a more specific structural path",
             file = file_path,
             selector = selector,
             candidates = candidates,
-        }
+        })
     end
 
     local result, patch_error = apply_patch_to_symbol(file_path, matches[1], replacement_text)
     if patch_error then
-        return patch_error
+        return render_patch_error(patch_error)
     end
-    return result
+    return render_patch_success(result)
 end

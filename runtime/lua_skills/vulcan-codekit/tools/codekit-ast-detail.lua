@@ -56,14 +56,10 @@ local MAX_EXPLICIT_FILES = 20
 local MAX_INLINE_RESULT_BYTES = 10000
 local MAX_HEADER_LINES = 4
 local MAX_COMMENT_SUMMARY_BYTES = 100
-local DEFAULT_AST_CLIENT_CHAR_LIMIT = 10000
-local CURRENT_AST_CLIENT_CHAR_LIMIT = DEFAULT_AST_CLIENT_CHAR_LIMIT
 local AST_GREP_TIMEOUT_MS = 30000
 local CURRENT_WORKING_DIRECTORY = nil
-local LARGE_RESULT_NOTICE_TEMPLATE = "If this MCP response is truncated by a client-side length limit, the complete result has already been written to %s. Open that file directly."
 local LFS_MODULE = nil
 local SHARED_LENGTH_HELPERS = nil
-local SHARED_OVERFLOW_HELPERS = nil
 local load_shared_length_helpers
 local DEFAULT_SOURCE_LANGUAGES = {
     bash = true,
@@ -116,16 +112,15 @@ local function starts_with(text, prefix)
 end
 
 --[[
-中文：在单次工具调用开始时初始化当前客户端的 AST 字符预算。
-English: Initialize the current client's AST character budget at the start of each tool call.
+中文：在单次工具调用开始时初始化当前客户端的 AST 预算。
+English: Initialize the current AST budget for this tool call.
 ]]
-local function initialize_ast_client_char_limit()
+local function initialize_ast_client_budget()
     local helpers, helper_error = load_shared_length_helpers()
     if helper_error then
         return nil, helper_error
     end
-    CURRENT_AST_CLIENT_CHAR_LIMIT = helpers.initialize_client_char_limit(vulcan)
-    return CURRENT_AST_CLIENT_CHAR_LIMIT, nil
+    return helpers.initialize_client_budget(vulcan)
 end
 
 --[[
@@ -431,21 +426,29 @@ local function should_ignore_entry(full_path, entry_name, is_directory, active_i
     return ignored
 end
 
--- 路径与语言解析 / Resolve skill-relative paths and normalize language keys.
+-- 路径与语言解析 / Resolve host-injected runtime paths and normalize language keys.
 local function get_skill_dir()
-    return __skill_dir_codekit_ast_detail or "."
+    return tostring(vulcan.skill_dir or ".")
+end
+
+local function get_entry_dir()
+    return tostring(vulcan.entry_dir or get_skill_dir())
+end
+
+local function get_entry_file()
+    return tostring(vulcan.entry_file or vulcan.path_join(get_entry_dir(), "codekit-ast-detail.lua"))
 end
 
 --[[
-中文：懒加载共享长度规则模块，让多个 codekit 工具复用同一套客户端字符预算映射。
-English: Lazily load the shared length-policy module so multiple codekit tools reuse one client budget mapping.
+中文：懒加载共享预算模块，让多个 codekit 工具复用同一套 MCP 输出/读取预算映射。
+English: Lazily load the shared budget module so multiple codekit tools reuse one MCP output/read budget mapping.
 ]]
 load_shared_length_helpers = function()
     if SHARED_LENGTH_HELPERS then
         return SHARED_LENGTH_HELPERS, nil
     end
 
-    local helper_path = vulcan.path_join(get_skill_dir(), "shared_length.lua")
+    local helper_path = vulcan.path_join(get_entry_dir(), "shared_length.lua")
     local chunk, load_error = loadfile(helper_path)
     if not chunk then
         return nil, {
@@ -466,38 +469,6 @@ load_shared_length_helpers = function()
 
     SHARED_LENGTH_HELPERS = helpers
     return SHARED_LENGTH_HELPERS, nil
-end
-
---[[
-中文：懒加载共享 overflow 模块，让 detail/tree/rg 复用同一套超限判定与 raw file pointer 输出协议。
-English: Lazily load the shared overflow module so detail/tree/rg reuse the same overflow policy and raw-file pointer protocol.
-]]
-local function load_shared_overflow_helpers()
-    if SHARED_OVERFLOW_HELPERS then
-        return SHARED_OVERFLOW_HELPERS, nil
-    end
-
-    local helper_path = vulcan.path_join(get_skill_dir(), "shared_overflow.lua")
-    local chunk, load_error = loadfile(helper_path)
-    if not chunk then
-        return nil, {
-            error = "shared_overflow_load_failed",
-            message = tostring(load_error),
-            path = helper_path,
-        }
-    end
-
-    local ok, helpers = pcall(chunk)
-    if not ok or type(helpers) ~= "table" then
-        return nil, {
-            error = "shared_overflow_invalid",
-            message = ok and "shared_overflow.lua did not return a table" or tostring(helpers),
-            path = helper_path,
-        }
-    end
-
-    SHARED_OVERFLOW_HELPERS = helpers
-    return SHARED_OVERFLOW_HELPERS, nil
 end
 
 --[[
@@ -1385,49 +1356,6 @@ end
 中文：确保输出文件的父目录存在，并把文本内容写入目标文件。
 English: Ensure the parent directory exists and then write the text content to the target file.
 ]]
-local function write_text_file(file_path, content)
-    local parent_directory = get_parent_directory(file_path)
-    if parent_directory then
-        local ensured, ensure_error = ensure_directory(parent_directory)
-        if not ensured then
-            return nil, ensure_error
-        end
-    end
-
-    local ok, write_error = pcall(vulcan.fs_write, file_path, tostring(content or ""))
-    if not ok then
-        return nil, {
-            error = "file_write_failed",
-            message = tostring(write_error),
-            file = file_path,
-        }
-    end
-    return file_path, nil
-end
-
---[[
-中文：构造结果落盘目录，统一使用宿主提供的 MCP 临时目录，避免把缓存写入工作目录干扰模型判断。
-English: Resolve the spill directory using only the host-provided MCP temp directory so cache files never pollute the workspace.
-]]
-local function resolve_large_result_directory()
-    local temp_root = trim(vulcan.temp_dir or "")
-    if temp_root == "" then
-        return nil, {
-            error = "temp_dir_unavailable",
-            message = "vulcan.temp_dir is unavailable; cannot spill large outputs",
-        }
-    end
-    return vulcan.path_join(temp_root, "mcp", "cache"), nil
-end
-
-local function build_spill_file_id(prefix)
-    return string.format("%s_%d_%06d", tostring(prefix or "result"), os.time(), math.floor((os.clock() % 1) * 1000000))
-end
-
-local function build_large_result_notice(full_output_path)
-    return string.format(LARGE_RESULT_NOTICE_TEMPLATE, full_output_path)
-end
-
 local function shallow_copy_object(source)
     local copied = {}
     for key, value in pairs(source or {}) do
@@ -1503,24 +1431,11 @@ local function build_ast_detail_text(result)
 end
 
 --[[
-中文：根据共享 overflow 协议决定是否内联返回 detail 文本；超限时仅返回 raw file 指针与安全分块读取计划。
-English: Use the shared overflow protocol to decide whether AST detail text stays inline; when oversized, return only the raw-file pointer plus the safe chunked read plan.
+中文：完成 AST detail 正文输出；超限策略不再由 Lua 决定，而是交给 MCP 宿主统一处理。
+English: Finalize the AST detail body; overflow strategy is no longer decided by Lua and is delegated to the MCP host.
 ]]
 local function finalize_ast_detail_content(markdown_text, summary_lines)
-    local helpers, helper_error = load_shared_overflow_helpers()
-    if helper_error then
-        return helper_error
-    end
-
-    return helpers.finalize_large_result({
-        content = markdown_text,
-        client_char_limit = CURRENT_AST_CLIENT_CHAR_LIMIT,
-        file_prefix = "codekit_ast_detail",
-        resolve_large_result_directory = resolve_large_result_directory,
-        build_spill_file_id = build_spill_file_id,
-        write_text_file = write_text_file,
-        summary_lines = summary_lines or {},
-    })
+    return tostring(markdown_text or ""), vulcan.overflow_type.page
 end
 
 -- 文件读取与 capture 提取 / Cache file content and decode ast-grep captures.
@@ -2418,7 +2333,7 @@ end
 
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
-    local _, client_limit_error = initialize_ast_client_char_limit()
+    local _, client_limit_error = initialize_ast_client_budget()
     if client_limit_error then
         return client_limit_error
     end

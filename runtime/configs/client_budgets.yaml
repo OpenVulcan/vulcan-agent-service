@@ -3,39 +3,49 @@
 
 defaults:
   estimation:
-    # 中文：默认 tokens -> bytes 折算倍率；工具若需要覆盖，可在 tool_configs.yaml 中声明同名字段。
-    # English: Default tokens -> bytes multiplier. Tools may override it in tool_configs.yaml using the same field name.
+    # 中文：仅当客户端本身使用 tokens 计量时，才按该倍率折算成 bytes。
+    # English: Only used when a client itself expresses limits in tokens; the value is converted into bytes with this multiplier.
     bytes_per_token: 3
-    # 中文：默认 lines -> bytes 折算倍率；工具若需要覆盖，可在 tool_configs.yaml 中声明同名字段。
-    # English: Default lines -> bytes multiplier. Tools may override it in tool_configs.yaml using the same field name.
-    bytes_per_line: 120
-    # 中文：当外部配置显式“不限”时，实际对 Lua 暴露的字节上限封顶；工具若需要覆盖，可在 tool_configs.yaml 中声明同名字段。
-    # English: Hard byte cap exposed to Lua when an external config explicitly says "unlimited". Tools may override it in tool_configs.yaml using the same field name.
+    # 中文：宿主在向 Lua 暴露实际字节预算前预留的安全比例，默认保留 5% 余量。
+    # English: Safety ratio applied by the host before exposing the effective byte budget to Lua, reserving 5% headroom by default.
+    safe_bytes_ratio: 0.95
+    # 中文：当客户端配置显式为不限时，实际对 Lua 暴露的字节上限默认封顶 200KB。
+    # English: When a client explicitly declares "unlimited", the actual byte cap exposed to Lua defaults to 200KB.
     unlimited_bytes_cap: 204800
   budgets:
-    tool_output:
+    tool_result:
       bytes:
-        default:
-          state: limited
-          value: 10000
+        default: 10000
+      lines:
+        default: -1
 
 clients:
   # 中文：以下客户端匹配规则复刻自 vulcan-codekit 原始已验证逻辑。
   # English: The client match rules below replicate the original validated logic from vulcan-codekit.
+  - pattern: "VulcanMcpTest"
+    budgets:
+      tool_result:
+        bytes:
+          default: 10000
+        lines:
+          default: -1
+      file_read:
+        bytes:
+          default: 10000
+        lines:
+          default: -1
+
   - pattern: "*qwen*"
     budgets:
-      tool_output:
+      tool_result:
         bytes:
-          default:
-            state: limited
-            value: 25000
+          default: 25000
           config_sources:
             - type: json
               path: "~/.qwen/settings.json"
               field: "tools.truncateToolOutputThreshold"
         lines:
-          default:
-            state: unset
+          default: -1
           config_sources:
             - type: json
               path: "~/.qwen/settings.json"
@@ -43,11 +53,9 @@ clients:
 
   - pattern: "codex-mcp-client"
     budgets:
-      tool_output:
+      tool_result:
         tokens:
-          default:
-            state: limited
-            value: 3334
+          default: 3334
           config_sources:
             - type: toml
               path: "~/.codex/config.toml"
@@ -55,31 +63,23 @@ clients:
 
   - pattern: "*claude-code*"
     budgets:
-      tool_output:
+      tool_result:
         tokens:
-          default:
-            state: limited
-            value: 16667
+          default: 16667
           config_sources:
             - type: env
               key: "MAX_MCP_OUTPUT_TOKENS"
       file_read:
         tokens:
-          default:
-            state: limited
-            value: 16667
+          default: 16667
           config_sources:
             - type: env
               key: "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"
 
   - pattern: "*opencode*"
     budgets:
-      tool_output:
+      tool_result:
         lines:
-          default:
-            state: limited
-            value: 2000
+          default: 2000
         bytes:
-          default:
-            state: limited
-            value: 51200
+          default: 51200

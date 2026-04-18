@@ -9,7 +9,7 @@ Copy workflow:
 4. Replace the sample Lua files, resources, prompts, and templates with your actual logic.
 
 Template coverage:
-- `main.lua`: sample tool entry
+- `tools/demo_template_tool.lua`: sample tool entry
 - `resources/guide.md`: static resource example
 - `resources/dynamic_guide.lua`: Lua-generated resource example
 - `templates/example.md`: static resource-template example

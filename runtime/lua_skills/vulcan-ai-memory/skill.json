@@ -15,7 +15,7 @@
         {
           "name": "vulcan-ai-memory-lancedb-test",
           "description": "Verify the host-managed LanceDB binding for vulcan-ai-memory by creating a demo table, upserting one vector row, and performing one vector search.",
-          "lua_entry": "main.lua",
+          "lua_entry": "tools/vulcan-ai-memory-lancedb-test.lua",
           "lua_module": "vulcan_ai_memory_lancedb_test",
           "parameters": [
             {
@@ -43,7 +43,6 @@
               "required": false
             }
           ],
-          "return_type": "table",
           "prompt": "Use this to verify that the current skill receives a working host-managed LanceDB instance under __lancedb/vulcan-ai-memory."
         }
       ]

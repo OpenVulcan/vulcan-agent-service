@@ -1,3 +1,4 @@
+use crate::runtime_logging::info as log_info;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
@@ -186,20 +187,20 @@ fn ensure_one_dependency(
     let asset_name = resolved_target.asset_name.clone();
     let download_url = render_download_url(&dependency.github, &tag, &version, &asset_name);
 
-    eprintln!(
+    log_info(format!(
         "[LuaSkill:deps] Resolving {} from {} at tag {}",
         dependency.name, dependency.github.repo, tag
-    );
+    ));
 
     let download_path = download_with_progress(client, &download_url, &asset_name, tools_bin_dir)?;
     install_downloaded_asset(&download_path, &resolved_target, &install_path)?;
     cleanup_download_file(&download_path);
 
-    eprintln!(
+    log_info(format!(
         "[LuaSkill:deps] Installed {} -> {}",
         dependency.name,
         install_path.display()
-    );
+    ));
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 use serde::Serialize;
-use serde_json::{Map, Value};
 #[cfg(test)]
 use serde_json::json;
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -90,7 +90,6 @@ pub fn resolve_tool_estimation_override(skill_name: Option<&str>) -> ToolEstimat
 
     ToolEstimationOverride {
         bytes_per_token: object.get("bytes_per_token").and_then(value_as_u64),
-        bytes_per_line: object.get("bytes_per_line").and_then(value_as_u64),
         unlimited_bytes_cap: object.get("unlimited_bytes_cap").and_then(value_as_u64),
     }
 }
@@ -100,7 +99,6 @@ pub fn resolve_tool_estimation_override(skill_name: Option<&str>) -> ToolEstimat
 #[derive(Debug, Clone, Default)]
 pub struct ToolEstimationOverride {
     pub bytes_per_token: Option<u64>,
-    pub bytes_per_line: Option<u64>,
     pub unlimited_bytes_cap: Option<u64>,
 }
 
@@ -208,10 +206,8 @@ fn validate_flat_tool_value(value: &Value) -> Result<(), String> {
                 match item {
                     Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
                     _ => {
-                        return Err(
-                            "arrays may only contain scalar values / 数组只能包含标量值"
-                                .to_string(),
-                        )
+                        return Err("arrays may only contain scalar values / 数组只能包含标量值"
+                            .to_string());
                     }
                 }
             }

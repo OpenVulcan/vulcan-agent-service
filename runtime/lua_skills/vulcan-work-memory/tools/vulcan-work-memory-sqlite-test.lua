@@ -36,16 +36,16 @@ end
 --- 中文：工具主入口，验证宿主管理 SQLite 的通用 SQL 与 FTS 能力闭环。
 --- English: Main tool entry that verifies both generic SQL and FTS flows for the host-managed SQLite integration.
 --- @param args table|nil 工具参数 / Tool arguments.
---- @return table
+--- @return string
 return function(args)
     local status = get_sqlite_status()
     if not status.enabled then
-        return {
+        return vulcan.json_encode({
             ok = false,
             error = "sqlite_not_enabled",
             message = tostring(status.reason or "current skill has not enabled sqlite"),
             status = status,
-        }
+        })
     end
 
     local note, created_at = build_default_note()
@@ -126,7 +126,7 @@ return function(args)
 
     local dictionary_result = vulcan.sqlite.list_custom_words()
 
-    return {
+    return vulcan.json_encode({
         ok = true,
         message = "Host-managed SQLite generic SQL and FTS test completed for vulcan-work-memory.",
         status = status,
@@ -148,5 +148,5 @@ return function(args)
             title = title,
             content = content,
         },
-    }
+    })
 end

@@ -9,14 +9,16 @@ mod lua_engine;
 mod lua_skill;
 #[allow(dead_code)]
 mod protocol;
+mod runtime_logging;
 mod server;
 #[allow(dead_code)]
 mod session;
 mod skill_dependency;
 mod sqlite_host;
 mod temp_maintenance;
-mod tool_config;
 mod tool_cache;
+mod tool_config;
+mod tool_result_format;
 
 pub mod pb_vmm {
     tonic::include_proto!("vmm.v1");
@@ -27,25 +29,34 @@ pub mod pb_mcp {
 }
 
 use client_budget::preload_client_budget_config;
+use client_budget::resolve_client_budget_snapshot;
 use config::Config;
 use lua_engine::{LuaEngine, LuaVmPoolConfig};
+use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext};
+use runtime_logging::{info as log_info, set_non_error_logging_enabled};
 use serde_json::{Value, json};
 use server::McpServer;
 use temp_maintenance::{CleanupTrigger, maintain_runtime_temp_dir, spawn_cross_day_cleanup_task};
-use tool_config::preload_tool_configs;
 use tool_cache::ToolCacheConfig;
 use tool_cache::configure_global_tool_cache;
+use tool_config::preload_tool_configs;
+use tool_result_format::{ToolCallOutput, render_tool_result_text};
 
-/// 中文：将 `--call-tools` 结果按类型输出；基础标量原样打印，数组和对象保持 JSON 形式。
-/// English: Print `--call-tools` results by type; emit scalar values verbatim while keeping arrays/objects as JSON.
-fn print_call_tools_result(value: &Value) -> Result<(), Box<dyn std::error::Error>> {
-    match value {
-        Value::String(text) => println!("{}", text),
-        Value::Number(number) => println!("{}", number),
-        Value::Bool(flag) => println!("{}", flag),
-        Value::Null => println!("null"),
-        Value::Array(_) | Value::Object(_) => println!("{}", serde_json::to_string_pretty(value)?),
-    }
+/// 中文：输出 `--call-tools` 的最终结果。
+/// 调试模式同样会注入模拟客户端上下文，因此预算解析也必须基于同一份请求上下文完成。
+/// English: Print the final `--call-tools` result.
+/// The debug mode also injects a simulated client context, so budget resolution must use the same request context.
+fn print_call_tools_result(
+    value: &ToolCallOutput,
+    skill_name: Option<&str>,
+    tool_name: Option<&str>,
+    request_context: Option<&RequestContext>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client_budget = resolve_client_budget_snapshot(request_context, tool_name, skill_name);
+    println!(
+        "{}",
+        render_tool_result_text(value, skill_name, Some(&client_budget))
+    );
     Ok(())
 }
 
@@ -60,18 +71,25 @@ fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadRepor
             let Some(scope_detail) = scope_value.as_object() else {
                 continue;
             };
-            let bytes = scope_detail.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+            let bytes = scope_detail
+                .get("bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             let source_summary = scope_detail
                 .get("source")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            let raw_tokens = scope_detail.get("raw_tokens").and_then(Value::as_u64);
-            let raw_bytes = scope_detail.get("raw_bytes").and_then(Value::as_u64);
+            let raw_tokens = scope_detail.get("raw_tokens").and_then(Value::as_i64);
+            let raw_bytes = scope_detail.get("raw_bytes").and_then(Value::as_i64);
             let raw_lines = scope_detail.get("raw_lines").and_then(Value::as_i64);
 
             let mut output_parts = Vec::new();
             if let Some(tokens) = raw_tokens {
-                let converted_bytes = tokens.saturating_mul(report.estimation.bytes_per_token);
+                let converted_bytes = if tokens == -1 {
+                    report.estimation.unlimited_bytes_cap
+                } else {
+                    (tokens.max(0) as u64).saturating_mul(report.estimation.bytes_per_token)
+                };
                 let displayed_bytes = if raw_bytes.is_some() {
                     converted_bytes
                 } else {
@@ -84,23 +102,26 @@ fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadRepor
             }
             if let Some(raw_bytes_value) = raw_bytes {
                 output_parts.push(format!("bytes:{}", raw_bytes_value));
+                if raw_bytes_value < 0 {
+                    output_parts.push(format!("effective_bytes:{}", bytes));
+                }
             } else if raw_tokens.is_none() {
                 output_parts.push(format!("bytes:{}", bytes));
             }
             if let Some(raw_lines_value) = raw_lines {
                 output_parts.push(format!("lines:{}", raw_lines_value));
             }
-            if raw_tokens.is_some() && raw_bytes.is_some() && raw_bytes != Some(bytes) {
+            if raw_tokens.is_some() && raw_bytes.is_some() && raw_bytes != Some(bytes as i64) {
                 output_parts.push(format!("effective_bytes:{}", bytes));
             }
 
-            eprintln!(
+            log_info(format!(
                 "[mcp_output_limit]client:{} {}({}) src={}",
                 client_pattern,
                 scope_name,
                 output_parts.join(", "),
                 source_summary
-            );
+            ));
         }
     }
 }
@@ -109,13 +130,16 @@ fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadRepor
 /// English: Format the preloaded tool-config summary into startup logs that are directly readable by humans.
 fn print_tool_config_preload_log(report: &tool_config::ToolConfigLoadReport) {
     if report.tool_count == 0 {
-        eprintln!("[tools_config]loaded none configs,count=0");
+        log_info("[tools_config]loaded none configs,count=0");
         return;
     }
 
     for tool_name in &report.tool_names {
         let count = report.config_counts.get(tool_name).copied().unwrap_or(0);
-        eprintln!("[tools_config]loaded {} configs,count={}", tool_name, count);
+        log_info(format!(
+            "[tools_config]loaded {} configs,count={}",
+            tool_name, count
+        ));
     }
 }
 
@@ -125,7 +149,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         RuntimeMode::CallTool {
             tool_name,
             arguments,
-        } => run_call_tool_mode(&tool_name, arguments),
+            simulated_client_name,
+        } => run_call_tool_mode(&tool_name, arguments, &simulated_client_name),
         RuntimeMode::Serve => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -174,14 +199,28 @@ enum RuntimeMode {
     /// English: Start the regular HTTP/gRPC services.
     Serve,
     /// 中文：仅初始化工具运行环境，并直接调用单个 tool 做本地调试。
+    /// 该模式会模拟一个固定客户端上下文，不读取 `config.yaml`，也不启动任何端口。
     /// English: Initialize the tool runtime only and directly invoke a single tool for local debugging.
-    CallTool { tool_name: String, arguments: Value },
+    /// This mode simulates a fixed client context, does not read `config.yaml`, and does not open any ports.
+    CallTool {
+        tool_name: String,
+        arguments: Value,
+        simulated_client_name: String,
+    },
 }
 
+/// 中文：`--call-tools` 调试模式使用的默认模拟客户端名称。
+/// English: Default simulated client name used by the `--call-tools` debug mode.
+const DEFAULT_CALL_TOOL_CLIENT_NAME: &str = "VulcanMcpTest";
+
 /// 中文：根据命令行参数解析运行模式。
-/// 支持 `--call-tools <tool_name> [json_arguments]`。
+/// 支持：
+/// - `--call-tools <tool_name> [json_arguments]`
+/// - `--call-client-name <name>`：指定模拟客户端名称
 /// English: Parse the runtime mode from CLI arguments.
-/// Supports `--call-tools <tool_name> [json_arguments]`.
+/// Supported forms:
+/// - `--call-tools <tool_name> [json_arguments]`
+/// - `--call-client-name <name>`: set the simulated client name
 fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     for index in 0..args.len() {
@@ -191,30 +230,47 @@ fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
                 .ok_or("--call-tools requires a tool name")?
                 .clone();
 
-            let raw_arguments = args
-                .get(index + 2)
-                .filter(|value| !is_reserved_cli_flag(value))
-                .cloned();
-
-            let arguments = match raw_arguments {
-                Some(raw) => serde_json::from_str::<Value>(&raw)?,
-                None => json!({}),
-            };
+            let mut arguments = json!({});
+            let mut simulated_client_name = DEFAULT_CALL_TOOL_CLIENT_NAME.to_string();
+            let mut cursor = index + 2;
+            while cursor < args.len() {
+                match args[cursor].as_str() {
+                    "--call-client-name" => {
+                        let client_name = args
+                            .get(cursor + 1)
+                            .ok_or("--call-client-name requires a value")?;
+                        simulated_client_name = client_name.clone();
+                        cursor += 2;
+                    }
+                    "--call-tools" => {
+                        break;
+                    }
+                    "-config" | "--config" => {
+                        cursor += 2;
+                    }
+                    value if value.starts_with("--") => {
+                        return Err(format!(
+                            "Unknown --call-tools flag: {} / 未知的 --call-tools 调试参数: {}",
+                            value, value
+                        )
+                        .into());
+                    }
+                    raw_json => {
+                        arguments = serde_json::from_str::<Value>(raw_json)?;
+                        cursor += 1;
+                    }
+                }
+            }
 
             return Ok(RuntimeMode::CallTool {
                 tool_name,
                 arguments,
+                simulated_client_name,
             });
         }
     }
 
     Ok(RuntimeMode::Serve)
-}
-
-/// 中文：判断某个 CLI token 是否属于主程序保留参数，避免把 `-config` 误当作 tool 参数 JSON。
-/// English: Determine whether a CLI token is a reserved program-level flag so `-config` is not mistaken for tool-argument JSON.
-fn is_reserved_cli_flag(value: &str) -> bool {
-    matches!(value, "-config" | "--config" | "--call-tools")
 }
 
 /// 中文：构建并初始化 MCP Server，包括外部客户端、Lua Skills 与共享缓存。
@@ -284,34 +340,33 @@ async fn run_network_transports(
 }
 
 /// 中文：在不启动服务的情况下，直接初始化 Lua skill 并调用目标 tool，便于调试技能加载、依赖初始化与实际返回值。
-/// English: Initialize Lua skills and invoke the target tool directly without starting transports, making skill loading, dependency setup, and real return values easier to debug.
-fn run_call_tool_mode(tool_name: &str, arguments: Value) -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = Config::load()?;
-
+/// 该模式固定使用单 VM，并模拟一个完整的 MCP 请求上下文。
+/// English: Initialize Lua skills and invoke the target tool directly without starting transports.
+/// This mode always uses a single VM and simulates a complete MCP request context.
+fn run_call_tool_mode(
+    tool_name: &str,
+    arguments: Value,
+    simulated_client_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    set_non_error_logging_enabled(false);
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
 
     configure_global_tool_cache(ToolCacheConfig {
-        max_entries: cfg
-            .tool_cache_max_entries
-            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
-        default_ttl_secs: cfg
-            .tool_cache_default_ttl_secs
-            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
-        max_ttl_secs: cfg
-            .tool_cache_max_ttl_secs
-            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
+        max_entries: tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES,
+        default_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS,
+        max_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS,
     });
 
     add_libs_to_path();
 
-    let (base_dir, override_dir) =
-        find_lua_skill_dirs(&cfg).ok_or("Lua skill directory not found for --call-tools mode")?;
+    let (base_dir, override_dir) = find_lua_skill_dirs_for_call_tools()
+        .ok_or("Lua skill directory not found for --call-tools mode")?;
 
     let mut engine = LuaEngine::new(LuaVmPoolConfig {
-        min_size: cfg.lua_vm_pool_min_size.unwrap_or(1),
-        max_size: cfg.lua_vm_pool_max_size.unwrap_or(4),
-        idle_ttl_secs: cfg.lua_vm_pool_idle_ttl_secs.unwrap_or(300),
+        min_size: 1,
+        max_size: 1,
+        idle_ttl_secs: 300,
     })?;
     engine.load_from_dirs(&base_dir, override_dir.as_deref())?;
 
@@ -319,11 +374,18 @@ fn run_call_tool_mode(tool_name: &str, arguments: Value) -> Result<(), Box<dyn s
         return Err(format!("Unknown Lua skill tool for --call-tools: {}", tool_name).into());
     }
 
+    let skill_name = engine.skill_name_for_tool(tool_name);
+    let request_context = build_call_tool_request_context(simulated_client_name);
     let result = engine
-        .call_skill(tool_name, &arguments, None)
+        .call_skill(tool_name, &arguments, Some(&request_context))
         .map_err(|error| format!("call-tools failed for {}: {}", tool_name, error))?;
 
-    print_call_tools_result(&result)
+    print_call_tools_result(
+        &result,
+        skill_name.as_deref(),
+        Some(tool_name),
+        Some(&request_context),
+    )
 }
 
 /// Find Lua skill base and override directories.
@@ -359,13 +421,55 @@ fn find_lua_skill_dirs(
     Some((base_dir, override_path))
 }
 
+/// 中文：为 `--call-tools` 构造尽量贴近真实 MCP 请求的模拟上下文。
+/// English: Build a simulated request context for `--call-tools` that stays close to a real MCP request.
+fn build_call_tool_request_context(client_name: &str) -> RequestContext {
+    RequestContext {
+        transport: Some("call_tools".to_string()),
+        session_id: Some("call-tools-local".to_string()),
+        protocol_version: Some(PROTOCOL_VERSION_LATEST.to_string()),
+        client_info: Some(ClientInfo {
+            name: client_name.trim().to_string(),
+            version: "local-debug".to_string(),
+        }),
+        client_capabilities: json!({}),
+    }
+}
+
+/// 中文：`--call-tools` 调试模式专用的 skill 目录查找逻辑。
+/// 该模式不读取 `config.yaml`，只使用运行时输出目录与默认用户覆盖目录。
+/// English: Dedicated skill-directory discovery for `--call-tools`.
+/// This mode does not read `config.yaml`; it only uses the runtime output directory and the default user override directory.
+fn find_lua_skill_dirs_for_call_tools() -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)>
+{
+    let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+    let parent = exe_dir.parent().unwrap_or(exe_dir);
+    let runtime_output_dir = parent.join("lua_skills");
+    let repository_dir = std::path::Path::new("runtime").join("lua_skills");
+    let base_dir = if runtime_output_dir.exists() {
+        runtime_output_dir
+    } else if repository_dir.exists() {
+        repository_dir
+    } else {
+        return None;
+    };
+
+    let override_path = home_dir().and_then(|home| {
+        let path = home.join(".vulcan/vulcan-mcp/lua_skills");
+        if path.exists() { Some(path) } else { None }
+    });
+
+    Some((base_dir, override_path))
+}
+
 /// 中文：在宿主启动前预载可热重载的运行时配置文件，避免首次请求时才暴露配置问题。
 /// English: Preload hot-reloadable runtime config files before the host starts so configuration issues surface before the first request.
 fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
     let client_budget_report = preload_client_budget_config()
         .map_err(|error| format!("Failed to preload client budgets: {}", error))?;
-    let tool_config_report =
-        preload_tool_configs().map_err(|error| format!("Failed to preload tool configs: {}", error))?;
+    let tool_config_report = preload_tool_configs()
+        .map_err(|error| format!("Failed to preload tool configs: {}", error))?;
 
     print_client_budget_preload_log(&client_budget_report);
     print_tool_config_preload_log(&tool_config_report);

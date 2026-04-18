@@ -193,8 +193,8 @@ pub struct SkillToolMeta {
     /// 展示在 tools/list 中的人类可读描述。
     #[serde(default)]
     pub description: String,
-    /// Lua entry filename relative to the skill directory, for example "main.lua".
-    /// 相对 skill 目录的 Lua 入口文件名，例如 "main.lua"。
+    /// Lua entry filename relative to the skill directory and constrained to `tools/`, for example `tools/codekit-rg.lua`.
+    /// 相对 skill 目录的 Lua 入口文件名，且必须位于 `tools/` 目录下，例如 `tools/codekit-rg.lua`。
     pub lua_entry: String,
     /// Lua module registration name, for example "ast_grep_main".
     /// Lua 模块注册名称，例如 "ast_grep_main"。
@@ -203,11 +203,6 @@ pub struct SkillToolMeta {
     /// 当前工具入口独有的参数定义。
     #[serde(default)]
     pub parameters: Vec<SkillParam>,
-    /// Expected return type: "table" | "string" | "number".
-    /// 预期返回类型："table" | "string" | "number"。
-    #[serde(default = "default_return_type")]
-    #[allow(dead_code)]
-    pub return_type: String,
     /// AI prompt hint appended to the tool description.
     /// 追加到工具描述后的 AI 使用提示。
     #[serde(default)]
@@ -252,8 +247,8 @@ pub struct SkillResourceMeta {
     /// 资源内容的可选 MIME 类型。
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// Relative file path that stores the resource payload.
-    /// 存储资源内容的相对文件路径。
+    /// Relative file path that stores the resource payload and must live under `resources/`.
+    /// 存储资源内容的相对文件路径，且必须位于 `resources/` 目录下。
     pub file: String,
     /// Optional declared size in bytes.
     /// 可选的字节大小声明。
@@ -279,8 +274,8 @@ pub struct SkillResourceTemplateMeta {
     /// 生成资源内容的可选 MIME 类型。
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// Relative file path used by the template.
-    /// 资源模板使用的相对文件路径。
+    /// Relative file path used by the template and constrained to `templates/`.
+    /// 资源模板使用的相对文件路径，且必须位于 `templates/` 目录下。
     pub file: String,
 }
 
@@ -320,19 +315,13 @@ pub struct SkillPromptMeta {
     /// 为 prompts/get 声明的参数定义。
     #[serde(default)]
     pub arguments: Vec<SkillPromptArgumentMeta>,
-    /// Relative file path that contains the prompt payload or generator.
-    /// 存放提示词内容或生成器的相对文件路径。
+    /// Relative file path that contains the prompt payload or generator and must live under `prompts/`.
+    /// 存放提示词内容或生成器的相对文件路径，且必须位于 `prompts/` 目录下。
     pub file: String,
     /// Message role used when building PromptMessage.
     /// 生成 PromptMessage 时使用的角色。
     #[serde(default = "default_prompt_role")]
     pub role: String,
-}
-
-/// Default return type for tool entries.
-/// 工具入口默认返回类型。
-fn default_return_type() -> String {
-    "table".to_string()
 }
 
 /// Default prompt role for prompt entries.
