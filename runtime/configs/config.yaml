@@ -25,27 +25,6 @@ grpc: "127.0.0.1:19202"
 # lua_skills_override: "/home/yourname/.vulcan/vulcan-mcp/lua_skills"
 
 # ============================================================
-# Shared Tool Cache
-# 中文：共享工具缓存配置。只有发生分页/截断等需要复用结果时才会实际写入缓存。
-# English: Shared tool cache settings. Entries are written only when a tool actually needs reusable cached output.
-# ============================================================
-
-# 中文：缓存最大条目数。默认 1000，超过后会淘汰较旧缓存。
-# English: Maximum number of cache entries. Default is 1000; older entries are evicted when the limit is reached.
-# 示例 / Example:
-# tool_cache_max_entries: 1000
-
-# 中文：缓存默认有效期（秒）。默认 1800 秒，即 30 分钟。
-# English: Default cache TTL in seconds. Default is 1800 seconds (30 minutes).
-# 示例 / Example:
-# tool_cache_default_ttl_secs: 1800
-
-# 中文：缓存允许的最大有效期（秒）。即使工具请求更大的 TTL，也会被限制到该值。
-# English: Maximum allowed cache TTL in seconds. Tool requests above this value are capped.
-# 示例 / Example:
-# tool_cache_max_ttl_secs: 1800
-
-# ============================================================
 # Lua VM Pool
 # 中文：Lua 虚拟机池配置。用于并发复用 Lua 运行时，降低频繁建虚拟机的开销。
 # English: Lua VM pool settings for concurrent reuse of Lua runtimes and lower VM creation overhead.

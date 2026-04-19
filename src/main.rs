@@ -4,19 +4,14 @@ mod config;
 mod grpc_client;
 mod grpc_server;
 mod http_server;
-mod lancedb_host;
-mod lua_engine;
-mod lua_skill;
+mod luaskills_host;
 #[allow(dead_code)]
 mod protocol;
 mod runtime_logging;
 mod server;
 #[allow(dead_code)]
 mod session;
-mod skill_dependency;
-mod sqlite_host;
 mod temp_maintenance;
-mod tool_cache;
 mod tool_config;
 mod tool_result_format;
 
@@ -29,33 +24,45 @@ pub mod pb_mcp {
 }
 
 use client_budget::preload_client_budget_config;
-use client_budget::resolve_client_budget_snapshot;
 use config::Config;
-use lua_engine::{LuaEngine, LuaVmPoolConfig};
+use luaskills_host::{
+    build_luaskills_cache_config, build_luaskills_engine_options,
+    build_runtime_invocation_context, client_budget_snapshot_for_render, install_luaskills_log_callback,
+};
 use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
 use serde_json::{Value, json};
 use server::McpServer;
-use temp_maintenance::{CleanupTrigger, maintain_runtime_temp_dir, spawn_cross_day_cleanup_task};
-use tool_cache::ToolCacheConfig;
-use tool_cache::configure_global_tool_cache;
+use temp_maintenance::{
+    CleanupTrigger, ensure_runtime_temp_dir, maintain_runtime_temp_dir,
+    spawn_cross_day_cleanup_task,
+};
 use tool_config::preload_tool_configs;
-use tool_result_format::{ToolCallOutput, render_tool_result_text};
+use tool_result_format::{HostRenderOptions, RuntimeInvocationResult, render_tool_result_text};
+use vulcan_luaskills::{LuaEngine, LuaVmPoolConfig};
 
 /// 中文：输出 `--call-tools` 的最终结果。
 /// 调试模式同样会注入模拟客户端上下文，因此预算解析也必须基于同一份请求上下文完成。
 /// English: Print the final `--call-tools` result.
 /// The debug mode also injects a simulated client context, so budget resolution must use the same request context.
 fn print_call_tools_result(
-    value: &ToolCallOutput,
+    value: &RuntimeInvocationResult,
     skill_name: Option<&str>,
     tool_name: Option<&str>,
     request_context: Option<&RequestContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client_budget = resolve_client_budget_snapshot(request_context, tool_name, skill_name);
+    let client_budget = client_budget_snapshot_for_render(request_context, tool_name, skill_name);
+    let spill_root = ensure_runtime_temp_dir()?.join("mcp").join("cache");
     println!(
         "{}",
-        render_tool_result_text(value, skill_name, Some(&client_budget))
+        render_tool_result_text(
+            value,
+            skill_name,
+            Some(&client_budget),
+            &HostRenderOptions {
+                spill_root: Some(spill_root),
+            },
+        )
     );
     Ok(())
 }
@@ -168,20 +175,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
 
+    install_luaskills_log_callback();
+
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-
-    configure_global_tool_cache(ToolCacheConfig {
-        max_entries: cfg
-            .tool_cache_max_entries
-            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES),
-        default_ttl_secs: cfg
-            .tool_cache_default_ttl_secs
-            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS),
-        max_ttl_secs: cfg
-            .tool_cache_max_ttl_secs
-            .unwrap_or(tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS),
-    });
 
     // Prepend output/libs/ to PATH so C dependency DLLs are found at runtime
     add_libs_to_path();
@@ -309,6 +306,11 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
                 max_size: cfg.lua_vm_pool_max_size.unwrap_or(4),
                 idle_ttl_secs: cfg.lua_vm_pool_idle_ttl_secs.unwrap_or(300),
             },
+            build_luaskills_cache_config(
+                cfg.tool_cache_max_entries,
+                cfg.tool_cache_default_ttl_secs,
+                cfg.tool_cache_max_ttl_secs,
+            ),
         )?;
     }
 
@@ -364,14 +366,9 @@ fn run_call_tool_mode(
     simulated_client_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     set_non_error_logging_enabled(false);
+    install_luaskills_log_callback();
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-
-    configure_global_tool_cache(ToolCacheConfig {
-        max_entries: tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES,
-        default_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS,
-        max_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS,
-    });
 
     add_libs_to_path();
     let engine = build_single_vm_lua_engine_for_local_mode()?;
@@ -382,8 +379,10 @@ fn run_call_tool_mode(
 
     let skill_name = engine.skill_name_for_tool(tool_name);
     let request_context = build_call_tool_request_context(simulated_client_name);
+    let invocation_context =
+        build_runtime_invocation_context(Some(&request_context), Some(tool_name), skill_name.as_deref());
     let result = engine
-        .call_skill(tool_name, &arguments, Some(&request_context))
+        .call_skill(tool_name, &arguments, Some(&invocation_context))
         .map_err(|error| format!("call-tools failed for {}: {}", tool_name, error))?;
 
     print_call_tools_result(
@@ -400,11 +399,11 @@ fn build_single_vm_lua_engine_for_local_mode() -> Result<LuaEngine, Box<dyn std:
     let (base_dir, override_dir) = find_lua_skill_dirs_for_call_tools()
         .ok_or("Lua skill directory not found for local debug mode")?;
 
-    let mut engine = LuaEngine::new(LuaVmPoolConfig {
+    let mut engine = LuaEngine::new(build_luaskills_engine_options(LuaVmPoolConfig {
         min_size: 1,
         max_size: 1,
         idle_ttl_secs: 300,
-    })?;
+    }, build_luaskills_cache_config(None, None, None))?)?;
     engine.load_from_dirs(&base_dir, override_dir.as_deref())?;
     Ok(engine)
 }
@@ -413,14 +412,9 @@ fn build_single_vm_lua_engine_for_local_mode() -> Result<LuaEngine, Box<dyn std:
 /// English: Internal luaexec subprocess mode that initializes the full local runtime before executing one isolated request.
 fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn std::error::Error>> {
     set_non_error_logging_enabled(false);
+    install_luaskills_log_callback();
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-
-    configure_global_tool_cache(ToolCacheConfig {
-        max_entries: tool_cache::DEFAULT_TOOL_CACHE_MAX_ENTRIES,
-        default_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS,
-        max_ttl_secs: tool_cache::DEFAULT_TOOL_CACHE_MAX_TTL_SECS,
-    });
 
     add_libs_to_path();
 

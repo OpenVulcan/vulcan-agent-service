@@ -258,36 +258,6 @@ pub fn resolve_client_budget_snapshot(
     }
 }
 
-/// 中文：将客户端预算快照直接转换为可注入 Lua 的 JSON 值。
-/// English: Convert the client-budget snapshot directly into JSON for Lua injection.
-pub fn resolve_client_budget_value(
-    request_context: Option<&RequestContext>,
-    tool_name: Option<&str>,
-    skill_name: Option<&str>,
-) -> Value {
-    serde_json::to_value(resolve_client_budget_snapshot(
-        request_context,
-        tool_name,
-        skill_name,
-    ))
-    .unwrap_or_else(|_| {
-        json!({
-            "client_name": null,
-            "tool_name": tool_name,
-            "skill_name": skill_name,
-            "matched_client_pattern": null,
-            "tool_result": {
-                "bytes": DEFAULT_INLINE_BYTES_LIMIT,
-                "lines": -1
-            },
-            "file_read": {
-                "bytes": DEFAULT_INLINE_BYTES_LIMIT,
-                "lines": -1
-            },
-            "tool_config": {}
-        })
-    })
-}
 
 /// 中文：加载客户端预算配置；优先读取缓存，其次从运行时配置文件中解析。
 /// English: Load the client-budget config, preferring the in-memory cache and otherwise parsing the runtime YAML file.

@@ -3,12 +3,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::client_budget::{reload_client_budget_config, resolve_client_budget_snapshot};
+use crate::client_budget::reload_client_budget_config;
 use crate::grpc_client::VmmClient;
-use crate::lua_engine::{LuaEngine, LuaVmPoolConfig};
+use crate::luaskills_host::{
+    build_luaskills_engine_options, build_runtime_invocation_context, build_runtime_request_context,
+    client_budget_snapshot_for_render, install_luaskills_log_callback, map_runtime_entry_to_mcp_tool,
+};
 use crate::protocol::*;
+use crate::temp_maintenance::ensure_runtime_temp_dir;
 use crate::tool_config::reload_tool_configs;
-use crate::tool_result_format::{ToolCallOutput, render_tool_result_text};
+use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
+use vulcan_luaskills::{
+    LuaEngine, LuaVmPoolConfig, RuntimeHelpDetail, RuntimeSkillHelpDescriptor, ToolCacheConfig,
+};
 
 // ============================================================
 // Shared MCP Server state
@@ -72,25 +79,23 @@ impl McpServer {
         base_dir: &std::path::Path,
         override_dir: Option<&std::path::Path>,
         pool_config: LuaVmPoolConfig,
+        cache_config: ToolCacheConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut engine = LuaEngine::new(pool_config)?;
+        install_luaskills_log_callback();
+        let mut engine = LuaEngine::new(build_luaskills_engine_options(pool_config, cache_config)?)?;
         engine.load_from_dirs(base_dir, override_dir)?;
-        let skills = engine.list_skills();
-        let resources = engine.list_resources();
-        let resource_templates = engine.list_resource_templates();
-        let prompts = engine.list_prompts();
-        eprintln!("[MCP] {} Lua skills loaded", skills.len());
+        let entries = engine.list_entries();
+        eprintln!("[MCP] {} Lua skills loaded", entries.len());
         self.lua_engine = Some(Arc::new(engine));
 
-        // Register Lua skills as MCP tools/resources/prompts.
+        // Register Lua skills strictly as MCP tools.
+        // 严格仅将 Lua skills 注册为 MCP tools。
         {
             let mut inner = self.inner.try_lock().unwrap();
-            for tool in skills {
+            for entry in entries {
+                let tool = map_runtime_entry_to_mcp_tool(&entry);
                 inner.tools.insert(tool.name.clone(), tool);
             }
-            inner.resources.extend(resources);
-            inner.resource_templates.extend(resource_templates);
-            inner.prompts.extend(prompts);
         }
 
         Ok(self)
@@ -99,22 +104,39 @@ impl McpServer {
     fn register_defaults(&mut self) {
         let mut inner = self.inner.try_lock().unwrap();
 
-        // --- runlua: execute arbitrary Lua code ---
+        // --- vulcan-help-list: list strict LuaSkills help trees for host-side help wrappers ---
         inner.tools.insert(
-            "runlua".to_string(),
+            "vulcan-help-list".to_string(),
             Tool::with_annotations(
-                "runlua",
-                "Execute arbitrary Lua (LuaJIT) code. Pass 'code' as a Lua script string and optional 'args' as a JSON object. The script has access to vulcan module (fs_list, fs_read, fs_write, fs_exists, fs_is_dir, path_join, cwd, exec, osinfo, json_encode, json_decode, cache_put, cache_get, cache_delete, call, log).",
-                json!({
-                    "code": {"type": "string", "description": "Lua code to execute. Use 'return <value>' to return results. Available: vulcan.fs_list(dir), vulcan.fs_read(path), vulcan.fs_write(path,content), vulcan.fs_exists(path), vulcan.fs_is_dir(path), vulcan.path_join(...), vulcan.cwd(), vulcan.exec(spec), vulcan.osinfo(), vulcan.json_encode(t), vulcan.json_decode(s), vulcan.cache_put(tool,value,ttl_sec), vulcan.cache_get(tool,cache_id), vulcan.cache_delete(tool,cache_id), vulcan.call(skill,args), vulcan.log(level,msg)"},
-                    "args": {"type": "object", "description": "Arguments passed to the Lua code as 'args' variable"}
-                }),
-                vec!["code".to_string()],
+                "vulcan-help-list",
+                "List all registered strict LuaSkills help trees and their available flow descriptions. This MCP wrapper renders host-side Markdown from lib/system structured help data.",
+                json!({}),
+                vec![],
                 ToolAnnotations {
-                    read_only_hint: Some(false),
-                    destructive_hint: Some(true),
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
                     user_confirmation_required: Some(false),
-                    idempotent_hint: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        // --- vulcan-help-detail: read one strict LuaSkills help flow and render it for MCP ---
+        inner.tools.insert(
+            "vulcan-help-detail".to_string(),
+            Tool::with_annotations(
+                "vulcan-help-detail",
+                "Read one strict LuaSkills help flow from lib/system help data and render it as Markdown for MCP clients. Use flow=`main` to read the skill main help node.",
+                json!({
+                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit` or `vulcan-runtime`."},
+                    "flow": {"type": "string", "description": "Help flow name. Use `main` for the skill main help node, or pass one declared workflow/topic name."}
+                }),
+                vec!["skill".to_string(), "flow".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
                 },
             ),
         );
@@ -347,9 +369,9 @@ impl McpServer {
             },
             instructions: Some(
                 "Vulcan MCP server supporting 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05. \
-                 By default this server exposes Lua skill provided MCP tools, resources, \
-                 resource templates, prompts, prompt completions, and the built-in \
-                 runlua tool."
+                 By default this server exposes Lua skill provided MCP tools, prompt \
+                 completions, and host-wrapped strict help tools. LuaSkills Core resources, \
+                 resource templates, and prompts are disabled in strict mode."
                     .to_string(),
             ),
         };
@@ -384,57 +406,67 @@ impl McpServer {
 
         let args = req.arguments.unwrap_or_default();
         let result = match tool.name.as_str() {
-            // --- runlua: execute arbitrary Lua code ---
-            "runlua" => {
+            "vulcan-help-list" => {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (
                         -32603,
                         "Lua engine not configured. Add lua_skills directory.".to_string(),
                     )
                 })?;
-                let code = args
-                    .get("code")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| (-32602, "Missing required parameter: code".to_string()))?;
-                let code = code.to_string();
-                let call_args = args.get("args").cloned().unwrap_or(json!({}));
+                let help_tree = engine.list_skill_help();
+                let markdown = render_help_list_markdown(&help_tree);
+                ToolCallResult {
+                    content: vec![TextContent::text(&markdown)],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-help-detail" => {
+                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                    (
+                        -32603,
+                        "Lua engine not configured. Add lua_skills directory.".to_string(),
+                    )
+                })?;
+                let skill_id = args
+                    .get("skill")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| (-32602, "Missing required parameter: skill".to_string()))?
+                    .to_string();
+                let flow = args
+                    .get("flow")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                let flow = flow.ok_or_else(|| {
+                    (-32602, "Missing required parameter: flow".to_string())
+                })?;
                 let engine_clone = engine.clone();
                 let request_context = request_context.clone();
-                let budget_request_context = request_context.clone();
+                let runtime_request_context = build_runtime_request_context(&request_context);
                 let result = tokio::task::spawn_blocking(move || {
-                    engine_clone.run_lua(&code, &call_args, Some(&request_context))
+                    engine_clone.render_skill_help_detail(
+                        &skill_id,
+                        &flow,
+                        Some(&runtime_request_context),
+                    )
                 })
                 .await
-                .map_err(|e| (-32603, format!("runlua spawn error: {}", e)))?;
+                .map_err(|error| (-32603, format!("vulcan-help-detail spawn error: {}", error)))?;
+
                 match result {
-                    Ok(val) => {
-                        let client_budget = resolve_client_budget_snapshot(
-                            Some(&budget_request_context),
-                            Some("runlua"),
-                            None,
-                        );
-                        let output = match val {
-                            Value::String(text) => ToolCallOutput::plain(text),
-                            _ => {
-                                return Ok(json!(ToolCallResult {
-                                    content: vec![TextContent::text(
-                                        crate::tool_result_format::NON_STRING_TOOL_RESULT_ERROR,
-                                    )],
-                                    is_error: Some(true),
-                                }));
-                            }
-                        };
-                        ToolCallResult {
-                            content: vec![TextContent::text(&render_tool_result_text(
-                                &output,
-                                None,
-                                Some(&client_budget),
-                            ))],
-                            is_error: None,
-                        }
-                    }
-                    Err(e) => ToolCallResult {
-                        content: vec![TextContent::text(&e)],
+                    Ok(Some(detail)) => ToolCallResult {
+                        content: vec![TextContent::text(&render_help_detail_markdown(&detail))],
+                        is_error: None,
+                    },
+                    Ok(None) => ToolCallResult {
+                        content: vec![TextContent::text("Skill help not found.")],
+                        is_error: Some(true),
+                    },
+                    Err(error) => ToolCallResult {
+                        content: vec![TextContent::text(&error)],
                         is_error: Some(true),
                     },
                 }
@@ -477,23 +509,40 @@ impl McpServer {
                         let args_clone = args.clone();
                         let request_context = request_context.clone();
                         let budget_request_context = request_context.clone();
+                        let invocation_context = build_runtime_invocation_context(
+                            Some(&request_context),
+                            Some(&tool_name),
+                            skill_name.as_deref(),
+                        );
                         let result = tokio::task::spawn_blocking(move || {
-                            engine_clone.call_skill(&tool_name, &args_clone, Some(&request_context))
+                            engine_clone.call_skill(&tool_name, &args_clone, Some(&invocation_context))
                         })
                         .await
                         .map_err(|e| (-32603, format!("Lua skill spawn error: {}", e)))?;
                         match result {
                             Ok(val) => {
-                                let client_budget = resolve_client_budget_snapshot(
+                                let client_budget = client_budget_snapshot_for_render(
                                     Some(&budget_request_context),
                                     Some(&tool.name),
                                     skill_name.as_deref(),
                                 );
+                                let spill_root = ensure_runtime_temp_dir()
+                                    .map_err(|error| {
+                                        (-32603, format!(
+                                            "resolve runtime spill dir failed: {}",
+                                            error
+                                        ))
+                                    })?
+                                    .join("mcp")
+                                    .join("cache");
                                 ToolCallResult {
                                     content: vec![TextContent::text(&render_tool_result_text(
                                         &val,
                                         skill_name.as_deref(),
                                         Some(&client_budget),
+                                        &HostRenderOptions {
+                                            spill_root: Some(spill_root),
+                                        },
                                     ))],
                                     is_error: None,
                                 }
@@ -526,22 +575,12 @@ impl McpServer {
     fn handle_resources_read(
         &self,
         params: Option<Value>,
-        request_context: &RequestContext,
+        _request_context: &RequestContext,
     ) -> Result<Value, (i64, String)> {
         let uri = params
             .and_then(|p| p.get("uri").cloned())
             .and_then(|v| v.as_str().map(String::from))
             .ok_or_else(|| (-32602, "Missing required parameter: uri".to_string()))?;
-
-        if let Some(engine) = &self.lua_engine {
-            if let Some(result) = engine
-                .read_resource(&uri, Some(request_context))
-                .map_err(|e| (-32603, format!("Lua skill resource error: {}", e)))?
-            {
-                return serde_json::to_value(result)
-                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
-            }
-        }
 
         Err((-32602, format!("Resource not found: {}", uri)))
     }
@@ -565,27 +604,13 @@ impl McpServer {
     fn handle_prompts_get(
         &self,
         params: Option<Value>,
-        request_context: &RequestContext,
+        _request_context: &RequestContext,
     ) -> Result<Value, (i64, String)> {
         let params = params.unwrap_or_default();
         let name = params
             .get("name")
             .and_then(|v| v.as_str().map(String::from))
             .ok_or_else(|| (-32602, "Missing required parameter: name".to_string()))?;
-
-        if let Some(engine) = &self.lua_engine {
-            if let Some(result) = engine
-                .get_prompt(
-                    &name,
-                    params.get("arguments").unwrap_or(&Value::Null),
-                    Some(request_context),
-                )
-                .map_err(|e| (-32603, format!("Lua skill prompt error: {}", e)))?
-            {
-                return serde_json::to_value(result)
-                    .map_err(|e| (-32603, format!("Serialization error: {}", e)));
-            }
-        }
 
         Err((-32602, format!("Prompt not found: {}", name)))
     }
@@ -660,4 +685,41 @@ impl McpServer {
             }
         })
     }
+}
+
+/// Render one structured help list payload into user-facing Markdown.
+/// 把一份结构化帮助列表载荷渲染成面向用户的 Markdown 文本。
+fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String {
+    if help_tree.is_empty() {
+        return "# Vulcan Help List\n\nNo help trees are currently registered.".to_string();
+    }
+
+    let mut lines = vec!["# Vulcan Help List".to_string(), String::new()];
+    for skill_help in help_tree {
+        lines.push(format!("## `{}`", skill_help.skill_id));
+        if !skill_help.main.description.trim().is_empty() {
+            lines.push(skill_help.main.description.trim().to_string());
+        }
+        lines.push("- `main`".to_string());
+        for flow in &skill_help.flows {
+            if flow.description.trim().is_empty() {
+                lines.push(format!("- `{}`", flow.flow_name));
+            } else {
+                lines.push(format!(
+                    "- `{}`: {}",
+                    flow.flow_name,
+                    flow.description.trim()
+                ));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
+}
+
+/// Render one structured help detail payload into user-facing Markdown.
+/// 把一份结构化帮助详情载荷渲染成面向用户的 Markdown 文本。
+fn render_help_detail_markdown(detail: &RuntimeHelpDetail) -> String {
+    detail.content.clone()
 }

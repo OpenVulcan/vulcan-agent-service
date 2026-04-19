@@ -1,9 +1,11 @@
----
-name: vulcan-codekit
-description: Use the Vulcan CodeKit MCP tools when Codex needs to choose the right code files before deep inspection, map a text clue back to the owning function or class, navigate Markdown docs by headings, or replace an entire function safely. Trigger especially when the target file is not yet known, when exact files need AST detail, when a symbol/log/regex clue must be narrowed to structure, or when a whole function must be replaced with AST-based targeting.
----
+--[[
+English: Dynamically build the CodeKit main help text without relying on host-supplied help arguments.
+中文：动态生成 CodeKit 主帮助文本，但不再依赖宿主传入的 help 参数。
+]]
 
-# Vulcan CodeKit
+return function()
+
+    local base_prompt = [[# Vulcan CodeKit
 
 Use this skill to choose the right `codekit-*` tool from your current state.
 
@@ -92,7 +94,7 @@ CodeKit is the required default path for source-code analysis.
 - `vulcan-codekit-ast-tree` returns a grouped Markdown tree with compact metrics such as lines, types, impl blocks, and functions.
 - `vulcan-codekit-rg` returns matched lines together with the owning function, method, impl, or class context.
 - `vulcan-codekit-ast-detail` returns a structured symbol tree with nesting, signatures, and line ownership.
-- Tools return plain strings. If the result exceeds the current client budget, the MCP host will decide whether to keep it inline, truncate it, or turn it into a paged read directory.
+- Tools return plain strings. If the result exceeds the current client budget, the MCP host decides whether to keep it inline, truncate it, or render it as a paged read directory.
 - When the host switches to page mode, you will receive a `raw_file` path together with host-safe line-based `offset` / `limit` read chunks. Follow that chunk plan directly.
 
 ## Main-Agent Rule
@@ -238,3 +240,7 @@ For source code:
 - use `vulcan-codekit-ast-tree` before deep inspection when the file set is not already known
 
 CodeKit is most valuable when the task depends on **function-, class-, impl-, or type-level structure**, and that is the default assumption for code analysis.
+]]
+
+    return base_prompt
+end

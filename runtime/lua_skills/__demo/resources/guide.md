@@ -1,18 +1,18 @@
-# __demo Skill Guide
+# __demo Resource Guide
 
-This directory is intentionally prefixed with `__`, so the loader skips it.
+这是 `__demo` skill 的资源示例文件。
 
-Copy workflow:
-1. Duplicate the `__demo` directory.
-2. Rename the directory to a real skill name without the `__` prefix.
-3. Update `skill.json`.
-4. Replace the sample Lua files, resources, prompts, and templates with your actual logic.
+新的模板结构里，`resources/` 表示 skill 私有资产目录，不再等同于 MCP `resources/list` 的协议对象。
 
-Template coverage:
-- `tools/demo_template_tool.lua`: sample tool entry
-- `resources/guide.md`: static resource example
-- `resources/dynamic_guide.lua`: Lua-generated resource example
-- `templates/example.md`: static resource-template example
-- `templates/example_generator.lua`: Lua-generated resource-template example
-- `prompts/static_prompt.md`: static prompt example
-- `prompts/dynamic_prompt.lua`: Lua-generated prompt example
+当前目录示例用途：
+
+- `runtime/`
+  - 存放真实 Lua 入口
+- `help/`
+  - 存放主 help 与子 help / workflow help
+- `overflow_templates/`
+  - 存放分页与截断提示模板
+- `resources/`
+  - 存放 skill 自己需要读取的静态或动态资源
+
+复制模板时，建议把这里的内容替换成真正会被你的 skill 读取或引用的资产，而不是继续保留旧的 prompt/resource-template 示例。

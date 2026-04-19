@@ -737,11 +737,10 @@ dependencies: []
 
 ## `vulcan-runtime` 工具说明
 
-`vulcan-runtime` 是当前仓库内置的运行时执行 skill，主要提供三个工具：
+`vulcan-runtime` 是当前仓库内置的运行时执行 skill，当前主要提供两个执行工具：
 
-- `vulcan-lua-help`
-- `vulcan-lua-exec`
-- `vulcan-lua-file`
+- `vulcan-runtime-lua-exec`
+- `vulcan-runtime-lua-file`
 
 它们都遵循当前工具返回规则：
 
@@ -752,14 +751,20 @@ dependencies: []
 - 多返回值会按顺序逐项展示
 - 长输出只允许截断，不分页
 
-### `vulcan-lua-help`
+### `vulcan-help-detail`
 
-无参数帮助工具，用来查看当前运行时能力边界。
+运行时帮助不再作为公开 skill tool 单独暴露，而是由宿主通过 system help 能力封装。
+
+在当前 MCP 宿主中：
+
+- 使用 `vulcan-help-detail`
+- 传入 `skill=vulcan-runtime`
+- 再传入 `flow=main`、`lua-exec` 或 `lua-file`
 
 它负责说明：
 
-- 什么时候该用 `vulcan-lua-exec`
-- 什么时候该用 `vulcan-lua-file`
+- 什么时候该用 `vulcan-runtime-lua-exec`
+- 什么时候该用 `vulcan-runtime-lua-file`
 - 当前支持的 `vulcan.*` API
 - 当前禁用能力
 - 输出规则
@@ -768,10 +773,10 @@ dependencies: []
 
 推荐约束：
 
-- 在调用 `vulcan-lua-exec` 或 `vulcan-lua-file` 前，先调用一次 `vulcan-lua-help`
-- 帮助工具不需要重复讲解 Lua 标准库本身；重点应放在宿主扩展能力和工具边界
+- 在调用 `vulcan-runtime-lua-exec` 或 `vulcan-runtime-lua-file` 前，先调用一次 `vulcan-help-detail`
+- 帮助能力属于 system tools，宿主可以重命名、重映射或选择不公开
 
-### `vulcan-lua-exec`
+### `vulcan-runtime-lua-exec`
 
 用于执行一段临时 Lua 代码。
 
@@ -809,7 +814,7 @@ dependencies: []
 - 快速网络探测
 - 命令编排
 
-### `vulcan-lua-file`
+### `vulcan-runtime-lua-file`
 
 用于执行一个已有 Lua 文件。
 

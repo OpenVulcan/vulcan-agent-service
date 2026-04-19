@@ -1,13 +1,10 @@
 use crate::client_budget::{ClientBudgetSnapshot, EffectiveBudgetScope};
-use crate::temp_maintenance::ensure_runtime_temp_dir;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// 中文：当工具返回非字符串结果时，统一返回的英文错误提示。
-/// English: Unified English error message returned when a tool emits a non-string result.
-pub const NON_STRING_TOOL_RESULT_ERROR: &str = "Tool results must be returned as plain strings. Structured JSON or table results are not supported.";
+pub use vulcan_luaskills::RuntimeInvocationResult;
+use vulcan_luaskills::ToolOverflowMode;
 
 /// 中文：当工具结果单行就超出当前客户端预算时，统一返回的英文错误提示。
 /// English: Unified English error message returned when even a single line exceeds the current client budget.
@@ -18,69 +15,34 @@ const TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR: &str = "Tool output exceeds the current M
 const DEFAULT_TRUNCATE_NOTICE: &str =
     "Content has been truncated because it exceeds the current MCP client limit.";
 
-/// 中文：宿主理解的统一超限模式。
-/// English: Unified overflow modes understood by the host runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolOverflowMode {
-    /// 中文：超限时按截断模板输出。
-    /// English: Render the result with truncate behavior when it overflows.
-    Truncate,
-    /// 中文：超限时进入分页目录模式。
-    /// English: Render the result as a paging directory when it overflows.
-    Page,
+
+/// 中文：宿主渲染选项，明确哪些最终处理决定属于宿主层。
+/// English: Host render options that make the final rendering decisions explicit at the host layer.
+#[derive(Debug, Clone, Default)]
+pub struct HostRenderOptions {
+    /// 中文：宿主管理的超限文件输出目录；仅在分页模式真正落盘时使用。
+    /// English: Host-managed spill directory used only when page mode needs to persist oversized output.
+    pub spill_root: Option<PathBuf>,
 }
 
-impl ToolOverflowMode {
-    /// 中文：解析来自 Lua 的超限模式字符串。
-    /// English: Parse an overflow mode string returned from Lua.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim() {
-            "truncate" => Some(Self::Truncate),
-            "page" => Some(Self::Page),
-            _ => None,
-        }
-    }
-}
-
-/// 中文：Lua 工具返回给宿主的统一字符串结果载荷。
-/// English: Unified string-result payload returned from Lua to the host.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolCallOutput {
-    /// 中文：工具正文内容，必须始终为字符串。
-    /// English: Tool body content, which must always be a string.
-    pub content: String,
-    /// 中文：可选超限模式；为空时宿主默认按 `truncate` 解释。
-    /// English: Optional overflow mode; when absent the host defaults to `truncate`.
-    pub overflow_mode: Option<ToolOverflowMode>,
-    /// 中文：可选模板名；为空时宿主按模式回退到固定模板名。
-    /// English: Optional template name; when absent the host falls back to the fixed template name for the chosen mode.
-    pub template_name: Option<String>,
-}
-
-impl ToolCallOutput {
-    /// 中文：构造只包含正文的字符串返回值。
-    /// English: Build a content-only string result.
-    pub fn plain(content: String) -> Self {
-        Self {
-            content,
-            overflow_mode: None,
-            template_name: None,
-        }
-    }
-}
-
-/// 中文：工具结果统一渲染入口；只接受宿主已解析好的字符串载荷，再由宿主按统一策略决定是原文、截断还是分页。
-/// English: Unified tool-result renderer. It accepts the host-parsed string payload, then decides between inline, truncate, or page under the unified policy.
+/// 中文：工具结果统一渲染入口；只接受 runtime 中间结果，再由宿主按统一策略决定是原文、截断还是分页。
+/// English: Unified host-side renderer that accepts the runtime intermediate result and decides between inline, truncate, or page under the host policy.
 pub fn render_tool_result_text(
-    output: &ToolCallOutput,
+    output: &RuntimeInvocationResult,
     skill_name: Option<&str>,
     client_budget: Option<&ClientBudgetSnapshot>,
+    render_options: &HostRenderOptions,
 ) -> String {
-    let text = normalize_text(&output.content);
     let policy = resolve_overflow_policy(skill_name, output);
     match policy.mode {
-        OverflowMode::Truncate => render_truncate_text(&text, skill_name, &policy, client_budget),
-        OverflowMode::Page => render_page_text(&text, skill_name, &policy, client_budget),
+        OverflowMode::Truncate => render_truncate_text(output, skill_name, &policy, client_budget),
+        OverflowMode::Page => render_page_text(
+            output,
+            skill_name,
+            &policy,
+            client_budget,
+            render_options,
+        ),
     }
 }
 
@@ -125,7 +87,10 @@ struct OverflowChunk {
 
 /// 中文：根据 Lua 返回的模式与模板名解析统一超限策略。
 /// English: Resolve the unified overflow policy from the mode and template name returned by Lua.
-fn resolve_overflow_policy(skill_name: Option<&str>, output: &ToolCallOutput) -> OverflowPolicy {
+fn resolve_overflow_policy(
+    skill_name: Option<&str>,
+    output: &RuntimeInvocationResult,
+) -> OverflowPolicy {
     let mode = match output.overflow_mode {
         Some(ToolOverflowMode::Page) => OverflowMode::Page,
         Some(ToolOverflowMode::Truncate) | None => OverflowMode::Truncate,
@@ -133,7 +98,7 @@ fn resolve_overflow_policy(skill_name: Option<&str>, output: &ToolCallOutput) ->
 
     OverflowPolicy {
         mode,
-        template_name: resolve_template_name(skill_name, output.template_name.as_deref(), mode),
+        template_name: resolve_template_name(skill_name, output.template_hint.as_deref(), mode),
     }
 }
 
@@ -157,17 +122,18 @@ fn resolve_template_name(
 /// 中文：渲染 `truncate` 模式；若未超限则直接返回原文，若单行都无法容纳则返回统一错误提示。
 /// English: Render `truncate`; return the original text when it fits, or the unified error message when even one line cannot fit.
 fn render_truncate_text(
-    content: &str,
+    output: &RuntimeInvocationResult,
     skill_name: Option<&str>,
     policy: &OverflowPolicy,
     client_budget: Option<&ClientBudgetSnapshot>,
 ) -> String {
     let tool_result_budget = resolve_budget_scope(client_budget, BudgetScopeKind::ToolResult);
-    if content_fits_budget(content, &tool_result_budget) {
-        return content.to_string();
+    if content_fits_budget(output, &tool_result_budget) {
+        return normalize_text(&output.content);
     }
 
-    let Some(truncated_content) = truncate_content_at_line_boundary(content, &tool_result_budget)
+    let Some(truncated_content) =
+        truncate_content_at_line_boundary(&output.content, &tool_result_budget)
     else {
         return TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR.to_string();
     };
@@ -189,23 +155,28 @@ fn render_truncate_text(
 /// 中文：渲染 `page` 模式；未超限时直接返回原文，超限后由宿主统一生成 spill 文件和读取目录。
 /// English: Render `page`; return the original text when it fits, otherwise let the host generate the spill file and read directory.
 fn render_page_text(
-    content: &str,
+    output: &RuntimeInvocationResult,
     skill_name: Option<&str>,
     policy: &OverflowPolicy,
     client_budget: Option<&ClientBudgetSnapshot>,
+    render_options: &HostRenderOptions,
 ) -> String {
     let tool_result_budget = resolve_budget_scope(client_budget, BudgetScopeKind::ToolResult);
-    if content_fits_budget(content, &tool_result_budget) {
-        return content.to_string();
+    if content_fits_budget(output, &tool_result_budget) {
+        return normalize_text(&output.content);
     }
 
     let file_read_budget = resolve_budget_scope(client_budget, BudgetScopeKind::FileRead);
-    let chunk_plan = match build_chunk_plan(content, &file_read_budget) {
+    let chunk_plan = match build_chunk_plan(&output.content, &file_read_budget) {
         Ok(plan) => plan,
         Err(_) => return TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR.to_string(),
     };
 
-    let raw_file = match write_overflow_text_file(content, policy) {
+    let Some(spill_root) = render_options.spill_root.as_deref() else {
+        return TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR.to_string();
+    };
+
+    let raw_file = match write_overflow_text_file(&output.content, policy, spill_root) {
         Ok(path) => path,
         Err(_) => return TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR.to_string(),
     };
@@ -276,11 +247,12 @@ fn resolve_budget_scope(
 
 /// 中文：判断正文是否已在目标预算内，无需再进入宿主超限处理。
 /// English: Decide whether the content already fits within the target budget and can bypass host overflow handling.
-fn content_fits_budget(content: &str, budget: &EffectiveBudgetScope) -> bool {
-    let normalized = normalize_text(content);
-    let lines = split_lines(&normalized);
-    let within_bytes = normalized.len() <= budget.bytes as usize;
-    let within_lines = budget.lines <= 0 || lines.len() <= budget.lines as usize;
+fn content_fits_budget(
+    output: &RuntimeInvocationResult,
+    budget: &EffectiveBudgetScope,
+) -> bool {
+    let within_bytes = output.content_bytes <= budget.bytes as usize;
+    let within_lines = budget.lines <= 0 || output.content_lines <= budget.lines as usize;
     within_bytes && within_lines
 }
 
@@ -438,14 +410,15 @@ fn render_chunk_lines(chunk_plan: &OverflowChunkPlan) -> String {
         .join("\n")
 }
 
-/// 中文：把超长正文写入宿主统一的临时缓存目录，供分页模式后续读取。
-/// English: Write oversized content into the host-managed temp cache directory for later page-mode reads.
-fn write_overflow_text_file(content: &str, policy: &OverflowPolicy) -> Result<PathBuf, String> {
-    let temp_root = ensure_runtime_temp_dir()
-        .map_err(|error| format!("failed to resolve temp dir: {}", error))?;
-    let cache_dir = temp_root.join("mcp").join("cache");
-    fs::create_dir_all(&cache_dir)
-        .map_err(|error| format!("failed to create cache dir: {}", error))?;
+/// 中文：把超长正文写入宿主指定的 spill 目录，供分页模式后续读取。
+/// English: Write oversized content into the host-provided spill directory for later page-mode reads.
+fn write_overflow_text_file(
+    content: &str,
+    policy: &OverflowPolicy,
+    spill_root: &Path,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(spill_root)
+        .map_err(|error| format!("failed to create spill dir: {}", error))?;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -455,7 +428,7 @@ fn write_overflow_text_file(content: &str, policy: &OverflowPolicy) -> Result<Pa
         policy.template_name.replace('.', "_"),
         now.as_millis()
     );
-    let file_path = cache_dir.join(file_name);
+    let file_path = spill_root.join(file_name);
     fs::write(&file_path, content)
         .map_err(|error| format!("failed to write overflow file: {}", error))?;
     Ok(file_path)
@@ -482,7 +455,11 @@ fn load_template_text(skill_name: Option<&str>, template_name: &str) -> Option<S
     let mut candidates = Vec::new();
 
     if let Some(skill_name) = skill_name {
-        candidates.push(root.join(skill_name).join("template").join(template_name));
+        candidates.push(
+            root.join(skill_name)
+                .join("overflow_templates")
+                .join(template_name),
+        );
     }
     candidates.push(root.join("__template").join(template_name));
 
@@ -548,10 +525,14 @@ fn join_lines_with_trailing_newline(existing_lines: &[String], next_line: &str) 
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolCallOutput, ToolOverflowMode, render_template_text, render_tool_result_text};
+    use super::{
+        HostRenderOptions, RuntimeInvocationResult, ToolOverflowMode, render_template_text,
+        render_tool_result_text,
+    };
     use crate::client_budget::{ClientBudgetSnapshot, EffectiveBudgetScope};
     use serde_json::json;
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
     fn sample_budget() -> ClientBudgetSnapshot {
         ClientBudgetSnapshot {
@@ -574,9 +555,10 @@ mod tests {
     #[test]
     fn plain_result_defaults_to_truncate_policy() {
         let rendered = render_tool_result_text(
-            &ToolCallOutput::plain("short".to_string()),
+            &RuntimeInvocationResult::plain("short".to_string()),
             Some("vulcan-codekit"),
             Some(&sample_budget()),
+            &HostRenderOptions::default(),
         );
         assert_eq!(rendered, "short");
     }
@@ -584,13 +566,14 @@ mod tests {
     #[test]
     fn truncate_mode_returns_notice_when_overflowed() {
         let rendered = render_tool_result_text(
-            &ToolCallOutput {
-                content: "line1\nline2\nline3".to_string(),
-                overflow_mode: Some(ToolOverflowMode::Truncate),
-                template_name: None,
-            },
+            &RuntimeInvocationResult::from_content_parts(
+                "line1\nline2\nline3".to_string(),
+                Some(ToolOverflowMode::Truncate),
+                None,
+            ),
             Some("vulcan-codekit"),
             Some(&sample_budget()),
+            &HostRenderOptions::default(),
         );
         assert!(rendered.contains("Content has been truncated"));
     }
@@ -598,13 +581,16 @@ mod tests {
     #[test]
     fn page_mode_returns_pointer_block_when_overflowed() {
         let rendered = render_tool_result_text(
-            &ToolCallOutput {
-                content: "line1\nline2\nline3\nline4".to_string(),
-                overflow_mode: Some(ToolOverflowMode::Page),
-                template_name: None,
-            },
+            &RuntimeInvocationResult::from_content_parts(
+                "line1\nline2\nline3\nline4".to_string(),
+                Some(ToolOverflowMode::Page),
+                None,
+            ),
             Some("vulcan-codekit"),
             Some(&sample_budget()),
+            &HostRenderOptions {
+                spill_root: Some(PathBuf::from("target/test-runtime-page-output")),
+            },
         );
         assert!(rendered.contains("# LARGE RESULT POINTER"));
         assert!(rendered.contains("raw_file:"));
@@ -618,13 +604,16 @@ mod tests {
             ..sample_budget()
         };
         let rendered = render_tool_result_text(
-            &ToolCallOutput {
-                content: "this-line-is-too-long".to_string(),
-                overflow_mode: Some(ToolOverflowMode::Page),
-                template_name: None,
-            },
+            &RuntimeInvocationResult::from_content_parts(
+                "this-line-is-too-long".to_string(),
+                Some(ToolOverflowMode::Page),
+                None,
+            ),
             Some("vulcan-codekit"),
             Some(&budget),
+            &HostRenderOptions {
+                spill_root: Some(PathBuf::from("target/test-runtime-page-error")),
+            },
         );
         assert_eq!(
             rendered,
