@@ -4,7 +4,7 @@
 它不再承担 LuaSkills 核运行时真相，而是基于 [`vulcan-luaskills`](https://github.com/OpenVulcan/vulcan-luaskills) 提供：
 
 - MCP 协议接入
-- STDIO / HTTP 传输
+- HTTP / gRPC 服务与本地调试模式
 - 宿主配置读取与策略注入
 - MCP 结果渲染、分页与截断处理
 - system tools 的宿主包装
@@ -28,7 +28,7 @@
 ## 主要能力
 
 - 支持 MCP 多版本协议协商
-- 支持 STDIO 与 HTTP 模式
+- 支持 HTTP 服务模式、gRPC 服务模式与本地调试模式
 - 通过本地依赖接入 `vulcan-luaskills`
 - 自动加载 `runtime/lua_skills/` 下符合规则的 LuaSkills
 - 把 skill entry 映射成 MCP tools
