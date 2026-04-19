@@ -1,10 +1,12 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock as StdRwLock;
 use tokio::sync::Mutex;
 
 use crate::client_budget::reload_client_budget_config;
 use crate::grpc_client::VmmClient;
+use crate::config::Config;
 use crate::luaskills_host::{
     build_luaskills_engine_options, build_runtime_invocation_context, build_runtime_request_context,
     client_budget_snapshot_for_render, install_luaskills_log_callback, map_runtime_entry_to_mcp_tool,
@@ -14,7 +16,9 @@ use crate::temp_maintenance::ensure_runtime_temp_dir;
 use crate::tool_config::reload_tool_configs;
 use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
 use vulcan_luaskills::{
-    LuaEngine, LuaVmPoolConfig, RuntimeHelpDetail, RuntimeSkillHelpDescriptor, ToolCacheConfig,
+    LuaEngine, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
+    RuntimeSkillLifecycleEvent, RuntimeSkillLifecycleCallback, RuntimeSkillHelpDescriptor,
+    ToolCacheConfig, set_entry_registry_callback, set_skill_lifecycle_callback,
 };
 
 // ============================================================
@@ -29,11 +33,18 @@ pub struct McpServer {
     // blocks on other concurrent operations (tools/list, initialize, etc).
     #[allow(dead_code)] // reserved for VMM forwarding mode
     vmm: Option<VmmClient>,
-    lua_engine: Option<Arc<LuaEngine>>,
+    lua_engine: Option<Arc<StdRwLock<LuaEngine>>>,
+    lua_skill_base_dir: Option<std::path::PathBuf>,
+    lua_skill_override_dir: Option<std::path::PathBuf>,
 }
 
 struct ServerInner {
-    tools: HashMap<String, Tool>,
+    /// English: Host-owned MCP tools registered by the current host adapter and never mutated by LuaSkills runtime deltas.
+    /// 当前宿主适配层拥有的 MCP 工具注册表，不会被 LuaSkills 运行时差异事件修改。
+    host_tools: HashMap<String, Tool>,
+    /// English: LuaSkills-managed dynamic MCP tools derived from runtime entries and fully driven by runtime registry deltas.
+    /// 由 LuaSkills 运行时入口派生并完全受运行时注册表差异驱动的动态 MCP 工具注册表。
+    skill_tools: HashMap<String, Tool>,
     resources: Vec<Resource>,
     resource_templates: Vec<ResourceTemplate>,
     prompts: Vec<Prompt>,
@@ -45,7 +56,8 @@ struct ServerInner {
 impl McpServer {
     pub fn new() -> Self {
         let inner = ServerInner {
-            tools: HashMap::new(),
+            host_tools: HashMap::new(),
+            skill_tools: HashMap::new(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             prompts: Vec::new(),
@@ -57,6 +69,8 @@ impl McpServer {
             inner: Arc::new(Mutex::new(inner)),
             vmm: None,
             lua_engine: None,
+            lua_skill_base_dir: None,
+            lua_skill_override_dir: None,
         };
         server.register_defaults();
         server
@@ -76,17 +90,40 @@ impl McpServer {
     /// Configure Lua skills from system and override directories.
     pub fn with_lua_skills(
         mut self,
+        config: &Config,
         base_dir: &std::path::Path,
         override_dir: Option<&std::path::Path>,
         pool_config: LuaVmPoolConfig,
         cache_config: ToolCacheConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         install_luaskills_log_callback();
-        let mut engine = LuaEngine::new(build_luaskills_engine_options(pool_config, cache_config)?)?;
+        let mut engine =
+            LuaEngine::new(build_luaskills_engine_options(config, pool_config, cache_config)?)?;
         engine.load_from_dirs(base_dir, override_dir)?;
         let entries = engine.list_entries();
         eprintln!("[MCP] {} Lua skills loaded", entries.len());
-        self.lua_engine = Some(Arc::new(engine));
+        let engine = Arc::new(StdRwLock::new(engine));
+        self.lua_engine = Some(engine.clone());
+        self.lua_skill_base_dir = Some(base_dir.to_path_buf());
+        self.lua_skill_override_dir = override_dir.map(|value| value.to_path_buf());
+
+        let callback_inner = self.inner.clone();
+        set_entry_registry_callback(Some(Arc::new(move |delta: &RuntimeEntryRegistryDelta| {
+            let mut inner = callback_inner.blocking_lock();
+            apply_runtime_entry_registry_delta(&mut inner, delta);
+        })));
+        let lifecycle_callback: RuntimeSkillLifecycleCallback =
+            Arc::new(|event: &RuntimeSkillLifecycleEvent| {
+                eprintln!(
+                    "[LuaSkills:lifecycle] plane={:?} action={:?} skill={} status={} message={}",
+                    event.plane,
+                    event.action,
+                    event.skill_id,
+                    event.status,
+                    event.message.as_deref().unwrap_or("")
+                );
+            });
+        set_skill_lifecycle_callback(Some(lifecycle_callback));
 
         // Register Lua skills strictly as MCP tools.
         // 严格仅将 Lua skills 注册为 MCP tools。
@@ -94,7 +131,7 @@ impl McpServer {
             let mut inner = self.inner.try_lock().unwrap();
             for entry in entries {
                 let tool = map_runtime_entry_to_mcp_tool(&entry);
-                inner.tools.insert(tool.name.clone(), tool);
+                inner.skill_tools.insert(tool.name.clone(), tool);
             }
         }
 
@@ -105,7 +142,7 @@ impl McpServer {
         let mut inner = self.inner.try_lock().unwrap();
 
         // --- vulcan-help-list: list strict LuaSkills help trees for host-side help wrappers ---
-        inner.tools.insert(
+        inner.host_tools.insert(
             "vulcan-help-list".to_string(),
             Tool::with_annotations(
                 "vulcan-help-list",
@@ -122,7 +159,7 @@ impl McpServer {
         );
 
         // --- vulcan-help-detail: read one strict LuaSkills help flow and render it for MCP ---
-        inner.tools.insert(
+        inner.host_tools.insert(
             "vulcan-help-detail".to_string(),
             Tool::with_annotations(
                 "vulcan-help-detail",
@@ -141,8 +178,79 @@ impl McpServer {
             ),
         );
 
+        inner.host_tools.insert(
+            "vulcan-skill-enable".to_string(),
+            Tool::with_annotations(
+                "vulcan-skill-enable",
+                "Enable one non-protected LuaSkills package through the ordinary skills plane and let the MCP host refresh its registered tools automatically.",
+                json!({
+                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."}
+                }),
+                vec!["skill".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-skill-disable".to_string(),
+            Tool::with_annotations(
+                "vulcan-skill-disable",
+                "Disable one non-protected LuaSkills package through the ordinary skills plane and let the MCP host refresh its registered tools automatically.",
+                json!({
+                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."},
+                    "reason": {"type": "string", "description": "Optional disable reason recorded into the skill state marker."}
+                }),
+                vec!["skill".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-skill-uninstall".to_string(),
+            Tool::with_annotations(
+                "vulcan-skill-uninstall",
+                "Uninstall one non-protected LuaSkills package through the ordinary skills plane and let the MCP host refresh its registered tools automatically.",
+                json!({
+                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."}
+                }),
+                vec!["skill".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(true),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(false),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-skill-reload".to_string(),
+            Tool::with_annotations(
+                "vulcan-skill-reload",
+                "Reload LuaSkills from the current base and override directories, then let the MCP host refresh its registered tools from runtime entry deltas.",
+                json!({}),
+                vec![],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
         // --- reload_vulcan_mcp_configs: hot reload runtime client budget / tool config files ---
-        inner.tools.insert(
+        inner.host_tools.insert(
             "reload_vulcan_mcp_configs".to_string(),
             Tool::with_annotations(
                 "reload_vulcan_mcp_configs",
@@ -316,7 +424,7 @@ impl McpServer {
             .as_ref()
             .map(|c| c.name.clone())
             .unwrap_or_else(|| "unknown".to_string());
-        let has_tools = !inner.tools.is_empty();
+        let has_tools = !inner.host_tools.is_empty() || !inner.skill_tools.is_empty();
         let has_resources = !inner.resources.is_empty() || !inner.resource_templates.is_empty();
         let has_prompts = !inner.prompts.is_empty();
         let has_completions =
@@ -384,7 +492,14 @@ impl McpServer {
             .inner
             .try_lock()
             .map_err(|_| (-32603, "Busy".to_string()))?;
-        let tools: Vec<Tool> = inner.tools.values().cloned().collect();
+        let mut merged = std::collections::BTreeMap::new();
+        for (name, tool) in &inner.skill_tools {
+            merged.insert(name.clone(), tool.clone());
+        }
+        for (name, tool) in &inner.host_tools {
+            merged.insert(name.clone(), tool.clone());
+        }
+        let tools: Vec<Tool> = merged.into_values().collect();
         Ok(json!({ "tools": tools }))
     }
 
@@ -398,14 +513,139 @@ impl McpServer {
 
         let inner = self.inner.lock().await;
         let tool = inner
-            .tools
+            .host_tools
             .get(&req.name)
+            .or_else(|| inner.skill_tools.get(&req.name))
             .ok_or_else(|| (-32602, format!("Unknown tool: {}", req.name)))?
             .clone();
         drop(inner);
 
         let args = req.arguments.unwrap_or_default();
         let result = match tool.name.as_str() {
+            "vulcan-skill-enable" => {
+                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                })?;
+                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill base directory is not configured.".to_string())
+                })?;
+                let skill_id = required_string_argument(&args, "skill")?;
+                let engine = engine.clone();
+                let base_dir = base_dir.clone();
+                let override_dir = self.lua_skill_override_dir.clone();
+                let skill_id_for_call = skill_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut engine = engine
+                        .write()
+                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                    engine
+                        .enable_skill(&base_dir, override_dir.as_deref(), &skill_id_for_call)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| (-32603, format!("vulcan-skill-enable spawn error: {}", error)))?
+                .map_err(|error| (-32603, error))?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&format!("Skill '{}' enabled.", skill_id))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-skill-disable" => {
+                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                })?;
+                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill base directory is not configured.".to_string())
+                })?;
+                let skill_id = required_string_argument(&args, "skill")?;
+                let reason = args
+                    .get("reason")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                let engine = engine.clone();
+                let base_dir = base_dir.clone();
+                let override_dir = self.lua_skill_override_dir.clone();
+                let skill_id_for_call = skill_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut engine = engine
+                        .write()
+                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                    engine
+                        .disable_skill(
+                            &base_dir,
+                            override_dir.as_deref(),
+                            &skill_id_for_call,
+                            reason.as_deref(),
+                        )
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| (-32603, format!("vulcan-skill-disable spawn error: {}", error)))?
+                .map_err(|error| (-32603, error))?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&format!("Skill '{}' disabled.", skill_id))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-skill-uninstall" => {
+                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                })?;
+                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill base directory is not configured.".to_string())
+                })?;
+                let skill_id = required_string_argument(&args, "skill")?;
+                let engine = engine.clone();
+                let base_dir = base_dir.clone();
+                let override_dir = self.lua_skill_override_dir.clone();
+                let skill_id_for_call = skill_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut engine = engine
+                        .write()
+                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                    engine
+                        .uninstall_skill(&base_dir, override_dir.as_deref(), &skill_id_for_call)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| (-32603, format!("vulcan-skill-uninstall spawn error: {}", error)))?
+                .map_err(|error| (-32603, error))?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&format!("Skill '{}' uninstalled.", skill_id))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-skill-reload" => {
+                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                })?;
+                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill base directory is not configured.".to_string())
+                })?;
+                let engine = engine.clone();
+                let base_dir = base_dir.clone();
+                let override_dir = self.lua_skill_override_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut engine = engine
+                        .write()
+                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                    engine
+                        .reload_from_dirs(&base_dir, override_dir.as_deref())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| (-32603, format!("vulcan-skill-reload spawn error: {}", error)))?
+                .map_err(|error| (-32603, error))?;
+                ToolCallResult {
+                    content: vec![TextContent::text("LuaSkills reloaded.")],
+                    is_error: None,
+                }
+            }
+
             "vulcan-help-list" => {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (
@@ -413,7 +653,10 @@ impl McpServer {
                         "Lua engine not configured. Add lua_skills directory.".to_string(),
                     )
                 })?;
-                let help_tree = engine.list_skill_help();
+                let help_tree = engine
+                    .read()
+                    .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+                    .list_skill_help();
                 let markdown = render_help_list_markdown(&help_tree);
                 ToolCallResult {
                     content: vec![TextContent::text(&markdown)],
@@ -447,7 +690,10 @@ impl McpServer {
                 let request_context = request_context.clone();
                 let runtime_request_context = build_runtime_request_context(&request_context);
                 let result = tokio::task::spawn_blocking(move || {
-                    engine_clone.render_skill_help_detail(
+                    let engine = engine_clone
+                        .read()
+                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                    engine.render_skill_help_detail(
                         &skill_id,
                         &flow,
                         Some(&runtime_request_context),
@@ -502,10 +748,17 @@ impl McpServer {
             _ => {
                 // Check if this is a Lua skill
                 if let Some(engine) = &self.lua_engine {
-                    if engine.is_skill(&tool.name) {
+                    let is_skill = engine
+                        .read()
+                        .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+                        .is_skill(&tool.name);
+                    if is_skill {
                         let engine_clone = engine.clone();
                         let tool_name = tool.name.clone();
-                        let skill_name = engine.skill_name_for_tool(&tool.name);
+                        let skill_name = engine
+                            .read()
+                            .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+                            .skill_name_for_tool(&tool.name);
                         let args_clone = args.clone();
                         let request_context = request_context.clone();
                         let budget_request_context = request_context.clone();
@@ -515,7 +768,10 @@ impl McpServer {
                             skill_name.as_deref(),
                         );
                         let result = tokio::task::spawn_blocking(move || {
-                            engine_clone.call_skill(&tool_name, &args_clone, Some(&invocation_context))
+                            let engine = engine_clone
+                                .read()
+                                .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                            engine.call_skill(&tool_name, &args_clone, Some(&invocation_context))
                         })
                         .await
                         .map_err(|e| (-32603, format!("Lua skill spawn error: {}", e)))?;
@@ -643,7 +899,12 @@ impl McpServer {
         let prompt_completion_values = if ref_type == "ref/prompt" {
             self.lua_engine
                 .as_ref()
-                .and_then(|engine| engine.prompt_argument_completions(ref_name, argument_name))
+                .and_then(|engine| {
+                    engine
+                        .read()
+                        .ok()
+                        .and_then(|engine| engine.prompt_argument_completions(ref_name, argument_name))
+                })
         } else {
             None
         };
@@ -716,6 +977,36 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     }
 
     lines.join("\n")
+}
+
+/// English: Return one required non-empty string argument from the current tool call payload.
+/// 从当前工具调用参数中读取一个必填且非空的字符串参数。
+fn required_string_argument(args: &Value, key: &str) -> Result<String, (i64, String)> {
+    args.get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .ok_or_else(|| (-32602, format!("Missing required parameter: {}", key)))
+}
+
+/// English: Apply one runtime entry-registry delta to the MCP host tool registry.
+/// 把一份运行时入口注册表差异应用到 MCP 宿主工具注册表。
+fn apply_runtime_entry_registry_delta(
+    inner: &mut ServerInner,
+    delta: &RuntimeEntryRegistryDelta,
+) {
+    for removed_name in &delta.removed_entry_names {
+        inner.skill_tools.remove(removed_name);
+    }
+    for entry in &delta.updated_entries {
+        let tool = map_runtime_entry_to_mcp_tool(entry);
+        inner.skill_tools.insert(tool.name.clone(), tool);
+    }
+    for entry in &delta.added_entries {
+        let tool = map_runtime_entry_to_mcp_tool(entry);
+        inner.skill_tools.insert(tool.name.clone(), tool);
+    }
 }
 
 /// Render one structured help detail payload into user-facing Markdown.

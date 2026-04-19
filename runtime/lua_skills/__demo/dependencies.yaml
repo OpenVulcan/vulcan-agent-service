@@ -1,36 +1,58 @@
-dependencies: []
+tool_dependencies: []
+lua_dependencies: []
+ffi_dependencies: []
 
-# 中文：复制该模板后，可将 dependencies 改为真正的依赖列表。
-# English: After copying this template, replace dependencies with your real dependency entries.
+# Example:
+# tool_dependencies:
+#   - name: demo-rg
+#     required: true
+#     scope: shared
+#     source:
+#       type: url
+#       url: {}
+#     packages:
+#       windows-x64:
+#         archive_type: zip
+#         url: https://example.com/rg/windows-x64.zip
+#         exports:
+#           - archive_path: rg.exe
+#             target_path: bin/rg.exe
 #
-# dependencies:
-#   - name: "example-tool"
-#     install_as: "example-tool"
-#     github:
-#       repo: "https://github.com/owner/example-tool"
-#       tag_api: "https://api.github.com/repos/owner/example-tool/releases/latest"
-#     targets:
-#       - os: "windows"
-#         arch: "x86_64"
-#         asset_name: "example-tool-x86_64-pc-windows-msvc.zip"
-#         install_as: "example-tool.exe"
-#         archive_path: "example-tool.exe"
-#         executable: false
-#       - os: "linux"
-#         arch: "x86_64"
-#         asset_name: "example-tool-{version}-x86_64-unknown-linux-gnu.tar.gz"
-#         install_as: "example-tool"
-#         archive_path: "example-tool-{version}-x86_64-unknown-linux-gnu/example-tool"
-#         executable: true
-#       - os: "linux"
-#         arch: "aarch64"
-#         asset_name: "example-tool-{version}-aarch64-unknown-linux-gnu.tar.gz"
-#         install_as: "example-tool"
-#         archive_path: "example-tool-{version}-aarch64-unknown-linux-gnu/example-tool"
-#         executable: true
-#       - os: "macos"
-#         arch: "aarch64"
-#         asset_name: "example-tool-{version}-aarch64-apple-darwin.zip"
-#         install_as: "example-tool"
-#         archive_path: "example-tool-{version}-aarch64-apple-darwin/example-tool"
-#         executable: true
+#   - name: demo-ast-grep
+#     required: true
+#     source:
+#       type: skilllist
+#       skilllist:
+#         url: https://example.com/luaskills-tools.yaml
+#         package: ast-grep
+#
+# lua_dependencies:
+#   - name: lua-cjson
+#     required: false
+#     scope: skill
+#     source:
+#       type: url
+#       url: {}
+#     packages:
+#       windows-x64:
+#         archive_type: raw
+#         url: https://example.com/lua/cjson.lua
+#         exports:
+#           - archive_path: cjson.lua
+#             target_path: share/lua/cjson.lua
+#
+# ffi_dependencies:
+#   - name: demo-native-lib
+#     required: false
+#     scope: skill
+#     source:
+#       type: github_release
+#       github:
+#         repo: demo/native-lib
+#     packages:
+#       windows-x64:
+#         archive_type: zip
+#         asset_name: native-lib-x64.zip
+#         exports:
+#           - archive_path: native-lib.dll
+#             target_path: bin/native-lib.dll

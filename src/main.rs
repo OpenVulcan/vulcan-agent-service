@@ -299,6 +299,7 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
     let lua_skills_loaded = find_lua_skill_dirs(&cfg);
     if let Some((base_dir, override_dir)) = lua_skills_loaded {
         server = server.with_lua_skills(
+            cfg,
             &base_dir,
             override_dir.as_deref(),
             LuaVmPoolConfig {
@@ -398,12 +399,17 @@ fn run_call_tool_mode(
 fn build_single_vm_lua_engine_for_local_mode() -> Result<LuaEngine, Box<dyn std::error::Error>> {
     let (base_dir, override_dir) = find_lua_skill_dirs_for_call_tools()
         .ok_or("Lua skill directory not found for local debug mode")?;
+    let config = Config::load()?;
 
-    let mut engine = LuaEngine::new(build_luaskills_engine_options(LuaVmPoolConfig {
-        min_size: 1,
-        max_size: 1,
-        idle_ttl_secs: 300,
-    }, build_luaskills_cache_config(None, None, None))?)?;
+    let mut engine = LuaEngine::new(build_luaskills_engine_options(
+        &config,
+        LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 1,
+            idle_ttl_secs: 300,
+        },
+        build_luaskills_cache_config(None, None, None),
+    )?)?;
     engine.load_from_dirs(&base_dir, override_dir.as_deref())?;
     Ok(engine)
 }

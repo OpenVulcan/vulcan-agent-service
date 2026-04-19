@@ -50,6 +50,10 @@ pub struct Config {
     /// 中文：Lua 虚拟机空闲多久后允许销毁（秒），默认 300 秒。
     /// English: Idle lifetime in seconds before an excess Lua VM can be destroyed. Defaults to 300 seconds.
     pub lua_vm_pool_idle_ttl_secs: Option<u64>,
+
+    /// 中文：受保护技能标识符列表，这些名称只允许由 system tools 维护。
+    /// English: Protected skill identifiers that may only be maintained through system tools.
+    pub protected_skills: Option<Vec<String>>,
 }
 
 fn default_http_addr() -> Option<String> {

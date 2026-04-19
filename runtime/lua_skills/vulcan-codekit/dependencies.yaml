@@ -1,61 +1,75 @@
-dependencies:
-  - name: "ast-grep"
-    install_as: "ast-grep.exe"
-    github:
-      repo: "https://github.com/ast-grep/ast-grep"
-      tag_api: "https://api.github.com/repos/ast-grep/ast-grep/releases/latest"
-    targets:
-      - os: "windows"
-        arch: "x86_64"
-        asset_name: "app-x86_64-pc-windows-msvc.zip"
-        install_as: "ast-grep.exe"
-        archive_path: "ast-grep.exe"
-        executable: false
-      - os: "linux"
-        arch: "x86_64"
-        asset_name: "app-x86_64-unknown-linux-gnu.zip"
-        install_as: "ast-grep"
-        archive_path: "ast-grep"
-        executable: true
-      - os: "linux"
-        arch: "aarch64"
-        asset_name: "app-aarch64-unknown-linux-gnu.zip"
-        install_as: "ast-grep"
-        archive_path: "ast-grep"
-        executable: true
-      - os: "macos"
-        arch: "aarch64"
-        asset_name: "app-aarch64-apple-darwin.zip"
-        install_as: "ast-grep"
-        archive_path: "ast-grep"
-        executable: true
-  - name: "rg"
-    install_as: "rg.exe"
-    github:
-      repo: "https://github.com/BurntSushi/ripgrep"
-      tag_api: "https://api.github.com/repos/BurntSushi/ripgrep/releases/latest"
-    targets:
-      - os: "windows"
-        arch: "x86_64"
-        asset_name: "ripgrep-{version}-x86_64-pc-windows-msvc.zip"
-        install_as: "rg.exe"
-        archive_path: "ripgrep-{version}-x86_64-pc-windows-msvc/rg.exe"
-        executable: false
-      - os: "linux"
-        arch: "x86_64"
-        asset_name: "ripgrep-{version}-x86_64-unknown-linux-musl.tar.gz"
-        install_as: "rg"
-        archive_path: "ripgrep-{version}-x86_64-unknown-linux-musl/rg"
-        executable: true
-      - os: "linux"
-        arch: "aarch64"
-        asset_name: "ripgrep-{version}-aarch64-unknown-linux-gnu.tar.gz"
-        install_as: "rg"
-        archive_path: "ripgrep-{version}-aarch64-unknown-linux-gnu/rg"
-        executable: true
-      - os: "macos"
-        arch: "aarch64"
-        asset_name: "ripgrep-{version}-aarch64-apple-darwin.tar.gz"
-        install_as: "rg"
-        archive_path: "ripgrep-{version}-aarch64-apple-darwin/rg"
-        executable: true
+tool_dependencies:
+  - name: ast-grep
+    required: true
+    scope: shared
+    source:
+      type: github_release
+      github:
+        repo: ast-grep/ast-grep
+    packages:
+      windows-x64:
+        archive_type: zip
+        asset_name: app-x86_64-pc-windows-msvc.zip
+        exports:
+          - archive_path: ast-grep.exe
+            target_path: bin/ast-grep.exe
+      linux-x64:
+        archive_type: zip
+        asset_name: app-x86_64-unknown-linux-gnu.zip
+        exports:
+          - archive_path: ast-grep
+            target_path: bin/ast-grep
+            executable: true
+      linux-arm64:
+        archive_type: zip
+        asset_name: app-aarch64-unknown-linux-gnu.zip
+        exports:
+          - archive_path: ast-grep
+            target_path: bin/ast-grep
+            executable: true
+      macos-arm64:
+        archive_type: zip
+        asset_name: app-aarch64-apple-darwin.zip
+        exports:
+          - archive_path: ast-grep
+            target_path: bin/ast-grep
+            executable: true
+
+  - name: rg
+    required: true
+    scope: shared
+    source:
+      type: github_release
+      github:
+        repo: BurntSushi/ripgrep
+    packages:
+      windows-x64:
+        archive_type: zip
+        asset_name: ripgrep-{version}-x86_64-pc-windows-msvc.zip
+        exports:
+          - archive_path: ripgrep-{version}-x86_64-pc-windows-msvc/rg.exe
+            target_path: bin/rg.exe
+      linux-x64:
+        archive_type: tar_gz
+        asset_name: ripgrep-{version}-x86_64-unknown-linux-musl.tar.gz
+        exports:
+          - archive_path: ripgrep-{version}-x86_64-unknown-linux-musl/rg
+            target_path: bin/rg
+            executable: true
+      linux-arm64:
+        archive_type: tar_gz
+        asset_name: ripgrep-{version}-aarch64-unknown-linux-gnu.tar.gz
+        exports:
+          - archive_path: ripgrep-{version}-aarch64-unknown-linux-gnu/rg
+            target_path: bin/rg
+            executable: true
+      macos-arm64:
+        archive_type: tar_gz
+        asset_name: ripgrep-{version}-aarch64-apple-darwin.tar.gz
+        exports:
+          - archive_path: ripgrep-{version}-aarch64-apple-darwin/rg
+            target_path: bin/rg
+            executable: true
+
+lua_dependencies: []
+ffi_dependencies: []

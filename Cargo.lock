@@ -2495,11 +2495,15 @@ name = "vulcan-luaskills"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "flate2",
  "libloading",
  "mlua",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tar",
+ "zip",
 ]
 
 [[package]]

@@ -92,6 +92,14 @@ Skill 包应表达：
 - 启用策略
 - 平台限制
 
+其中启用策略建议使用单个 `enable` 字段：
+
+- `enable: true` 表示显式启用
+- `enable: false` 表示显式关闭
+- 省略 `enable` 时默认启用
+
+依赖缺失、平台不兼容等情况不通过 `enable` 表达，而应进入运行时状态模型。
+
 并建议同时定义：
 
 - `skill_id`
@@ -113,6 +121,37 @@ Skill 包应表达：
 - native / ffi 依赖
 - host capability 依赖
 - provider 偏好
+
+当前已落地的依赖清单分组为：
+
+- `tool_dependencies`
+- `lua_dependencies`
+- `ffi_dependencies`
+
+并建议所有依赖声明都支持 `scope`：
+
+- `shared`
+- `skill`
+- `host`
+
+推荐默认策略：
+
+- `tool_dependencies` 默认 `shared`
+- `lua_dependencies` 默认 `skill`
+- `ffi_dependencies` 默认 `skill`
+
+作用语义如下：
+
+- `shared`
+  - 安装到共享目录
+  - 可被多个 skill 复用
+  - 是否清理不依赖记忆文件，而由运行时实时扫描当前 skill 清单决定
+- `skill`
+  - 安装到 skill 私有目录
+  - skill 卸载时可以直接清理
+- `host`
+  - 由宿主提供
+  - LuaSkills 只负责检测是否存在，不负责下载和删除
 
 但依赖的下载与安装，不属于 runtime 层职责。
 

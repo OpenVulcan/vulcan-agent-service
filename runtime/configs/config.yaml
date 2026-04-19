@@ -44,3 +44,9 @@ lua_vm_pool_max_size: 8
 # English: Idle lifetime in seconds before excess Lua VMs above the minimum warm count may be destroyed.
 # 示例 / Example:
 lua_vm_pool_idle_ttl_secs: 600
+
+# 中文：受保护技能名称列表。列表中的 skill 只能由宿主 system tools 维护，不能走普通 skills 管理面。
+# English: Protected skill names. Skills in this list may only be maintained through host-side system tools, not the ordinary skills plane.
+# 示例 / Example:
+# protected_skills:
+#   - "vulcan-runtime"

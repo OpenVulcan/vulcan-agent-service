@@ -210,6 +210,20 @@ LuaSkills Core 推荐只定义以下对象：
 
 entry 是可调用单元，MCP 再决定如何将其映射为 `tool` 或其他对象。
 
+另外，skill 级开关建议只保留单个 `enable` 字段：
+
+- `enable: false`：显式关闭该 skill
+- `enable: true`：显式启用该 skill
+- 不声明时：默认启用
+
+运行时仍然需要继续计算：
+
+- 依赖是否满足
+- 平台是否兼容
+- provider 是否就绪
+
+因此 skill 的最终状态不等同于 `enable` 字段本身。
+
 并建议同步采用命名空间规则：
 
 - skill 提供 namespace
@@ -244,6 +258,138 @@ entry 是可调用单元，MCP 再决定如何将其映射为 `tool` 或其他�
 不再保留旧的 `::` 兼容名。
 
 ### 5.3 Help 不再按 tool 一一绑定
+
+### 5.4 保护技能与双平面生命周期管理
+
+LuaSkills 需要同时支持两类技能管理平面：
+
+- `skills` 平面
+- `system` 平面
+
+二者的职责边界如下：
+
+- `skills` 平面：面向普通统一 skill 管理
+- `system` 平面：面向宿主核心包、保留名称与内部维护
+
+保护技能不是“当前已安装的某个技能实例”，而是“被宿主保留的 skill 名称”。
+
+因此：
+
+- 即使某个保护技能当前并不存在
+- 只要其名称在保护名单中
+- 就不能通过 `skills` 平面对其执行 `install / update / reload / enable / disable / uninstall`
+
+但保护技能仍然允许由 `system` 平面处理。
+
+这意味着：
+
+- `skills.*`：不能操作保护技能
+- `system.*`：可以操作保护技能
+
+宿主应通过配置对象向 `vulcan-luaskills` 注入：
+
+- `protected_skill_ids`
+
+该配置属于宿主策略，而不是 skill 包自身元数据。
+
+### 5.5 install 与 update 的语义边界
+
+`install` 与 `update` 对外应保持两个独立入口，但内部可以复用同一条 package apply 主链。
+
+推荐规则：
+
+- `install`
+  - skill 不存在时执行安装
+  - skill 已存在时返回结构化状态
+  - 不做隐式升级
+- `update`
+  - 明确用于更新已安装 skill
+  - skill 不存在时返回结构化状态
+
+在 skillhub 与完整安装规则尚未落地前，运行时至少应预留：
+
+- `install` 占位入口
+- `update` 占位入口
+- 结构化状态返回
+
+这样后续接入：
+
+- GitHub
+- URL
+- skilllist
+- skillhub
+
+时无需推翻已有 API 语义。
+
+### 5.6 宿主回调与注册表变化通知
+
+LuaSkills 在执行以下动作后，应允许向宿主发送结构化回调：
+
+- reload
+- enable
+- disable
+- uninstall
+- install
+- update
+
+回调至少分为两类：
+
+- 技能生命周期事件
+- entry 注册表差异事件
+
+其中：
+
+- 生命周期事件用于告诉宿主某个技能发生了什么状态变化
+- 注册表差异事件用于告诉宿主有哪些 tool/entry 新增、移除或更新
+
+这样宿主可以自行决定：
+
+- 是否立即刷新 MCP tools 注册表
+- 是否更新 IDE slash command / palette
+- 是否记录审计日志
+- 是否忽略部分 system events
+
+LuaSkills 只负责发出结构化变化，不负责决定宿主如何展示这些变化。
+
+### 5.7 共享依赖不应依赖记忆文件
+
+共享依赖是否仍被使用，不应以持久化引用计数文件作为最终真相。
+
+原因在于：
+
+- skill 包可能被人工修改
+- `dependencies.yaml` 可能被手工替换
+- override 目录可能新增或删除 skill
+
+因此更合理的方式是：
+
+- 每次启动时重新扫描 skill
+- 每次 reload 时重新扫描 skill
+- 每次 enable / disable / uninstall 后重新扫描 skill
+
+然后由运行时根据实时扫描结果决定：
+
+- 哪些 shared 依赖仍然被使用
+- 哪些 shared 依赖已经变成孤立目录
+
+孤立 shared 依赖才允许被清理。
+
+### 5.8 MCP 宿主包装的 system tools
+
+当前 `vulcan-mcp` 宿主应包装一组面向普通 skill 管理面的 system tools：
+
+- `vulcan-skill-enable`
+- `vulcan-skill-disable`
+- `vulcan-skill-uninstall`
+- `vulcan-skill-reload`
+
+这些工具的职责是：
+
+- 调用 `vulcan-luaskills` 的技能管理入口
+- 让 runtime 自身完成状态计算与 delta 生成
+- 宿主根据 runtime delta 自动调整自身已注册的 MCP tools
+
+保护技能仍然不应通过这组普通 tools 处理，而应保留给宿主自己的 system plane。
 
 help 的组织方式应改为：
 
