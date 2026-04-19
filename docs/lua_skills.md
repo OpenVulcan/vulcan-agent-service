@@ -504,14 +504,15 @@ local http = require "socket.http"
 local body, code = http.request("https://api.example.com/data")
 ```
 
-### `luacurl` — libcurl 绑定
+### `lua-curl` — libcurl 绑定
 
 提供基于 libcurl 的网络请求能力，适合需要直接使用 curl 语义的场景。
 
 ```lua
-local curl = require "luacurl"
-local easy = curl.new()
-easy:setopt(curl.OPT_URL, "https://example.com")
+local curl = require "lcurl.safe"
+local easy = curl.easy {
+  url = "https://example.com",
+}
 easy:perform()
 easy:close()
 ```
@@ -854,4 +855,218 @@ dependencies: []
 - 宿主对字节预算会再应用安全比例，因此 Lua 实际拿到的最终 `bytes` 可能小于配置原值
 - 同时仍禁止：
   - 调用当前发起 `luaexec` 的工具自身
-  - 在 `vulcan-lua-exec` / `vulcan-lua-file` 中再次调用这两个执行工具
+- 在 `vulcan-lua-exec` / `vulcan-lua-file` 中再次调用这两个执行工具
+
+## `vulcan-curl` 工具说明
+
+`vulcan-curl` 是当前仓库内置的 HTTP 调用 skill，底层直接使用 `lua-curl`，不依赖系统 `curl` 可执行文件。
+
+它的目标是：
+
+- 尽量保持 Linux `curl` 的使用心智
+- 避免 Windows / Linux / macOS 下不同 shell 的转义差异
+- 让 AI 直接通过结构化参数数组复用熟悉的 `curl` 参数风格
+- 同时提供更适合 AI 的极简 GET / POST 快捷工具
+
+### `vulcan-curl-get`
+
+这是给 AI 使用的极简 GET 工具，适合：
+
+- 只提供 `url`
+- 只带简单 `params`
+- 只带简单 `headers`
+- 不关心复杂 TLS、代理、重试、上传和 curl 高级参数
+
+输入结构：
+
+```json
+{
+  "url": "https://httpbin.org/get",
+  "params": {
+    "q": "hello",
+    "page": 1
+  },
+  "headers": {
+    "Accept": "application/json"
+  },
+  "timeout_ms": 30000
+}
+```
+
+说明：
+
+- `params` 支持对象形式
+- 若调用侧需要显式传递原始查询片段数组，可使用 `params_list`
+- 对象形式会自动 URL 编码并拼到查询串
+- `headers` 为对象型头映射，`header_lines` 为原始头字符串数组
+- `bearer` 可快捷注入 `Authorization: Bearer ...`
+- `basic` 为对象型基础认证，`basic_text` 可直接传 `user:pass`
+- `follow_location` 可用于常见 30x 跳转跟随
+- `download_to` 可将响应体直接保存到文件
+- `save_headers_to` 可将响应头保存到文件
+- 若需要复杂 curl 参数、代理、证书、输出文件、重试等，请回退使用基础 `vulcan-curl`
+
+### `vulcan-curl-post`
+
+这是给 AI 使用的极简 POST 工具，适合：
+
+- 简单 JSON 请求
+- 简单表单请求
+- 简单原始 body 请求
+
+输入结构：
+
+```json
+{
+  "url": "https://httpbin.org/post",
+  "json": {
+    "hello": "world"
+  },
+  "headers": {
+    "Accept": "application/json"
+  },
+  "timeout_ms": 30000
+}
+```
+
+说明：
+
+- `json`、`body` 与 `form/files` 三种负载族只能三选一
+- `form` 为对象型表单映射，`form_lines` 为 curl 风格表单数组
+- `files` 为对象型文件映射，`file_lines` 为 curl 风格文件数组
+- `form` 与 `files` 可以组合成常见 multipart 请求
+- 查询参数若需要显式数组输入，可使用 `params_list`
+- `headers` 为对象型头映射，`header_lines` 为原始头字符串数组
+- `bearer` 可快捷注入 `Authorization: Bearer ...`
+- `basic` 为对象型基础认证，`basic_text` 可直接传 `user:pass`
+- `follow_location` 可用于常见 30x 跳转跟随
+- `download_to` 可将响应体直接保存到文件
+- `save_headers_to` 可将响应头保存到文件
+- 若需要文件上传、复杂 TLS、代理、重试、更多 curl 参数，请回退使用基础 `vulcan-curl`
+
+文件上传示例：
+
+```json
+{
+  "url": "https://httpbin.org/post",
+  "form": {
+    "name": "alice"
+  },
+  "files": {
+    "upload": "D:/projects/demo/report.txt"
+  }
+}
+```
+
+### `vulcan-curl`
+
+当前 skill 的基础工具为：
+
+- `vulcan-curl`
+
+输入结构：
+
+```json
+{
+  "args": ["-X", "POST", "https://example.com/api", "--json", "{\"hello\":\"world\"}"],
+  "cwd": "D:/workspace",
+  "timeout_ms": 60000
+}
+```
+
+字段语义：
+
+- `args`
+  - 必填
+  - curl 风格参数数组
+  - 推荐**不要**包含前导 `curl`
+  - 如果传了前导 `curl`，工具也会自动剥离
+- `cwd`
+  - 可选
+  - 用于解析相对文件路径
+  - 会影响：
+    - `-o/--output`
+    - `-F @file`
+    - `-F <file`
+    - `--cacert`
+    - `--cert`
+    - `--key`
+    - `--cookie-jar`
+- `timeout_ms`
+  - 可选
+  - 当未显式提供 `--max-time` 时，作为默认请求超时
+  - 默认 `60000`
+
+### 当前第一版已支持的常见 curl 参数
+
+- `-X`, `--request`
+- `-H`, `--header`
+- `-d`, `--data`, `--data-raw`, `--data-binary`
+- `--data-urlencode`
+- `--json`
+- `-F`, `--form`
+- `-u`, `--user`
+- `-A`, `--user-agent`
+- `-e`, `--referer`
+- `-L`, `--location`
+- `-I`, `--head`
+- `-G`, `--get`
+- `-k`, `--insecure`
+- `-o`, `--output`
+- `-D`, `--dump-header`
+- `-m`, `--max-time`
+- `--connect-timeout`
+- `--retry`
+- `--retry-delay`
+- `--retry-max-time`
+- `--proxy`
+- `--proxy-user`
+- `-b`, `--cookie`
+- `-c`, `--cookie-jar`
+- `--cacert`
+- `--capath`
+- `-E`, `--cert`, `--key`
+- `--compressed`
+- `-f`, `--fail`
+- `--fail-with-body`
+- `-i`, `--include`
+- `--http1.1`
+- `--http2`
+
+当前不在第一版支持范围内的参数，会直接返回明确错误，而不是静默忽略。
+
+### 当前输出规则
+
+- 工具固定返回 Markdown 字符串
+- 成功时返回：
+  - 请求方法
+  - 请求 URL
+  - 最终 URL
+  - 状态码
+  - 尝试次数
+  - 响应头
+  - 响应体（若未使用 `-o`）
+- 如果使用 `-o`，则：
+  - 响应内容写入文件
+  - 工具只返回输出文件路径和响应头摘要
+
+### 现实边界说明
+
+- 该工具底层走的是 `lua-curl`，不是系统 `curl`
+- 因此它解决的是：
+  - shell 差异
+  - 引号转义
+  - PowerShell / pwsh / sh 差异
+- 它不解决目标网络环境本身的证书或代理问题
+- Windows 下在未显式传入 `-k`、`--cacert`、`--capath` 时，会优先尝试使用系统原生 CA 存储
+- 如果当前网络环境存在 TLS 中间代理或证书校验问题，仍然可能需要：
+  - `-k`
+  - 或显式提供 `--cacert`
+
+### 适用场景建议
+
+- 调 OpenAI / GitHub / 通用 REST API
+- 发送 JSON 请求
+- 上传简单表单
+- 保存返回内容到文件
+- 让 AI 继续沿用 curl 的参数心智，但不再直接拼 shell 命令

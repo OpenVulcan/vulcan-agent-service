@@ -249,6 +249,45 @@ return content, vulcan.overflow_type.page, "overflow_page.md"
 - `vulcan-lua-file`
   - 执行一个 Lua 文件，并自动切换工作目录
 
+## `vulcan-curl` 相关新能力
+
+当前仓库还内置了 `vulcan-curl` skill，主要提供：
+
+- `vulcan-curl-get`
+- `vulcan-curl-post`
+- `vulcan-curl`
+
+适用场景：
+
+- 简单 GET 请求
+- 简单 POST 请求
+- 简单 PUT 更新请求
+- 简单 DELETE 删除请求
+- 直接发 HTTP / HTTPS 请求
+- 调 OpenAI、GitHub 或通用 REST API
+- 上传简单表单
+- 保存响应到文件
+
+设计目标：
+
+- 保持 AI 对 Linux `curl` 参数风格的熟悉心智
+- 但底层不依赖系统 `curl` 可执行文件
+- 统一走 `lua-curl`
+- 避免 PowerShell / pwsh / sh 的转义差异
+
+当前推荐理解：
+
+- `vulcan-curl-get` / `vulcan-curl-post` 是面向 AI 的快捷工具
+- 复杂需求统一回退到基础 `vulcan-curl`
+- `vulcan-curl-post` 现在支持简单 `form + files` 组合上传
+- 两个快捷工具都支持 `bearer` / `basic` 认证快捷输入
+- 两个快捷工具都支持 `follow_location`、`download_to`、`save_headers_to`
+- 传入的是 curl 风格参数数组
+- 不需要手写 shell 命令
+- 如果环境存在 TLS 中间代理，仍可能需要显式传：
+  - `-k`
+  - 或 `--cacert`
+
 ## 推荐复制流程
 
 建议按下面的顺序复制：
