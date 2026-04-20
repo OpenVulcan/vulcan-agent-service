@@ -24,7 +24,7 @@ use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
 use vulcan_luaskills::{
     LuaEngine, LuaEngineOptions, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
     RuntimeSkillLifecycleEvent, RuntimeSkillLifecycleCallback, RuntimeSkillHelpDescriptor,
-    RuntimeSkillRoot,
+    RuntimeSkillRoot, SkillInstallRequest, SkillInstallSourceType,
     SkillUninstallOptions, ToolCacheConfig, set_entry_registry_callback,
     set_skill_lifecycle_callback,
 };
@@ -316,6 +316,46 @@ impl McpServer {
                     destructive_hint: Some(false),
                     user_confirmation_required: Some(false),
                     idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-skill-install".to_string(),
+            Tool::with_annotations(
+                "vulcan-skill-install",
+                "Install one LuaSkills package into the current highest-priority skill root. GitHub installs currently require one owner/repo source locator and write a managed install record for future updates.",
+                json!({
+                    "source": {"type": "string", "description": "Managed install source locator. For GitHub installs, use `owner/repo`, for example `OpenVulcan/luaskills-demo-skill`."},
+                    "source_type": {"type": "string", "description": "Optional managed source type. Supported values currently: `github` and `url`. Default: `github`."},
+                    "skill": {"type": "string", "description": "Optional explicit skill id. When omitted, GitHub installs derive the skill id from the repository name."},
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When provided, the install runs against that project environment instead of the default environment."}
+                }),
+                vec!["source".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(false),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-skill-update".to_string(),
+            Tool::with_annotations(
+                "vulcan-skill-update",
+                "Update one managed LuaSkills package by checking its recorded install source. GitHub-managed skills compare the installed version with the latest release tag of the recorded repository.",
+                json!({
+                    "skill": {"type": "string", "description": "Target managed skill id, for example `luaskills-demo-skill`."},
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When provided, the update runs against that project environment instead of the default environment."}
+                }),
+                vec!["skill".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(false),
                 },
             ),
         );
@@ -1140,6 +1180,70 @@ impl McpServer {
 
         let args = req.arguments.unwrap_or_default();
         let result = match tool.name.as_str() {
+            "vulcan-skill-install" => {
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let (engine, skill_roots) =
+                    self.resolve_lua_runtime_target(environment_id.as_deref())?;
+                let source = required_string_argument(&args, "source")?;
+                let skill_id = optional_string_argument(&args, "skill");
+                let source_type = parse_skill_install_source_type(
+                    optional_string_argument(&args, "source_type").as_deref(),
+                )?;
+                let install_request = SkillInstallRequest {
+                    skill_id,
+                    source: Some(source.clone()),
+                    source_type,
+                };
+                let install_result = tokio::task::spawn_blocking(move || {
+                    let mut engine = engine
+                        .write()
+                        .map_err(|_| "Lua engine lock poisoned".to_string())?;
+                    engine
+                        .install_skill(&skill_roots, &install_request)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| (-32603, format!("vulcan-skill-install spawn error: {}", error)))?
+                .map_err(|error| (-32603, error))?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&render_skill_apply_result_markdown(
+                        "Install",
+                        &install_result,
+                    ))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-skill-update" => {
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let (engine, skill_roots) =
+                    self.resolve_lua_runtime_target(environment_id.as_deref())?;
+                let skill_id = required_string_argument(&args, "skill")?;
+                let update_request = SkillInstallRequest {
+                    skill_id: Some(skill_id),
+                    source: None,
+                    source_type: SkillInstallSourceType::Github,
+                };
+                let update_result = tokio::task::spawn_blocking(move || {
+                    let mut engine = engine
+                        .write()
+                        .map_err(|_| "Lua engine lock poisoned".to_string())?;
+                    engine
+                        .update_skill(&skill_roots, &update_request)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| (-32603, format!("vulcan-skill-update spawn error: {}", error)))?
+                .map_err(|error| (-32603, error))?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&render_skill_apply_result_markdown(
+                        "Update",
+                        &update_result,
+                    ))],
+                    is_error: None,
+                }
+            }
+
             "vulcan-skill-enable" => {
                 let environment_id = optional_string_argument(&args, "environment_id");
                 let (engine, skill_roots) =
@@ -1668,6 +1772,34 @@ fn render_skill_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> Strin
     lines.join("\n")
 }
 
+/// Render one structured install/update result into user-facing Markdown text.
+/// 把单个结构化安装或更新结果渲染成面向用户的 Markdown 文本。
+fn render_skill_apply_result_markdown(action: &str, result: &vulcan_luaskills::SkillApplyResult) -> String {
+    let mut lines = vec![
+        format!("# LuaSkills {}", action),
+        String::new(),
+        format!("- skill: `{}`", result.skill_id),
+        format!("- status: `{}`", result.status),
+    ];
+    if let Some(version) = result.version.as_deref() {
+        lines.push(format!("- version: `{}`", version));
+    }
+    if let Some(source_type) = result.source_type {
+        lines.push(format!(
+            "- source_type: `{}`",
+            match source_type {
+                SkillInstallSourceType::Github => "github",
+                SkillInstallSourceType::Url => "url",
+            }
+        ));
+    }
+    if let Some(source_locator) = result.source_locator.as_deref() {
+        lines.push(format!("- source: `{}`", source_locator));
+    }
+    lines.push(format!("- message: {}", result.message));
+    lines.join("\n")
+}
+
 /// Return one required non-empty string argument from the current tool call payload.
 /// 从当前工具调用参数中读取一个必填且非空的字符串参数。
 fn required_string_argument(args: &Value, key: &str) -> Result<String, (i64, String)> {
@@ -1697,6 +1829,23 @@ fn optional_bool_argument(args: &Value, key: &str, default: bool) -> Result<bool
             .as_bool()
             .ok_or_else(|| (-32602, format!("Parameter '{}' must be boolean", key))),
         None => Ok(default),
+    }
+}
+
+/// Parse one optional managed install source type argument and return the strict enum value.
+/// 解析单个可选受管安装来源类型参数，并返回严格枚举值。
+fn parse_skill_install_source_type(value: Option<&str>) -> Result<SkillInstallSourceType, (i64, String)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(SkillInstallSourceType::Github),
+        Some("github") => Ok(SkillInstallSourceType::Github),
+        Some("url") => Ok(SkillInstallSourceType::Url),
+        Some(other) => Err((
+            -32602,
+            format!(
+                "Unsupported source_type '{}'. Supported values are: github, url",
+                other
+            ),
+        )),
     }
 }
 
