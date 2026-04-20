@@ -643,25 +643,27 @@ impl McpServer {
         for record in records {
             let skills_dir = PathBuf::from(&record.skills_dir);
             if !skills_dir.exists() {
-                eprintln!(
-                    "[LuaSkills] Skip restoring environment '{}' because skills dir does not exist: {}",
+                return Err(format!(
+                    "[LuaSkills] Failed to restore environment '{}' because skills dir does not exist: {} / 恢复环境 '{}' 失败，skills 目录不存在：{}",
+                    record.environment_id,
+                    skills_dir.display(),
                     record.environment_id,
                     skills_dir.display()
-                );
-                continue;
+                )
+                .into());
             }
-            match self.build_project_environment_sync(&record.environment_id, &skills_dir, false) {
-                Ok(environment) => {
-                    if let Ok(mut registry) = self.lua_project_environments.write() {
-                        registry.insert(record.environment_id.clone(), environment);
-                    }
-                }
-                Err(error) => {
-                    eprintln!(
-                        "[LuaSkills] Failed to restore persisted environment '{}': {}",
-                        record.environment_id, error
-                    );
-                }
+            let environment = self
+                .build_project_environment_sync(&record.environment_id, &skills_dir, false)
+                .map_err(|error| {
+                    format!(
+                        "[LuaSkills] Failed to restore persisted environment '{}': {} / 恢复持久化环境 '{}' 失败：{}",
+                        record.environment_id, error, record.environment_id, error
+                    )
+                })?;
+            if let Ok(mut registry) = self.lua_project_environments.write() {
+                registry.insert(record.environment_id.clone(), environment);
+            } else {
+                return Err("Project environment registry lock poisoned. / 项目环境注册表锁已损坏".into());
             }
         }
         Ok(())
@@ -675,27 +677,44 @@ impl McpServer {
         skills_dir: &Path,
         create_if_missing: bool,
     ) -> Result<LuaProjectEnvironment, String> {
+        if environment_id.trim().is_empty() {
+            return Err(
+                "Project environment id must not be empty. / 项目环境标识不能为空。".to_string(),
+            );
+        }
+        if skills_dir.exists() && !skills_dir.is_dir() {
+            return Err(format!(
+                "Project skills path exists but is not a directory: {} / 项目技能路径存在但不是目录：{}",
+                skills_dir.display(),
+                skills_dir.display()
+            ));
+        }
+        if !create_if_missing && !skills_dir.exists() {
+            return Err(format!(
+                "Project skills directory does not exist: {} / 项目技能目录不存在：{}",
+                skills_dir.display(),
+                skills_dir.display()
+            ));
+        }
         let engine_options = self
             .lua_engine_options
             .clone()
-            .ok_or_else(|| "Lua engine options are not initialized.".to_string())?;
+            .ok_or_else(|| {
+                "Project environments require initialized base skill roots. Configure at least one base skill root before creating project environments. / 项目环境依赖基础技能根初始化，请先配置至少一个基础技能根后再创建项目环境。"
+                    .to_string()
+            })?;
         let default_roots = self
             .lua_skill_roots
             .clone()
-            .ok_or_else(|| "Default Lua skill roots are not initialized.".to_string())?;
-        if create_if_missing {
-            fs::create_dir_all(skills_dir).map_err(|error| {
-                format!(
-                    "Failed to create project skills directory {}: {}",
-                    skills_dir.display(),
-                    error
-                )
+            .ok_or_else(|| {
+                "Project environments require initialized base skill roots. Configure at least one base skill root before creating project environments. / 项目环境依赖基础技能根初始化，请先配置至少一个基础技能根后再创建项目环境。"
+                    .to_string()
             })?;
-        } else if !skills_dir.exists() {
-            return Err(format!(
-                "Project skills directory does not exist: {}",
-                skills_dir.display()
-            ));
+        if default_roots.is_empty() {
+            return Err(
+                "Project environments require at least one base skill root. / 项目环境要求至少存在一个基础技能根。"
+                    .to_string(),
+            );
         }
 
         let mut project_roots = vec![RuntimeSkillRoot {
@@ -716,6 +735,17 @@ impl McpServer {
                 environment_id, error, environment_id, error
             )
         })?;
+        if create_if_missing {
+            fs::create_dir_all(skills_dir).map_err(|error| {
+                format!(
+                    "Failed to create project skills directory {}: {} / 创建项目技能目录 {} 失败：{}",
+                    skills_dir.display(),
+                    error,
+                    skills_dir.display(),
+                    error
+                )
+            })?;
+        }
 
         let mut engine = LuaEngine::new(engine_options).map_err(|error| error.to_string())?;
         engine

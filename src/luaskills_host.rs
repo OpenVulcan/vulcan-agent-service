@@ -152,9 +152,17 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
 pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSkillRoot>, String> {
     let mut ordered_roots = Vec::new();
     let mut seen_roots = HashSet::new();
+    let mut seen_root_names = HashSet::new();
     let mut synthesized_index = 1usize;
 
     let mut push_unique_root = |name: String, path: PathBuf| -> Result<(), String> {
+        let normalized_name = name.trim().to_string();
+        if !seen_root_names.insert(normalized_name.clone()) {
+            return Err(format!(
+                "duplicate skill root name '{}' is not allowed / 不允许重复配置技能根名称 '{}'",
+                normalized_name, normalized_name
+            ));
+        }
         let normalized_path = normalize_skill_root_key(&path);
         if !seen_roots.insert(normalized_path) {
             return Err(format!(
@@ -166,27 +174,33 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
             ));
         }
         ordered_roots.push(RuntimeSkillRoot {
-            name,
+            name: normalized_name,
             skills_dir: path,
         });
         Ok(())
     };
 
     if let Some(configured_roots) = &config.skill_roots {
-        for value in configured_roots {
+        for (index, value) in configured_roots.iter().enumerate() {
             match value {
                 SkillRootConfigEntry::Named(named) => {
                     let name = named.name.trim();
                     let path = named.path.trim();
                     if name.is_empty() || path.is_empty() {
-                        continue;
+                        return Err(format!(
+                            "skill_roots[{}] must declare non-empty name and path / skill_roots[{}] 必须提供非空的 name 与 path",
+                            index, index
+                        ));
                     }
                     push_unique_root(name.to_string(), PathBuf::from(path))?;
                 }
                 SkillRootConfigEntry::Path(path) => {
                     let trimmed = path.trim();
                     if trimmed.is_empty() {
-                        continue;
+                        return Err(format!(
+                            "skill_roots[{}] path must not be empty / skill_roots[{}] 的路径不能为空",
+                            index, index
+                        ));
                     }
                     let generated = if synthesized_index == 1 {
                         "ROOT".to_string()
@@ -258,7 +272,15 @@ pub fn normalize_skill_root_key(path: &std::path::Path) -> String {
 /// 校验每个技能根都映射到唯一的同级运行时空间。
 pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Result<(), String> {
     let mut seen_space_parents = HashSet::new();
+    let mut seen_root_names = HashSet::new();
     for root in skill_roots {
+        let normalized_name = root.name.trim().to_string();
+        if !seen_root_names.insert(normalized_name.clone()) {
+            return Err(format!(
+                "skill root name '{}' is duplicated in one runtime chain / 同一运行时根链中存在重复的技能根名称 '{}'",
+                normalized_name, normalized_name
+            ));
+        }
         let parent = root
             .skills_dir
             .parent()
