@@ -1625,7 +1625,10 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     let mut lines = vec!["# Vulcan Help List".to_string(), String::new()];
     for skill_help in help_tree {
         lines.push(format!("## `{}`", skill_help.skill_id));
-        lines.push(format!("- root: `{}`\n- dir: `{}`", skill_help.root_name, skill_help.skill_dir));
+        lines.push(format!(
+            "- version: `{}`\n- root: `{}`\n- dir: `{}`",
+            skill_help.skill_version, skill_help.root_name, skill_help.skill_dir
+        ));
         if !skill_help.main.description.trim().is_empty() {
             lines.push(skill_help.main.description.trim().to_string());
         }
@@ -1653,6 +1656,7 @@ fn render_skill_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> Strin
     let mut lines = vec!["# Vulcan Skill List".to_string(), String::new()];
     for skill_help in help_tree {
         lines.push(format!("## `{}`", skill_help.skill_id));
+        lines.push(format!("- version: `{}`", skill_help.skill_version));
         lines.push(format!("- root: `{}`", skill_help.root_name));
         lines.push(format!("- dir: `{}`", skill_help.skill_dir));
         if !skill_help.main.description.trim().is_empty() {
@@ -1813,7 +1817,10 @@ fn render_environment_inspect_markdown(
         lines.push("No skills are currently active in this environment.".to_string());
     } else {
         for skill in effective_skills {
-            lines.push(format!("- `{}` => root `{}`, dir `{}`", skill.skill_id, skill.root_name, skill.skill_dir));
+            lines.push(format!(
+                "- `{}` => version `{}`, root `{}`, dir `{}`",
+                skill.skill_id, skill.skill_version, skill.root_name, skill.skill_dir
+            ));
         }
     }
     lines.join("\n")

@@ -1,4 +1,5 @@
 name: vulcan-ai-memory
+version: 0.1.0
 debug: true
 lancedb:
   enable: true

@@ -1,4 +1,5 @@
 name: vulcan-work-memory
+version: 0.1.0
 debug: true
 sqlite:
   enable: true
