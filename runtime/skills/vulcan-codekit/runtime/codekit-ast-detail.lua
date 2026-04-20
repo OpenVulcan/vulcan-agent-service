@@ -1,7 +1,7 @@
 --[[
 codekit-ast-detail
-中文：基于 ast-grep 的文件级结构详情工具，输出按文件聚合、可直接阅读的纯文本结构摘要。
-English: File-level AST detail viewer powered by ast-grep. It returns file-grouped plain-text structure summaries.
+基于 ast-grep 的文件级结构详情工具，输出按文件聚合、可直接阅读的纯文本结构摘要。
+File-level AST detail viewer powered by ast-grep. It returns file-grouped plain-text structure summaries.
 ]]
 
 -- 语言注册表 / Language registry for rule bundles, file extensions, and comment styles.
@@ -112,8 +112,8 @@ local function starts_with(text, prefix)
 end
 
 --[[
-中文：在单次工具调用开始时初始化当前客户端的 AST 预算。
-English: Initialize the current AST budget for this tool call.
+在单次工具调用开始时初始化当前客户端的 AST 预算。
+Initialize the current AST budget for this tool call.
 ]]
 local function initialize_ast_client_budget()
     local helpers, helper_error = load_shared_length_helpers()
@@ -124,8 +124,8 @@ local function initialize_ast_client_budget()
 end
 
 --[[
-中文：转义 Lua pattern 元字符，便于后续按“字面量”而非模式语义执行字符串替换。
-English: Escape Lua pattern metacharacters so later replacements operate on literal text instead of pattern semantics.
+转义 Lua pattern 元字符，便于后续按“字面量”而非模式语义执行字符串替换。
+Escape Lua pattern metacharacters so later replacements operate on literal text instead of pattern semantics.
 
 参数 / Parameters:
 - text(string): 需要转义的原始文本 / Raw text to escape.
@@ -139,8 +139,8 @@ local function escape_lua_pattern(text)
 end
 
 --[[
-中文：按字面量替换文本，避免块注释起止标记和三引号 token 被 `string.gsub` 当作模式表达式解析。
-English: Replace literal text safely so block-comment markers and triple-quote tokens are not interpreted by `string.gsub` as Lua patterns.
+按字面量替换文本，避免块注释起止标记和三引号 token 被 `string.gsub` 当作模式表达式解析。
+Replace literal text safely so block-comment markers and triple-quote tokens are not interpreted by `string.gsub` as Lua patterns.
 
 参数 / Parameters:
 - text(string): 原始文本 / Original text.
@@ -168,8 +168,8 @@ local function split_lines(content)
 end
 
 --[[
-中文：把路径统一为使用正斜杠且无冗余分隔符的形式，便于跨平台做忽略规则匹配。
-English: Normalize a path into a forward-slash form without redundant separators so ignore-rule matching stays cross-platform.
+把路径统一为使用正斜杠且无冗余分隔符的形式，便于跨平台做忽略规则匹配。
+Normalize a path into a forward-slash form without redundant separators so ignore-rule matching stays cross-platform.
 
 参数 / Parameters:
 - path(string): 待规范化的路径文本 / Path text to normalize.
@@ -187,8 +187,8 @@ local function normalize_ignore_path(path)
 end
 
 --[[
-中文：复制数组内容，避免在递归遍历目录时直接改写父级忽略规则列表。
-English: Copy an array so recursive directory walking does not mutate the parent ignore-rule list in place.
+复制数组内容，避免在递归遍历目录时直接改写父级忽略规则列表。
+Copy an array so recursive directory walking does not mutate the parent ignore-rule list in place.
 
 参数 / Parameters:
 - items(table|nil): 待复制的数组 / Array to copy.
@@ -205,8 +205,8 @@ local function clone_array(items)
 end
 
 --[[
-中文：把完整路径转换成相对于某个忽略规则基目录的相对路径，用于实现子目录级 `.gitignore/.ignore` 作用域。
-English: Convert a full path into a path relative to an ignore-rule base directory so subtree-scoped `.gitignore/.ignore` rules can be evaluated correctly.
+把完整路径转换成相对于某个忽略规则基目录的相对路径，用于实现子目录级 `.gitignore/.ignore` 作用域。
+Convert a full path into a path relative to an ignore-rule base directory so subtree-scoped `.gitignore/.ignore` rules can be evaluated correctly.
 
 参数 / Parameters:
 - base_directory(string): 忽略规则所在目录 / Directory that owns the ignore rules.
@@ -229,8 +229,8 @@ local function relative_ignore_path(base_directory, full_path)
 end
 
 --[[
-中文：匹配简化版 gitignore 通配符，支持 `*`、`**`、`?`，并区分路径分隔符 `/`。
-English: Match a simplified gitignore-style glob that supports `*`, `**`, and `?`, while treating `/` as a path separator boundary.
+匹配简化版 gitignore 通配符，支持 `*`、`**`、`?`，并区分路径分隔符 `/`。
+Match a simplified gitignore-style glob that supports `*`, `**`, and `?`, while treating `/` as a path separator boundary.
 
 参数 / Parameters:
 - text(string): 待匹配文本 / Candidate text.
@@ -301,8 +301,8 @@ local function match_ignore_glob(text, pattern)
 end
 
 --[[
-中文：解析单行忽略规则，提取反选、目录限定、锚定等属性，并记录规则所属目录作用域。
-English: Parse a single ignore-rule line, extracting negation, directory-only, and anchored attributes while recording the owning directory scope.
+解析单行忽略规则，提取反选、目录限定、锚定等属性，并记录规则所属目录作用域。
+Parse a single ignore-rule line, extracting negation, directory-only, and anchored attributes while recording the owning directory scope.
 
 参数 / Parameters:
 - line(string): 忽略文件中的单行文本 / Single line from an ignore file.
@@ -353,8 +353,8 @@ local function parse_ignore_rule(line, base_directory)
 end
 
 --[[
-中文：读取某个目录下的 `.gitignore` 与 `.ignore`，并缓存解析结果，避免递归遍历时重复读取同一路径。
-English: Read and cache `.gitignore` and `.ignore` files for a directory so recursive traversal does not repeatedly re-read the same path.
+读取某个目录下的 `.gitignore` 与 `.ignore`，并缓存解析结果，避免递归遍历时重复读取同一路径。
+Read and cache `.gitignore` and `.ignore` files for a directory so recursive traversal does not repeatedly re-read the same path.
 
 参数 / Parameters:
 - directory_path(string): 当前遍历目录 / Directory currently being traversed.
@@ -389,8 +389,8 @@ local function load_directory_ignore_rules(directory_path)
 end
 
 --[[
-中文：判断单个目录项是否应被忽略，先应用默认忽略目录，再按目录作用域顺序执行 `.gitignore/.ignore` 规则覆盖。
-English: Decide whether a directory entry should be ignored by applying default ignored directories first, then evaluating scoped `.gitignore/.ignore` rules in order.
+判断单个目录项是否应被忽略，先应用默认忽略目录，再按目录作用域顺序执行 `.gitignore/.ignore` 规则覆盖。
+Decide whether a directory entry should be ignored by applying default ignored directories first, then evaluating scoped `.gitignore/.ignore` rules in order.
 
 参数 / Parameters:
 - full_path(string): 目录项的完整路径 / Full path of the directory entry.
@@ -440,8 +440,64 @@ local function get_entry_file()
 end
 
 --[[
-中文：懒加载共享预算模块，让多个 codekit 工具复用同一套 MCP 输出/读取预算映射。
-English: Lazily load the shared budget module so multiple codekit tools reuse one MCP output/read budget mapping.
+Return the normalized platform key used by LuaSkills dependency installation.
+返回 LuaSkills 依赖安装使用的标准平台键。
+]]
+local function current_platform_key()
+    local os_info = vulcan.os.info() or {}
+    local architecture = trim((os_info.arch or os_info.architecture or "")):lower()
+    local os_name = trim((os_info.os or "")):lower()
+
+    if os_name == "windows" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "windows-arm64"
+        end
+        return "windows-x64"
+    end
+
+    if os_name == "macos" or os_name == "darwin" or os_name == "osx" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "macos-arm64"
+        end
+        return "macos-x64"
+    end
+
+    if architecture == "arm64" or architecture == "aarch64" then
+        return "linux-arm64"
+    end
+    return "linux-x64"
+end
+
+--[[
+Return the host-injected tool dependency root for the current skill.
+返回宿主为当前 skill 注入的工具依赖根目录。
+]]
+local function get_tool_dependency_root()
+    return trim(vulcan and vulcan.deps and vulcan.deps.tools_path or "")
+end
+
+--[[
+Build one tool binary path from the injected dependency root, dependency name, version, and executable name.
+基于注入的依赖根目录、依赖名、版本号与程序名构造工具二进制路径。
+]]
+local function build_tool_binary_path(dependency_name, version, executable_name)
+    local tools_root = get_tool_dependency_root()
+    if tools_root == "" then
+        return ""
+    end
+    return vulcan.path.join(
+        tools_root,
+        tostring(dependency_name or ""),
+        tostring(version or ""),
+        current_platform_key(),
+        "bin",
+        tostring(executable_name or "")
+    )
+end
+
+--[[
+懒加载共享预算模块，让多个 codekit 工具复用同一套 MCP 输出/读取预算映射。
+Lazily load the shared budget module so multiple codekit tools reuse one MCP output/read budget mapping.
 ]]
 load_shared_length_helpers = function()
     if SHARED_LENGTH_HELPERS then
@@ -472,8 +528,8 @@ load_shared_length_helpers = function()
 end
 
 --[[
-中文：读取并缓存当前进程工作目录，用于把用户传入的相对扫描路径转换为稳定的绝对路径。
-English: Read and cache the current process working directory so relative scan paths from the user can be converted into stable absolute paths.
+读取并缓存当前进程工作目录，用于把用户传入的相对扫描路径转换为稳定的绝对路径。
+Read and cache the current process working directory so relative scan paths from the user can be converted into stable absolute paths.
 
 参数 / Parameters:
 - 无 / None.
@@ -511,8 +567,8 @@ local function get_current_working_directory()
 end
 
 --[[
-中文：判断路径是否已经是绝对路径，避免重复拼接工作目录导致路径失真。
-English: Determine whether a path is already absolute so the working directory is not joined twice and the path stays valid.
+判断路径是否已经是绝对路径，避免重复拼接工作目录导致路径失真。
+Determine whether a path is already absolute so the working directory is not joined twice and the path stays valid.
 
 参数 / Parameters:
 - path(string): 待判断的路径文本 / Path text to inspect.
@@ -529,8 +585,8 @@ local function is_absolute_path(path)
 end
 
 --[[
-中文：将扫描目标路径规范化为绝对路径，确保即使 ast-grep 在 skill 的 bin 目录下执行也能稳定找到源文件。
-English: Normalize the scan target path into an absolute path so source files remain discoverable even when ast-grep executes from the skill's bin directory.
+将扫描目标路径规范化为绝对路径，确保即使 ast-grep 在 skill 的 bin 目录下执行也能稳定找到源文件。
+Normalize the scan target path into an absolute path so source files remain discoverable even when ast-grep executes from the skill's bin directory.
 
 参数 / Parameters:
 - path(string): 用户传入或递归拼接得到的扫描路径。
@@ -565,8 +621,8 @@ local function detect_language_key(file_name)
 end
 
 --[[
-中文：提取文件名末尾扩展名并统一为小写，便于做目录扫描时的扩展名过滤。
-English: Extract the trailing file extension and normalize it to lowercase for directory-mode extension filtering.
+提取文件名末尾扩展名并统一为小写，便于做目录扫描时的扩展名过滤。
+Extract the trailing file extension and normalize it to lowercase for directory-mode extension filtering.
 
 参数 / Parameters:
 - file_name(string): 文件名或路径文本 / File name or path text.
@@ -586,9 +642,8 @@ end
 local function find_binary()
     local info = vulcan.os.info()
     local executable_name = info.os == "windows" and "ast-grep.exe" or "ast-grep"
-    local runtime_root = vulcan.path.join(get_skill_dir(), "..", "..")
-    local binary_directory = vulcan.path.join(runtime_root, "bin", "tools")
-    local binary_path = vulcan.path.join(binary_directory, executable_name)
+    local binary_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name)
+    local binary_directory = trim(binary_path:match("^(.*)[/\\][^/\\]+$") or "")
     if vulcan.fs.exists(binary_path) then
         return binary_path, binary_directory, executable_name
     end
@@ -655,8 +710,8 @@ local function parse_stream_output(output)
 end
 
 --[[
-中文：把 stderr 或其他诊断文本逐行压入诊断数组，保持与旧版 `io.popen` 输出兼容的可读性。
-English: Append stderr or other diagnostic text line by line into the diagnostics array while preserving readability compatible with the previous `io.popen` flow.
+把 stderr 或其他诊断文本逐行压入诊断数组，保持与旧版 `io.popen` 输出兼容的可读性。
+Append stderr or other diagnostic text line by line into the diagnostics array while preserving readability compatible with the previous `io.popen` flow.
 
 参数 / Parameters:
 - diagnostics(table): 目标诊断数组 / Target diagnostics array.
@@ -714,8 +769,8 @@ local function run_scan_batch(binary_directory, executable_name, rule_path, file
 end
 
 --[[
-中文：按指定批大小执行同语言文件扫描，并合并每批返回的结构结果与诊断信息。
-English: Execute same-language scans with the specified batch size, then merge structure results and diagnostics from every batch.
+按指定批大小执行同语言文件扫描，并合并每批返回的结构结果与诊断信息。
+Execute same-language scans with the specified batch size, then merge structure results and diagnostics from every batch.
 
 参数 / Parameters:
 - binary_directory(string): ast-grep 所在目录 / Directory containing ast-grep.
@@ -765,8 +820,8 @@ local function run_language_scan_in_batches(binary_directory, executable_name, l
 end
 
 --[[
-中文：按语言批量扫描文件。常规路径下每批最多 50 个文件，以规避 Windows `CreateProcess` 命令行长度限制；若某批失败，再自动降级到更小批次。
-English: Scan files grouped by language. The normal path caps each batch at 50 files to avoid Windows `CreateProcess` command-line length limits; failed batches are retried with smaller chunks.
+按语言批量扫描文件。常规路径下每批最多 50 个文件，以规避 Windows `CreateProcess` 命令行长度限制；若某批失败，再自动降级到更小批次。
+Scan files grouped by language. The normal path caps each batch at 50 files to avoid Windows `CreateProcess` command-line length limits; failed batches are retried with smaller chunks.
 
 参数 / Parameters:
 - binary_directory(string): ast-grep 所在目录 / Directory containing ast-grep.
@@ -810,8 +865,8 @@ local function run_language_scan(binary_directory, executable_name, language_key
 end
 
 --[[
-中文：将扩展名过滤统一解析为集合；未传 `ext` 时自动回退到默认代码语言集合，避免把 HTML/CSS/JSON/YAML 等非核心代码文件扫入结果。
-English: Normalize the extension filter into a lookup set. When `ext` is omitted, fall back to the default source-language set so HTML/CSS/JSON/YAML-style files are excluded by default.
+将扩展名过滤统一解析为集合；未传 `ext` 时自动回退到默认代码语言集合，避免把 HTML/CSS/JSON/YAML 等非核心代码文件扫入结果。
+Normalize the extension filter into a lookup set. When `ext` is omitted, fall back to the default source-language set so HTML/CSS/JSON/YAML-style files are excluded by default.
 
 参数 / Parameters:
 - value(any): 用户传入的 `ext` 参数 / User-provided `ext` argument.
@@ -904,8 +959,8 @@ local function validate_extension_argument(value)
 end
 
 --[[
-中文：判断文件是否满足扩展名过滤集合；当前调用链始终会传入显式集合或默认代码语言集合。
-English: Decide whether a file matches the extension filter set. The current flow always supplies either an explicit set or the default source-code set.
+判断文件是否满足扩展名过滤集合；当前调用链始终会传入显式集合或默认代码语言集合。
+Decide whether a file matches the extension filter set. The current flow always supplies either an explicit set or the default source-code set.
 
 参数 / Parameters:
 - file_name(string): 文件名或路径文本 / File name or path text.
@@ -924,8 +979,8 @@ local function matches_extension_filter(file_name, extension_filter)
 end
 
 --[[
-中文：基于路径文本与展示路径构建单个可扫描文件项，仅当扩展名可识别时返回结果。
-English: Build a single scannable file item from the real path and the display path, returning nil when the extension is unsupported.
+基于路径文本与展示路径构建单个可扫描文件项，仅当扩展名可识别时返回结果。
+Build a single scannable file item from the real path and the display path, returning nil when the extension is unsupported.
 
 参数 / Parameters:
 - full_path(string): 实际扫描路径 / Actual full path to scan.
@@ -948,8 +1003,8 @@ local function build_file_item(full_path, display_path)
 end
 
 --[[
-中文：基于单个目标路径收集可扫描文件，保持“文件模式忽略递归与扩展名、目录模式应用过滤”的既有规则。
-English: Collect scannable files for a single target path while preserving the existing rules: file mode ignores recursion and extension filters, while directory mode applies them.
+基于单个目标路径收集可扫描文件，保持“文件模式忽略递归与扩展名、目录模式应用过滤”的既有规则。
+Collect scannable files for a single target path while preserving the existing rules: file mode ignores recursion and extension filters, while directory mode applies them.
 
 参数 / Parameters:
 - target_path(string): 单个待处理路径，可以是文件或目录。
@@ -1038,8 +1093,8 @@ local function collect_files_for_path(target_path, recursive, extension_filter, 
 end
 
 --[[
-中文：聚合多个输入路径的扫描结果，并按绝对路径去重，确保目录与文件路径重叠时不会重复输出同一文件。
-English: Aggregate scan results from multiple input paths and deduplicate by absolute path so overlapping directory/file inputs do not emit the same file.
+聚合多个输入路径的扫描结果，并按绝对路径去重，确保目录与文件路径重叠时不会重复输出同一文件。
+Aggregate scan results from multiple input paths and deduplicate by absolute path so overlapping directory/file inputs do not emit the same file.
 
 参数 / Parameters:
 - target_paths(table): 用户传入的目标路径列表。
@@ -1109,8 +1164,8 @@ local function collect_files(target_paths, recursive, extension_filter, ignore_e
 end
 
 --[[
-中文：判断输入路径集合的模式，明确区分“全文件”“全目录”与非法混用，供入口逻辑做约束校验。
-English: Classify the caller-provided path set as all-files, all-directories, or an invalid mixed set so the entrypoint can enforce path-shape rules.
+判断输入路径集合的模式，明确区分“全文件”“全目录”与非法混用，供入口逻辑做约束校验。
+Classify the caller-provided path set as all-files, all-directories, or an invalid mixed set so the entrypoint can enforce path-shape rules.
 
 参数 / Parameters:
 - target_paths(table): 用户传入的目标路径列表。
@@ -1150,8 +1205,8 @@ local function classify_target_path_modes(target_paths)
 end
 
 --[[
-中文：校验 Markdown 导出路径，要求为绝对路径，并建议使用 `.md` 扩展名。
-English: Validate the Markdown export path; it must be absolute and should use the `.md` extension.
+校验 Markdown 导出路径，要求为绝对路径，并建议使用 `.md` 扩展名。
+Validate the Markdown export path; it must be absolute and should use the `.md` extension.
 ]]
 local function validate_export_md_argument(value)
     if value == nil then
@@ -1184,8 +1239,8 @@ local function validate_export_md_argument(value)
 end
 
 --[[
-中文：懒加载 LuaFileSystem，用于在导出 JSON/Markdown 前递归创建目录。
-English: Lazily load LuaFileSystem so directories can be created recursively before exporting JSON or Markdown.
+懒加载 LuaFileSystem，用于在导出 JSON/Markdown 前递归创建目录。
+Lazily load LuaFileSystem so directories can be created recursively before exporting JSON or Markdown.
 ]]
 local function get_lfs_module()
     if LFS_MODULE ~= nil then
@@ -1201,8 +1256,8 @@ local function get_lfs_module()
 end
 
 --[[
-中文：获取某个路径的父目录，缺失时返回 nil。
-English: Get the parent directory of a path and return nil when no parent exists.
+获取某个路径的父目录，缺失时返回 nil。
+Get the parent directory of a path and return nil when no parent exists.
 ]]
 local function get_parent_directory(path)
     local normalized = tostring(path or ""):gsub("[\\/]+$", "")
@@ -1227,8 +1282,8 @@ local function append_path_segment(current, segment)
 end
 
 --[[
-中文：在 LuaFileSystem 不可用时，回退到宿主 `vulcan.exec` 递归创建目录，避免大结果落盘依赖单一 Lua C 模块。
-English: Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSystem is unavailable, so large-result spilling does not depend on a single Lua C module.
+在 LuaFileSystem 不可用时，回退到宿主 `vulcan.exec` 递归创建目录，避免大结果落盘依赖单一 Lua C 模块。
+Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSystem is unavailable, so large-result spilling does not depend on a single Lua C module.
 
 参数 / Parameters:
 - directory_path(string): 需要创建的目录绝对路径 / Absolute directory path that should be created.
@@ -1292,8 +1347,8 @@ local function ensure_directory_via_exec(directory_path)
 end
 
 --[[
-中文：递归创建目录，供工作目录缓存和 Markdown 导出复用。
-English: Create directories recursively so workdir-based cache dumps and Markdown exports can share the same helper.
+递归创建目录，供工作目录缓存和 Markdown 导出复用。
+Create directories recursively so workdir-based cache dumps and Markdown exports can share the same helper.
 ]]
 local function ensure_directory(directory_path)
     local normalized = trim(directory_path or "")
@@ -1353,8 +1408,8 @@ local function ensure_directory(directory_path)
 end
 
 --[[
-中文：确保输出文件的父目录存在，并把文本内容写入目标文件。
-English: Ensure the parent directory exists and then write the text content to the target file.
+确保输出文件的父目录存在，并把文本内容写入目标文件。
+Ensure the parent directory exists and then write the text content to the target file.
 ]]
 local function shallow_copy_object(source)
     local copied = {}
@@ -1382,8 +1437,8 @@ local function render_error_lines(errors)
 end
 
 --[[
-中文：把 `codekit-ast-detail` 的扫描结果渲染为 Markdown 纯文本，便于 AI 直接阅读并继续选择下一步文件操作。
-English: Render the `codekit-ast-detail` scan result as plain Markdown text so the AI can read it directly and choose the next file-level action.
+把 `codekit-ast-detail` 的扫描结果渲染为 Markdown 纯文本，便于 AI 直接阅读并继续选择下一步文件操作。
+Render the `codekit-ast-detail` scan result as plain Markdown text so the AI can read it directly and choose the next file-level action.
 ]]
 local function build_ast_detail_text(result)
     local lines = {
@@ -1431,8 +1486,8 @@ local function build_ast_detail_text(result)
 end
 
 --[[
-中文：完成 AST detail 正文输出；超限策略不再由 Lua 决定，而是交给 MCP 宿主统一处理。
-English: Finalize the AST detail body; overflow strategy is no longer decided by Lua and is delegated to the MCP host.
+完成 AST detail 正文输出；超限策略不再由 Lua 决定，而是交给 MCP 宿主统一处理。
+Finalize the AST detail body; overflow strategy is no longer decided by Lua and is delegated to the MCP host.
 ]]
 local function finalize_ast_detail_content(markdown_text, summary_lines)
     return tostring(markdown_text or ""), vulcan.runtime.overflow_type.page
@@ -1459,8 +1514,8 @@ local function read_file_state(file_path)
 end
 
 --[[
-中文：读取单个文件的总行数，优先复用文件状态缓存；若读取失败，则返回 0，避免影响整体结构输出。
-English: Read the total line count for a single file, reusing the file-state cache whenever possible; return 0 on read failure so the overall structure output stays stable.
+读取单个文件的总行数，优先复用文件状态缓存；若读取失败，则返回 0，避免影响整体结构输出。
+Read the total line count for a single file, reusing the file-state cache whenever possible; return 0 on read failure so the overall structure output stays stable.
 
 参数 / Parameters:
 - file_path(string): 目标文件完整路径 / Full path of the target file.
@@ -1676,8 +1731,8 @@ local function clean_comment_line(line, comment_config)
 end
 
 --[[
-中文：移除注释行里常见的文档装饰字符，例如块注释中的 `*` 前缀。
-English: Strip common decorative markers from a comment line, such as the leading `*` used in block comments.
+移除注释行里常见的文档装饰字符，例如块注释中的 `*` 前缀。
+Strip common decorative markers from a comment line, such as the leading `*` used in block comments.
 ]]
 local function strip_comment_decorations(line)
     local current = trim(line)
@@ -1687,8 +1742,8 @@ local function strip_comment_decorations(line)
 end
 
 --[[
-中文：判断一行备注是否只是分隔线、区域边界或其它无语义装饰文本。
-English: Determine whether a comment line is merely a separator, section boundary, or other non-semantic decoration.
+判断一行备注是否只是分隔线、区域边界或其它无语义装饰文本。
+Determine whether a comment line is merely a separator, section boundary, or other non-semantic decoration.
 ]]
 local function is_separator_comment_line(line)
     local current = strip_comment_decorations(line)
@@ -1703,8 +1758,8 @@ local function is_separator_comment_line(line)
 end
 
 --[[
-中文：判断备注行是否属于参数、返回值等结构化标签说明，而非核心摘要内容。
-English: Determine whether a comment line is a structured label such as params or returns instead of core summary content.
+判断备注行是否属于参数、返回值等结构化标签说明，而非核心摘要内容。
+Determine whether a comment line is a structured label such as params or returns instead of core summary content.
 ]]
 local function is_comment_metadata_line(line)
     local current = strip_comment_decorations(line):lower()
@@ -1740,8 +1795,8 @@ local function is_comment_metadata_line(line)
 end
 
 --[[
-中文：按 UTF-8 字节边界截断字符串，避免中文字符被截成半个字节序列。
-English: Truncate text on UTF-8 byte boundaries so multi-byte characters are not split mid-sequence.
+按 UTF-8 字节边界截断字符串，避免中文字符被截成半个字节序列。
+Truncate text on UTF-8 byte boundaries so multi-byte characters are not split mid-sequence.
 ]]
 local function utf8_truncate_by_bytes(text, max_bytes)
     local source = tostring(text or "")
@@ -1774,8 +1829,8 @@ local function utf8_truncate_by_bytes(text, max_bytes)
 end
 
 --[[
-中文：把原始多行注释压缩为适合 AST 备注展示的单行摘要。
-English: Compress raw multi-line comments into a single-line summary suitable for AST note display.
+把原始多行注释压缩为适合 AST 备注展示的单行摘要。
+Compress raw multi-line comments into a single-line summary suitable for AST note display.
 ]]
 local function summarize_comment_text(raw_comment)
     local source = tostring(raw_comment or "")
@@ -2039,8 +2094,8 @@ local function deduplicate_symbols(symbols)
 end
 
 --[[
-中文：将起止行号格式化为统一的 `Lx-y` 文本，便于 AI 与人类直接定位结构范围。
-English: Format start and end lines into a unified `Lx-y` label so both AI agents and humans can locate the symbol range directly.
+将起止行号格式化为统一的 `Lx-y` 文本，便于 AI 与人类直接定位结构范围。
+Format start and end lines into a unified `Lx-y` label so both AI agents and humans can locate the symbol range directly.
 
 参数 / Parameters:
 - start_line(number): 起始行号 / 1-based start line.
@@ -2066,8 +2121,8 @@ local function format_line_span(start_line, end_line)
 end
 
 --[[
-中文：为单个结构节点生成一行可读摘要，优先使用原始签名，缺失时再回退到 `kind + name`。
-English: Build a readable one-line summary for a single symbol, preferring its original signature and falling back to `kind + name` when needed.
+为单个结构节点生成一行可读摘要，优先使用原始签名，缺失时再回退到 `kind + name`。
+Build a readable one-line summary for a single symbol, preferring its original signature and falling back to `kind + name` when needed.
 
 参数 / Parameters:
 - symbol(table): 已归一化的结构节点，包含 kind、name、signature 与行号信息。
@@ -2087,8 +2142,8 @@ local function format_symbol_line(symbol, depth)
 end
 
 --[[
-中文：把结构节点备注渲染为“无行号”的补充说明行，确保备注属于当前节点而不是相邻节点。
-English: Render a symbol comment as a no-line-number supplementary line so the note stays attached to the current node instead of a neighboring one.
+把结构节点备注渲染为“无行号”的补充说明行，确保备注属于当前节点而不是相邻节点。
+Render a symbol comment as a no-line-number supplementary line so the note stays attached to the current node instead of a neighboring one.
 
 参数 / Parameters:
 - symbol(table): 已归一化的结构节点，包含可选的 `comment` 字段。
@@ -2111,8 +2166,8 @@ local function format_symbol_comment_line(symbol, depth)
 end
 
 --[[
-中文：递归遍历结构树并展开为纯文本列表，输出目标是“无需解析 JSON 也能直接理解”的结构摘要。
-English: Recursively flatten the symbol tree into a plain-text outline so the structure can be understood directly without parsing JSON nodes.
+递归遍历结构树并展开为纯文本列表，输出目标是“无需解析 JSON 也能直接理解”的结构摘要。
+Recursively flatten the symbol tree into a plain-text outline so the structure can be understood directly without parsing JSON nodes.
 
 参数 / Parameters:
 - symbols(table): 当前层级的结构节点列表。
@@ -2144,8 +2199,8 @@ local function append_symbol_outline(symbols, depth, lines, include_comments)
 end
 
 --[[
-中文：将单文件的结构树渲染为最终 `content` 文本字段，作为对外暴露的轻量结构视图。
-English: Render a file-level symbol tree into the final `content` text field, which serves as the lightweight public structure view.
+将单文件的结构树渲染为最终 `content` 文本字段，作为对外暴露的轻量结构视图。
+Render a file-level symbol tree into the final `content` text field, which serves as the lightweight public structure view.
 
 参数 / Parameters:
 - symbols(table): 单个文件对应的结构树根节点列表。
@@ -2164,8 +2219,8 @@ local function build_file_content(symbols, include_comments)
 end
 
 --[[
-中文：校验技能入口的路径参数，支持单路径或多行路径列表；每一行都必须是非空字符串。
-English: Validate the skill entry path argument. It supports either a single path or a multi-line path list, and each line must be a non-empty string.
+校验技能入口的路径参数，支持单路径或多行路径列表；每一行都必须是非空字符串。
+Validate the skill entry path argument. It supports either a single path or a multi-line path list, and each line must be a non-empty string.
 
 参数 / Parameters:
 - value(any): 用户传入的 `path` 参数。
@@ -2208,8 +2263,8 @@ local function validate_path_argument(value)
 end
 
 --[[
-中文：校验递归扫描开关，要求显式布尔值，避免把 0/"true" 一类值误当成配置。
-English: Validate the recursive scan flag and require an explicit boolean to avoid treating values like 0/"true" as configuration.
+校验递归扫描开关，要求显式布尔值，避免把 0/"true" 一类值误当成配置。
+Validate the recursive scan flag and require an explicit boolean to avoid treating values like 0/"true" as configuration.
 
 参数 / Parameters:
 - value(any): 用户传入的 `recursive` 参数。
@@ -2236,8 +2291,8 @@ local function validate_recursive_argument(value)
 end
 
 --[[
-中文：校验 `noignore` 开关，默认仍启用忽略目录与忽略文件规则，只有显式传入 `true` 时才关闭忽略。
-English: Validate the `noignore` toggle. Ignore directories and ignore-file rules remain enabled by default and are disabled only when `true` is explicitly provided.
+校验 `noignore` 开关，默认仍启用忽略目录与忽略文件规则，只有显式传入 `true` 时才关闭忽略。
+Validate the `noignore` toggle. Ignore directories and ignore-file rules remain enabled by default and are disabled only when `true` is explicitly provided.
 
 参数 / Parameters:
 - value(any): 用户传入的 `noignore` 参数。
@@ -2264,8 +2319,8 @@ local function validate_noignore_argument(value)
 end
 
 --[[
-中文：校验备注输出开关，默认关闭；只有显式传入 `true` 时才开启备注渲染。
-English: Validate the comment-output toggle. Comments are disabled by default and are enabled only when `true` is explicitly provided.
+校验备注输出开关，默认关闭；只有显式传入 `true` 时才开启备注渲染。
+Validate the comment-output toggle. Comments are disabled by default and are enabled only when `true` is explicitly provided.
 
 参数 / Parameters:
 - value(any): 用户传入的备注控制参数。
@@ -2292,8 +2347,8 @@ local function validate_comment_argument(value)
 end
 
 --[[
-中文：校验 `codekit-ast-detail` 的 `paths` 参数；当前仅支持显式文件列表，且最多 20 个文件。
-English: Validate the `paths` argument for `codekit-ast-detail`; only explicit file lists are supported and the request is capped at 20 files.
+校验 `codekit-ast-detail` 的 `paths` 参数；当前仅支持显式文件列表，且最多 20 个文件。
+Validate the `paths` argument for `codekit-ast-detail`; only explicit file lists are supported and the request is capped at 20 files.
 ]]
 local function validate_detail_paths_argument(value)
     if type(value) ~= "string" then
@@ -2338,8 +2393,8 @@ return function(args)
         return client_limit_error
     end
 
-    -- 中文：为 `codekit-rg`、`codekit-markdown-menu` 与 `codekit-ast-tree` 保留共享 helper 的闭包 upvalue。
-    -- English: Keep shared helper functions as closure upvalues so `codekit-rg`, `codekit-markdown-menu`, and `codekit-ast-tree` can continue extracting them.
+    -- 为 `codekit-rg`、`codekit-markdown-menu` 与 `codekit-ast-tree` 保留共享 helper 的闭包 upvalue。
+    -- Keep shared helper functions as closure upvalues so `codekit-rg`, `codekit-markdown-menu`, and `codekit-ast-tree` can continue extracting them.
     if args and args.__codekit_helper_probe == "__never__" then
         validate_path_argument(args.path)
         validate_recursive_argument(args.recursive)
@@ -2372,7 +2427,7 @@ return function(args)
     if not binary_path then
         return {
             error = "ast_grep_binary_not_found",
-            expected_path = vulcan.path.join(vulcan.path.join(get_skill_dir(), "..", ".."), "bin", "tools", executable_name),
+            expected_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name),
         }
     end
 

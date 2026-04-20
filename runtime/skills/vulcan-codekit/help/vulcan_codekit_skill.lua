@@ -1,6 +1,6 @@
 --[[
-English: Dynamically build the CodeKit main help text without relying on host-supplied help arguments.
-中文：动态生成 CodeKit 主帮助文本，但不再依赖宿主传入的 help 参数。
+Dynamically build the CodeKit main help text without relying on host-supplied help arguments.
+动态生成 CodeKit 主帮助文本，但不再依赖宿主传入的 help 参数。
 ]]
 
 return function()

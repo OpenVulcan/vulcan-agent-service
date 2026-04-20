@@ -1,25 +1,25 @@
 --[[
 shared_length
-中文：为 vulcan-codekit 提供统一的 MCP 预算读取逻辑。
+为 vulcan-codekit 提供统一的 MCP 预算读取逻辑。
 宿主 Rust 已经完成预算解析与预估，这里只直接消费最终的 `tool_result/file_read -> bytes/lines` 结果。
-English: Provide unified MCP budget access for vulcan-codekit.
+Provide unified MCP budget access for vulcan-codekit.
 The Rust host has already resolved and estimated the final budgets, so Lua only consumes the final
 `tool_result/file_read -> bytes/lines` values directly.
 ]]
 
 --[[
-中文：去除字符串首尾空白，确保宿主传入的 scope 名称与工具配置字段读取稳定。
-English: Trim leading and trailing whitespace so host-provided scope names and tool-config fields are read consistently.
+去除字符串首尾空白，确保宿主传入的 scope 名称与工具配置字段读取稳定。
+Trim leading and trailing whitespace so host-provided scope names and tool-config fields are read consistently.
 ]]
 local function trim(text)
     return (tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
 --[[
-中文：从 `vulcan` 上下文中读取宿主已经解析完成的客户端预算对象。
+从 `vulcan` 上下文中读取宿主已经解析完成的客户端预算对象。
 当前统一语法下，预算对象直接暴露 `tool_result` 与 `file_read` 两个 scope。
 当前统一语法下，预算对象直接暴露 `tool_result` 与 `file_read` 两个 scope。
-English: Read the client-budget object already resolved by the host from the `vulcan` context.
+Read the client-budget object already resolved by the host from the `vulcan` context.
 Under the unified syntax, the budget object directly exposes the `tool_result` and `file_read` scopes.
 ]]
 local function resolve_client_budget(vulcan_context)
@@ -31,8 +31,8 @@ local function resolve_client_budget(vulcan_context)
 end
 
 --[[
-中文：从 `vulcan` 上下文中读取宿主注入的当前工具配置；若未命中工具配置，则返回 nil。
-English: Read the current tool config injected by the host from `vulcan`; return nil when no tool-specific config matched.
+从 `vulcan` 上下文中读取宿主注入的当前工具配置；若未命中工具配置，则返回 nil。
+Read the current tool config injected by the host from `vulcan`; return nil when no tool-specific config matched.
 ]]
 local function resolve_tool_config(vulcan_context)
     local context = type(vulcan_context) == "table" and vulcan_context or nil
@@ -43,12 +43,12 @@ local function resolve_tool_config(vulcan_context)
 end
 
 --[[
-中文：根据工具配置选择当前应使用的预算 scope。
+根据工具配置选择当前应使用的预算 scope。
 当前宿主统一提供：
 - tool_result：MCP 工具结果返回预算
 - file_read：客户端文件读取预算
 若未配置 scope，则默认使用 tool_result。
-English: Select the budget scope currently required by the tool configuration.
+Select the budget scope currently required by the tool configuration.
 The host now exposes two unified scopes:
 - tool_result: final MCP tool-result budget
 - file_read: client-side file-read budget
@@ -108,8 +108,8 @@ local function resolve_client_budget_scope(vulcan_context)
 end
 
 --[[
-中文：在单次工具调用开始时初始化当前 codekit 使用的完整预算对象，包含 bytes 与 lines。
-English: Initialize the full budget object used by the current codekit call, including bytes and lines.
+在单次工具调用开始时初始化当前 codekit 使用的完整预算对象，包含 bytes 与 lines。
+Initialize the full budget object used by the current codekit call, including bytes and lines.
 ]]
 local function initialize_client_budget(vulcan_context)
     return resolve_client_budget_scope(vulcan_context)

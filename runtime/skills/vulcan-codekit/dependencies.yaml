@@ -1,7 +1,8 @@
 tool_dependencies:
   - name: ast-grep
+    version: "0.42.1"
     required: true
-    scope: shared
+    scope: skill
     source:
       type: github_release
       github:
@@ -36,8 +37,9 @@ tool_dependencies:
             executable: true
 
   - name: rg
+    version: "14.1.1"
     required: true
-    scope: shared
+    scope: skill
     source:
       type: github_release
       github:

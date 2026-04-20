@@ -1,7 +1,7 @@
 --[[
 codekit-patch
-中文：基于 AST 结构路径重新定位函数/方法节点，并执行整函数替换。
-English: Re-locate function or method nodes by AST structural selectors and replace the full function source.
+基于 AST 结构路径重新定位函数/方法节点，并执行整函数替换。
+Re-locate function or method nodes by AST structural selectors and replace the full function source.
 ]]
 
 -- 工具常量 / Tool constants for selector matching and replacement behavior.
@@ -26,8 +26,8 @@ local function split_lines(content)
 end
 
 --[[
-中文：浅拷贝数组，避免在树遍历和代码拼装时直接修改原始列表。
-English: Create a shallow array copy so tree traversal and code assembly do not mutate the original list in place.
+浅拷贝数组，避免在树遍历和代码拼装时直接修改原始列表。
+Create a shallow array copy so tree traversal and code assembly do not mutate the original list in place.
 
 参数 / Parameters:
 - items(table|nil): 待复制的数组 / Array to clone.
@@ -44,8 +44,8 @@ local function clone_array(items)
 end
 
 --[[
-中文：通过 `debug.getupvalue` 从现有 `codekit-ast-detail` 入口中提取内部 helper，避免复制整套 AST 分析实现。
-English: Extract internal helpers from the existing `codekit-ast-detail` entry through `debug.getupvalue` so the full AST pipeline does not need to be duplicated.
+通过 `debug.getupvalue` 从现有 `codekit-ast-detail` 入口中提取内部 helper，避免复制整套 AST 分析实现。
+Extract internal helpers from the existing `codekit-ast-detail` entry through `debug.getupvalue` so the full AST pipeline does not need to be duplicated.
 
 参数 / Parameters:
 - fn(function): 待扫描 upvalue 的函数 / Function whose upvalues will be scanned.
@@ -70,8 +70,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：获取宿主注入的当前 skill 目录。
-English: Resolve the current skill directory injected by the host.
+获取宿主注入的当前 skill 目录。
+Resolve the current skill directory injected by the host.
 
 返回 / Returns:
 - string: 当前 skill 目录 / Current skill directory.
@@ -85,8 +85,8 @@ local function get_entry_dir()
 end
 
 --[[
-中文：懒加载 `codekit-ast-detail` 内部 helper，确保 `codekit-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
-English: Lazily load internal `codekit-ast-detail` helpers so `codekit-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
+懒加载 `codekit-ast-detail` 内部 helper，确保 `codekit-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
+Lazily load internal `codekit-ast-detail` helpers so `codekit-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
 
 返回 / Returns:
 - table|nil: helper 函数集合 / Helper bundle on success.
@@ -141,8 +141,8 @@ local function load_ast_runtime_helpers()
 end
 
 --[[
-中文：校验目标文件参数，要求为存在的单个文件路径。
-English: Validate the target file argument. It must be a single existing file path.
+校验目标文件参数，要求为存在的单个文件路径。
+Validate the target file argument. It must be a single existing file path.
 ]]
 local function validate_file_argument(value)
     if type(value) ~= "string" or trim(value) == "" then
@@ -172,8 +172,8 @@ local function validate_file_argument(value)
 end
 
 --[[
-中文：校验 selector 与 replacement 参数。
-English: Validate selector and replacement arguments.
+校验 selector 与 replacement 参数。
+Validate selector and replacement arguments.
 ]]
 local function validate_selector_argument(value)
     if type(value) ~= "string" or trim(value) == "" then
@@ -198,12 +198,12 @@ local function validate_replacement_argument(value)
 end
 
 --[[
-中文：显式拒绝旧版 `mode` 参数，避免调用方误以为工具仍支持 body/auto 分支。
-English: Explicitly reject the legacy `mode` argument so callers do not assume body/auto branches still exist.
+显式拒绝旧版 `mode` 参数，避免调用方误以为工具仍支持 body/auto 分支。
+Explicitly reject the legacy `mode` argument so callers do not assume body/auto branches still exist.
 ]]
 --[[
-中文：把结构化错误对象渲染成适合 AI 直接消费的 Markdown 文本，避免宿主再看到 Lua table。
-English: Render a structured error object into AI-friendly Markdown text so the host never receives a Lua table.
+把结构化错误对象渲染成适合 AI 直接消费的 Markdown 文本，避免宿主再看到 Lua table。
+Render a structured error object into AI-friendly Markdown text so the host never receives a Lua table.
 
 参数 / Parameters:
 - error_payload(table|nil): 内部错误对象 / Internal structured error object.
@@ -270,8 +270,8 @@ local function render_patch_error(error_payload)
 end
 
 --[[
-中文：把成功 patch 的结构化结果渲染成 Markdown 文本，便于 AI 直接理解修改落点。
-English: Render the successful patch result into Markdown text so the AI can immediately understand what was changed.
+把成功 patch 的结构化结果渲染成 Markdown 文本，便于 AI 直接理解修改落点。
+Render the successful patch result into Markdown text so the AI can immediately understand what was changed.
 
 参数 / Parameters:
 - result_payload(table|nil): patch 成功后的结构化结果 / Structured success payload after patching.
@@ -309,8 +309,8 @@ local function render_patch_success(result_payload)
 end
 
 --[[
-中文：为 AST 节点补充父节点引用，便于后续构造结构路径 selector。
-English: Attach parent references to AST nodes so structural selector paths can be derived later.
+为 AST 节点补充父节点引用，便于后续构造结构路径 selector。
+Attach parent references to AST nodes so structural selector paths can be derived later.
 ]]
 local function attach_parent_links(symbols, parent_symbol)
     for _, symbol in ipairs(symbols or {}) do
@@ -320,16 +320,16 @@ local function attach_parent_links(symbols, parent_symbol)
 end
 
 --[[
-中文：判断一个节点是否为可 patch 的函数级节点。
-English: Determine whether a node is a patchable function-level symbol.
+判断一个节点是否为可 patch 的函数级节点。
+Determine whether a node is a patchable function-level symbol.
 ]]
 local function is_function_like(symbol)
     return symbol and (symbol.kind == "function" or symbol.kind == "method")
 end
 
 --[[
-中文：深度优先收集树中所有可 patch 的函数级节点。
-English: Collect every patchable function-level node from the tree with a depth-first traversal.
+深度优先收集树中所有可 patch 的函数级节点。
+Collect every patchable function-level node from the tree with a depth-first traversal.
 ]]
 local function collect_patchable_symbols(symbols, collected)
     for _, symbol in ipairs(symbols or {}) do
@@ -341,16 +341,16 @@ local function collect_patchable_symbols(symbols, collected)
 end
 
 --[[
-中文：统一 selector 文本，做大小写归一与空白压缩，便于宽松匹配。
-English: Normalize selector text with lowercase conversion and whitespace compaction for flexible matching.
+统一 selector 文本，做大小写归一与空白压缩，便于宽松匹配。
+Normalize selector text with lowercase conversion and whitespace compaction for flexible matching.
 ]]
 local function normalize_selector_text(text)
     return trim((tostring(text or ""):lower():gsub("%s+", " ")))
 end
 
 --[[
-中文：提取结构签名中参数列表前的声明前缀，用于生成宽松 selector 别名。
-English: Extract the declaration prefix before the parameter list so flexible selector aliases can be generated.
+提取结构签名中参数列表前的声明前缀，用于生成宽松 selector 别名。
+Extract the declaration prefix before the parameter list so flexible selector aliases can be generated.
 ]]
 local function extract_declaration_prefix(signature)
     local normalized = trim(signature or "")
@@ -362,8 +362,8 @@ local function extract_declaration_prefix(signature)
 end
 
 --[[
-中文：为单个结构节点生成一组宽松 selector 别名，使 `with_vmm`、`fn with_vmm`、`pub async fn with_vmm` 等表达都能命中。
-English: Generate a set of flexible selector aliases for one symbol so forms like `with_vmm`, `fn with_vmm`, and `pub async fn with_vmm` can all match.
+为单个结构节点生成一组宽松 selector 别名，使 `with_vmm`、`fn with_vmm`、`pub async fn with_vmm` 等表达都能命中。
+Generate a set of flexible selector aliases for one symbol so forms like `with_vmm`, `fn with_vmm`, and `pub async fn with_vmm` can all match.
 ]]
 local function build_symbol_segment_aliases(symbol)
     local aliases = {}
@@ -401,8 +401,8 @@ local function build_symbol_segment_aliases(symbol)
 end
 
 --[[
-中文：构造某个函数节点的结构路径链，包含所有父级容器以及节点自身。
-English: Build the structural path chain for a function node, including all parent containers and the node itself.
+构造某个函数节点的结构路径链，包含所有父级容器以及节点自身。
+Build the structural path chain for a function node, including all parent containers and the node itself.
 ]]
 local function build_symbol_chain(symbol)
     local chain = {}
@@ -415,8 +415,8 @@ local function build_symbol_chain(symbol)
 end
 
 --[[
-中文：把 selector 文本按 `/` 切分为多个路径段，并做统一规范化。
-English: Split selector text by `/` into path segments and normalize each segment.
+把 selector 文本按 `/` 切分为多个路径段，并做统一规范化。
+Split selector text by `/` into path segments and normalize each segment.
 ]]
 local function split_selector_segments(selector)
     local segments = {}
@@ -430,8 +430,8 @@ local function split_selector_segments(selector)
 end
 
 --[[
-中文：判断一个函数节点是否命中给定 selector，采用“路径后缀 + 别名匹配”策略。
-English: Determine whether a function node matches the given selector using suffix-path matching plus alias matching.
+判断一个函数节点是否命中给定 selector，采用“路径后缀 + 别名匹配”策略。
+Determine whether a function node matches the given selector using suffix-path matching plus alias matching.
 ]]
 local function symbol_matches_selector(symbol, selector_segments)
     local chain = build_symbol_chain(symbol)
@@ -451,8 +451,8 @@ local function symbol_matches_selector(symbol, selector_segments)
 end
 
 --[[
-中文：为匹配候选生成更完整的规范路径，便于在歧义场景下提示 AI 重新选择。
-English: Build a fuller canonical path for a candidate so the AI can retry with a more specific selector when ambiguity occurs.
+为匹配候选生成更完整的规范路径，便于在歧义场景下提示 AI 重新选择。
+Build a fuller canonical path for a candidate so the AI can retry with a more specific selector when ambiguity occurs.
 ]]
 local function build_canonical_symbol_path(symbol)
     local segments = {}
@@ -463,8 +463,8 @@ local function build_canonical_symbol_path(symbol)
 end
 
 --[[
-中文：构造仅由结构名称组成的稳定身份路径，用于在代码行号漂移后重新定位同一函数节点。
-English: Build a stable identity path composed only of structural names so the same function node can be re-located after line numbers drift.
+构造仅由结构名称组成的稳定身份路径，用于在代码行号漂移后重新定位同一函数节点。
+Build a stable identity path composed only of structural names so the same function node can be re-located after line numbers drift.
 ]]
 local function build_symbol_identity_path(symbol)
     local segments = {}
@@ -481,8 +481,8 @@ local function build_symbol_identity_path(symbol)
 end
 
 --[[
-中文：为歧义候选构造结构化信息，返回文件、路径、签名与行号范围。
-English: Build structured ambiguity candidate details including file, path, signature, and line range.
+为歧义候选构造结构化信息，返回文件、路径、签名与行号范围。
+Build structured ambiguity candidate details including file, path, signature, and line range.
 ]]
 local function build_candidate_descriptor(symbol)
     return {
@@ -495,8 +495,8 @@ local function build_candidate_descriptor(symbol)
 end
 
 --[[
-中文：读取目标文件并返回原始文本、行数组、换行符风格和尾随换行状态。
-English: Read the target file and return raw text, line array, newline style, and trailing-newline state.
+读取目标文件并返回原始文本、行数组、换行符风格和尾随换行状态。
+Read the target file and return raw text, line array, newline style, and trailing-newline state.
 ]]
 local function read_file_content(file_path)
     local ok, raw_content = pcall(vulcan.fs.read, file_path)
@@ -518,8 +518,8 @@ local function read_file_content(file_path)
 end
 
 --[[
-中文：构造与原文件同目录、同扩展名的临时文件路径，便于后续先校验再替换。
-English: Build a temporary file path that stays in the same directory and keeps the original extension so validation can happen before the final swap.
+构造与原文件同目录、同扩展名的临时文件路径，便于后续先校验再替换。
+Build a temporary file path that stays in the same directory and keeps the original extension so validation can happen before the final swap.
 ]]
 local function build_sidecar_file_path(file_path, label)
     local directory, file_name = tostring(file_path or ""):match("^(.*[\\/])([^\\/]+)$")
@@ -536,8 +536,8 @@ local function build_sidecar_file_path(file_path, label)
 end
 
 --[[
-中文：尝试删除一个文件，失败时静默忽略，用于清理临时文件与回滚副本。
-English: Try to delete one file and silently ignore failures, which is useful for temp-file cleanup and rollback backup cleanup.
+尝试删除一个文件，失败时静默忽略，用于清理临时文件与回滚副本。
+Try to delete one file and silently ignore failures, which is useful for temp-file cleanup and rollback backup cleanup.
 ]]
 local function safe_remove_file(file_path)
     if type(file_path) ~= "string" or file_path == "" then
@@ -549,8 +549,8 @@ local function safe_remove_file(file_path)
 end
 
 --[[
-中文：执行同目录重命名，用于临时文件替换与失败回滚。
-English: Rename one file within the same directory, used for temp-file swapping and rollback restoration.
+执行同目录重命名，用于临时文件替换与失败回滚。
+Rename one file within the same directory, used for temp-file swapping and rollback restoration.
 ]]
 local function rename_file(source_path, target_path)
     local ok, renamed, message = pcall(os.rename, source_path, target_path)
@@ -564,8 +564,8 @@ local function rename_file(source_path, target_path)
 end
 
 --[[
-中文：提取最小公共缩进并去除，方便把 AI 给出的 replacement 重新缩进到目标节点层级。
-English: Remove the minimal common indentation so AI-provided replacement text can be re-indented to the target node level.
+提取最小公共缩进并去除，方便把 AI 给出的 replacement 重新缩进到目标节点层级。
+Remove the minimal common indentation so AI-provided replacement text can be re-indented to the target node level.
 ]]
 local function dedent_lines(lines)
     local min_indent = nil
@@ -594,8 +594,8 @@ local function dedent_lines(lines)
 end
 
 --[[
-中文：按目标缩进重新缩进 replacement 文本行，保留空行。
-English: Re-indent replacement text lines with the target indentation while preserving blank lines.
+按目标缩进重新缩进 replacement 文本行，保留空行。
+Re-indent replacement text lines with the target indentation while preserving blank lines.
 ]]
 local function reindent_lines(lines, indent)
     local result = {}
@@ -610,8 +610,8 @@ local function reindent_lines(lines, indent)
 end
 
 --[[
-中文：根据原函数起始行推断该节点的声明缩进。
-English: Infer the declaration indentation of the target node from its first source line.
+根据原函数起始行推断该节点的声明缩进。
+Infer the declaration indentation of the target node from its first source line.
 ]]
 local function detect_symbol_indent(file_lines, symbol)
     local first_line = file_lines[(tonumber(symbol.start_line) or 1)] or ""
@@ -619,8 +619,8 @@ local function detect_symbol_indent(file_lines, symbol)
 end
 
 --[[
-中文：把完整函数 replacement 调整到目标节点的声明缩进层级。
-English: Re-indent a full-function replacement so it matches the declaration indentation of the target node.
+把完整函数 replacement 调整到目标节点的声明缩进层级。
+Re-indent a full-function replacement so it matches the declaration indentation of the target node.
 ]]
 local function build_full_replacement_lines(symbol, file_lines, replacement_text)
     local declaration_indent = detect_symbol_indent(file_lines, symbol)
@@ -629,8 +629,8 @@ local function build_full_replacement_lines(symbol, file_lines, replacement_text
 end
 
 --[[
-中文：校验 replacement 是否满足“完整函数源码”这一严格输入规则。
-English: Validate that the replacement follows the strict full-function-source rule.
+校验 replacement 是否满足“完整函数源码”这一严格输入规则。
+Validate that the replacement follows the strict full-function-source rule.
 ]]
 local function validate_full_replacement_shape(symbol, replacement_text)
     local non_empty_lines = {}
@@ -675,8 +675,8 @@ local function validate_full_replacement_shape(symbol, replacement_text)
 end
 
 --[[
-中文：把节点替换结果回写到文件行数组中，返回新的完整文件行数组。
-English: Apply the node replacement to the file line array and return the new full-file line array.
+把节点替换结果回写到文件行数组中，返回新的完整文件行数组。
+Apply the node replacement to the file line array and return the new full-file line array.
 ]]
 local function build_replaced_file_lines(file_lines, symbol, replacement_lines)
     local rebuilt = {}
@@ -696,8 +696,8 @@ local function build_replaced_file_lines(file_lines, symbol, replacement_lines)
 end
 
 --[[
-中文：按原文件的换行风格把完整文件内容重新拼接为文本。
-English: Rebuild the full file text using the original file's newline style.
+按原文件的换行风格把完整文件内容重新拼接为文本。
+Rebuild the full file text using the original file's newline style.
 ]]
 local function join_file_lines(lines, newline, has_trailing_newline)
     local text = table.concat(lines or {}, newline or "\n")
@@ -708,8 +708,8 @@ local function join_file_lines(lines, newline, has_trailing_newline)
 end
 
 --[[
-中文：收集单文件 AST 结构树，为 selector 匹配和 patch 提供结构上下文。
-English: Collect the AST tree for a single file to provide the structural context needed by selector matching and patch application.
+收集单文件 AST 结构树，为 selector 匹配和 patch 提供结构上下文。
+Collect the AST tree for a single file to provide the structural context needed by selector matching and patch application.
 ]]
 local function collect_ast_for_file(file_path, helper_bundle)
     local files, _, collection_errors, collection_error = helper_bundle.collect_files({ file_path }, false, nil, true)
@@ -737,7 +737,7 @@ local function collect_ast_for_file(file_path, helper_bundle)
     if not ast_binary_path then
         return nil, nil, {
             error = "ast_grep_binary_not_found",
-            message = "ast-grep binary not found in shared tool directory",
+            message = "ast-grep binary not found in the current skill dependency root",
         }
     end
 
@@ -765,8 +765,8 @@ local function collect_ast_for_file(file_path, helper_bundle)
 end
 
 --[[
-中文：构造通用 ERROR 节点扫描规则，利用 ast-grep 的错误节点匹配做跨语言语法损坏探测。
-English: Build a generic ERROR-node scan rule so ast-grep can detect syntax damage across languages.
+构造通用 ERROR 节点扫描规则，利用 ast-grep 的错误节点匹配做跨语言语法损坏探测。
+Build a generic ERROR-node scan rule so ast-grep can detect syntax damage across languages.
 ]]
 local function build_error_node_rule(language_key)
     return table.concat({
@@ -779,8 +779,8 @@ local function build_error_node_rule(language_key)
 end
 
 --[[
-中文：执行 ERROR 节点扫描，若写入后的文件出现解析错误节点，则返回结构化错误信息。
-English: Run an ERROR-node scan and return a structured error when the patched file contains parser error nodes.
+执行 ERROR 节点扫描，若写入后的文件出现解析错误节点，则返回结构化错误信息。
+Run an ERROR-node scan and return a structured error when the patched file contains parser error nodes.
 ]]
 local function scan_ast_error_nodes(file_path, file_info, helper_bundle)
     if type(vulcan.exec) ~= "function" then
@@ -791,7 +791,7 @@ local function scan_ast_error_nodes(file_path, file_info, helper_bundle)
     if not ast_binary_path then
         return nil, {
             error = "ast_grep_binary_not_found",
-            message = "ast-grep binary not found in shared tool directory",
+            message = "ast-grep binary not found in the current skill dependency root",
         }
     end
 
@@ -859,8 +859,8 @@ local function scan_ast_error_nodes(file_path, file_info, helper_bundle)
 end
 
 --[[
-中文：将 ERROR 节点命中结果压缩成易读诊断，便于在失败时快速理解问题位置。
-English: Compress ERROR-node matches into readable diagnostics so failures can be understood quickly.
+将 ERROR 节点命中结果压缩成易读诊断，便于在失败时快速理解问题位置。
+Compress ERROR-node matches into readable diagnostics so failures can be understood quickly.
 ]]
 local function summarize_error_node_matches(matches)
     local diagnostics = {}
@@ -878,8 +878,8 @@ local function summarize_error_node_matches(matches)
 end
 
 --[[
-中文：对写入后的文件做通用结构校验，包括 ERROR 节点检测与目标函数重定位检查。
-English: Validate the patched file generically by checking ERROR nodes and re-locating the target function.
+对写入后的文件做通用结构校验，包括 ERROR 节点检测与目标函数重定位检查。
+Validate the patched file generically by checking ERROR nodes and re-locating the target function.
 ]]
 local function validate_ast_after_write(file_path, helper_bundle, original_symbol)
     local symbol_roots, file_info, validation_error = collect_ast_for_file(file_path, helper_bundle)
@@ -955,8 +955,8 @@ local function validate_ast_after_write(file_path, helper_bundle, original_symbo
 end
 
 --[[
-中文：在单文件 AST 树中按 selector 重新定位可 patch 的函数节点。
-English: Re-locate patchable function nodes inside a single-file AST tree by selector.
+在单文件 AST 树中按 selector 重新定位可 patch 的函数节点。
+Re-locate patchable function nodes inside a single-file AST tree by selector.
 ]]
 find_matching_patch_targets = function(symbol_roots, selector)
     local patchable_symbols = {}
@@ -973,8 +973,8 @@ find_matching_patch_targets = function(symbol_roots, selector)
 end
 
 --[[
-中文：将 patch 结果写回磁盘，按“完整函数替换”规则覆盖目标函数节点源码。
-English: Persist the patch result to disk by replacing the target function node with a full-function replacement.
+将 patch 结果写回磁盘，按“完整函数替换”规则覆盖目标函数节点源码。
+Persist the patch result to disk by replacing the target function node with a full-function replacement.
 ]]
 local function apply_patch_to_symbol(file_path, symbol, replacement_text)
     local file_content, file_error = read_file_content(file_path)

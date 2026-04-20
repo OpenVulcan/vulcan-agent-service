@@ -1,7 +1,7 @@
 --[[
 codekit-ast-tree
-中文：对单个目录执行轻量级 AST 树索引，只返回按目录分组的 Markdown 文本摘要，帮助 AI 先判断文件范围，再决定后续精确读取哪些文件。
-English: Build a lightweight AST tree index for a single directory and return only a directory-grouped Markdown summary, helping the AI decide which files deserve detailed follow-up reads.
+对单个目录执行轻量级 AST 树索引，只返回按目录分组的 Markdown 文本摘要，帮助 AI 先判断文件范围，再决定后续精确读取哪些文件。
+Build a lightweight AST tree index for a single directory and return only a directory-grouped Markdown summary, helping the AI decide which files deserve detailed follow-up reads.
 ]]
 
 local MAX_LISTED_CONTAINERS = 3
@@ -25,24 +25,24 @@ local TYPE_LIKE_KINDS = {
 }
 
 --[[
-中文：去除字符串首尾空白，保证路径与摘要文本的拼接稳定。
-English: Trim leading and trailing whitespace so path parsing and summary formatting remain stable.
+去除字符串首尾空白，保证路径与摘要文本的拼接稳定。
+Trim leading and trailing whitespace so path parsing and summary formatting remain stable.
 ]]
 local function trim(text)
     return (tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
 --[[
-中文：判断字符串是否以前缀开头，用于客户端名规则匹配与路径处理。
-English: Check whether a string starts with a prefix for client-name rule matching and path handling.
+判断字符串是否以前缀开头，用于客户端名规则匹配与路径处理。
+Check whether a string starts with a prefix for client-name rule matching and path handling.
 ]]
 local function starts_with(text, prefix)
     return tostring(text or ""):sub(1, #prefix) == prefix
 end
 
 --[[
-中文：获取当前技能目录，优先使用宿主注入给 `codekit-ast-tree` 的目录变量。
-English: Resolve the current skill directory, preferring the host-injected directory variable for `codekit-ast-tree`.
+获取当前技能目录，优先使用宿主注入给 `codekit-ast-tree` 的目录变量。
+Resolve the current skill directory, preferring the host-injected directory variable for `codekit-ast-tree`.
 ]]
 local function get_skill_dir()
     return tostring(vulcan.context.skill_dir or ".")
@@ -53,8 +53,64 @@ local function get_entry_dir()
 end
 
 --[[
-中文：懒加载共享预算模块，让 tree/detail/rg 复用同一套 MCP 输出/读取预算映射。
-English: Lazily load the shared budget module so tree/detail/rg reuse the same MCP output/read budget mapping.
+Return the normalized platform key used by LuaSkills dependency installation.
+返回 LuaSkills 依赖安装使用的标准平台键。
+]]
+local function current_platform_key()
+    local os_info = vulcan.os.info() or {}
+    local architecture = trim((os_info.arch or os_info.architecture or "")):lower()
+    local os_name = trim((os_info.os or "")):lower()
+
+    if os_name == "windows" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "windows-arm64"
+        end
+        return "windows-x64"
+    end
+
+    if os_name == "macos" or os_name == "darwin" or os_name == "osx" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "macos-arm64"
+        end
+        return "macos-x64"
+    end
+
+    if architecture == "arm64" or architecture == "aarch64" then
+        return "linux-arm64"
+    end
+    return "linux-x64"
+end
+
+--[[
+Return the host-injected tool dependency root for the current skill.
+返回宿主为当前 skill 注入的工具依赖根目录。
+]]
+local function get_tool_dependency_root()
+    return trim(vulcan and vulcan.deps and vulcan.deps.tools_path or "")
+end
+
+--[[
+Build one tool binary path from the injected dependency root, dependency name, version, and executable name.
+基于注入的依赖根目录、依赖名、版本号与程序名构造工具二进制路径。
+]]
+local function build_tool_binary_path(dependency_name, version, executable_name)
+    local tools_root = get_tool_dependency_root()
+    if tools_root == "" then
+        return ""
+    end
+    return vulcan.path.join(
+        tools_root,
+        tostring(dependency_name or ""),
+        tostring(version or ""),
+        current_platform_key(),
+        "bin",
+        tostring(executable_name or "")
+    )
+end
+
+--[[
+懒加载共享预算模块，让 tree/detail/rg 复用同一套 MCP 输出/读取预算映射。
+Lazily load the shared budget module so tree/detail/rg reuse the same MCP output/read budget mapping.
 ]]
 local function load_shared_length_helpers()
     if SHARED_LENGTH_HELPERS then
@@ -85,8 +141,8 @@ local function load_shared_length_helpers()
 end
 
 --[[
-中文：从主 `codekit-ast-detail` 闭包中按名称提取 upvalue，供目录型树工具复用底层能力。
-English: Extract named upvalues from the main `codekit-ast-detail` closure so the directory tree tool can reuse core helpers.
+从主 `codekit-ast-detail` 闭包中按名称提取 upvalue，供目录型树工具复用底层能力。
+Extract named upvalues from the main `codekit-ast-detail` closure so the directory tree tool can reuse core helpers.
 ]]
 local function extract_upvalue_by_name(fn, name)
     local index = 1
@@ -103,8 +159,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：懒加载主 `codekit-ast-detail` 的运行时助手，让本工具复用二进制定位、文件收集、建树与行数统计逻辑。
-English: Lazily load runtime helpers from the main `codekit-ast-detail` tool so this tool can reuse binary lookup, file collection, tree building, and line-count logic.
+懒加载主 `codekit-ast-detail` 的运行时助手，让本工具复用二进制定位、文件收集、建树与行数统计逻辑。
+Lazily load runtime helpers from the main `codekit-ast-detail` tool so this tool can reuse binary lookup, file collection, tree building, and line-count logic.
 ]]
 local function load_ast_runtime_helpers()
     if AST_RUNTIME_HELPERS then
@@ -159,8 +215,8 @@ local function load_ast_runtime_helpers()
 end
 
 --[[
-中文：把 `paths` 参数规范化为单个目录路径；虽然参数名为复数，但当前协议只允许一个目录值。
-English: Normalize the `paths` argument into a single directory path; although the parameter name is plural, the current contract allows exactly one directory value.
+把 `paths` 参数规范化为单个目录路径；虽然参数名为复数，但当前协议只允许一个目录值。
+Normalize the `paths` argument into a single directory path; although the parameter name is plural, the current contract allows exactly one directory value.
 ]]
 local function validate_paths_argument(value)
     if type(value) ~= "string" then
@@ -199,8 +255,8 @@ local function validate_paths_argument(value)
 end
 
 --[[
-中文：显式拒绝 `comment` 参数，避免调用方误以为目录树工具仍支持备注展开。
-English: Explicitly reject the `comment` argument so callers do not assume the directory tree tool still supports comment expansion.
+显式拒绝 `comment` 参数，避免调用方误以为目录树工具仍支持备注展开。
+Explicitly reject the `comment` argument so callers do not assume the directory tree tool still supports comment expansion.
 ]]
 local function validate_comment_absence(value)
     if value ~= nil then
@@ -213,8 +269,8 @@ local function validate_comment_absence(value)
 end
 
 --[[
-中文：在单次工具调用开始时初始化当前客户端的 AST tree 预算。
-English: Initialize the current AST-tree budget at the start of each tool call.
+在单次工具调用开始时初始化当前客户端的 AST tree 预算。
+Initialize the current AST-tree budget at the start of each tool call.
 ]]
 local function initialize_ast_client_budget()
     local helpers, helper_error = load_shared_length_helpers()
@@ -225,8 +281,8 @@ local function initialize_ast_client_budget()
 end
 
 --[[
-中文：懒加载 LuaFileSystem，供超限结果落盘时创建目录使用。
-English: Lazily load LuaFileSystem so oversized-result spilling can create directories when needed.
+懒加载 LuaFileSystem，供超限结果落盘时创建目录使用。
+Lazily load LuaFileSystem so oversized-result spilling can create directories when needed.
 ]]
 local function get_lfs_module()
     if LFS_MODULE ~= nil then
@@ -243,8 +299,8 @@ local function get_lfs_module()
 end
 
 --[[
-中文：逐段创建目录，用于超限文本写入缓存时保证目标目录存在。
-English: Create a directory path segment by segment so spill files can be written safely when text exceeds the inline limit.
+逐段创建目录，用于超限文本写入缓存时保证目标目录存在。
+Create a directory path segment by segment so spill files can be written safely when text exceeds the inline limit.
 ]]
 local function ensure_directory(directory_path)
     local normalized = trim(directory_path or "")
@@ -298,8 +354,8 @@ local function ensure_directory(directory_path)
 end
 
 --[[
-中文：把起止行号压缩为 `Lx` 或 `Lx-y` 形式，保持与主 AST 工具的行号表达风格一致。
-English: Compress start/end line numbers into the `Lx` or `Lx-y` form so the line-span style stays aligned with the main AST tool.
+把起止行号压缩为 `Lx` 或 `Lx-y` 形式，保持与主 AST 工具的行号表达风格一致。
+Compress start/end line numbers into the `Lx` or `Lx-y` form so the line-span style stays aligned with the main AST tool.
 ]]
 local function format_line_span(start_line, end_line)
     local normalized_start = tonumber(start_line) or 0
@@ -314,8 +370,8 @@ local function format_line_span(start_line, end_line)
 end
 
 --[[
-中文：为排序构造统一路径键，Windows 下按不区分大小写处理。
-English: Build a normalized path key for sorting, handling Windows paths case-insensitively.
+为排序构造统一路径键，Windows 下按不区分大小写处理。
+Build a normalized path key for sorting, handling Windows paths case-insensitively.
 ]]
 local function normalize_sort_key(path)
     local normalized = tostring(path or ""):gsub("\\", "/")
@@ -326,8 +382,8 @@ local function normalize_sort_key(path)
 end
 
 --[[
-中文：从完整文件路径中提取父目录路径，若无法拆分则回退到当前目录标记。
-English: Extract the parent directory from a full file path and fall back to the current-directory marker when splitting fails.
+从完整文件路径中提取父目录路径，若无法拆分则回退到当前目录标记。
+Extract the parent directory from a full file path and fall back to the current-directory marker when splitting fails.
 ]]
 local function get_parent_directory(path)
     local parent = tostring(path or ""):match("^(.*)[/\\][^/\\]+$")
@@ -335,8 +391,8 @@ local function get_parent_directory(path)
 end
 
 --[[
-中文：从完整文件路径中提取基础文件名，用于目录分组下的单行摘要展示。
-English: Extract the basename from a full file path for one-line summaries inside each directory group.
+从完整文件路径中提取基础文件名，用于目录分组下的单行摘要展示。
+Extract the basename from a full file path for one-line summaries inside each directory group.
 ]]
 local function get_file_name(path)
     local name = tostring(path or ""):match("([^/\\]+)$")
@@ -344,8 +400,8 @@ local function get_file_name(path)
 end
 
 --[[
-中文：递归统计类型或 impl 节点下的方法数量，用于构造 `m` 指标。
-English: Recursively count methods beneath a type or impl node so the `m` metric can be produced.
+递归统计类型或 impl 节点下的方法数量，用于构造 `m` 指标。
+Recursively count methods beneath a type or impl node so the `m` metric can be produced.
 ]]
 local function count_descendant_methods(nodes)
     local total = 0
@@ -360,16 +416,16 @@ local function count_descendant_methods(nodes)
 end
 
 --[[
-中文：判断节点类型是否属于稳定可输出的顶级类型级结构。
-English: Determine whether a node kind belongs to the stable top-level type-like structures worth surfacing.
+判断节点类型是否属于稳定可输出的顶级类型级结构。
+Determine whether a node kind belongs to the stable top-level type-like structures worth surfacing.
 ]]
 local function is_type_like_kind(kind)
     return TYPE_LIKE_KINDS[tostring(kind or "")] == true
 end
 
 --[[
-中文：从符号头部提炼更紧凑的容器名称，尽量去掉可见性关键字与泛型尾部噪音。
-English: Derive a more compact container name from the symbol header, removing visibility keywords and noisy generic tails when possible.
+从符号头部提炼更紧凑的容器名称，尽量去掉可见性关键字与泛型尾部噪音。
+Derive a more compact container name from the symbol header, removing visibility keywords and noisy generic tails when possible.
 ]]
 local function resolve_container_name(kind, node)
     local candidate = trim(node.name or "")
@@ -392,8 +448,8 @@ local function resolve_container_name(kind, node)
 end
 
 --[[
-中文：将顶级类型或 impl 节点格式化为紧凑标签，并附带行号范围。
-English: Format a top-level type or impl node as a compact label annotated with its line span.
+将顶级类型或 impl 节点格式化为紧凑标签，并附带行号范围。
+Format a top-level type or impl node as a compact label annotated with its line span.
 ]]
 local function format_container_label(node)
     local kind = tostring(node.kind or "symbol")
@@ -408,8 +464,8 @@ local function format_container_label(node)
 end
 
 --[[
-中文：统计文件级指标，并提取少量顶级类型/impl 标签用于后续展示。
-English: Compute file-level metrics and extract a small set of top-level type/impl labels for later rendering.
+统计文件级指标，并提取少量顶级类型/impl 标签用于后续展示。
+Compute file-level metrics and extract a small set of top-level type/impl labels for later rendering.
 ]]
 local function summarize_tree_metrics(root_nodes)
     local type_count = 0
@@ -444,8 +500,8 @@ local function summarize_tree_metrics(root_nodes)
 end
 
 --[[
-中文：把文件级指标压缩为单个方括号字段，仅保留非零项以减少无效字符。
-English: Compress file-level metrics into one bracketed field and keep only non-zero entries to reduce noise.
+把文件级指标压缩为单个方括号字段，仅保留非零项以减少无效字符。
+Compress file-level metrics into one bracketed field and keep only non-zero entries to reduce noise.
 ]]
 local function build_metric_text(line_count, type_count, impl_count, free_function_count, method_count)
     local parts = {
@@ -469,8 +525,8 @@ local function build_metric_text(line_count, type_count, impl_count, free_functi
 end
 
 --[[
-中文：把少量顶级类型/impl 标签拼成紧凑摘要，并在超出上限时附加 `+N` 提示。
-English: Join a few top-level type/impl labels into a compact summary and append `+N` when more entries are omitted.
+把少量顶级类型/impl 标签拼成紧凑摘要，并在超出上限时附加 `+N` 提示。
+Join a few top-level type/impl labels into a compact summary and append `+N` when more entries are omitted.
 ]]
 local function build_container_text(containers)
     if #(containers or {}) == 0 then
@@ -490,8 +546,8 @@ local function build_container_text(containers)
 end
 
 --[[
-中文：把单个文件的 AST 树压缩成一行 Markdown 列表项，兼顾目录级导航与后续精确取数。
-English: Compress one file's AST tree into a single Markdown bullet line for directory-level navigation and later precise follow-up reads.
+把单个文件的 AST 树压缩成一行 Markdown 列表项，兼顾目录级导航与后续精确取数。
+Compress one file's AST tree into a single Markdown bullet line for directory-level navigation and later precise follow-up reads.
 ]]
 local function build_file_summary(file_path, root_nodes, helpers)
     local line_count = helpers.get_file_line_count(file_path)
@@ -513,8 +569,8 @@ local function build_file_summary(file_path, root_nodes, helpers)
 end
 
 --[[
-中文：将文件摘要安全地插入到目录分组表中，供最终 Markdown 拼装使用。
-English: Insert a file summary into the directory-group map so the final Markdown content can be assembled.
+将文件摘要安全地插入到目录分组表中，供最终 Markdown 拼装使用。
+Insert a file summary into the directory-group map so the final Markdown content can be assembled.
 ]]
 local function append_file_summary(groups_by_directory, file_summary)
     local directory_path = tostring(file_summary.directory or ".")
@@ -530,8 +586,8 @@ local function append_file_summary(groups_by_directory, file_summary)
 end
 
 --[[
-中文：构建最终 Markdown 文本，先给出总览摘要，再按目录分组输出文件摘要。
-English: Build the final Markdown text by emitting a summary first and then directory-grouped file summaries.
+构建最终 Markdown 文本，先给出总览摘要，再按目录分组输出文件摘要。
+Build the final Markdown text by emitting a summary first and then directory-grouped file summaries.
 ]]
 local function build_tree_content(groups_by_directory, files_scanned, files_with_symbols, items_found)
     local directories = {}
@@ -576,8 +632,8 @@ local function build_tree_content(groups_by_directory, files_scanned, files_with
 end
 
 --[[
-中文：把扫描过程中的非致命诊断写入日志，保持工具返回正文尽量纯净。
-English: Write non-fatal scan diagnostics to logs so the main tool response can stay as clean text.
+把扫描过程中的非致命诊断写入日志，保持工具返回正文尽量纯净。
+Write non-fatal scan diagnostics to logs so the main tool response can stay as clean text.
 ]]
 local function log_diagnostics(diagnostics)
     if not diagnostics then
@@ -594,8 +650,8 @@ local function log_diagnostics(diagnostics)
 end
 
 --[[
-中文：完成 tree 文本输出；是否原样返回还是分页改由宿主统一决定。
-English: Finalize the tree body; whether it stays inline or becomes paged is now decided by the host.
+完成 tree 文本输出；是否原样返回还是分页改由宿主统一决定。
+Finalize the tree body; whether it stays inline or becomes paged is now decided by the host.
 ]]
 local function finalize_tree_content(content, summary_lines)
     return tostring(content or ""), vulcan.runtime.overflow_type.page
@@ -648,7 +704,7 @@ return function(args)
     if not binary_path then
         return {
             error = "ast_grep_binary_not_found",
-            expected_path = vulcan.path.join(vulcan.path.join(get_skill_dir(), "..", ".."), "bin", "tools", executable_name),
+            expected_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name),
         }
     end
 

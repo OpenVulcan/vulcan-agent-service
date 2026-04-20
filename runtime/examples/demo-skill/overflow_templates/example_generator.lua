@@ -1,5 +1,5 @@
--- 中文：演示如何通过 .lua 文件动态生成 overflow template 的内容。
--- English: Demonstrates how a .lua file can dynamically build an overflow template result.
+-- 演示如何通过 .lua 文件动态生成 overflow template 的内容。
+-- Demonstrates how a .lua file can dynamically build an overflow template result.
 
 return function(args)
   local params = (args and args.params) or args or {}

@@ -1,8 +1,8 @@
--- 中文：`vulcan-work-memory` 的宿主管理 SQLite 测试工具入口。
--- English: Host-managed SQLite test entry for `vulcan-work-memory`.
+-- `vulcan-work-memory` 的宿主管理 SQLite 测试工具入口。
+-- Host-managed SQLite test entry for `vulcan-work-memory`.
 
---- 中文：构造稳定的默认测试说明，确保无参调用也能看到持久化结果。
---- English: Build a stable default note so parameter-free calls still produce a visible persisted result.
+--- 构造稳定的默认测试说明，确保无参调用也能看到持久化结果。
+--- Build a stable default note so parameter-free calls still produce a visible persisted result.
 --- @return string, string
 local function build_default_note()
     local timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -10,8 +10,8 @@ local function build_default_note()
     return note, timestamp
 end
 
---- 中文：安全读取当前 skill 的 SQLite 状态对象。
---- English: Safely read the current SQLite status object for the skill.
+--- 安全读取当前 skill 的 SQLite 状态对象。
+--- Safely read the current SQLite status object for the skill.
 --- @return table
 local function get_sqlite_status()
     if type(vulcan.sqlite) ~= "table" or type(vulcan.sqlite.status) ~= "function" then
@@ -33,8 +33,8 @@ local function get_sqlite_status()
     return status
 end
 
---- 中文：工具主入口，验证宿主管理 SQLite 的通用 SQL 与 FTS 能力闭环。
---- English: Main tool entry that verifies both generic SQL and FTS flows for the host-managed SQLite integration.
+--- 工具主入口，验证宿主管理 SQLite 的通用 SQL 与 FTS 能力闭环。
+--- Main tool entry that verifies both generic SQL and FTS flows for the host-managed SQLite integration.
 --- @param args table|nil 工具参数 / Tool arguments.
 --- @return string
 return function(args)

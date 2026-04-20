@@ -1,7 +1,7 @@
 --[[
 codekit-markdown-menu
-中文：扫描目录、文件或混合路径中的 Markdown 文件，只提取 `#`、`##`、`###` 标题及其行号，生成适合快速筛选文档的菜单视图。
-English: Scan directories, files, or mixed path sets for Markdown files and extract only `#`, `##`, and `###` headings with line numbers, producing a menu-oriented view for fast document triage.
+扫描目录、文件或混合路径中的 Markdown 文件，只提取 `#`、`##`、`###` 标题及其行号，生成适合快速筛选文档的菜单视图。
+Scan directories, files, or mixed path sets for Markdown files and extract only `#`, `##`, and `###` headings with line numbers, producing a menu-oriented view for fast document triage.
 ]]
 
 local MAX_MATCHED_FILES = 5000
@@ -9,24 +9,24 @@ local LFS_MODULE = nil
 local AST_RUNTIME_HELPERS = nil
 local SHARED_LENGTH_HELPERS = nil
 --[[
-中文：去除字符串首尾空白，作为最基础的文本规整工具。
-English: Trim leading and trailing whitespace as the most basic text-normalization helper.
+去除字符串首尾空白，作为最基础的文本规整工具。
+Trim leading and trailing whitespace as the most basic text-normalization helper.
 ]]
 local function trim(text)
     return (tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
 --[[
-中文：判断字符串是否以前缀开头，用于路径和标题匹配。
-English: Check whether a string starts with a given prefix for path and heading matching.
+判断字符串是否以前缀开头，用于路径和标题匹配。
+Check whether a string starts with a given prefix for path and heading matching.
 ]]
 local function starts_with(text, prefix)
     return tostring(text or ""):sub(1, #prefix) == prefix
 end
 
 --[[
-中文：按统一换行符拆分文本，便于逐行解析 Markdown 内容。
-English: Split text after normalizing line endings so Markdown content can be processed line by line.
+按统一换行符拆分文本，便于逐行解析 Markdown 内容。
+Split text after normalizing line endings so Markdown content can be processed line by line.
 ]]
 local function split_lines(content)
     local normalized = tostring(content or ""):gsub("\r\n", "\n")
@@ -41,8 +41,8 @@ local function split_lines(content)
 end
 
 --[[
-中文：浅拷贝数组，避免在规则传递和结果渲染中原地修改原始列表。
-English: Create a shallow array copy so rule propagation and rendering do not mutate the source list in place.
+浅拷贝数组，避免在规则传递和结果渲染中原地修改原始列表。
+Create a shallow array copy so rule propagation and rendering do not mutate the source list in place.
 ]]
 local function clone_array(items)
     local copied = {}
@@ -53,8 +53,8 @@ local function clone_array(items)
 end
 
 --[[
-中文：获取当前 skill 目录，优先使用宿主注入路径。
-English: Resolve the current skill directory, preferring the host-injected path.
+获取当前 skill 目录，优先使用宿主注入路径。
+Resolve the current skill directory, preferring the host-injected path.
 ]]
 local function get_skill_dir()
     return tostring(vulcan.context.skill_dir or ".")
@@ -65,8 +65,64 @@ local function get_entry_dir()
 end
 
 --[[
-中文：懒加载共享长度规则模块，让 markdown-menu 与其他 codekit 工具复用同一套预算模型。
-English: Lazily load the shared length-policy module so markdown-menu reuses the same budget model as other codekit tools.
+Return the normalized platform key used by LuaSkills dependency installation.
+返回 LuaSkills 依赖安装使用的标准平台键。
+]]
+local function current_platform_key()
+    local os_info = vulcan.os.info() or {}
+    local architecture = trim((os_info.arch or os_info.architecture or "")):lower()
+    local os_name = trim((os_info.os or "")):lower()
+
+    if os_name == "windows" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "windows-arm64"
+        end
+        return "windows-x64"
+    end
+
+    if os_name == "macos" or os_name == "darwin" or os_name == "osx" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "macos-arm64"
+        end
+        return "macos-x64"
+    end
+
+    if architecture == "arm64" or architecture == "aarch64" then
+        return "linux-arm64"
+    end
+    return "linux-x64"
+end
+
+--[[
+Return the host-injected tool dependency root for the current skill.
+返回宿主为当前 skill 注入的工具依赖根目录。
+]]
+local function get_tool_dependency_root()
+    return trim(vulcan and vulcan.deps and vulcan.deps.tools_path or "")
+end
+
+--[[
+Build one tool binary path from the injected dependency root, dependency name, version, and executable name.
+基于注入的依赖根目录、依赖名、版本号与程序名构造工具二进制路径。
+]]
+local function build_tool_binary_path(dependency_name, version, executable_name)
+    local tools_root = get_tool_dependency_root()
+    if tools_root == "" then
+        return ""
+    end
+    return vulcan.path.join(
+        tools_root,
+        tostring(dependency_name or ""),
+        tostring(version or ""),
+        current_platform_key(),
+        "bin",
+        tostring(executable_name or "")
+    )
+end
+
+--[[
+懒加载共享长度规则模块，让 markdown-menu 与其他 codekit 工具复用同一套预算模型。
+Lazily load the shared length-policy module so markdown-menu reuses the same budget model as other codekit tools.
 ]]
 local function load_shared_length_helpers()
     if SHARED_LENGTH_HELPERS then
@@ -97,8 +153,8 @@ local function load_shared_length_helpers()
 end
 
 --[[
-中文：在单次工具调用开始时初始化 markdown-menu 当前使用的预算。
-English: Initialize the current budget used by markdown-menu at the start of one tool call.
+在单次工具调用开始时初始化 markdown-menu 当前使用的预算。
+Initialize the current budget used by markdown-menu at the start of one tool call.
 ]]
 local function initialize_markdown_menu_budget()
     local helpers, helper_error = load_shared_length_helpers()
@@ -109,8 +165,8 @@ local function initialize_markdown_menu_budget()
 end
 
 --[[
-中文：从 `codekit-ast-detail` 入口闭包中按名称提取内部助手函数，避免重复复制路径和忽略规则逻辑。
-English: Extract internal helpers from the `codekit-ast-detail` closure by name so path and ignore logic can be reused instead of duplicated.
+从 `codekit-ast-detail` 入口闭包中按名称提取内部助手函数，避免重复复制路径和忽略规则逻辑。
+Extract internal helpers from the `codekit-ast-detail` closure by name so path and ignore logic can be reused instead of duplicated.
 ]]
 local function extract_upvalue_by_name(fn, name)
     local index = 1
@@ -127,8 +183,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：懒加载 `codekit-ast-detail` 运行时助手，确保新工具在路径解析、忽略规则和参数校验上保持一致。
-English: Lazily load `codekit-ast-detail` runtime helpers so the new tool stays aligned on path resolution, ignore rules, and argument validation.
+懒加载 `codekit-ast-detail` 运行时助手，确保新工具在路径解析、忽略规则和参数校验上保持一致。
+Lazily load `codekit-ast-detail` runtime helpers so the new tool stays aligned on path resolution, ignore rules, and argument validation.
 ]]
 local function load_ast_runtime_helpers()
     if AST_RUNTIME_HELPERS then
@@ -176,8 +232,8 @@ local function load_ast_runtime_helpers()
 end
 
 --[[
-中文：懒加载 LuaFileSystem，若不可用则返回 nil。
-English: Lazily load LuaFileSystem and return nil when it is unavailable.
+懒加载 LuaFileSystem，若不可用则返回 nil。
+Lazily load LuaFileSystem and return nil when it is unavailable.
 ]]
 local function get_lfs_module()
     if LFS_MODULE ~= nil then
@@ -194,8 +250,8 @@ local function get_lfs_module()
 end
 
 --[[
-中文：规范化文件路径键，主要用于去重；Windows 下按不区分大小写处理。
-English: Normalize a file-path key for deduplication, handling Windows paths case-insensitively.
+规范化文件路径键，主要用于去重；Windows 下按不区分大小写处理。
+Normalize a file-path key for deduplication, handling Windows paths case-insensitively.
 ]]
 local function normalize_file_key(path)
     local normalized = tostring(path or ""):gsub("\\", "/")
@@ -206,8 +262,8 @@ local function normalize_file_key(path)
 end
 
 --[[
-中文：提取路径对应的父目录，并保留目录末尾分隔符，便于在文件菜单中直接作为目录标题显示。
-English: Extract the parent directory of a path while preserving the trailing separator so it can be rendered directly as a directory heading in the file menu.
+提取路径对应的父目录，并保留目录末尾分隔符，便于在文件菜单中直接作为目录标题显示。
+Extract the parent directory of a path while preserving the trailing separator so it can be rendered directly as a directory heading in the file menu.
 ]]
 local function extract_parent_directory(path)
     local normalized = tostring(path or ""):gsub("[\\/]+$", "")
@@ -216,8 +272,8 @@ local function extract_parent_directory(path)
 end
 
 --[[
-中文：提取路径中的文件名部分，供 `FILE MENU` 在目录标题下逐行列出文件名使用。
-English: Extract only the file-name portion of a path so `FILE MENU` can list filenames beneath each directory heading.
+提取路径中的文件名部分，供 `FILE MENU` 在目录标题下逐行列出文件名使用。
+Extract only the file-name portion of a path so `FILE MENU` can list filenames beneath each directory heading.
 ]]
 local function extract_file_name(path)
     local normalized = tostring(path or ""):gsub("[\\/]+$", "")
@@ -226,8 +282,8 @@ local function extract_file_name(path)
 end
 
 --[[
-中文：判断路径是否为绝对路径，兼容 Windows 盘符、UNC 路径与 Unix 风格绝对路径。
-English: Check whether a path is absolute, supporting Windows drive paths, UNC paths, and Unix-style absolute paths.
+判断路径是否为绝对路径，兼容 Windows 盘符、UNC 路径与 Unix 风格绝对路径。
+Check whether a path is absolute, supporting Windows drive paths, UNC paths, and Unix-style absolute paths.
 ]]
 local function is_absolute_path(path)
     local normalized = tostring(path or "")
@@ -237,8 +293,8 @@ local function is_absolute_path(path)
 end
 
 --[[
-中文：获取当前工作目录，优先使用 LuaFileSystem；缺失时回退到 "."。
-English: Resolve the current working directory, preferring LuaFileSystem and falling back to "." when unavailable.
+获取当前工作目录，优先使用 LuaFileSystem；缺失时回退到 "."。
+Resolve the current working directory, preferring LuaFileSystem and falling back to "." when unavailable.
 ]]
 local function get_current_working_directory()
     local lfs = get_lfs_module()
@@ -252,8 +308,8 @@ local function get_current_working_directory()
 end
 
 --[[
-中文：将相对路径解析为当前工作目录下的绝对路径；绝对路径保持原样返回。
-English: Resolve a relative path against the current working directory while leaving absolute paths untouched.
+将相对路径解析为当前工作目录下的绝对路径；绝对路径保持原样返回。
+Resolve a relative path against the current working directory while leaving absolute paths untouched.
 ]]
 local function resolve_scan_path(path)
     local normalized = tostring(path or "")
@@ -264,26 +320,25 @@ local function resolve_scan_path(path)
 end
 
 --[[
-中文：定位 ripgrep 可执行文件，优先使用 ast-grep 技能依赖目录中的 `rg`。
-English: Resolve the ripgrep executable, preferring the `rg` binary installed in the ast-grep skill dependency directory.
+Resolve the ripgrep executable from the host-injected dependency root instead of reconstructing host paths locally.
+从宿主注入的依赖根目录解析 ripgrep 可执行文件，而不是在 skill 内部重建宿主路径。
 ]]
 local function find_rg_binary()
     local executable_name = vulcan.os.info().os == "windows" and "rg.exe" or "rg"
-    local binary_path = vulcan.path.join(vulcan.path.join(vulcan.path.join(get_skill_dir(), "..", ".."), "bin"), "tools")
-    local full_path = vulcan.path.join(binary_path, executable_name)
+    local full_path = build_tool_binary_path("rg", "14.1.1", executable_name)
     if vulcan.fs.exists(full_path) then
         return full_path, nil
     end
     return nil, {
         error = "rg_binary_not_found",
-        message = "ripgrep binary not found for codekit-markdown-menu",
+        message = "ripgrep binary not found in the current skill dependency root",
         expected_path = full_path,
     }
 end
 
 --[[
-中文：通过 ripgrep 列出目录下的 Markdown 文件，复用其递归与忽略规则能力。
-English: List Markdown files under a directory via ripgrep so recursion and ignore-rule behavior can be reused.
+通过 ripgrep 列出目录下的 Markdown 文件，复用其递归与忽略规则能力。
+List Markdown files under a directory via ripgrep so recursion and ignore-rule behavior can be reused.
 ]]
 local function list_markdown_files_with_rg(directory_path, recursive, ignore_enabled)
     local rg_binary_path, binary_error = find_rg_binary()
@@ -356,8 +411,8 @@ local function list_markdown_files_with_rg(directory_path, recursive, ignore_ena
 end
 
 --[[
-中文：判断文件是否为 Markdown 文件；当前工具仅扫描 `.md` 扩展名。
-English: Check whether a file is Markdown; this tool intentionally scans only `.md` files.
+判断文件是否为 Markdown 文件；当前工具仅扫描 `.md` 扩展名。
+Check whether a file is Markdown; this tool intentionally scans only `.md` files.
 ]]
 local function is_markdown_file(path)
     local extension = tostring(path or ""):match("%.([^.]+)$")
@@ -365,8 +420,8 @@ local function is_markdown_file(path)
 end
 
 --[[
-中文：收集单个目标路径下的 Markdown 文件，支持文件模式与目录模式。
-English: Collect Markdown files under one target path, supporting both file mode and directory mode.
+收集单个目标路径下的 Markdown 文件，支持文件模式与目录模式。
+Collect Markdown files under one target path, supporting both file mode and directory mode.
 ]]
 local function collect_markdown_files_for_path(target_path, recursive, ignore_enabled, helpers)
     local collected = {}
@@ -407,8 +462,8 @@ local function collect_markdown_files_for_path(target_path, recursive, ignore_en
 end
 
 --[[
-中文：聚合多个输入路径的 Markdown 文件结果，允许目录与文件混用并按绝对路径去重。
-English: Aggregate Markdown files across multiple input paths, allowing mixed file/directory mode and deduplicating by absolute path.
+聚合多个输入路径的 Markdown 文件结果，允许目录与文件混用并按绝对路径去重。
+Aggregate Markdown files across multiple input paths, allowing mixed file/directory mode and deduplicating by absolute path.
 ]]
 local function collect_markdown_files(target_paths, recursive, ignore_enabled, helpers)
     local collected = {}
@@ -445,8 +500,8 @@ local function collect_markdown_files(target_paths, recursive, ignore_enabled, h
 end
 
 --[[
-中文：规范化标题文本，移除末尾装饰性 `#` 和多余空白，确保目录节点简洁稳定。
-English: Normalize heading text by removing trailing decorative `#` markers and extra whitespace so menu nodes stay clean and stable.
+规范化标题文本，移除末尾装饰性 `#` 和多余空白，确保目录节点简洁稳定。
+Normalize heading text by removing trailing decorative `#` markers and extra whitespace so menu nodes stay clean and stable.
 ]]
 local function normalize_heading_text(heading_text)
     local normalized = trim(heading_text or "")
@@ -455,8 +510,8 @@ local function normalize_heading_text(heading_text)
 end
 
 --[[
-中文：识别 Markdown 代码围栏行，避免把代码块中的井号误判成文档标题。
-English: Detect Markdown fenced-code lines so hash signs inside code blocks are not mistaken for document headings.
+识别 Markdown 代码围栏行，避免把代码块中的井号误判成文档标题。
+Detect Markdown fenced-code lines so hash signs inside code blocks are not mistaken for document headings.
 ]]
 local function detect_fence_marker(line)
     local trimmed_line = trim(line)
@@ -470,8 +525,8 @@ local function detect_fence_marker(line)
 end
 
 --[[
-中文：从 Markdown 文件中提取 `#`、`##`、`###` 标题及其行号，并返回文件总行数，同时跳过代码围栏区域。
-English: Extract `#`, `##`, and `###` headings with line numbers from a Markdown file, return the total line count, and skip fenced code blocks.
+从 Markdown 文件中提取 `#`、`##`、`###` 标题及其行号，并返回文件总行数，同时跳过代码围栏区域。
+Extract `#`, `##`, and `###` headings with line numbers from a Markdown file, return the total line count, and skip fenced code blocks.
 ]]
 local function extract_markdown_headings(file_path)
     local ok, file_content = pcall(vulcan.fs.read, file_path)
@@ -513,8 +568,8 @@ local function extract_markdown_headings(file_path)
 end
 
 --[[
-中文：将扫描统计、文件菜单和标题目录详情渲染成单段 Markdown 文本，便于模型直接阅读而无需再解析结构体包装。
-English: Render scan statistics, the file menu, and heading details into a single Markdown text block so models can read it directly without unpacking a wrapper table.
+将扫描统计、文件菜单和标题目录详情渲染成单段 Markdown 文本，便于模型直接阅读而无需再解析结构体包装。
+Render scan statistics, the file menu, and heading details into a single Markdown text block so models can read it directly without unpacking a wrapper table.
 ]]
 local function build_markdown_menu_content(documents, stats)
     local lines = {
@@ -604,8 +659,8 @@ local function build_markdown_menu_content(documents, stats)
 end
 
 --[[
-中文：完成 markdown-menu 正文输出；是否直接返回原文还是按统一截断策略处理，由宿主统一决定。
-English: Finalize the markdown-menu body; whether it stays inline or is truncated under the unified policy is decided by the host.
+完成 markdown-menu 正文输出；是否直接返回原文还是按统一截断策略处理，由宿主统一决定。
+Finalize the markdown-menu body; whether it stays inline or is truncated under the unified policy is decided by the host.
 ]]
 local function finalize_markdown_menu_content(markdown_text)
     return tostring(markdown_text or "")

@@ -1,8 +1,8 @@
--- 中文：`vulcan-ai-memory` 的 LanceDB 测试工具入口。
--- English: LanceDB test tool entry for `vulcan-ai-memory`.
+-- `vulcan-ai-memory` 的 LanceDB 测试工具入口。
+-- LanceDB test tool entry for `vulcan-ai-memory`.
 
---- 中文：统一返回稳定默认值，避免测试参数缺失时影响链路验证。
---- English: Provide stable defaults so missing test arguments never break the validation flow.
+--- 统一返回稳定默认值，避免测试参数缺失时影响链路验证。
+--- Provide stable defaults so missing test arguments never break the validation flow.
 --- @param args table|nil 工具入参 / Tool arguments.
 --- @return table
 local function resolve_test_config(args)
@@ -33,15 +33,15 @@ local function resolve_test_config(args)
     return config
 end
 
---- 中文：生成稳定的测试向量，确保每次检索都能命中刚写入的记录。
---- English: Build a stable test vector so each search can deterministically hit the freshly inserted row.
+--- 生成稳定的测试向量，确保每次检索都能命中刚写入的记录。
+--- Build a stable test vector so each search can deterministically hit the freshly inserted row.
 --- @return table
 local function build_test_embedding()
     return { 0.11, 0.22, 0.33, 0.44 }
 end
 
---- 中文：构造用于宿主建表接口的列定义。
---- English: Build the column definition expected by the host-side create-table interface.
+--- 构造用于宿主建表接口的列定义。
+--- Build the column definition expected by the host-side create-table interface.
 --- @return table
 local function build_table_columns()
     return {
@@ -64,8 +64,8 @@ local function build_table_columns()
     }
 end
 
---- 中文：构造 JSON Rows 形式的写入数据。
---- English: Build the JSON rows payload used by the host-side vector upsert interface.
+--- 构造 JSON Rows 形式的写入数据。
+--- Build the JSON rows payload used by the host-side vector upsert interface.
 --- @param config table 已解析的测试配置 / Resolved test config.
 --- @param embedding table 测试向量 / Test embedding vector.
 --- @return table
@@ -79,8 +79,8 @@ local function build_upsert_rows(config, embedding)
     }
 end
 
---- 中文：封装宿主 LanceDB 可用性检查，优先给出稳定状态而不是直接抛 Lua 空引用错误。
---- English: Wrap host-side LanceDB availability checks so we return stable status diagnostics instead of a raw Lua nil-reference failure.
+--- 封装宿主 LanceDB 可用性检查，优先给出稳定状态而不是直接抛 Lua 空引用错误。
+--- Wrap host-side LanceDB availability checks so we return stable status diagnostics instead of a raw Lua nil-reference failure.
 --- @return boolean, table
 local function check_lancedb_ready()
     if type(vulcan) ~= "table" or type(vulcan.lancedb) ~= "table" then
@@ -115,8 +115,8 @@ local function check_lancedb_ready()
     return true, status_result
 end
 
---- 中文：工具主入口，验证当前 skill 的 LanceDB 绑定是否可正常完成建表、写入与检索闭环。
---- English: Main tool entry that verifies the current skill's LanceDB binding can complete the full create-table, upsert, and search loop.
+--- 工具主入口，验证当前 skill 的 LanceDB 绑定是否可正常完成建表、写入与检索闭环。
+--- Main tool entry that verifies the current skill's LanceDB binding can complete the full create-table, upsert, and search loop.
 --- @param args table|nil 工具参数 / Tool arguments.
 --- @return string
 return function(args)

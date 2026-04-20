@@ -1,5 +1,5 @@
--- 中文：演示如何通过 .lua 文件动态生成 resource/read 的返回内容。
--- English: Demonstrates how a .lua file can dynamically build the resource/read response.
+-- 演示如何通过 .lua 文件动态生成 resource/read 的返回内容。
+-- Demonstrates how a .lua file can dynamically build the resource/read response.
 
 return function(args)
   local uri = tostring((args and args.uri) or "skill://demo/dynamic-guide")

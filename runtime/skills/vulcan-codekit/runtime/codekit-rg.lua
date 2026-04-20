@@ -1,7 +1,7 @@
 --[[
 codekit-rg
-中文：先基于 ripgrep 做文本命中，再结合 codekit-ast-detail 的结构能力，仅输出与命中行直接相关的 AST 结构。
-English: Perform ripgrep text matching first, then reuse codekit-ast-detail structural analysis to return only AST structures directly related to the matched lines.
+先基于 ripgrep 做文本命中，再结合 codekit-ast-detail 的结构能力，仅输出与命中行直接相关的 AST 结构。
+Perform ripgrep text matching first, then reuse codekit-ast-detail structural analysis to return only AST structures directly related to the matched lines.
 ]]
 
 -- 工具常量 / Tool constants for rg execution and response shaping.
@@ -35,8 +35,8 @@ local function split_lines(content)
 end
 
 --[[
-中文：浅拷贝数组，避免在树渲染或结果拼装时直接改写原始列表。
-English: Create a shallow array copy so tree rendering and result assembly do not mutate the original list in place.
+浅拷贝数组，避免在树渲染或结果拼装时直接改写原始列表。
+Create a shallow array copy so tree rendering and result assembly do not mutate the original list in place.
 
 参数 / Parameters:
 - items(table|nil): 待复制的数组 / Array to clone.
@@ -53,8 +53,8 @@ local function clone_array(items)
 end
 
 --[[
-中文：统一格式化结构范围，输出 `Lx-y` 或 `Lx` 形式，便于结果直接定位到代码区间。
-English: Format structural ranges into `Lx-y` or `Lx` so the output can be used as an immediate line anchor.
+统一格式化结构范围，输出 `Lx-y` 或 `Lx` 形式，便于结果直接定位到代码区间。
+Format structural ranges into `Lx-y` or `Lx` so the output can be used as an immediate line anchor.
 
 参数 / Parameters:
 - start_line(number): 起始行号 / 1-based start line.
@@ -79,8 +79,8 @@ local function format_line_span(start_line, end_line)
 end
 
 --[[
-中文：获取宿主注入的当前 skill 目录。
-English: Resolve the current skill directory injected by the host.
+获取宿主注入的当前 skill 目录。
+Resolve the current skill directory injected by the host.
 
 参数 / Parameters:
 - 无 / None.
@@ -101,8 +101,64 @@ local function get_entry_file()
 end
 
 --[[
-中文：懒加载共享预算模块，让 rg/detail/tree 复用同一套 MCP 输出/读取预算映射。
-English: Lazily load the shared budget module so rg/detail/tree reuse the same MCP output/read budget mapping.
+Return the normalized platform key used by LuaSkills dependency installation.
+返回 LuaSkills 依赖安装使用的标准平台键。
+]]
+local function current_platform_key()
+    local os_info = vulcan.os.info() or {}
+    local architecture = trim((os_info.arch or os_info.architecture or "")):lower()
+    local os_name = trim((os_info.os or "")):lower()
+
+    if os_name == "windows" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "windows-arm64"
+        end
+        return "windows-x64"
+    end
+
+    if os_name == "macos" or os_name == "darwin" or os_name == "osx" then
+        if architecture == "arm64" or architecture == "aarch64" then
+            return "macos-arm64"
+        end
+        return "macos-x64"
+    end
+
+    if architecture == "arm64" or architecture == "aarch64" then
+        return "linux-arm64"
+    end
+    return "linux-x64"
+end
+
+--[[
+Return the host-injected tool dependency root for the current skill.
+返回宿主为当前 skill 注入的工具依赖根目录。
+]]
+local function get_tool_dependency_root()
+    return trim(vulcan and vulcan.deps and vulcan.deps.tools_path or "")
+end
+
+--[[
+Build one tool binary path from the injected dependency root, dependency name, version, and executable name.
+基于注入的依赖根目录、依赖名、版本号与程序名构造工具二进制路径。
+]]
+local function build_tool_binary_path(dependency_name, version, executable_name)
+    local tools_root = get_tool_dependency_root()
+    if tools_root == "" then
+        return ""
+    end
+    return vulcan.path.join(
+        tools_root,
+        tostring(dependency_name or ""),
+        tostring(version or ""),
+        current_platform_key(),
+        "bin",
+        tostring(executable_name or "")
+    )
+end
+
+--[[
+懒加载共享预算模块，让 rg/detail/tree 复用同一套 MCP 输出/读取预算映射。
+Lazily load the shared budget module so rg/detail/tree reuse the same MCP output/read budget mapping.
 ]]
 local function load_shared_length_helpers()
     if SHARED_LENGTH_HELPERS then
@@ -133,8 +189,8 @@ local function load_shared_length_helpers()
 end
 
 --[[
-中文：在单次工具调用开始时初始化当前客户端的 RG 预算。
-English: Initialize the current RG budget at the start of each tool call.
+在单次工具调用开始时初始化当前客户端的 RG 预算。
+Initialize the current RG budget at the start of each tool call.
 ]]
 local function initialize_rg_client_budget()
     local helpers, helper_error = load_shared_length_helpers()
@@ -145,8 +201,8 @@ local function initialize_rg_client_budget()
 end
 
 --[[
-中文：通过 `debug.getupvalue` 从现有 `codekit-ast-detail` 入口中提取内部助手函数，避免复制一整套 AST 解析实现。
-English: Extract internal helper functions from the existing `codekit-ast-detail` entry with `debug.getupvalue` to avoid duplicating the full AST parsing pipeline.
+通过 `debug.getupvalue` 从现有 `codekit-ast-detail` 入口中提取内部助手函数，避免复制一整套 AST 解析实现。
+Extract internal helper functions from the existing `codekit-ast-detail` entry with `debug.getupvalue` to avoid duplicating the full AST parsing pipeline.
 
 参数 / Parameters:
 - fn(function): 待检查 upvalue 的函数 / Function whose upvalues will be inspected.
@@ -171,8 +227,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-中文：懒加载 `codekit-ast-detail` 内部助手，确保 `codekit-rg` 与现有 AST 规则、文件收集和结构归一化逻辑保持一致。
-English: Lazily load internal `codekit-ast-detail` helpers so `codekit-rg` stays aligned with the existing AST rules, file collection logic, and symbol normalization flow.
+懒加载 `codekit-ast-detail` 内部助手，确保 `codekit-rg` 与现有 AST 规则、文件收集和结构归一化逻辑保持一致。
+Lazily load internal `codekit-ast-detail` helpers so `codekit-rg` stays aligned with the existing AST rules, file collection logic, and symbol normalization flow.
 
 参数 / Parameters:
 - 无 / None.
@@ -233,8 +289,8 @@ local function load_ast_runtime_helpers()
 end
 
 --[[
-中文：校验目录参数，要求非空字符串且必须是已存在目录。
-English: Validate the directory argument. It must be a non-empty string pointing to an existing directory.
+校验目录参数，要求非空字符串且必须是已存在目录。
+Validate the directory argument. It must be a non-empty string pointing to an existing directory.
 
 参数 / Parameters:
 - value(any): 用户传入的目录参数 / User-provided directory argument.
@@ -271,8 +327,8 @@ local function validate_directory_argument(value)
 end
 
 --[[
-中文：校验 ripgrep 正则参数，要求非空字符串。
-English: Validate the ripgrep regex argument. It must be a non-empty string.
+校验 ripgrep 正则参数，要求非空字符串。
+Validate the ripgrep regex argument. It must be a non-empty string.
 
 参数 / Parameters:
 - value(any): 用户传入的 rg 正则 / User-provided rg regular expression.
@@ -293,8 +349,8 @@ local function validate_rg_pattern_argument(value)
 end
 
 --[[
-中文：显式拒绝 `export_md_path` 参数，避免调用方误以为 `codekit-rg` 仍支持导出到指定目录。
-English: Explicitly reject the `export_md_path` argument so callers do not assume `codekit-rg` still supports exporting to a chosen path.
+显式拒绝 `export_md_path` 参数，避免调用方误以为 `codekit-rg` 仍支持导出到指定目录。
+Explicitly reject the `export_md_path` argument so callers do not assume `codekit-rg` still supports exporting to a chosen path.
 ]]
 local function validate_export_md_absence(value)
     if value ~= nil then
@@ -342,8 +398,8 @@ local function append_path_segment(current, segment)
 end
 
 --[[
-中文：在 LuaFileSystem 不可用时，回退到宿主 `vulcan.exec` 递归创建目录，保证大结果落盘与 Markdown 导出仍可执行。
-English: Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSystem is unavailable so large-result spilling and Markdown export still work.
+在 LuaFileSystem 不可用时，回退到宿主 `vulcan.exec` 递归创建目录，保证大结果落盘与 Markdown 导出仍可执行。
+Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSystem is unavailable so large-result spilling and Markdown export still work.
 ]]
 local function ensure_directory_via_exec(directory_path)
     if type(vulcan.exec) ~= "function" then
@@ -465,8 +521,8 @@ local function shallow_copy_object(source)
 end
 
 --[[
-中文：查找宿主 `bin/tools` 目录中的 `rg` 可执行文件，遵循当前宿主提供工具布局。
-English: Locate the `rg` executable inside the host `bin/tools` directory, following the current host-provided tool layout.
+Locate the `rg` executable from the host-injected dependency root instead of guessing the host directory layout.
+从宿主注入的依赖根目录定位 `rg` 可执行文件，而不是猜测宿主目录布局。
 
 参数 / Parameters:
 - 无 / None.
@@ -477,15 +533,13 @@ English: Locate the `rg` executable inside the host `bin/tools` directory, follo
 ]]
 local function find_rg_binary()
     local executable_name = vulcan.os.info().os == "windows" and "rg.exe" or "rg"
-    local runtime_root = vulcan.path.join(get_skill_dir(), "..", "..")
-    local binary_path = vulcan.path.join(runtime_root, "bin", "tools")
-    local full_path = vulcan.path.join(binary_path, executable_name)
+    local full_path = build_tool_binary_path("rg", "14.1.1", executable_name)
     if vulcan.fs.exists(full_path) then
         return full_path, nil
     end
     return nil, {
         error = "rg_binary_not_found",
-        message = "ripgrep binary not found in shared tool directory",
+        message = "ripgrep binary not found in the current skill dependency root",
         expected_path = full_path,
     }
 end
@@ -524,8 +578,8 @@ local function build_rg_command(rg_binary_path, arguments)
 end
 
 --[[
-中文：调用 ripgrep，并优先使用宿主暴露的 `vulcan.exec`，缺失时回退到 `io.popen`。
-English: Execute ripgrep, preferring the host-provided `vulcan.exec` and falling back to `io.popen` when unavailable.
+调用 ripgrep，并优先使用宿主暴露的 `vulcan.exec`，缺失时回退到 `io.popen`。
+Execute ripgrep, preferring the host-provided `vulcan.exec` and falling back to `io.popen` when unavailable.
 
 参数 / Parameters:
 - rg_binary_path(string): `rg` 可执行文件完整路径 / Full path to the `rg` executable.
@@ -544,8 +598,8 @@ local function run_rg_command(rg_binary_path, arguments)
             timeout_ms = RG_TIMEOUT_MS,
         })
         if ok and type(result) == "table" then
-            -- 中文：ripgrep 退出码 1 表示“无匹配”，不是执行失败。这里显式转成空结果，避免上层把它误报成 rg_exec_failed。
-            -- English: ripgrep exit code 1 means "no matches", not an execution failure. Convert it into an empty successful result here.
+            -- ripgrep 退出码 1 表示“无匹配”，不是执行失败。这里显式转成空结果，避免上层把它误报成 rg_exec_failed。
+            -- ripgrep exit code 1 means "no matches", not an execution failure. Convert it into an empty successful result here.
             if (not result.timed_out) and tonumber(result.code) == 1 then
                 return tostring(result.stdout or ""), tostring(result.stderr or ""), nil
             end
@@ -585,8 +639,8 @@ local function run_rg_command(rg_binary_path, arguments)
 end
 
 --[[
-中文：解析 `rg --json` 的输出，只保留 `match` 事件，并按文件聚合命中行信息。
-English: Parse `rg --json` output, keeping only `match` events and grouping line hits by file.
+解析 `rg --json` 的输出，只保留 `match` 事件，并按文件聚合命中行信息。
+Parse `rg --json` output, keeping only `match` events and grouping line hits by file.
 
 参数 / Parameters:
 - output(string): `rg --json` 的 stdout 文本 / Stdout text from `rg --json`.
@@ -664,9 +718,9 @@ local function is_function_like(symbol)
 end
 
 --[[
-中文：根据命中行决定最终展示目标。
+根据命中行决定最终展示目标。
 若命中的是声明起始行，则展示声明对应结构；否则优先回退到最近的函数/方法结构。
-English: Decide the final display target from a matched line.
+Decide the final display target from a matched line.
 If the hit lands on a declaration start line, show that declaration’s structure; otherwise prefer the nearest enclosing function/method.
 
 参数 / Parameters:
@@ -760,8 +814,8 @@ local function format_symbol_label(symbol)
 end
 
 --[[
-中文：把符号链格式化为单行扁平头部，使用 `@ 父结构 :: 子结构` 形式表达层级，便于模型快速感知命中上下文。
-English: Format a symbol chain into a single flat header line using `@ parent :: child` so models can recognize the hit context without tree prefixes.
+把符号链格式化为单行扁平头部，使用 `@ 父结构 :: 子结构` 形式表达层级，便于模型快速感知命中上下文。
+Format a symbol chain into a single flat header line using `@ parent :: child` so models can recognize the hit context without tree prefixes.
 
 参数 / Parameters:
 - symbol_chain(table): 从最外层结构到当前命中结构的符号链 / Symbol chain from the outermost structure to the current matched structure.
@@ -843,8 +897,8 @@ local function append_symbol_tree(lines, symbol, branch_state, is_last)
 end
 
 --[[
-中文：根据 rg 命中行标记 AST 结构树，只保留与命中相关的祖先链、目标结构和必要子结构。
-English: Mark the AST tree according to rg hit lines, retaining only related ancestor chains, target structures, and necessary descendant structures.
+根据 rg 命中行标记 AST 结构树，只保留与命中相关的祖先链、目标结构和必要子结构。
+Mark the AST tree according to rg hit lines, retaining only related ancestor chains, target structures, and necessary descendant structures.
 
 参数 / Parameters:
 - symbol_roots(table): 文件级 AST 结构树根节点 / File-level AST tree roots.
@@ -879,8 +933,8 @@ local function build_filtered_file_content(symbol_roots)
     local lines = {}
 
     --[[
-    中文：递归收集命中结构的扁平输出条目，只为真正承载命中行的节点生成 `@ ...` 头部。
-    English: Recursively collect flat render entries and emit `@ ...` headers only for nodes that actually own matched lines.
+    递归收集命中结构的扁平输出条目，只为真正承载命中行的节点生成 `@ ...` 头部。
+    Recursively collect flat render entries and emit `@ ...` headers only for nodes that actually own matched lines.
 
     参数 / Parameters:
     - symbols(table): 当前层级的符号列表 / Symbols at the current traversal level.
@@ -909,8 +963,8 @@ local function build_filtered_file_content(symbol_roots)
 end
 
 --[[
-中文：根据预先收集的文件上下文统一生成 rg 文件结果，固定只输出命中结构与命中行，保持结果协议单一稳定。
-English: Build rg file results from pre-collected file contexts and always emit only matched structures plus matched lines so the response protocol stays single and stable.
+根据预先收集的文件上下文统一生成 rg 文件结果，固定只输出命中结构与命中行，保持结果协议单一稳定。
+Build rg file results from pre-collected file contexts and always emit only matched structures plus matched lines so the response protocol stays single and stable.
 
 参数 / Parameters:
 - render_contexts(table): 每个文件的命中、符号与文件元信息 / Per-file hit, symbol, and file metadata contexts.
@@ -967,8 +1021,8 @@ local function render_error_lines(errors)
 end
 
 --[[
-中文：把 `codekit-rg` 结果渲染为 Markdown 纯文本，便于模型直接阅读并继续下一步分析。
-English: Render the `codekit-rg` result as plain Markdown text so the model can read it directly and continue analysis.
+把 `codekit-rg` 结果渲染为 Markdown 纯文本，便于模型直接阅读并继续下一步分析。
+Render the `codekit-rg` result as plain Markdown text so the model can read it directly and continue analysis.
 ]]
 local function build_rg_markdown(result)
     local lines = {
@@ -1010,8 +1064,8 @@ local function build_rg_markdown(result)
 end
 
 --[[
-中文：统一收尾 rg 结果；正常情况下直接返回 Markdown，超出预算时走共享 overflow 协议。
-English: Finalize the rg result uniformly; return inline Markdown when safe, otherwise use the shared overflow protocol.
+统一收尾 rg 结果；正常情况下直接返回 Markdown，超出预算时走共享 overflow 协议。
+Finalize the rg result uniformly; return inline Markdown when safe, otherwise use the shared overflow protocol.
 
 参数 / Parameters:
 - full_result(table): 已完成统计与渲染内容拼装的最终结果对象 / Final result object with stats and rendered content assembled.
@@ -1101,7 +1155,7 @@ return function(args)
     if not ast_binary_path then
         return {
             error = "ast_grep_binary_not_found",
-            message = "ast-grep binary not found in shared tool directory",
+            message = "ast-grep binary not found in the current skill dependency root",
         }
     end
 

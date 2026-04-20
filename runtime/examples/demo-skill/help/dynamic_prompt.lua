@@ -1,5 +1,5 @@
--- English: Demonstrate how one `.lua` help file can generate one help topic or workflow node without host-supplied arguments.
--- 中文：演示如何通过 `.lua` help 文件在不依赖宿主传参的情况下生成一个帮助 topic 或 workflow 节点。
+-- Demonstrate how one `.lua` help file can generate one help topic or workflow node without host-supplied arguments.
+-- 演示如何通过 `.lua` help 文件在不依赖宿主传参的情况下生成一个帮助 topic 或 workflow 节点。
 
 return function()
   return table.concat({
