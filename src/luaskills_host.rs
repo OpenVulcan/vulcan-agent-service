@@ -163,19 +163,20 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
                 normalized_name, normalized_name
             ));
         }
-        let normalized_path = normalize_skill_root_key(&path);
+        let normalized_storage_path = normalize_skill_root_path(&path)?;
+        let normalized_path = normalize_skill_root_key(&normalized_storage_path);
         if !seen_roots.insert(normalized_path) {
             return Err(format!(
                 "duplicate skill root '{}' at {} is not allowed / 不允许重复配置技能根 '{}' ({})",
                 name,
-                path.display(),
+                normalized_storage_path.display(),
                 name,
-                path.display()
+                normalized_storage_path.display()
             ));
         }
         ordered_roots.push(RuntimeSkillRoot {
             name: normalized_name,
-            skills_dir: path,
+            skills_dir: normalized_storage_path,
         });
         Ok(())
     };
@@ -236,28 +237,85 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     validate_unique_skill_root_spaces(&ordered_roots)?;
     if config.skill_roots.is_some() {
         for root in &ordered_roots {
-            if !root.skills_dir.exists() {
-                return Err(format!(
-                    "configured skill root '{}' does not exist: {} / 显式配置的技能根 '{}' 不存在：{}",
-                    root.name,
-                    root.skills_dir.display(),
-                    root.name,
-                    root.skills_dir.display()
-                ));
-            }
+            validate_skill_root_directory(root, true)?;
         }
         return Ok(ordered_roots);
     }
-    Ok(ordered_roots
-        .into_iter()
-        .filter(|root| root.skills_dir.exists())
-        .collect())
+    let mut implicit_roots = Vec::new();
+    for root in ordered_roots {
+        if !root.skills_dir.exists() {
+            continue;
+        }
+        validate_skill_root_directory(&root, false)?;
+        implicit_roots.push(root);
+    }
+    Ok(implicit_roots)
+}
+
+/// English: Validate one skill root path according to strict or implicit runtime-root rules.
+/// 按严格模式或隐式根规则校验单个技能根路径是否合法。
+fn validate_skill_root_directory(
+    root: &RuntimeSkillRoot,
+    strict_missing: bool,
+) -> Result<(), String> {
+    if !root.skills_dir.exists() {
+        if strict_missing {
+            return Err(format!(
+                "configured skill root '{}' does not exist: {} / 显式配置的技能根 '{}' 不存在：{}",
+                root.name,
+                root.skills_dir.display(),
+                root.name,
+                root.skills_dir.display()
+            ));
+        }
+        return Err(format!(
+            "implicit skill root '{}' does not exist: {} / 隐式技能根 '{}' 不存在：{}",
+            root.name,
+            root.skills_dir.display(),
+            root.name,
+            root.skills_dir.display()
+        ));
+    }
+
+    if !root.skills_dir.is_dir() {
+        return Err(format!(
+            "skill root '{}' is not a directory: {} / 技能根 '{}' 不是目录：{}",
+            root.name,
+            root.skills_dir.display(),
+            root.name,
+            root.skills_dir.display()
+        ));
+    }
+
+    Ok(())
 }
 
 /// English: Normalize one skill-root path into a stable deduplication key.
 /// 将单个技能根路径归一化为稳定的去重键。
+/// English: Normalize one skill-root path into a stable absolute path for runtime storage and validation.
+/// 灏嗗崟涓妧鑳芥牴璺緞褰掍竴鍖栦负鐢ㄤ簬杩愯鏃跺瓨鍌ㄤ笌鏍￠獙鐨勭ǔ瀹氱粷瀵硅矾寰勩€?
+pub fn normalize_skill_root_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                format!(
+                    "failed to resolve current directory while normalizing skill root '{}': {} / 褰掍竴鍖栨妧鑳芥牴 '{}' 鏃舵棤娉曡幏鍙栧綋鍓嶇洰褰曪細{}",
+                    path.display(),
+                    error,
+                    path.display(),
+                    error
+                )
+            })?
+            .join(path)
+    };
+    Ok(std::fs::canonicalize(&absolute_path).unwrap_or(absolute_path))
+}
+
 pub fn normalize_skill_root_key(path: &std::path::Path) -> String {
-    let rendered = path.to_string_lossy().replace('\\', "/");
+    let normalized_path = normalize_skill_root_path(path).unwrap_or_else(|_| path.to_path_buf());
+    let rendered = normalized_path.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
     {
         rendered.to_ascii_lowercase()

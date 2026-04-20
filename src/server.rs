@@ -14,7 +14,8 @@ use crate::config::Config;
 use crate::luaskills_host::{
     build_luaskills_engine_options, build_runtime_invocation_context, build_runtime_request_context,
     client_budget_snapshot_for_render, install_luaskills_log_callback, map_runtime_entry_to_mcp_tool,
-    normalize_skill_root_key, resolve_runtime_root_from_config, validate_unique_skill_root_spaces,
+    normalize_skill_root_key, normalize_skill_root_path, resolve_runtime_root_from_config,
+    validate_unique_skill_root_spaces,
 };
 use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
@@ -420,18 +421,29 @@ impl McpServer {
     fn resolve_lua_engine_for_environment(
         &self,
         environment_id: Option<&str>,
-    ) -> Option<Arc<StdRwLock<LuaEngine>>> {
+    ) -> Result<Arc<StdRwLock<LuaEngine>>, (i64, String)> {
         let normalized = environment_id
             .map(str::trim)
             .filter(|value| !value.is_empty());
         match normalized {
-            None => self.lua_engine.clone(),
-            Some(environment_id) => self
-                .lua_project_environments
-                .read()
-                .ok()
-                .and_then(|registry| registry.get(environment_id).cloned())
-                .map(|environment| environment.engine),
+            None => self.lua_engine.clone().ok_or_else(|| {
+                (-32603, "Lua engine not configured. Add skills directory.".to_string())
+            }),
+            Some(environment_id) => {
+                let registry = self.lua_project_environments.read().map_err(|_| {
+                    (-32603, "Project environment registry lock poisoned.".to_string())
+                })?;
+                registry
+                    .get(environment_id)
+                    .cloned()
+                    .map(|environment| environment.engine)
+                    .ok_or_else(|| {
+                        (
+                            -32602,
+                            format!("Lua project environment '{}' is not initialized.", environment_id),
+                        )
+                    })
+            }
         }
     }
 
@@ -455,17 +467,15 @@ impl McpServer {
                 Ok((engine.clone(), skill_roots.clone()))
             }
             Some(environment_id) => {
-                let environment = self
-                    .lua_project_environments
-                    .read()
-                    .ok()
-                    .and_then(|registry| registry.get(environment_id).cloned())
-                    .ok_or_else(|| {
-                        (
-                            -32602,
-                            format!("Lua project environment '{}' is not initialized.", environment_id),
-                        )
-                    })?;
+                let registry = self.lua_project_environments.read().map_err(|_| {
+                    (-32603, "Project environment registry lock poisoned.".to_string())
+                })?;
+                let environment = registry.get(environment_id).cloned().ok_or_else(|| {
+                    (
+                        -32602,
+                        format!("Lua project environment '{}' is not initialized.", environment_id),
+                    )
+                })?;
                 Ok((environment.engine, environment.skill_roots))
             }
         }
@@ -507,26 +517,44 @@ impl McpServer {
         })?
         .map_err(|error| (-32603, error))?;
 
-        self.persist_project_environment_record(environment_id, &project_skills_dir)
-            .map_err(|error| (-32603, error))?;
-        self.lua_project_environments
-            .write()
-            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
-            .insert(environment_id.to_string(), environment.clone());
+        let previous_environment = {
+            let mut registry = self.lua_project_environments.write().map_err(|_| {
+                (-32603, "Project environment registry lock poisoned.".to_string())
+            })?;
+            registry.insert(environment_id.to_string(), environment.clone())
+        };
+        if let Err(error) = self.persist_project_environment_record(environment_id, &project_skills_dir) {
+            let mut registry = self.lua_project_environments.write().map_err(|_| {
+                (
+                    -32603,
+                    format!(
+                        "Failed to persist project environment '{}' and failed to rollback in-memory registry because the registry lock is poisoned: {} / 持久化项目环境 '{}' 失败，且由于注册表锁损坏导致无法回滚内存状态：{}",
+                        environment_id, error, environment_id, error
+                    ),
+                )
+            })?;
+            match previous_environment {
+                Some(previous_environment) => {
+                    registry.insert(environment_id.to_string(), previous_environment);
+                }
+                None => {
+                    registry.remove(environment_id);
+                }
+            }
+            return Err((-32603, error));
+        }
         Ok(environment)
     }
 
     /// English: Return all initialized project environments sorted by environment id.
     /// 返回按环境标识排序后的全部已初始化项目环境。
-    fn list_project_environments(&self) -> Vec<LuaProjectEnvironment> {
-        let mut environments = self
-            .lua_project_environments
-            .read()
-            .ok()
-            .map(|registry| registry.values().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
+    fn list_project_environments(&self) -> Result<Vec<LuaProjectEnvironment>, (i64, String)> {
+        let registry = self.lua_project_environments.read().map_err(|_| {
+            (-32603, "Project environment registry lock poisoned.".to_string())
+        })?;
+        let mut environments = registry.values().cloned().collect::<Vec<_>>();
         environments.sort_by(|left, right| left.environment_id.cmp(&right.environment_id));
-        environments
+        Ok(environments)
     }
 
     /// English: Return the state-directory root that stores persisted project-environment records.
@@ -552,9 +580,10 @@ impl McpServer {
                 error
             )
         })?;
+        let normalized_skills_dir = normalize_persisted_environment_skills_dir(skills_dir)?;
         let record = PersistedProjectEnvironmentRecord {
             environment_id: environment_id.to_string(),
-            skills_dir: skills_dir.display().to_string(),
+            skills_dir: normalized_skills_dir,
         };
         let record_path = registry_dir.join(environment_record_file_name(environment_id));
         let content = serde_json::to_string_pretty(&record)
@@ -597,6 +626,7 @@ impl McpServer {
         }
 
         let mut records = Vec::new();
+        let mut seen_environment_ids = std::collections::HashSet::new();
         for entry in fs::read_dir(&registry_dir).map_err(|error| {
             format!(
                 "Failed to read environment registry directory {}: {}",
@@ -630,6 +660,30 @@ impl McpServer {
                         error
                     )
                 })?;
+            let normalized_environment_id = record.environment_id.trim().to_string();
+            if normalized_environment_id.is_empty() {
+                return Err(format!(
+                    "Project environment record {} contains an empty environment_id / 项目环境记录 {} 包含空的 environment_id",
+                    path.display(),
+                    path.display()
+                ));
+            }
+            if record.skills_dir.trim().is_empty() {
+                return Err(format!(
+                    "Project environment record {} contains an empty skills_dir / 项目环境记录 {} 包含空的 skills_dir",
+                    path.display(),
+                    path.display()
+                ));
+            }
+            if !seen_environment_ids.insert(normalized_environment_id.clone()) {
+                return Err(format!(
+                    "Duplicate persisted project environment id '{}' detected in {} / 在 {} 中检测到重复的持久化项目环境标识 '{}'",
+                    normalized_environment_id,
+                    registry_dir.display(),
+                    registry_dir.display(),
+                    normalized_environment_id
+                ));
+            }
             records.push(record);
         }
         records.sort_by(|left, right| left.environment_id.cmp(&right.environment_id));
@@ -663,7 +717,14 @@ impl McpServer {
             if let Ok(mut registry) = self.lua_project_environments.write() {
                 registry.insert(record.environment_id.clone(), environment);
             } else {
-                return Err("Project environment registry lock poisoned. / 项目环境注册表锁已损坏".into());
+                return Err(format!(
+                    "[LuaSkills] Failed to restore environment '{}' because the project environment registry lock is poisoned while registering skills dir {} / 恢复环境 '{}' 失败，原因是在注册 skills 目录 {} 时项目环境注册表锁已损坏",
+                    record.environment_id,
+                    skills_dir.display(),
+                    record.environment_id,
+                    skills_dir.display()
+                )
+                .into());
             }
         }
         Ok(())
@@ -677,23 +738,24 @@ impl McpServer {
         skills_dir: &Path,
         create_if_missing: bool,
     ) -> Result<LuaProjectEnvironment, String> {
+        let normalized_skills_dir = normalize_skill_root_path(skills_dir)?;
         if environment_id.trim().is_empty() {
             return Err(
                 "Project environment id must not be empty. / 项目环境标识不能为空。".to_string(),
             );
         }
-        if skills_dir.exists() && !skills_dir.is_dir() {
+        if normalized_skills_dir.exists() && !normalized_skills_dir.is_dir() {
             return Err(format!(
                 "Project skills path exists but is not a directory: {} / 项目技能路径存在但不是目录：{}",
-                skills_dir.display(),
-                skills_dir.display()
+                normalized_skills_dir.display(),
+                normalized_skills_dir.display()
             ));
         }
-        if !create_if_missing && !skills_dir.exists() {
+        if !create_if_missing && !normalized_skills_dir.exists() {
             return Err(format!(
                 "Project skills directory does not exist: {} / 项目技能目录不存在：{}",
-                skills_dir.display(),
-                skills_dir.display()
+                normalized_skills_dir.display(),
+                normalized_skills_dir.display()
             ));
         }
         let engine_options = self
@@ -719,10 +781,10 @@ impl McpServer {
 
         let mut project_roots = vec![RuntimeSkillRoot {
             name: environment_id.to_string(),
-            skills_dir: skills_dir.to_path_buf(),
+            skills_dir: normalized_skills_dir.clone(),
         }];
         let mut seen_root_keys = std::collections::HashSet::new();
-        seen_root_keys.insert(normalize_skill_root_key(skills_dir));
+        seen_root_keys.insert(normalize_skill_root_key(&normalized_skills_dir));
         for root in default_roots {
             let normalized_key = normalize_skill_root_key(&root.skills_dir);
             if seen_root_keys.insert(normalized_key) {
@@ -736,12 +798,12 @@ impl McpServer {
             )
         })?;
         if create_if_missing {
-            fs::create_dir_all(skills_dir).map_err(|error| {
+            fs::create_dir_all(&normalized_skills_dir).map_err(|error| {
                 format!(
                     "Failed to create project skills directory {}: {} / 创建项目技能目录 {} 失败：{}",
-                    skills_dir.display(),
+                    normalized_skills_dir.display(),
                     error,
-                    skills_dir.display(),
+                    normalized_skills_dir.display(),
                     error
                 )
             })?;
@@ -770,24 +832,26 @@ impl McpServer {
             return Err((-32602, "environment_id must not be empty".to_string()));
         }
 
-        let skills_dir = self
+        let in_memory_skills_dir = self
             .lua_project_environments
             .read()
-            .ok()
-            .and_then(|registry| registry.get(environment_id).cloned())
+            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
+            .get(environment_id)
+            .cloned()
             .and_then(|environment| environment.skill_roots.first().cloned())
-            .map(|root| root.skills_dir)
-            .or_else(|| {
-                self.load_persisted_project_environment_records()
-                    .ok()
-                    .and_then(|records| {
-                        records
-                            .into_iter()
-                            .find(|record| record.environment_id == environment_id)
-                            .map(|record| PathBuf::from(record.skills_dir))
-                    })
-            })
-            .ok_or_else(|| (-32602, format!("Environment '{}' is not registered.", environment_id)))?;
+            .map(|root| root.skills_dir);
+        let skills_dir = if let Some(skills_dir) = in_memory_skills_dir {
+            skills_dir
+        } else {
+            self.load_persisted_project_environment_records()
+                .map_err(|error| (-32603, error))?
+                .into_iter()
+                .find(|record| record.environment_id == environment_id)
+                .map(|record| PathBuf::from(record.skills_dir))
+                .ok_or_else(|| {
+                    (-32602, format!("Environment '{}' is not registered.", environment_id))
+                })?
+        };
 
         let environment_id_owned = environment_id.to_string();
         let environment = {
@@ -810,12 +874,32 @@ impl McpServer {
             .map_err(|error| (-32603, error))?
         };
 
-        self.persist_project_environment_record(environment_id, &skills_dir)
-            .map_err(|error| (-32603, error))?;
-        self.lua_project_environments
-            .write()
-            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
-            .insert(environment_id.to_string(), environment.clone());
+        let previous_environment = {
+            let mut registry = self.lua_project_environments.write().map_err(|_| {
+                (-32603, "Project environment registry lock poisoned.".to_string())
+            })?;
+            registry.insert(environment_id.to_string(), environment.clone())
+        };
+        if let Err(error) = self.persist_project_environment_record(environment_id, &skills_dir) {
+            let mut registry = self.lua_project_environments.write().map_err(|_| {
+                (
+                    -32603,
+                    format!(
+                        "Failed to persist reloaded project environment '{}' and failed to rollback in-memory registry because the registry lock is poisoned: {} / 持久化重载后的项目环境 '{}' 失败，且由于注册表锁损坏导致无法回滚内存状态：{}",
+                        environment_id, error, environment_id, error
+                    ),
+                )
+            })?;
+            match previous_environment {
+                Some(previous_environment) => {
+                    registry.insert(environment_id.to_string(), previous_environment);
+                }
+                None => {
+                    registry.remove(environment_id);
+                }
+            }
+            return Err((-32603, error));
+        }
         Ok(environment)
     }
 
@@ -829,14 +913,38 @@ impl McpServer {
         if environment_id.is_empty() {
             return Err((-32602, "environment_id must not be empty".to_string()));
         }
-        let removed = self
+        let mut registry = self
             .lua_project_environments
             .write()
-            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
-            .remove(environment_id);
-        let record_removed = self
-            .remove_project_environment_record(environment_id)
-            .map_err(|error| (-32603, error))?;
+            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?;
+        let removed = registry.remove(environment_id);
+        let record_removed = match self.remove_project_environment_record(environment_id) {
+            Ok(record_removed) => record_removed,
+            Err(error) => {
+                if let Some(environment) = removed.clone() {
+                    registry.insert(environment_id.to_string(), environment);
+                }
+                return Err((-32603, error));
+            }
+        };
+        if let Some(environment) = removed.clone() {
+            if !record_removed {
+                registry.insert(environment_id.to_string(), environment);
+                return Err((
+                    -32603,
+                    format!(
+                        "Environment '{}' exists in memory but its persisted record is missing. The remove operation was rolled back to preserve strict state consistency. / 环境 '{}' 仅存在于内存中而缺少持久化记录。为保持严格状态一致性，删除操作已回滚。",
+                        environment_id, environment_id
+                    ),
+                ));
+            }
+        }
+        if removed.is_none() && !record_removed {
+            return Err((
+                -32602,
+                format!("Environment '{}' is not registered.", environment_id),
+            ));
+        }
         Ok((removed, record_removed))
     }
 
@@ -853,8 +961,9 @@ impl McpServer {
         let environment = self
             .lua_project_environments
             .read()
-            .ok()
-            .and_then(|registry| registry.get(environment_id).cloned())
+            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
+            .get(environment_id)
+            .cloned()
             .ok_or_else(|| (-32602, format!("Environment '{}' is not initialized.", environment_id)))?;
         let effective_skills = environment
             .engine
@@ -1237,12 +1346,7 @@ impl McpServer {
 
             "vulcan-help-list" => {
                 let environment_id = optional_string_argument(&args, "environment_id");
-                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref()).ok_or_else(|| {
-                    (
-                        -32603,
-                        "Lua engine not configured or environment not initialized.".to_string(),
-                    )
-                })?;
+                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref())?;
                 let help_tree = engine
                     .read()
                     .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
@@ -1256,12 +1360,7 @@ impl McpServer {
 
             "vulcan-skill-list" => {
                 let environment_id = optional_string_argument(&args, "environment_id");
-                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref()).ok_or_else(|| {
-                    (
-                        -32603,
-                        "Lua engine not configured or environment not initialized.".to_string(),
-                    )
-                })?;
+                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref())?;
                 let skill_tree = engine
                     .read()
                     .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
@@ -1286,7 +1385,7 @@ impl McpServer {
             }
 
             "vulcan-environment-list" => {
-                let environments = self.list_project_environments();
+                let environments = self.list_project_environments()?;
                 ToolCallResult {
                     content: vec![TextContent::text(&render_environment_list_markdown(&environments))],
                     is_error: None,
@@ -1332,12 +1431,7 @@ impl McpServer {
 
             "vulcan-help-detail" => {
                 let environment_id = optional_string_argument(&args, "environment_id");
-                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref()).ok_or_else(|| {
-                    (
-                        -32603,
-                        "Lua engine not configured or environment not initialized.".to_string(),
-                    )
-                })?;
+                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref())?;
                 let skill_id = args
                     .get("skill")
                     .and_then(|value| value.as_str())
@@ -1417,17 +1511,9 @@ impl McpServer {
                 if let Some(engine) = &self.lua_engine {
                     let environment_id = optional_string_argument(&args, "environment_id");
                     let target_engine = match environment_id.as_deref() {
-                        Some(environment_id) => self
-                            .resolve_lua_engine_for_environment(Some(environment_id))
-                            .ok_or_else(|| {
-                                (
-                                    -32602,
-                                    format!(
-                                        "Lua project environment '{}' is not initialized.",
-                                        environment_id
-                                    ),
-                                )
-                            })?,
+                        Some(environment_id) => {
+                            self.resolve_lua_engine_for_environment(Some(environment_id))?
+                        }
                         None => engine.clone(),
                     };
                     let is_skill = target_engine
@@ -1864,4 +1950,18 @@ fn environment_record_file_name(environment_id: &str) -> String {
         })
         .collect();
     format!("{}-{:016x}.json", safe_name, hash)
+}
+
+/// English: Normalize one project-environment skills directory into a stable absolute path for persistence.
+/// 将项目环境 skills 目录规范化为稳定的绝对路径后再持久化。
+fn normalize_persisted_environment_skills_dir(skills_dir: &Path) -> Result<String, String> {
+    let absolute_path = if skills_dir.is_absolute() {
+        skills_dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("Failed to resolve current directory: {}", error))?
+            .join(skills_dir)
+    };
+    let normalized_path = fs::canonicalize(&absolute_path).unwrap_or(absolute_path);
+    Ok(normalized_path.display().to_string())
 }
