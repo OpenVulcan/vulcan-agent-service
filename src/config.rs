@@ -84,6 +84,14 @@ pub struct Config {
     /// 中文：依赖目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `dependencies`。
     /// English: Dependency directory name, fixed as a sibling of the skills root under the same parent. Defaults to `dependencies`.
     pub dependency_dir_name: Option<String>,
+
+    /// 中文：状态目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `state`。
+    /// English: State directory name, fixed as a sibling of the skills root under the same parent. Defaults to `state`.
+    pub state_dir_name: Option<String>,
+
+    /// 中文：数据库目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `databases`。
+    /// English: Database directory name, fixed as a sibling of the skills root under the same parent. Defaults to `databases`.
+    pub database_dir_name: Option<String>,
 }
 
 fn default_http_addr() -> Option<String> {

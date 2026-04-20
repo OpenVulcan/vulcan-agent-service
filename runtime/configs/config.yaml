@@ -45,6 +45,14 @@ grpc: "127.0.0.1:19202"
 # English: Dependency directory name. It is always created as a sibling of the skills root; only the directory name is configurable.
 # dependency_dir_name: "dependencies"
 
+# 中文：状态目录名称。它会被固定创建在 skills 根目录的同级目录下，位置不可变，仅名称可配。
+# English: State directory name. It is always created as a sibling of the skills root; only the directory name is configurable.
+# state_dir_name: "state"
+
+# 中文：数据库目录名称。它会被固定创建在 skills 根目录的同级目录下，位置不可变，仅名称可配。
+# English: Database directory name. It is always created as a sibling of the skills root; only the directory name is configurable.
+# database_dir_name: "databases"
+
 # ============================================================
 # Lua VM Pool
 # 中文：Lua 虚拟机池配置。用于并发复用 Lua 运行时，降低频繁建虚拟机的开销。

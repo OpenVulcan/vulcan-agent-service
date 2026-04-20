@@ -1,5 +1,4 @@
 name: vulcan-curl
-skill_id: vulcan-curl
 debug: true
 help:
   main:

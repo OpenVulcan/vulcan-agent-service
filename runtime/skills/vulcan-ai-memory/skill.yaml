@@ -1,5 +1,4 @@
 name: vulcan-ai-memory
-skill_id: vulcan-ai-memory
 debug: true
 lancedb:
   enable: true

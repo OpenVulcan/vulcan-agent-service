@@ -2,7 +2,7 @@
 
 这份目录是新的 LuaSkills Core 模板示例，用来演示迁移后的最小结构，而不是旧的 `skill.json + groups/prompts/templates/resources` 模型。
 
-`__demo` 目录不会被自动加载，不是因为宿主单独判断 `__` 前缀，而是因为 LuaSkills 现在要求目录名必须匹配 `^[a-z]([a-z0-9-]*[a-z0-9])?$`。复制它时，建议把目录改成你自己的合法 skill 名称，再同步修改 `skill.yaml` 中的 `name` 与 `skill_id`。
+`__demo` 目录不会被自动加载，不是因为宿主单独判断 `__` 前缀，而是因为 LuaSkills 现在要求目录名必须匹配 `^[a-z]([a-z0-9-]*[a-z0-9])?$`。复制它时，建议把目录改成你自己的合法 skill 名称，再同步修改 `skill.yaml` 中的 `name`。
 
 ## 当前模板对应的新结构
 
@@ -34,14 +34,13 @@
 
 ## `skill.yaml` 重点字段
 
-### `name` / `skill_id`
+### `name`
 
 - `name`
   - 当前 skill 的内部名称
 - `skill_id`
-  - canonical 命名空间
-
-模板里二者暂时保持一致，复制后也推荐这样做。
+  - 不再由 `skill.yaml` 声明
+  - 统一直接取 skill 目录名
 
 ### `entries`
 
@@ -137,7 +136,7 @@ return content, vulcan.runtime.overflow_type.page, "overflow_page.md"
 ## 推荐复制流程
 
 1. 复制 `__demo` 目录并改名
-2. 修改 `skill.yaml` 中的 `name`、`skill_id`、`entries`
+2. 修改 `skill.yaml` 中的 `name`、`entries`
 3. 替换 `runtime/` 目录中的 Lua 实现
 4. 调整 `help/` 与 `overflow_templates/`
 5. 删除不需要的示例资源文件

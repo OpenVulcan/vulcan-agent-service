@@ -1,5 +1,4 @@
 name: vulcan-runtime
-skill_id: vulcan-runtime
 debug: true
 help:
   main:

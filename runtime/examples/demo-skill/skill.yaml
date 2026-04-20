@@ -1,5 +1,4 @@
 name: __demo
-skill_id: __demo
 debug: true
 lancedb:
   enable: false

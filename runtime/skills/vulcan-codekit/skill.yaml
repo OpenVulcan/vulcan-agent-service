@@ -1,5 +1,4 @@
 name: vulcan-codekit
-skill_id: vulcan-codekit
 debug: true
 help:
   main:

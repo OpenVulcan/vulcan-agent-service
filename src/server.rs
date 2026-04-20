@@ -1359,9 +1359,20 @@ impl McpServer {
                 // Check if this is a Lua skill
                 if let Some(engine) = &self.lua_engine {
                     let environment_id = optional_string_argument(&args, "environment_id");
-                    let target_engine = self
-                        .resolve_lua_engine_for_environment(environment_id.as_deref())
-                        .unwrap_or_else(|| engine.clone());
+                    let target_engine = match environment_id.as_deref() {
+                        Some(environment_id) => self
+                            .resolve_lua_engine_for_environment(Some(environment_id))
+                            .ok_or_else(|| {
+                                (
+                                    -32602,
+                                    format!(
+                                        "Lua project environment '{}' is not initialized.",
+                                        environment_id
+                                    ),
+                                )
+                            })?,
+                        None => engine.clone(),
+                    };
                     let is_skill = target_engine
                         .read()
                         .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?

@@ -89,7 +89,18 @@ pub fn build_luaskills_engine_options(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "dependencies".to_string()),
-        lifecycle_dir_name: "__".to_string(),
+        state_dir_name: config
+            .state_dir_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "state".to_string()),
+        database_dir_name: config
+            .database_dir_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "databases".to_string()),
         protection: resolve_skill_protection_config(config),
         allow_network_download: true,
         github_base_url: std::env::var("VULCAN_GITHUB_BASE_URL")
@@ -144,8 +155,8 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<RuntimeSkillRoot>
     let mut synthesized_index = 1usize;
 
     let mut push_unique_root = |name: String, path: PathBuf| {
-        let normalized = format!("{}::{}", name, path.to_string_lossy());
-        if seen_roots.insert(normalized) {
+        let normalized_path = normalize_skill_root_key(&path);
+        if seen_roots.insert(normalized_path) {
             ordered_roots.push(RuntimeSkillRoot {
                 name,
                 skills_dir: path,
@@ -195,13 +206,29 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<RuntimeSkillRoot>
     }
 
     if let Some(runtime_root) = resolve_runtime_root_from_config(config) {
-        push_unique_root("ROOT".to_string(), runtime_root.join("skills"));
+        if config.skill_roots.is_none() {
+            push_unique_root("ROOT".to_string(), runtime_root.join("skills"));
+        }
     }
 
     ordered_roots
         .into_iter()
         .filter(|root| root.skills_dir.exists())
         .collect()
+}
+
+/// English: Normalize one skill-root path into a stable deduplication key.
+/// 将单个技能根路径归一化为稳定的去重键。
+fn normalize_skill_root_key(path: &std::path::Path) -> String {
+    let rendered = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        rendered.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        rendered
+    }
 }
 
 /// English: Resolve the host-provided protected skill policy from environment and built-in defaults.

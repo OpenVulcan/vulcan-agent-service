@@ -1,5 +1,4 @@
 name: vulcan-work-memory
-skill_id: vulcan-work-memory
 debug: true
 sqlite:
   enable: true
