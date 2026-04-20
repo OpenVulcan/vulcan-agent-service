@@ -5,6 +5,7 @@ use crate::runtime_logging::{error as log_error, info as log_info, warn as log_w
 use crate::temp_maintenance::ensure_runtime_temp_dir;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::collections::HashSet;
 use std::sync::Arc;
 use vulcan_luaskills::{
     LuaEngineOptions, LuaInvocationContext, LuaRuntimeHostOptions, LuaVmPoolConfig,
@@ -135,6 +136,49 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
     None
 }
 
+/// English: Resolve the ordered default skill roots from host configuration and runtime layout.
+/// 从宿主配置与运行时布局解析默认环境使用的有序技能根目录列表。
+pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<PathBuf> {
+    let mut ordered_roots = Vec::new();
+    let mut seen_roots = HashSet::new();
+
+    let mut push_unique_root = |path: PathBuf| {
+        let normalized = path.to_string_lossy().to_string();
+        if seen_roots.insert(normalized) {
+            ordered_roots.push(path);
+        }
+    };
+
+    if let Some(configured_roots) = &config.skill_roots {
+        for value in configured_roots {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            push_unique_root(PathBuf::from(trimmed));
+        }
+    } else if let Some(override_root) = config
+        .skills_override
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        push_unique_root(override_root);
+    } else if let Some(home) = home_dir() {
+        push_unique_root(home.join(".vulcan").join("vulcan-mcp").join("skills"));
+    }
+
+    if let Some(runtime_root) = resolve_runtime_root_from_config(config) {
+        push_unique_root(runtime_root.join("skills"));
+    }
+
+    ordered_roots
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect()
+}
+
 /// English: Resolve the host-provided protected skill policy from environment and built-in defaults.
 /// 从环境变量与内建默认值解析宿主提供的受保护技能策略。
 fn resolve_skill_protection_config(config: &Config) -> SkillProtectionConfig {
@@ -261,6 +305,24 @@ fn resolve_lua_packages_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
         return Some(runtime_path);
     }
     None
+}
+
+/// English: Resolve the current user's home directory when a default skill override root needs to be derived.
+/// 在需要推导默认技能覆盖根目录时解析当前用户主目录。
+fn home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("USERPROFILE")
+            .ok()
+            .map(std::path::PathBuf::from)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("HOME")
+            .ok()
+            .map(std::path::PathBuf::from)
+    }
 }
 
 /// English: Resolve one host-side dynamic-library path from the unified runtime root.

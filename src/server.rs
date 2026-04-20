@@ -35,8 +35,7 @@ pub struct McpServer {
     #[allow(dead_code)] // reserved for VMM forwarding mode
     vmm: Option<VmmClient>,
     lua_engine: Option<Arc<StdRwLock<LuaEngine>>>,
-    lua_skill_base_dir: Option<std::path::PathBuf>,
-    lua_skill_override_dir: Option<std::path::PathBuf>,
+    lua_skill_roots: Option<Vec<std::path::PathBuf>>,
 }
 
 struct ServerInner {
@@ -70,8 +69,7 @@ impl McpServer {
             inner: Arc::new(Mutex::new(inner)),
             vmm: None,
             lua_engine: None,
-            lua_skill_base_dir: None,
-            lua_skill_override_dir: None,
+            lua_skill_roots: None,
         };
         server.register_defaults();
         server
@@ -92,21 +90,19 @@ impl McpServer {
     pub fn with_lua_skills(
         mut self,
         config: &Config,
-        base_dir: &std::path::Path,
-        override_dir: Option<&std::path::Path>,
+        skill_roots: &[std::path::PathBuf],
         pool_config: LuaVmPoolConfig,
         cache_config: ToolCacheConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         install_luaskills_log_callback();
         let mut engine =
             LuaEngine::new(build_luaskills_engine_options(config, pool_config, cache_config)?)?;
-        engine.load_from_dirs(base_dir, override_dir)?;
+        engine.load_from_roots(skill_roots)?;
         let entries = engine.list_entries();
         eprintln!("[MCP] {} Lua skills loaded", entries.len());
         let engine = Arc::new(StdRwLock::new(engine));
         self.lua_engine = Some(engine.clone());
-        self.lua_skill_base_dir = Some(base_dir.to_path_buf());
-        self.lua_skill_override_dir = override_dir.map(|value| value.to_path_buf());
+        self.lua_skill_roots = Some(skill_roots.to_vec());
 
         let callback_inner = self.inner.clone();
         set_entry_registry_callback(Some(Arc::new(move |delta: &RuntimeEntryRegistryDelta| {
@@ -529,20 +525,19 @@ impl McpServer {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
-                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill base directory is not configured.".to_string())
+                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill roots are not configured.".to_string())
                 })?;
                 let skill_id = required_string_argument(&args, "skill")?;
                 let engine = engine.clone();
-                let base_dir = base_dir.clone();
-                let override_dir = self.lua_skill_override_dir.clone();
+                let skill_roots = skill_roots.clone();
                 let skill_id_for_call = skill_id.clone();
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
                         .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
                     engine
-                        .enable_skill(&base_dir, override_dir.as_deref(), &skill_id_for_call)
+                        .enable_skill(&skill_roots, &skill_id_for_call)
                         .map_err(|error| error.to_string())
                 })
                 .await
@@ -558,8 +553,8 @@ impl McpServer {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
-                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill base directory is not configured.".to_string())
+                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill roots are not configured.".to_string())
                 })?;
                 let skill_id = required_string_argument(&args, "skill")?;
                 let reason = args
@@ -568,17 +563,15 @@ impl McpServer {
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty());
                 let engine = engine.clone();
-                let base_dir = base_dir.clone();
-                let override_dir = self.lua_skill_override_dir.clone();
+                let skill_roots = skill_roots.clone();
                 let skill_id_for_call = skill_id.clone();
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
                         .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
                     engine
-                        .disable_skill(
-                            &base_dir,
-                            override_dir.as_deref(),
+                        .disable_skill_in_roots(
+                            &skill_roots,
                             &skill_id_for_call,
                             reason.as_deref(),
                         )
@@ -597,15 +590,14 @@ impl McpServer {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
-                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill base directory is not configured.".to_string())
+                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill roots are not configured.".to_string())
                 })?;
                 let skill_id = required_string_argument(&args, "skill")?;
                 let remove_sqlite = optional_bool_argument(&args, "remove_sqlite", false)?;
                 let remove_lancedb = optional_bool_argument(&args, "remove_lancedb", false)?;
                 let engine = engine.clone();
-                let base_dir = base_dir.clone();
-                let override_dir = self.lua_skill_override_dir.clone();
+                let skill_roots = skill_roots.clone();
                 let skill_id_for_call = skill_id.clone();
                 let uninstall_options = SkillUninstallOptions {
                     remove_sqlite,
@@ -617,8 +609,7 @@ impl McpServer {
                         .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
                     engine
                         .uninstall_skill(
-                            &base_dir,
-                            override_dir.as_deref(),
+                            &skill_roots,
                             &skill_id_for_call,
                             &uninstall_options,
                         )
@@ -644,18 +635,17 @@ impl McpServer {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
-                let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill base directory is not configured.".to_string())
+                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill roots are not configured.".to_string())
                 })?;
                 let engine = engine.clone();
-                let base_dir = base_dir.clone();
-                let override_dir = self.lua_skill_override_dir.clone();
+                let skill_roots = skill_roots.clone();
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
                         .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
                     engine
-                        .reload_from_dirs(&base_dir, override_dir.as_deref())
+                        .reload_from_roots(&skill_roots)
                         .map_err(|error| error.to_string())
                 })
                 .await

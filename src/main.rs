@@ -29,6 +29,7 @@ use luaskills_host::{
     build_luaskills_cache_config, build_luaskills_engine_options,
     build_runtime_invocation_context, client_budget_snapshot_for_render,
     install_luaskills_log_callback, resolve_runtime_root_from_config,
+    resolve_skill_roots_from_config,
 };
 use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
@@ -294,12 +295,11 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
     }
 
     // Load Lua skills from system directory, with optional user override
-    let skill_dirs = find_skill_dirs(&cfg);
-    if let Some((base_dir, override_dir)) = skill_dirs {
+    let skill_roots = find_skill_roots(&cfg);
+    if !skill_roots.is_empty() {
         server = server.with_lua_skills(
             cfg,
-            &base_dir,
-            override_dir.as_deref(),
+            &skill_roots,
             LuaVmPoolConfig {
                 min_size: cfg.lua_vm_pool_min_size.unwrap_or(1),
                 max_size: cfg.lua_vm_pool_max_size.unwrap_or(4),
@@ -397,8 +397,10 @@ fn run_call_tool_mode(
 fn build_single_vm_lua_engine_for_local_mode(
     config: &Config,
 ) -> Result<LuaEngine, Box<dyn std::error::Error>> {
-    let (base_dir, override_dir) =
-        find_skill_dirs(config).ok_or("Lua skill directory not found for local debug mode")?;
+    let skill_roots = find_skill_roots(config);
+    if skill_roots.is_empty() {
+        return Err("Lua skill directory not found for local debug mode".into());
+    }
 
     let mut engine = LuaEngine::new(build_luaskills_engine_options(
         config,
@@ -409,7 +411,7 @@ fn build_single_vm_lua_engine_for_local_mode(
         },
         build_luaskills_cache_config(None, None, None),
     )?)?;
-    engine.load_from_dirs(&base_dir, override_dir.as_deref())?;
+    engine.load_from_roots(&skill_roots)?;
     Ok(engine)
 }
 
@@ -432,28 +434,10 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// Find Lua skill base and override directories from the unified runtime root.
-/// 从统一运行根中解析 Lua skill 基目录与覆盖目录，并在存在时返回它们。
-fn find_skill_dirs(cfg: &config::Config) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
-    let runtime_root = resolve_runtime_root_from_config(cfg)?;
-    let base_dir = runtime_root.join("skills");
-
-    if !base_dir.exists() {
-        return None;
-    }
-
-    // Override directory: from config or default ~/.vulcan/vulcan-mcp/skills/
-    let override_dir = cfg.skills_override.clone().or_else(|| {
-        let home = home_dir()?;
-        Some(home.join(".vulcan/vulcan-mcp/skills").to_string_lossy().to_string())
-    });
-
-    let override_path = override_dir.and_then(|p| {
-        let path = std::path::PathBuf::from(p);
-        if path.exists() { Some(path) } else { None }
-    });
-
-    Some((base_dir, override_path))
+/// English: Find the ordered skill-root chain for the default runtime environment.
+/// 查找默认运行环境使用的有序技能根目录覆盖链。
+fn find_skill_roots(cfg: &config::Config) -> Vec<std::path::PathBuf> {
+    resolve_skill_roots_from_config(cfg)
 }
 
 /// 中文：为 `--call-tools` 构造尽量贴近真实 MCP 请求的模拟上下文。
@@ -508,16 +492,4 @@ fn add_libs_to_path(config: &Config) {
     unsafe {
         std::env::set_var("PATH", new_path);
     }
-}
-
-#[cfg(target_os = "windows")]
-fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var("USERPROFILE")
-        .ok()
-        .map(std::path::PathBuf::from)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var("HOME").ok().map(std::path::PathBuf::from)
 }

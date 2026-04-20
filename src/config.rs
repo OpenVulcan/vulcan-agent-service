@@ -28,6 +28,10 @@ pub struct Config {
     #[serde(alias = "lua_skills_override")]
     pub skills_override: Option<String>,
 
+    /// English: Ordered skill roots from highest priority to lowest priority for the default runtime environment.
+    /// 默认运行环境使用的有序技能根目录列表，按从高优先级到低优先级排列。
+    pub skill_roots: Option<Vec<String>>,
+
     /// English: Optional runtime root directory that owns configs, skills, dependencies, databases, temp, libs, and lua_packages.
     /// 宿主完整运行根目录，可统一承载 configs、skills、dependencies、databases、temp、libs 与 lua_packages。
     pub runtime_root: Option<String>,
