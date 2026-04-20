@@ -13,31 +13,31 @@ use crate::pb_vmm::{
     vmm_service_client::VmmServiceClient,
 };
 
-/// 中文：跨 VMM gRPC 接口复用的 scratchpad 键值项结构。
-/// English: Shared scratchpad key/value item used by the VMM gRPC wrapper.
+/// Shared scratchpad key/value item used by the VMM gRPC wrapper.
+/// 跨 VMM gRPC 接口复用的 scratchpad 键值项结构。
 #[derive(Clone, Debug)]
 pub struct ScratchpadItem {
-    /// 中文：Scratchpad 条目的键名。
-    /// English: Key of the scratchpad entry.
+    /// Key of the scratchpad entry.
+    /// Scratchpad 条目的键名。
     pub key: String,
-    /// 中文：Scratchpad 条目的文本值。
-    /// English: Text value of the scratchpad entry.
+    /// Text value of the scratchpad entry.
+    /// Scratchpad 条目的文本值。
     pub value: String,
 }
 
-/// 中文：VulcanMemoryMesh gRPC 客户端包装器，负责串行化底层 tonic 客户端访问。
-/// English: VulcanMemoryMesh gRPC client wrapper that serializes access to the underlying tonic client.
+/// VulcanMemoryMesh gRPC client wrapper that serializes access to the underlying tonic client.
+/// VulcanMemoryMesh gRPC 客户端包装器，负责串行化底层 tonic 客户端访问。
 #[derive(Clone)]
 pub struct VmmClient {
     client: Arc<Mutex<VmmServiceClient<Channel>>>,
-    /// 中文：当前 VMM 服务端点，仅用于日志与诊断展示。
-    /// English: Current VMM service endpoint, used for logging and diagnostics only.
+    /// Current VMM service endpoint, used for logging and diagnostics only.
+    /// 当前 VMM 服务端点，仅用于日志与诊断展示。
     pub endpoint: String,
 }
 
 impl VmmClient {
-    /// 中文：连接指定的 VMM gRPC 服务端点。
-    /// English: Connect to the specified VMM gRPC service endpoint.
+    /// Connect to the specified VMM gRPC service endpoint.
+    /// 连接指定的 VMM gRPC 服务端点。
     pub async fn connect(endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = VmmServiceClient::connect(endpoint.to_string()).await?;
         Ok(Self {
@@ -46,21 +46,18 @@ impl VmmClient {
         })
     }
 
-    /// 中文：执行 VMM 健康检查并返回简要状态字符串。
-    /// English: Execute the VMM health check and return a brief status string.
+    /// Execute the VMM health check and return a brief status string.
+    /// 执行 VMM 健康检查并返回简要状态字符串。
     pub async fn healthz(&self) -> Result<String, String> {
         let req = tonic::Request::new(());
         let mut client = self.client.lock().await;
         let resp = client.healthz(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "status={}, trace_id={}",
-            inner.status, inner.trace_id
-        ))
+        Ok(format!("status={}, trace_id={}", inner.status, inner.trace_id))
     }
 
-    /// 中文：列出 VMM 中已登记的项目路径。
-    /// English: List project paths registered in VMM.
+    /// List project paths registered in VMM.
+    /// 列出 VMM 中已登记的项目路径。
     pub async fn list_projects(&self) -> Result<String, String> {
         let req = tonic::Request::new(());
         let mut client = self.client.lock().await;
@@ -71,15 +68,11 @@ impl VmmClient {
             .iter()
             .map(|p| p.display_path.clone())
             .collect();
-        Ok(format!(
-            "projects={}, trace_id={}",
-            projects.join(", "),
-            inner.trace_id
-        ))
+        Ok(format!("projects={}, trace_id={}", projects.join(", "), inner.trace_id))
     }
 
-    /// 中文：解析项目引用并返回项目信息摘要。
-    /// English: Resolve a project reference and return a summarized project description.
+    /// Resolve a project reference and return a summarized project description.
+    /// 解析项目引用并返回项目信息摘要。
     pub async fn resolve_project(&self, project_ref: &str) -> Result<String, String> {
         let req = tonic::Request::new(ResolveProjectRequest {
             project_ref: project_ref.to_string(),
@@ -95,14 +88,11 @@ impl VmmClient {
             .as_ref()
             .map(|p| p.display_path.clone())
             .unwrap_or_default();
-        Ok(format!(
-            "message={}, project={}, trace_id={}",
-            inner.message, path, inner.trace_id
-        ))
+        Ok(format!("message={}, project={}, trace_id={}", inner.message, path, inner.trace_id))
     }
 
-    /// 中文：确保项目存在，必要时按确认参数创建项目。
-    /// English: Ensure a project exists and create it if confirmation is granted.
+    /// Ensure a project exists and create it if confirmation is granted.
+    /// 确保项目存在，必要时按确认参数创建项目。
     pub async fn ensure_project(
         &self,
         project_path: &str,
@@ -123,14 +113,11 @@ impl VmmClient {
             .as_ref()
             .map(|p| p.display_path.clone())
             .unwrap_or_default();
-        Ok(format!(
-            "message={}, exists={}, project={}, trace_id={}",
-            inner.message, inner.exists, path, inner.trace_id
-        ))
+        Ok(format!("message={}, exists={}, project={}, trace_id={}", inner.message, inner.exists, path, inner.trace_id))
     }
 
-    /// 中文：删除指定项目及其派生数据。
-    /// English: Delete the specified project and its derived data.
+    /// Delete the specified project and its derived data.
+    /// 删除指定项目及其派生数据。
     pub async fn delete_project(
         &self,
         project_path: &str,
@@ -146,20 +133,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "message={}, needs_confirm={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
-            inner.message,
-            inner.needs_confirm,
-            inner.deleted_sessions,
-            inner.deleted_messages,
-            inner.deleted_memories,
-            inner.deleted_vector_rows,
-            inner.trace_id
-        ))
+        Ok(format!("message={}, needs_confirm={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}", inner.message, inner.needs_confirm, inner.deleted_sessions, inner.deleted_messages, inner.deleted_memories, inner.deleted_vector_rows, inner.trace_id))
     }
 
-    /// 中文：迁移项目数据到新路径。
-    /// English: Migrate project data to a new path.
+    /// Migrate project data to a new path.
+    /// 迁移项目数据到新路径。
     pub async fn migrate_project(
         &self,
         source: &str,
@@ -177,20 +155,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "message={}, needs_confirm={}, migrated_sessions={}, migrated_messages={}, migrated_memories={}, rebuilt_vector={}, trace_id={}",
-            inner.message,
-            inner.needs_confirm,
-            inner.migrated_sessions,
-            inner.migrated_messages,
-            inner.migrated_memories,
-            inner.rebuilt_vector_rows,
-            inner.trace_id
-        ))
+        Ok(format!("message={}, needs_confirm={}, migrated_sessions={}, migrated_messages={}, migrated_memories={}, rebuilt_vector={}, trace_id={}", inner.message, inner.needs_confirm, inner.migrated_sessions, inner.migrated_messages, inner.migrated_memories, inner.rebuilt_vector_rows, inner.trace_id))
     }
 
-    /// 中文：解析用户引用并可选创建用户。
-    /// English: Resolve a user reference and optionally create the user.
+    /// Resolve a user reference and optionally create the user.
+    /// 解析用户引用并可选创建用户。
     pub async fn resolve_user(
         &self,
         user_ref: &str,
@@ -208,14 +177,11 @@ impl VmmClient {
             .as_ref()
             .map(|u| format!("{}({})", u.user_name, u.user_id))
             .unwrap_or_default();
-        Ok(format!(
-            "message={}, user={}, created={}, exists={}, trace_id={}",
-            inner.message, user_info, inner.created, inner.exists, inner.trace_id
-        ))
+        Ok(format!("message={}, user={}, created={}, exists={}, trace_id={}", inner.message, user_info, inner.created, inner.exists, inner.trace_id))
     }
 
-    /// 中文：列出所有用户摘要。
-    /// English: List all user summaries.
+    /// List all user summaries.
+    /// 列出所有用户摘要。
     pub async fn list_users(&self) -> Result<String, String> {
         let req = tonic::Request::new(());
         let mut client = self.client.lock().await;
@@ -226,15 +192,11 @@ impl VmmClient {
             .iter()
             .map(|u| format!("{}({})", u.user_name, u.user_id))
             .collect();
-        Ok(format!(
-            "users={}, trace_id={}",
-            users.join(", "),
-            inner.trace_id
-        ))
+        Ok(format!("users={}, trace_id={}", users.join(", "), inner.trace_id))
     }
 
-    /// 中文：删除用户及其相关数据。
-    /// English: Delete a user and its related data.
+    /// Delete a user and its related data.
+    /// 删除用户及其相关数据。
     pub async fn delete_user(
         &self,
         user_ref: &str,
@@ -252,21 +214,11 @@ impl VmmClient {
             .as_ref()
             .map(|u| format!("{}({})", u.user_name, u.user_id))
             .unwrap_or_default();
-        Ok(format!(
-            "message={}, requires_confirmation={}, user={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
-            inner.message,
-            inner.requires_confirmation,
-            user_info,
-            inner.deleted_sessions,
-            inner.deleted_messages,
-            inner.deleted_memories,
-            inner.deleted_vector_rows,
-            inner.trace_id
-        ))
+        Ok(format!("message={}, requires_confirmation={}, user={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}", inner.message, inner.requires_confirmation, user_info, inner.deleted_sessions, inner.deleted_messages, inner.deleted_memories, inner.deleted_vector_rows, inner.trace_id))
     }
 
-    /// 中文：读取画像节点。
-    /// English: Fetch profile nodes.
+    /// Fetch profile nodes.
+    /// 读取画像节点。
     pub async fn get_profile_nodes(
         &self,
         target: i32,
@@ -286,15 +238,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "node_count={}, trace_id={}",
-            inner.nodes.len(),
-            inner.trace_id
-        ))
+        Ok(format!("node_count={}, trace_id={}", inner.nodes.len(), inner.trace_id))
     }
 
-    /// 中文：读取画像聚合文本。
-    /// English: Fetch the aggregated profile bundle text.
+    /// Fetch the aggregated profile bundle text.
+    /// 读取画像聚合文本。
     pub async fn get_profile_bundle(
         &self,
         user_id: u64,
@@ -314,15 +262,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "combined_text_len={}, trace_id={}",
-            inner.combined_text.len(),
-            inner.trace_id
-        ))
+        Ok(format!("combined_text_len={}, trace_id={}", inner.combined_text.len(), inner.trace_id))
     }
 
-    /// 中文：写入画像指令。
-    /// English: Apply a profile instruction.
+    /// Apply a profile instruction.
+    /// 写入画像指令。
     pub async fn apply_profile_instruction(
         &self,
         target: i32,
@@ -342,17 +286,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "instruction_id={}, accepted_nodes={}, retired_nodes={}, trace_id={}",
-            inner.instruction_id,
-            inner.accepted_nodes.len(),
-            inner.retired_nodes.len(),
-            inner.trace_id
-        ))
+        Ok(format!("instruction_id={}, accepted_nodes={}, retired_nodes={}, trace_id={}", inner.instruction_id, inner.accepted_nodes.len(), inner.retired_nodes.len(), inner.trace_id))
     }
 
-    /// 中文：执行记忆事件检索。
-    /// English: Execute memory-event search.
+    /// Execute memory-event search.
+    /// 执行记忆事件检索。
     pub async fn search_memory_events(
         &self,
         user_id: u64,
@@ -373,16 +311,11 @@ impl VmmClient {
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         let total: usize = inner.results.iter().map(|r| r.hits.len()).sum();
-        Ok(format!(
-            "total_hits={}, query_groups={}, trace_id={}",
-            total,
-            inner.results.len(),
-            inner.trace_id
-        ))
+        Ok(format!("total_hits={}, query_groups={}, trace_id={}", total, inner.results.len(), inner.trace_id))
     }
 
-    /// 中文：按 turn_id 批量读取对话详情。
-    /// English: Load conversation details by turn ids.
+    /// Load conversation details by turn ids.
+    /// 按 turn_id 批量读取对话详情。
     pub async fn get_turn_details(&self, turn_ids: Vec<u64>) -> Result<String, String> {
         let req = tonic::Request::new(GetTurnDetailsRequest { turn_ids });
         let mut client = self.client.lock().await;
@@ -391,15 +324,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "turns_loaded={}, trace_id={}",
-            inner.turns.len(),
-            inner.trace_id
-        ))
+        Ok(format!("turns_loaded={}, trace_id={}", inner.turns.len(), inner.trace_id))
     }
 
-    /// 中文：写入结构化记忆。
-    /// English: Write structured memories.
+    /// Write structured memories.
+    /// 写入结构化记忆。
     pub async fn write_memories(
         &self,
         session_id: &str,
@@ -420,16 +349,11 @@ impl VmmClient {
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         let deduped: usize = inner.items.iter().filter(|i| i.deduped).count();
-        Ok(format!(
-            "written={}, deduped={}, trace_id={}",
-            inner.items.len(),
-            deduped,
-            inner.trace_id
-        ))
+        Ok(format!("written={}, deduped={}, trace_id={}", inner.items.len(), deduped, inner.trace_id))
     }
 
-    /// 中文：向 VMM scratchpad 写入键值项。
-    /// English: Upsert scratchpad key/value items into VMM.
+    /// Upsert scratchpad key/value items into VMM.
+    /// 向 VMM scratchpad 写入键值项。
     pub async fn scratchpad_upsert(
         &self,
         session_id: &str,
@@ -461,18 +385,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "status={:?}, msg={}, affected={}, inserted={}, updated={}",
-            inner.status,
-            inner.msg,
-            inner.affected_count,
-            inner.inserted_count,
-            inner.updated_count
-        ))
+        Ok(format!("status={:?}, msg={}, affected={}, inserted={}, updated={}", inner.status, inner.msg, inner.affected_count, inner.inserted_count, inner.updated_count))
     }
 
-    /// 中文：删除 VMM scratchpad 中的键。
-    /// English: Delete keys from the VMM scratchpad.
+    /// Delete keys from the VMM scratchpad.
+    /// 删除 VMM scratchpad 中的键。
     pub async fn scratchpad_delete(
         &self,
         session_id: &str,
@@ -496,14 +413,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "status={:?}, msg={}, affected={}",
-            inner.status, inner.msg, inner.affected_count
-        ))
+        Ok(format!("status={:?}, msg={}, affected={}", inner.status, inner.msg, inner.affected_count))
     }
 
-    /// 中文：读取 VMM scratchpad 中的记录。
-    /// English: Read records from the VMM scratchpad.
+    /// Read records from the VMM scratchpad.
+    /// 读取 VMM scratchpad 中的记录。
     pub async fn scratchpad_get(
         &self,
         session_id: &str,
@@ -523,14 +437,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "status={:?}, msg={}, plan_name={}, item_count={}",
-            inner.status, inner.msg, inner.plan_name, inner.item_count
-        ))
+        Ok(format!("status={:?}, msg={}, plan_name={}, item_count={}", inner.status, inner.msg, inner.plan_name, inner.item_count))
     }
 
-    /// 中文：列出 VMM scratchpad 中的全部键。
-    /// English: List all keys stored in the VMM scratchpad.
+    /// List all keys stored in the VMM scratchpad.
+    /// 列出 VMM scratchpad 中的全部键。
     pub async fn scratchpad_list_keys(
         &self,
         session_id: &str,
@@ -548,14 +459,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "status={:?}, msg={}, plan_name={}, key_count={}",
-            inner.status, inner.msg, inner.plan_name, inner.key_count
-        ))
+        Ok(format!("status={:?}, msg={}, plan_name={}, key_count={}", inner.status, inner.msg, inner.plan_name, inner.key_count))
     }
 
-    /// 中文：清空 VMM scratchpad。
-    /// English: Clean the VMM scratchpad scope.
+    /// Clean the VMM scratchpad scope.
+    /// 清空 VMM scratchpad。
     pub async fn scratchpad_clean(
         &self,
         session_id: &str,
@@ -576,8 +484,8 @@ impl VmmClient {
         Ok(format!("status={:?}, msg={}", inner.status, inner.msg))
     }
 
-    /// 中文：触发对话压缩。
-    /// English: Trigger conversation compaction.
+    /// Trigger conversation compaction.
+    /// 触发对话压缩。
     pub async fn chat_compact(
         &self,
         session_id: &str,
@@ -592,14 +500,11 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.chat_compact(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "accepted={}, updated={}, compacted_turn_id={}, trace_id={}",
-            inner.accepted, inner.updated, inner.compacted_turn_id, inner.trace_id
-        ))
+        Ok(format!("accepted={}, updated={}, compacted_turn_id={}, trace_id={}", inner.accepted, inner.updated, inner.compacted_turn_id, inner.trace_id))
     }
 
-    /// 中文：执行 PreCheck。
-    /// English: Execute the PreCheck flow.
+    /// Execute the PreCheck flow.
+    /// 执行 PreCheck。
     pub async fn pre_check(
         &self,
         session_id: &str,
@@ -618,17 +523,11 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.pre_check(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "should_inject={}, context_items={}, degraded={}, trace_id={}",
-            inner.should_inject,
-            inner.context_items.len(),
-            inner.degraded,
-            inner.trace_id
-        ))
+        Ok(format!("should_inject={}, context_items={}, degraded={}, trace_id={}", inner.should_inject, inner.context_items.len(), inner.degraded, inner.trace_id))
     }
 
-    /// 中文：执行 PostAction。
-    /// English: Execute the PostAction flow.
+    /// Execute the PostAction flow.
+    /// 执行 PostAction。
     pub async fn post_action(
         &self,
         session_id: &str,
@@ -649,9 +548,6 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.post_action(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!(
-            "accepted={}, trace_id={}",
-            inner.accepted, inner.trace_id
-        ))
+        Ok(format!("accepted={}, trace_id={}", inner.accepted, inner.trace_id))
     }
 }

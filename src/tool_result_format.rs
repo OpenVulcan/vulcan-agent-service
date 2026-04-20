@@ -6,27 +6,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use vulcan_luaskills::RuntimeInvocationResult;
 use vulcan_luaskills::ToolOverflowMode;
 
-/// 中文：当工具结果单行就超出当前客户端预算时，统一返回的英文错误提示。
-/// English: Unified English error message returned when even a single line exceeds the current client budget.
+/// Unified English error message returned when even a single line exceeds the current client budget.
+/// 当工具结果单行就超出当前客户端预算时，统一返回的英文错误提示。
 const TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR: &str = "Tool output exceeds the current MCP client limit.";
 
-/// 中文：`truncate` 默认提示文本；会在模板中作为尾部说明输出。
-/// English: Default notice text for `truncate`, rendered as the trailing explanation inside the template.
+/// Default notice text for `truncate`, rendered as the trailing explanation inside the template.
+/// `truncate` 默认提示文本；会在模板中作为尾部说明输出。
 const DEFAULT_TRUNCATE_NOTICE: &str =
     "Content has been truncated because it exceeds the current MCP client limit.";
 
 
-/// 中文：宿主渲染选项，明确哪些最终处理决定属于宿主层。
-/// English: Host render options that make the final rendering decisions explicit at the host layer.
+/// Host render options that make the final rendering decisions explicit at the host layer.
+/// 宿主渲染选项，明确哪些最终处理决定属于宿主层。
 #[derive(Debug, Clone, Default)]
 pub struct HostRenderOptions {
-    /// 中文：宿主管理的超限文件输出目录；仅在分页模式真正落盘时使用。
-    /// English: Host-managed spill directory used only when page mode needs to persist oversized output.
+    /// Host-managed spill directory used only when page mode needs to persist oversized output.
+    /// 宿主管理的超限文件输出目录；仅在分页模式真正落盘时使用。
     pub spill_root: Option<PathBuf>,
 }
 
-/// 中文：工具结果统一渲染入口；只接受 runtime 中间结果，再由宿主按统一策略决定是原文、截断还是分页。
-/// English: Unified host-side renderer that accepts the runtime intermediate result and decides between inline, truncate, or page under the host policy.
+/// Unified host-side renderer that accepts the runtime intermediate result and decides between inline, truncate, or page under the host policy.
+/// 工具结果统一渲染入口；只接受 runtime 中间结果，再由宿主按统一策略决定是原文、截断还是分页。
 pub fn render_tool_result_text(
     output: &RuntimeInvocationResult,
     skill_name: Option<&str>,
@@ -46,24 +46,24 @@ pub fn render_tool_result_text(
     }
 }
 
-/// 中文：宿主统一的超限模式。
-/// English: Host-side unified overflow modes.
+/// Host-side unified overflow modes.
+/// 宿主统一的超限模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverflowMode {
     Truncate,
     Page,
 }
 
-/// 中文：工具最终渲染策略，包含模式与模板名。
-/// English: Final rendering policy for one tool, including its mode and template name.
+/// Final rendering policy for one tool, including its mode and template name.
+/// 工具最终渲染策略，包含模式与模板名。
 #[derive(Debug, Clone)]
 struct OverflowPolicy {
     mode: OverflowMode,
     template_name: String,
 }
 
-/// 中文：分页模式下的安全分块计划，供模板渲染读取目录时使用。
-/// English: Safe chunk plan used by page-mode templates to render the read directory.
+/// Safe chunk plan used by page-mode templates to render the read directory.
+/// 分页模式下的安全分块计划，供模板渲染读取目录时使用。
 #[derive(Debug, Clone)]
 struct OverflowChunkPlan {
     chunks: Vec<OverflowChunk>,
@@ -74,8 +74,8 @@ struct OverflowChunkPlan {
     safe_limit_lines: i64,
 }
 
-/// 中文：单个分页块的偏移与行号范围。
-/// English: Offset and line-span information for a single paging chunk.
+/// Offset and line-span information for a single paging chunk.
+/// 单个分页块的偏移与行号范围。
 #[derive(Debug, Clone)]
 struct OverflowChunk {
     offset: usize,
@@ -85,8 +85,8 @@ struct OverflowChunk {
     byte_count: usize,
 }
 
-/// 中文：根据 Lua 返回的模式与模板名解析统一超限策略。
-/// English: Resolve the unified overflow policy from the mode and template name returned by Lua.
+/// Resolve the unified overflow policy from the mode and template name returned by Lua.
+/// 根据 Lua 返回的模式与模板名解析统一超限策略。
 fn resolve_overflow_policy(
     skill_name: Option<&str>,
     output: &RuntimeInvocationResult,
@@ -102,8 +102,8 @@ fn resolve_overflow_policy(
     }
 }
 
-/// 中文：获取模板名称，优先使用 Lua 显式返回的模板名，否则回退到当前模式的固定公共模板名。
-/// English: Resolve the template name, preferring the explicit template returned from Lua and otherwise falling back to the fixed shared template for the current mode.
+/// Resolve the template name, preferring the explicit template returned from Lua and otherwise falling back to the fixed shared template for the current mode.
+/// 获取模板名称，优先使用 Lua 显式返回的模板名，否则回退到当前模式的固定公共模板名。
 fn resolve_template_name(
     _skill_name: Option<&str>,
     explicit_template_name: Option<&str>,
@@ -119,8 +119,8 @@ fn resolve_template_name(
         .to_string()
 }
 
-/// 中文：渲染 `truncate` 模式；若未超限则直接返回原文，若单行都无法容纳则返回统一错误提示。
-/// English: Render `truncate`; return the original text when it fits, or the unified error message when even one line cannot fit.
+/// Render `truncate`; return the original text when it fits, or the unified error message when even one line cannot fit.
+/// 渲染 `truncate` 模式；若未超限则直接返回原文，若单行都无法容纳则返回统一错误提示。
 fn render_truncate_text(
     output: &RuntimeInvocationResult,
     skill_name: Option<&str>,
@@ -152,8 +152,8 @@ fn render_truncate_text(
     )
 }
 
-/// 中文：渲染 `page` 模式；未超限时直接返回原文，超限后由宿主统一生成 spill 文件和读取目录。
-/// English: Render `page`; return the original text when it fits, otherwise let the host generate the spill file and read directory.
+/// Render `page`; return the original text when it fits, otherwise let the host generate the spill file and read directory.
+/// 渲染 `page` 模式；未超限时直接返回原文，超限后由宿主统一生成 spill 文件和读取目录。
 fn render_page_text(
     output: &RuntimeInvocationResult,
     skill_name: Option<&str>,
@@ -221,16 +221,16 @@ fn render_page_text(
     render_page_default(&context)
 }
 
-/// 中文：预算场景类型，用于区分“工具结果返回预算”和“客户端文件读取预算”。
-/// English: Budget scope kind used to distinguish between tool-result budgets and client file-read budgets.
+/// Budget scope kind used to distinguish between tool-result budgets and client file-read budgets.
+/// 预算场景类型，用于区分“工具结果返回预算”和“客户端文件读取预算”。
 #[derive(Debug, Clone, Copy)]
 enum BudgetScopeKind {
     ToolResult,
     FileRead,
 }
 
-/// 中文：从预算快照中选择目标场景，缺失时回退到稳定默认值。
-/// English: Pick the target scope from the budget snapshot and fall back to stable defaults when missing.
+/// Pick the target scope from the budget snapshot and fall back to stable defaults when missing.
+/// 从预算快照中选择目标场景，缺失时回退到稳定默认值。
 fn resolve_budget_scope(
     client_budget: Option<&ClientBudgetSnapshot>,
     scope_kind: BudgetScopeKind,
@@ -245,8 +245,8 @@ fn resolve_budget_scope(
     }
 }
 
-/// 中文：判断正文是否已在目标预算内，无需再进入宿主超限处理。
-/// English: Decide whether the content already fits within the target budget and can bypass host overflow handling.
+/// Decide whether the content already fits within the target budget and can bypass host overflow handling.
+/// 判断正文是否已在目标预算内，无需再进入宿主超限处理。
 fn content_fits_budget(
     output: &RuntimeInvocationResult,
     budget: &EffectiveBudgetScope,
@@ -256,8 +256,8 @@ fn content_fits_budget(
     within_bytes && within_lines
 }
 
-/// 中文：按真实行边界截断正文；若连第一行都无法纳入预算，则返回 `None`。
-/// English: Truncate content on real line boundaries; return `None` when even the first line cannot fit into the budget.
+/// Truncate content on real line boundaries; return `None` when even the first line cannot fit into the budget.
+/// 按真实行边界截断正文；若连第一行都无法纳入预算，则返回 `None`。
 fn truncate_content_at_line_boundary(
     content: &str,
     budget: &EffectiveBudgetScope,
@@ -297,8 +297,8 @@ fn truncate_content_at_line_boundary(
     }
 }
 
-/// 中文：构建分页模式的安全 chunk 计划；若任一原始行都超出文件读取预算，则直接报错。
-/// English: Build the safe chunk plan for page mode; error out immediately when any raw line exceeds the file-read budget.
+/// Build the safe chunk plan for page mode; error out immediately when any raw line exceeds the file-read budget.
+/// 构建分页模式的安全 chunk 计划；若任一原始行都超出文件读取预算，则直接报错。
 fn build_chunk_plan(
     content: &str,
     file_read_budget: &EffectiveBudgetScope,
@@ -384,8 +384,8 @@ fn build_chunk_plan(
     })
 }
 
-/// 中文：把 chunk 计划渲染成模板可直接替换的列表文本。
-/// English: Render the chunk plan into a list block that can be directly inserted into a template.
+/// Render the chunk plan into a list block that can be directly inserted into a template.
+/// 把 chunk 计划渲染成模板可直接替换的列表文本。
 fn render_chunk_lines(chunk_plan: &OverflowChunkPlan) -> String {
     if chunk_plan.chunks.is_empty() {
         return "- read_01: unavailable".to_string();
@@ -396,22 +396,14 @@ fn render_chunk_lines(chunk_plan: &OverflowChunkPlan) -> String {
         .iter()
         .enumerate()
         .map(|(index, chunk)| {
-            format!(
-                "- read_{:02}: offset={}, limit={}, start_line={}, end_line={}, bytes={}",
-                index + 1,
-                chunk.offset,
-                chunk.limit,
-                chunk.start_line,
-                chunk.end_line,
-                chunk.byte_count
-            )
+            format!("- read_{:02}: offset={}, limit={}, start_line={}, end_line={}, bytes={}", index + 1, chunk.offset, chunk.limit, chunk.start_line, chunk.end_line, chunk.byte_count)
         })
         .collect::<Vec<String>>()
         .join("\n")
 }
 
-/// 中文：把超长正文写入宿主指定的 spill 目录，供分页模式后续读取。
-/// English: Write oversized content into the host-provided spill directory for later page-mode reads.
+/// Write oversized content into the host-provided spill directory for later page-mode reads.
+/// 把超长正文写入宿主指定的 spill 目录，供分页模式后续读取。
 fn write_overflow_text_file(
     content: &str,
     policy: &OverflowPolicy,
@@ -423,19 +415,15 @@ fn write_overflow_text_file(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("failed to read system time: {}", error))?;
-    let file_name = format!(
-        "tool_output_{}_{}.md",
-        policy.template_name.replace('.', "_"),
-        now.as_millis()
-    );
+    let file_name = format!("tool_output_{}_{}.md", policy.template_name.replace('.', "_"), now.as_millis());
     let file_path = spill_root.join(file_name);
     fs::write(&file_path, content)
         .map_err(|error| format!("failed to write overflow file: {}", error))?;
     Ok(file_path)
 }
 
-/// 中文：根据当前运行形态定位技能根目录；优先使用宿主运行目录，其次回退到仓库目录。
-/// English: Locate the skill root according to the current runtime layout, preferring the hosted runtime directory and then the repository layout.
+/// Locate the skill root according to the current runtime layout, preferring the hosted runtime directory and then the repository layout.
+/// 根据当前运行形态定位技能根目录；优先使用宿主运行目录，其次回退到仓库目录。
 fn resolve_runtime_skills_root() -> Option<PathBuf> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
@@ -453,8 +441,8 @@ fn resolve_runtime_skills_root() -> Option<PathBuf> {
     None
 }
 
-/// 中文：根据当前运行形态定位共享资源根目录；优先使用宿主运行目录，其次回退到仓库目录。
-/// English: Locate the shared resources root according to the current runtime layout, preferring the hosted runtime directory and then the repository layout.
+/// Locate the shared resources root according to the current runtime layout, preferring the hosted runtime directory and then the repository layout.
+/// 根据当前运行形态定位共享资源根目录；优先使用宿主运行目录，其次回退到仓库目录。
 fn resolve_runtime_resources_root() -> Option<PathBuf> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
@@ -472,8 +460,8 @@ fn resolve_runtime_resources_root() -> Option<PathBuf> {
     None
 }
 
-/// 中文：按“skill 本地模板优先，公共模板兜底”的顺序查找模板文本。
-/// English: Load template text with skill-local templates taking priority over shared fallback templates.
+/// Load template text with skill-local templates taking priority over shared fallback templates.
+/// 按“skill 本地模板优先，公共模板兜底”的顺序查找模板文本。
 fn load_template_text(skill_name: Option<&str>, template_name: &str) -> Option<String> {
     let skill_root = resolve_runtime_skills_root()?;
     let resource_root = resolve_runtime_resources_root()?;
@@ -504,8 +492,8 @@ fn load_template_text(skill_name: Option<&str>, template_name: &str) -> Option<S
     None
 }
 
-/// 中文：执行简单的模板变量替换；未命中的变量替换为空字符串。
-/// English: Perform simple template variable substitution; unknown variables are replaced with an empty string.
+/// Perform simple template variable substitution; unknown variables are replaced with an empty string.
+/// 执行简单的模板变量替换；未命中的变量替换为空字符串。
 fn render_template_text(template_text: &str, context: &HashMap<&'static str, String>) -> String {
     let mut rendered = template_text.to_string();
     for (key, value) in context {
@@ -514,8 +502,8 @@ fn render_template_text(template_text: &str, context: &HashMap<&'static str, Str
     rendered
 }
 
-/// 中文：渲染分页模式的默认模板内容；仅在外部模板缺失时使用。
-/// English: Render the built-in default page template; used only when no external template exists.
+/// Render the built-in default page template; used only when no external template exists.
+/// 渲染分页模式的默认模板内容；仅在外部模板缺失时使用。
 fn render_page_default(context: &HashMap<&'static str, String>) -> String {
     render_template_text(
         "# LARGE RESULT POINTER\n\n## Raw File\n- raw_file: {{raw_file}}\n- format: {{format}}\n- total_bytes: {{total_bytes}}\n- total_lines: {{total_lines}}\n- safe_inline_limit_bytes: {{safe_inline_limit_bytes}}\n- safe_inline_limit_lines: {{safe_inline_limit_lines}}\n- safe_read_limit_bytes: {{safe_read_limit_bytes}}\n- safe_read_limit_lines: {{safe_read_limit_lines}}\n- chunk_count: {{chunk_count}}\n\n{{host_safe_read_chunks_section}}\n\n{{read_strategy_section}}",
@@ -523,14 +511,14 @@ fn render_page_default(context: &HashMap<&'static str, String>) -> String {
     )
 }
 
-/// 中文：统一正文换行风格，避免 Windows CRLF 影响按行统计与切块。
-/// English: Normalize line endings so Windows CRLF does not affect line counting or chunking.
+/// Normalize line endings so Windows CRLF does not affect line counting or chunking.
+/// 统一正文换行风格，避免 Windows CRLF 影响按行统计与切块。
 fn normalize_text(content: &str) -> String {
     content.replace("\r\n", "\n")
 }
 
-/// 中文：按行拆分文本；空字符串返回空数组。
-/// English: Split text into lines and return an empty array for empty input.
+/// Split text into lines and return an empty array for empty input.
+/// 按行拆分文本；空字符串返回空数组。
 fn split_lines(content: &str) -> Vec<String> {
     let normalized = normalize_text(content);
     if normalized.is_empty() {
@@ -543,8 +531,8 @@ fn split_lines(content: &str) -> Vec<String> {
     }
 }
 
-/// 中文：在尝试追加下一行时生成候选正文，用于严格的行级截断判断。
-/// English: Build the candidate body when appending the next line, used for strict line-boundary truncation checks.
+/// Build the candidate body when appending the next line, used for strict line-boundary truncation checks.
+/// 在尝试追加下一行时生成候选正文，用于严格的行级截断判断。
 fn join_lines_with_trailing_newline(existing_lines: &[String], next_line: &str) -> String {
     if existing_lines.is_empty() {
         next_line.to_string()

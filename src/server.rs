@@ -55,7 +55,7 @@ struct LuaProjectEnvironment {
     engine: Arc<StdRwLock<LuaEngine>>,
 }
 
-/// English: Persisted project-environment record stored under the host runtime state directory.
+/// Persisted project-environment record stored under the host runtime state directory.
 /// 存放在宿主运行时状态目录中的项目环境持久化记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedProjectEnvironmentRecord {
@@ -64,10 +64,10 @@ struct PersistedProjectEnvironmentRecord {
 }
 
 struct ServerInner {
-    /// English: Host-owned MCP tools registered by the current host adapter and never mutated by LuaSkills runtime deltas.
+    /// Host-owned MCP tools registered by the current host adapter and never mutated by LuaSkills runtime deltas.
     /// 当前宿主适配层拥有的 MCP 工具注册表，不会被 LuaSkills 运行时差异事件修改。
     host_tools: HashMap<String, Tool>,
-    /// English: LuaSkills-managed dynamic MCP tools derived from runtime entries and fully driven by runtime registry deltas.
+    /// LuaSkills-managed dynamic MCP tools derived from runtime entries and fully driven by runtime registry deltas.
     /// 由 LuaSkills 运行时入口派生并完全受运行时注册表差异驱动的动态 MCP 工具注册表。
     skill_tools: HashMap<String, Tool>,
     resources: Vec<Resource>,
@@ -403,7 +403,7 @@ impl McpServer {
             "reload_vulcan_mcp_configs".to_string(),
             Tool::with_annotations(
                 "reload_vulcan_mcp_configs",
-                "Reload hot-reloadable Vulcan MCP runtime config files. This refreshes client_budgets.yaml and tool_configs.yaml, but does not reload config.yaml or restart-bound transport settings. Use this only when the user explicitly asks to reload runtime configs; do not call it proactively during normal tool execution. / 热重载 Vulcan MCP 的运行时配置文件。当前会刷新 client_budgets.yaml 与 tool_configs.yaml，但不会重载 config.yaml 或需要重启才能生效的传输配置。仅在用户明确要求重载运行时配置时使用，常规工具执行过程中不要主动调用。",
+                "Reload hot-reloadable Vulcan MCP runtime config files. This refreshes client_budgets.yaml and tool_configs.yaml, but does not reload config.yaml or restart-bound transport settings. Use this only when the user explicitly asks to reload runtime configs; do not call it proactively during normal tool execution.",
                 json!({}),
                 vec![],
                 ToolAnnotations {
@@ -416,7 +416,7 @@ impl McpServer {
         );
     }
 
-    /// English: Resolve the Lua engine for one optional project environment id, falling back to the default environment.
+    /// Resolve the Lua engine for one optional project environment id, falling back to the default environment.
     /// 根据可选项目环境标识解析对应的 Lua 引擎，缺省时回退到默认环境。
     fn resolve_lua_engine_for_environment(
         &self,
@@ -447,7 +447,7 @@ impl McpServer {
         }
     }
 
-    /// English: Resolve the target Lua engine together with the effective skill-root chain for one optional environment id.
+    /// Resolve the target Lua engine together with the effective skill-root chain for one optional environment id.
     /// 为一个可选环境标识解析目标 Lua 引擎及其对应的有效技能根目录链。
     fn resolve_lua_runtime_target(
         &self,
@@ -481,7 +481,7 @@ impl McpServer {
         }
     }
 
-    /// English: Initialize or refresh one explicit project environment and return its resolved descriptor.
+    /// Initialize or refresh one explicit project environment and return its resolved descriptor.
     /// 初始化或刷新单个显式项目环境，并返回其已解析描述信息。
     async fn initialize_project_environment(
         &self,
@@ -527,10 +527,7 @@ impl McpServer {
             let mut registry = self.lua_project_environments.write().map_err(|_| {
                 (
                     -32603,
-                    format!(
-                        "Failed to persist project environment '{}' and failed to rollback in-memory registry because the registry lock is poisoned: {} / 持久化项目环境 '{}' 失败，且由于注册表锁损坏导致无法回滚内存状态：{}",
-                        environment_id, error, environment_id, error
-                    ),
+                    format!("Failed to persist project environment '{}' and failed to rollback in-memory registry because the registry lock is poisoned: {}", environment_id, error),
                 )
             })?;
             match previous_environment {
@@ -546,7 +543,7 @@ impl McpServer {
         Ok(environment)
     }
 
-    /// English: Return all initialized project environments sorted by environment id.
+    /// Return all initialized project environments sorted by environment id.
     /// 返回按环境标识排序后的全部已初始化项目环境。
     fn list_project_environments(&self) -> Result<Vec<LuaProjectEnvironment>, (i64, String)> {
         let registry = self.lua_project_environments.read().map_err(|_| {
@@ -557,7 +554,7 @@ impl McpServer {
         Ok(environments)
     }
 
-    /// English: Return the state-directory root that stores persisted project-environment records.
+    /// Return the state-directory root that stores persisted project-environment records.
     /// 返回用于存放项目环境持久化记录的状态目录根路径。
     fn environment_registry_dir(&self) -> Result<PathBuf, String> {
         self.lua_environment_registry_dir
@@ -565,7 +562,7 @@ impl McpServer {
             .ok_or_else(|| "Lua environment registry directory is not initialized.".to_string())
     }
 
-    /// English: Persist one project-environment record so the host can restore it on the next startup.
+    /// Persist one project-environment record so the host can restore it on the next startup.
     /// 持久化一份项目环境记录，便于宿主在下次启动时恢复该环境。
     fn persist_project_environment_record(
         &self,
@@ -574,11 +571,7 @@ impl McpServer {
     ) -> Result<(), String> {
         let registry_dir = self.environment_registry_dir()?;
         fs::create_dir_all(&registry_dir).map_err(|error| {
-            format!(
-                "Failed to create environment registry directory {}: {}",
-                registry_dir.display(),
-                error
-            )
+            format!("Failed to create environment registry directory {}: {}", registry_dir.display(), error)
         })?;
         let normalized_skills_dir = normalize_persisted_environment_skills_dir(skills_dir)?;
         let record = PersistedProjectEnvironmentRecord {
@@ -589,15 +582,11 @@ impl McpServer {
         let content = serde_json::to_string_pretty(&record)
             .map_err(|error| format!("Failed to serialize project environment record: {}", error))?;
         fs::write(&record_path, content).map_err(|error| {
-            format!(
-                "Failed to write project environment record {}: {}",
-                record_path.display(),
-                error
-            )
+            format!("Failed to write project environment record {}: {}", record_path.display(), error)
         })
     }
 
-    /// English: Delete one persisted project-environment record by environment id.
+    /// Delete one persisted project-environment record by environment id.
     /// 按环境标识删除单条项目环境持久化记录。
     fn remove_project_environment_record(&self, environment_id: &str) -> Result<bool, String> {
         let registry_dir = self.environment_registry_dir()?;
@@ -606,16 +595,12 @@ impl McpServer {
             return Ok(false);
         }
         fs::remove_file(&record_path).map_err(|error| {
-            format!(
-                "Failed to remove project environment record {}: {}",
-                record_path.display(),
-                error
-            )
+            format!("Failed to remove project environment record {}: {}", record_path.display(), error)
         })?;
         Ok(true)
     }
 
-    /// English: Load all persisted project-environment records from the current host state directory.
+    /// Load all persisted project-environment records from the current host state directory.
     /// 从当前宿主状态目录加载全部项目环境持久化记录。
     fn load_persisted_project_environment_records(
         &self,
@@ -628,61 +613,31 @@ impl McpServer {
         let mut records = Vec::new();
         let mut seen_environment_ids = std::collections::HashSet::new();
         for entry in fs::read_dir(&registry_dir).map_err(|error| {
-            format!(
-                "Failed to read environment registry directory {}: {}",
-                registry_dir.display(),
-                error
-            )
+            format!("Failed to read environment registry directory {}: {}", registry_dir.display(), error)
         })? {
             let entry = entry.map_err(|error| {
-                format!(
-                    "Failed to iterate environment registry directory {}: {}",
-                    registry_dir.display(),
-                    error
-                )
+                format!("Failed to iterate environment registry directory {}: {}", registry_dir.display(), error)
             })?;
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
             let content = fs::read_to_string(&path).map_err(|error| {
-                format!(
-                    "Failed to read project environment record {}: {}",
-                    path.display(),
-                    error
-                )
+                format!("Failed to read project environment record {}: {}", path.display(), error)
             })?;
             let record: PersistedProjectEnvironmentRecord = serde_json::from_str(&content)
                 .map_err(|error| {
-                    format!(
-                        "Failed to parse project environment record {}: {}",
-                        path.display(),
-                        error
-                    )
+                    format!("Failed to parse project environment record {}: {}", path.display(), error)
                 })?;
             let normalized_environment_id = record.environment_id.trim().to_string();
             if normalized_environment_id.is_empty() {
-                return Err(format!(
-                    "Project environment record {} contains an empty environment_id / 项目环境记录 {} 包含空的 environment_id",
-                    path.display(),
-                    path.display()
-                ));
+                return Err(format!("Project environment record {} contains an empty environment_id", path.display()));
             }
             if record.skills_dir.trim().is_empty() {
-                return Err(format!(
-                    "Project environment record {} contains an empty skills_dir / 项目环境记录 {} 包含空的 skills_dir",
-                    path.display(),
-                    path.display()
-                ));
+                return Err(format!("Project environment record {} contains an empty skills_dir", path.display()));
             }
             if !seen_environment_ids.insert(normalized_environment_id.clone()) {
-                return Err(format!(
-                    "Duplicate persisted project environment id '{}' detected in {} / 在 {} 中检测到重复的持久化项目环境标识 '{}'",
-                    normalized_environment_id,
-                    registry_dir.display(),
-                    registry_dir.display(),
-                    normalized_environment_id
-                ));
+                return Err(format!("Duplicate persisted project environment id '{}' detected in {}: {}, {}", normalized_environment_id, registry_dir.display(), registry_dir.display(), normalized_environment_id));
             }
             records.push(record);
         }
@@ -690,47 +645,32 @@ impl McpServer {
         Ok(records)
     }
 
-    /// English: Restore persisted project environments whose physical skills directories still exist.
+    /// Restore persisted project environments whose physical skills directories still exist.
     /// 恢复物理技能目录仍然存在的已持久化项目环境。
     fn restore_persisted_project_environments(&self) -> Result<(), Box<dyn std::error::Error>> {
         let records = self.load_persisted_project_environment_records()?;
         for record in records {
             let skills_dir = PathBuf::from(&record.skills_dir);
             if !skills_dir.exists() {
-                return Err(format!(
-                    "[LuaSkills] Failed to restore environment '{}' because skills dir does not exist: {} / 恢复环境 '{}' 失败，skills 目录不存在：{}",
-                    record.environment_id,
-                    skills_dir.display(),
-                    record.environment_id,
-                    skills_dir.display()
-                )
+                return Err(format!("[LuaSkills] Failed to restore environment '{}' because skills dir does not exist: {}", record.environment_id, skills_dir.display())
                 .into());
             }
             let environment = self
                 .build_project_environment_sync(&record.environment_id, &skills_dir, false)
                 .map_err(|error| {
-                    format!(
-                        "[LuaSkills] Failed to restore persisted environment '{}': {} / 恢复持久化环境 '{}' 失败：{}",
-                        record.environment_id, error, record.environment_id, error
-                    )
+                    format!("[LuaSkills] Failed to restore persisted environment '{}': {}", record.environment_id, error)
                 })?;
             if let Ok(mut registry) = self.lua_project_environments.write() {
                 registry.insert(record.environment_id.clone(), environment);
             } else {
-                return Err(format!(
-                    "[LuaSkills] Failed to restore environment '{}' because the project environment registry lock is poisoned while registering skills dir {} / 恢复环境 '{}' 失败，原因是在注册 skills 目录 {} 时项目环境注册表锁已损坏",
-                    record.environment_id,
-                    skills_dir.display(),
-                    record.environment_id,
-                    skills_dir.display()
-                )
+                return Err(format!("[LuaSkills] Failed to restore environment '{}' because the project environment registry lock is poisoned while registering skills dir {}", record.environment_id, skills_dir.display())
                 .into());
             }
         }
         Ok(())
     }
 
-    /// English: Build one project environment synchronously from the current default root chain and host engine options.
+    /// Build one project environment synchronously from the current default root chain and host engine options.
     /// 基于当前默认根链与宿主引擎选项同步构建单个项目环境。
     fn build_project_environment_sync(
         &self,
@@ -741,40 +681,32 @@ impl McpServer {
         let normalized_skills_dir = normalize_skill_root_path(skills_dir)?;
         if environment_id.trim().is_empty() {
             return Err(
-                "Project environment id must not be empty. / 项目环境标识不能为空。".to_string(),
+                "Project environment id must not be empty.".to_string(),
             );
         }
         if normalized_skills_dir.exists() && !normalized_skills_dir.is_dir() {
-            return Err(format!(
-                "Project skills path exists but is not a directory: {} / 项目技能路径存在但不是目录：{}",
-                normalized_skills_dir.display(),
-                normalized_skills_dir.display()
-            ));
+            return Err(format!("Project skills path exists but is not a directory: {}", normalized_skills_dir.display()));
         }
         if !create_if_missing && !normalized_skills_dir.exists() {
-            return Err(format!(
-                "Project skills directory does not exist: {} / 项目技能目录不存在：{}",
-                normalized_skills_dir.display(),
-                normalized_skills_dir.display()
-            ));
+            return Err(format!("Project skills directory does not exist: {}", normalized_skills_dir.display()));
         }
         let engine_options = self
             .lua_engine_options
             .clone()
             .ok_or_else(|| {
-                "Project environments require initialized base skill roots. Configure at least one base skill root before creating project environments. / 项目环境依赖基础技能根初始化，请先配置至少一个基础技能根后再创建项目环境。"
+                "Project environments require initialized base skill roots. Configure at least one base skill root before creating project environments."
                     .to_string()
             })?;
         let default_roots = self
             .lua_skill_roots
             .clone()
             .ok_or_else(|| {
-                "Project environments require initialized base skill roots. Configure at least one base skill root before creating project environments. / 项目环境依赖基础技能根初始化，请先配置至少一个基础技能根后再创建项目环境。"
+                "Project environments require initialized base skill roots. Configure at least one base skill root before creating project environments."
                     .to_string()
             })?;
         if default_roots.is_empty() {
             return Err(
-                "Project environments require at least one base skill root. / 项目环境要求至少存在一个基础技能根。"
+                "Project environments require at least one base skill root."
                     .to_string(),
             );
         }
@@ -792,20 +724,11 @@ impl McpServer {
             }
         }
         validate_unique_skill_root_spaces(&project_roots).map_err(|error| {
-            format!(
-                "invalid project environment root chain for '{}': {} / 项目环境 '{}' 的技能根目录链无效：{}",
-                environment_id, error, environment_id, error
-            )
+            format!("invalid project environment root chain for '{}': {}", environment_id, error)
         })?;
         if create_if_missing {
             fs::create_dir_all(&normalized_skills_dir).map_err(|error| {
-                format!(
-                    "Failed to create project skills directory {}: {} / 创建项目技能目录 {} 失败：{}",
-                    normalized_skills_dir.display(),
-                    error,
-                    normalized_skills_dir.display(),
-                    error
-                )
+                format!("Failed to create project skills directory {}: {}", normalized_skills_dir.display(), error)
             })?;
         }
 
@@ -821,7 +744,7 @@ impl McpServer {
         })
     }
 
-    /// English: Reload one explicit project environment and update its persisted host record.
+    /// Reload one explicit project environment and update its persisted host record.
     /// 重新加载单个显式项目环境，并同步更新其宿主持久化记录。
     async fn reload_project_environment(
         &self,
@@ -884,10 +807,7 @@ impl McpServer {
             let mut registry = self.lua_project_environments.write().map_err(|_| {
                 (
                     -32603,
-                    format!(
-                        "Failed to persist reloaded project environment '{}' and failed to rollback in-memory registry because the registry lock is poisoned: {} / 持久化重载后的项目环境 '{}' 失败，且由于注册表锁损坏导致无法回滚内存状态：{}",
-                        environment_id, error, environment_id, error
-                    ),
+                    format!("Failed to persist reloaded project environment '{}' and failed to rollback in-memory registry because the registry lock is poisoned: {}", environment_id, error),
                 )
             })?;
             match previous_environment {
@@ -903,7 +823,7 @@ impl McpServer {
         Ok(environment)
     }
 
-    /// English: Remove one explicit project environment from memory and persistence without touching the physical skills directory.
+    /// Remove one explicit project environment from memory and persistence without touching the physical skills directory.
     /// 从内存与持久化中移除单个显式项目环境，但不触碰实际技能目录。
     fn remove_project_environment(
         &self,
@@ -932,10 +852,7 @@ impl McpServer {
                 registry.insert(environment_id.to_string(), environment);
                 return Err((
                     -32603,
-                    format!(
-                        "Environment '{}' exists in memory but its persisted record is missing. The remove operation was rolled back to preserve strict state consistency. / 环境 '{}' 仅存在于内存中而缺少持久化记录。为保持严格状态一致性，删除操作已回滚。",
-                        environment_id, environment_id
-                    ),
+                    format!("Environment '{}' exists in memory but its persisted record is missing. The remove operation was rolled back to preserve strict state consistency.", environment_id),
                 ));
             }
         }
@@ -948,7 +865,7 @@ impl McpServer {
         Ok((removed, record_removed))
     }
 
-    /// English: Inspect one explicit project environment and return its resolved descriptor together with effective skills.
+    /// Inspect one explicit project environment and return its resolved descriptor together with effective skills.
     /// 检查单个显式项目环境，并返回其已解析描述及当前生效技能列表。
     fn inspect_project_environment(
         &self,
@@ -1100,12 +1017,7 @@ impl McpServer {
         let negotiated = negotiate_version(&req.protocol_version).ok_or_else(|| {
             (
                 -32602,
-                format!(
-                    "Unsupported protocol version: {}. Supported: {}, {}",
-                    req.protocol_version,
-                    PROTOCOL_VERSION_LATEST,
-                    PROTOCOL_VERSION_COMPATIBLE.join(", ")
-                ),
+                format!("Unsupported protocol version: {}. Supported: {}, {}", req.protocol_version, PROTOCOL_VERSION_LATEST, PROTOCOL_VERSION_COMPATIBLE.join(", ")),
             )
         })?;
 
@@ -1237,7 +1149,7 @@ impl McpServer {
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
-                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                        .map_err(|_| "Lua engine lock poisoned".to_string())?;
                     engine
                         .enable_skill(&skill_roots, &skill_id_for_call)
                         .map_err(|error| error.to_string())
@@ -1265,7 +1177,7 @@ impl McpServer {
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
-                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                        .map_err(|_| "Lua engine lock poisoned".to_string())?;
                     engine
                         .disable_skill_in_roots(
                             &skill_roots,
@@ -1298,7 +1210,7 @@ impl McpServer {
                 let uninstall_result = tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
-                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                        .map_err(|_| "Lua engine lock poisoned".to_string())?;
                     engine
                         .uninstall_skill(
                             &skill_roots,
@@ -1311,14 +1223,7 @@ impl McpServer {
                 .map_err(|error| (-32603, format!("vulcan-skill-uninstall spawn error: {}", error)))?
                 .map_err(|error| (-32603, error))?;
                 ToolCallResult {
-                    content: vec![TextContent::text(&format!(
-                        "Skill '{}' uninstalled.\n- SQLite removed: {}\n- SQLite retained: {}\n- LanceDB removed: {}\n- LanceDB retained: {}",
-                        uninstall_result.skill_id,
-                        uninstall_result.sqlite_removed,
-                        uninstall_result.sqlite_retained,
-                        uninstall_result.lancedb_removed,
-                        uninstall_result.lancedb_retained
-                    ))],
+                    content: vec![TextContent::text(&format!("Skill '{}' uninstalled.\n- SQLite removed: {}\n- SQLite retained: {}\n- LanceDB removed: {}\n- LanceDB retained: {}", uninstall_result.skill_id, uninstall_result.sqlite_removed, uninstall_result.sqlite_retained, uninstall_result.lancedb_removed, uninstall_result.lancedb_retained))],
                     is_error: None,
                 }
             }
@@ -1330,7 +1235,7 @@ impl McpServer {
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
-                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                        .map_err(|_| "Lua engine lock poisoned".to_string())?;
                     engine
                         .reload_from_roots(&skill_roots)
                         .map_err(|error| error.to_string())
@@ -1453,7 +1358,7 @@ impl McpServer {
                 let result = tokio::task::spawn_blocking(move || {
                     let engine = engine_clone
                         .read()
-                        .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                        .map_err(|_| "Lua engine lock poisoned".to_string())?;
                     engine.render_skill_help_detail(
                         &skill_id,
                         &flow,
@@ -1486,19 +1391,13 @@ impl McpServer {
                 let tool_config_report = reload_tool_configs()
                     .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
 
-                let reload_message = format!(
-                    "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded",
-                    client_budget_report.client_count,
-                    client_budget_report
+                let reload_message = format!("Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded", client_budget_report.client_count, client_budget_report
                         .source_path
                         .as_deref()
-                        .unwrap_or("unavailable"),
-                    tool_config_report.tool_count,
-                    tool_config_report
+                        .unwrap_or("unavailable"), tool_config_report.tool_count, tool_config_report
                         .source_path
                         .as_deref()
-                        .unwrap_or("unavailable")
-                );
+                        .unwrap_or("unavailable"));
 
                 ToolCallResult {
                     content: vec![TextContent::text(&reload_message)],
@@ -1541,7 +1440,7 @@ impl McpServer {
                         let result = tokio::task::spawn_blocking(move || {
                             let engine = engine_clone
                                 .read()
-                                .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
+                                .map_err(|_| "Lua engine lock poisoned".to_string())?;
                             engine.call_skill(&tool_name, &args_clone, Some(&invocation_context))
                         })
                         .await
@@ -1555,10 +1454,7 @@ impl McpServer {
                                 );
                                 let spill_root = ensure_runtime_temp_dir()
                                     .map_err(|error| {
-                                        (-32603, format!(
-                                            "resolve runtime spill dir failed: {}",
-                                            error
-                                        ))
+                                        (-32603, format!("resolve runtime spill dir failed: {}", error))
                                     })?
                                     .join("mcp")
                                     .join("cache");
@@ -1729,10 +1625,7 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     let mut lines = vec!["# Vulcan Help List".to_string(), String::new()];
     for skill_help in help_tree {
         lines.push(format!("## `{}`", skill_help.skill_id));
-        lines.push(format!(
-            "- root: `{}`\n- dir: `{}`",
-            skill_help.root_name, skill_help.skill_dir
-        ));
+        lines.push(format!("- root: `{}`\n- dir: `{}`", skill_help.root_name, skill_help.skill_dir));
         if !skill_help.main.description.trim().is_empty() {
             lines.push(skill_help.main.description.trim().to_string());
         }
@@ -1741,11 +1634,7 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
             if flow.description.trim().is_empty() {
                 lines.push(format!("- `{}`", flow.flow_name));
             } else {
-                lines.push(format!(
-                    "- `{}`: {}",
-                    flow.flow_name,
-                    flow.description.trim()
-                ));
+                lines.push(format!("- `{}`: {}", flow.flow_name, flow.description.trim()));
             }
         }
         lines.push(String::new());
@@ -1775,7 +1664,7 @@ fn render_skill_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> Strin
     lines.join("\n")
 }
 
-/// English: Return one required non-empty string argument from the current tool call payload.
+/// Return one required non-empty string argument from the current tool call payload.
 /// 从当前工具调用参数中读取一个必填且非空的字符串参数。
 fn required_string_argument(args: &Value, key: &str) -> Result<String, (i64, String)> {
     args.get(key)
@@ -1786,7 +1675,7 @@ fn required_string_argument(args: &Value, key: &str) -> Result<String, (i64, Str
         .ok_or_else(|| (-32602, format!("Missing required parameter: {}", key)))
 }
 
-/// English: Return one optional non-empty string argument from the current tool call payload.
+/// Return one optional non-empty string argument from the current tool call payload.
 /// 从当前工具调用参数中读取一个可选且非空的字符串参数。
 fn optional_string_argument(args: &Value, key: &str) -> Option<String> {
     args.get(key)
@@ -1796,7 +1685,7 @@ fn optional_string_argument(args: &Value, key: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
-/// English: Return one optional boolean argument from the current tool call payload with a safe default.
+/// Return one optional boolean argument from the current tool call payload with a safe default.
 /// 从当前工具调用参数中读取一个可选布尔参数，并在缺失时返回安全默认值。
 fn optional_bool_argument(args: &Value, key: &str, default: bool) -> Result<bool, (i64, String)> {
     match args.get(key) {
@@ -1807,7 +1696,7 @@ fn optional_bool_argument(args: &Value, key: &str, default: bool) -> Result<bool
     }
 }
 
-/// English: Apply one runtime entry-registry delta to the MCP host tool registry.
+/// Apply one runtime entry-registry delta to the MCP host tool registry.
 /// 把一份运行时入口注册表差异应用到 MCP 宿主工具注册表。
 fn apply_runtime_entry_registry_delta(
     inner: &mut ServerInner,
@@ -1826,7 +1715,7 @@ fn apply_runtime_entry_registry_delta(
     }
 }
 
-/// English: Insert one LuaSkills-managed tool into the dynamic registry while rejecting host-reserved name collisions.
+/// Insert one LuaSkills-managed tool into the dynamic registry while rejecting host-reserved name collisions.
 /// 将单个 LuaSkills 动态工具插入动态注册表，并拒绝与宿主保留名称发生冲突。
 fn insert_skill_tool(inner: &mut ServerInner, tool: Tool) {
     if inner.host_tools.contains_key(&tool.name) {
@@ -1879,7 +1768,7 @@ fn render_environment_detail_markdown(environment: &LuaProjectEnvironment) -> St
     lines.join("\n")
 }
 
-/// English: Render one project-environment removal result into user-facing Markdown.
+/// Render one project-environment removal result into user-facing Markdown.
 /// 把单个项目环境移除结果渲染成面向用户的 Markdown 文本。
 fn render_environment_remove_markdown(
     environment_id: &str,
@@ -1894,10 +1783,7 @@ fn render_environment_remove_markdown(
     ];
     if let Some(environment) = environment {
         if let Some(primary_root) = environment.skill_roots.first() {
-            lines.push(format!(
-                "- retained_skills_dir: `{}`",
-                primary_root.skills_dir.display()
-            ));
+            lines.push(format!("- retained_skills_dir: `{}`", primary_root.skills_dir.display()));
         }
     } else {
         lines.push("- active_environment_removed: `false`".to_string());
@@ -1906,7 +1792,7 @@ fn render_environment_remove_markdown(
     lines.join("\n")
 }
 
-/// English: Render one inspected project environment and its effective skills into user-facing Markdown.
+/// Render one inspected project environment and its effective skills into user-facing Markdown.
 /// 把单个项目环境及其当前生效技能渲染成面向用户的 Markdown 文本。
 fn render_environment_inspect_markdown(
     environment: &LuaProjectEnvironment,
@@ -1927,16 +1813,13 @@ fn render_environment_inspect_markdown(
         lines.push("No skills are currently active in this environment.".to_string());
     } else {
         for skill in effective_skills {
-            lines.push(format!(
-                "- `{}` => root `{}`, dir `{}`",
-                skill.skill_id, skill.root_name, skill.skill_dir
-            ));
+            lines.push(format!("- `{}` => root `{}`, dir `{}`", skill.skill_id, skill.root_name, skill.skill_dir));
         }
     }
     lines.join("\n")
 }
 
-/// English: Build one deterministic record filename for the given environment id.
+/// Build one deterministic record filename for the given environment id.
 /// 为给定环境标识生成确定性的记录文件名。
 fn environment_record_file_name(environment_id: &str) -> String {
     let mut hasher = DefaultHasher::new();
@@ -1952,7 +1835,7 @@ fn environment_record_file_name(environment_id: &str) -> String {
     format!("{}-{:016x}.json", safe_name, hash)
 }
 
-/// English: Normalize one project-environment skills directory into a stable absolute path for persistence.
+/// Normalize one project-environment skills directory into a stable absolute path for persistence.
 /// 将项目环境 skills 目录规范化为稳定的绝对路径后再持久化。
 fn normalize_persisted_environment_skills_dir(skills_dir: &Path) -> Result<String, String> {
     let absolute_path = if skills_dir.is_absolute() {

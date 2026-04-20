@@ -24,7 +24,8 @@ use crate::server::McpServer;
 use crate::session::{SessionManager, SseSessionManager};
 
 // ============================================================
-// Application state shared with axum handlers / Axum 处理器共享应用状态
+// Application state shared with axum handlers
+// Axum 处理器共享应用状态
 // ============================================================
 
 #[derive(Clone)]
@@ -35,7 +36,8 @@ pub struct AppState {
 }
 
 // ============================================================
-// HTTP transport runner / HTTP 传输入口
+// HTTP transport runner
+// HTTP 传输入口
 // ============================================================
 
 pub async fn run_http(server: McpServer, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -78,7 +80,8 @@ pub async fn run_http(server: McpServer, addr: &str) -> Result<(), Box<dyn std::
 }
 
 // ============================================================
-// HTTP Streamable handlers (2025-11-25) / 新版 Streamable HTTP 处理器
+// HTTP Streamable handlers (2025-11-25)
+// 新版 Streamable HTTP 处理器
 // ============================================================
 
 #[derive(Deserialize)]
@@ -87,7 +90,8 @@ struct McpQuery {
     session_id: Option<String>,
 }
 
-/// JSON-RPC payload kind / JSON-RPC 负载分类。
+/// JSON-RPC payload kind
+/// JSON-RPC 负载分类。
 enum JsonRpcMessageKind<'a> {
     Request { method: &'a str },
     Notification { method: &'a str },
@@ -172,7 +176,9 @@ async fn handle_streamable_post(
     }
 }
 
-/// Handle GET /mcp as the session-bound SSE listener / 将 GET /mcp 作为绑定会话的 SSE 监听流。
+/// Handle GET
+/// mcp as the session-bound SSE listener
+/// 将 GET /mcp 作为绑定会话的 SSE 监听流。
 async fn handle_streamable_get(
     State(state): State<AppState>,
     query: Query<McpQuery>,
@@ -238,7 +244,9 @@ async fn handle_streamable_get(
     resp
 }
 
-/// Handle DELETE /mcp as session shutdown / 处理 DELETE /mcp 以关闭会话。
+/// Handle DELETE
+/// mcp as session shutdown
+/// 处理 DELETE /mcp 以关闭会话。
 async fn handle_streamable_delete(
     State(state): State<AppState>,
     query: Query<McpQuery>,
@@ -264,7 +272,8 @@ async fn handle_streamable_delete(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// Handle the initialize request / 处理 initialize 初始化请求。
+/// Handle the initialize request
+/// 处理 initialize 初始化请求。
 async fn handle_initialize_request(
     state: AppState,
     headers: HeaderMap,
@@ -307,10 +316,7 @@ async fn handle_initialize_request(
             Err(error) => {
                 return plain_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!(
-                        "initialize params could not be reconstructed after success: {}",
-                        error
-                    ),
+                    &format!("initialize params could not be reconstructed after success: {}", error),
                 );
             }
         };
@@ -333,7 +339,8 @@ async fn handle_initialize_request(
     resp
 }
 
-/// Handle post-initialize JSON-RPC requests / 处理初始化后的普通 JSON-RPC 请求。
+/// Handle post-initialize JSON-RPC requests
+/// 处理初始化后的普通 JSON-RPC 请求。
 async fn handle_streamable_request(
     state: AppState,
     headers: HeaderMap,
@@ -378,7 +385,8 @@ async fn handle_streamable_request(
     resp
 }
 
-/// Handle notifications sent by the client / 处理客户端发送的 notification。
+/// Handle notifications sent by the client
+/// 处理客户端发送的 notification。
 async fn handle_streamable_notification(
     state: AppState,
     headers: HeaderMap,
@@ -408,7 +416,8 @@ async fn handle_streamable_notification(
     StatusCode::ACCEPTED.into_response()
 }
 
-/// Handle client-originated JSON-RPC responses / 处理客户端回传的 JSON-RPC response。
+/// Handle client-originated JSON-RPC responses
+/// 处理客户端回传的 JSON-RPC response。
 async fn handle_streamable_client_response(
     state: AppState,
     headers: HeaderMap,
@@ -477,19 +486,13 @@ async fn validate_session_protocol(
         if negotiate_version(header_version).is_none() {
             return Err(plain_response(
                 StatusCode::BAD_REQUEST,
-                &format!(
-                    "Unsupported MCP-Protocol-Version header: {}",
-                    header_version
-                ),
+                &format!("Unsupported MCP-Protocol-Version header: {}", header_version),
             ));
         }
         if header_version != session_version {
             return Err(plain_response(
                 StatusCode::BAD_REQUEST,
-                &format!(
-                    "MCP-Protocol-Version header mismatch. Expected {}, got {}.",
-                    session_version, header_version
-                ),
+                &format!("MCP-Protocol-Version header mismatch. Expected {}, got {}.", session_version, header_version),
             ));
         }
     }
@@ -513,7 +516,8 @@ fn negotiated_protocol_from_initialize(response: &Value) -> Option<String> {
     None
 }
 
-/// Detect the JSON-RPC message kind / 判断 JSON-RPC 消息类型。
+/// Detect the JSON-RPC message kind
+/// 判断 JSON-RPC 消息类型。
 fn classify_jsonrpc_message(msg: &Value) -> Option<JsonRpcMessageKind<'_>> {
     let obj = msg.as_object()?;
     let method = obj.get("method").and_then(|value| value.as_str());
@@ -529,14 +533,16 @@ fn classify_jsonrpc_message(msg: &Value) -> Option<JsonRpcMessageKind<'_>> {
     }
 }
 
-/// Read MCP-Protocol-Version header / 读取 MCP-Protocol-Version 请求头。
+/// Read MCP-Protocol-Version header
+/// 读取 MCP-Protocol-Version 请求头。
 fn protocol_header_value<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
     headers
         .get("MCP-Protocol-Version")
         .and_then(|value| value.to_str().ok())
 }
 
-/// Check whether the client accepts SSE / 判断客户端是否接受 SSE。
+/// Check whether the client accepts SSE
+/// 判断客户端是否接受 SSE。
 fn accepts_sse(headers: &HeaderMap) -> bool {
     headers
         .get("Accept")
@@ -545,7 +551,8 @@ fn accepts_sse(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-/// Extract session id from query or header / 从查询参数或请求头中提取 session id。
+/// Extract session id from query or header
+/// 从查询参数或请求头中提取 session id。
 fn extract_session_id(query: &McpQuery, headers: &HeaderMap) -> Option<String> {
     query.session_id.clone().or_else(|| {
         headers
@@ -555,17 +562,20 @@ fn extract_session_id(query: &McpQuery, headers: &HeaderMap) -> Option<String> {
     })
 }
 
-/// Build a plain-text HTTP response / 构造纯文本 HTTP 响应。
+/// Build a plain-text HTTP response
+/// 构造纯文本 HTTP 响应。
 fn plain_response(status: StatusCode, message: &str) -> Response {
     (status, message.to_string()).into_response()
 }
 
-/// Build a JSON response with explicit status / 构造带明确状态码的 JSON 响应。
+/// Build a JSON response with explicit status
+/// 构造带明确状态码的 JSON 响应。
 fn json_with_status(status: StatusCode, payload: Value) -> Response {
     (status, Json(payload)).into_response()
 }
 
-/// Build a JSON-RPC error HTTP response / 构造 JSON-RPC 错误 HTTP 响应。
+/// Build a JSON-RPC error HTTP response
+/// 构造 JSON-RPC 错误 HTTP 响应。
 fn jsonrpc_error_response(status: StatusCode, id: Value, code: i64, message: &str) -> Response {
     json_with_status(
         status,
@@ -581,7 +591,8 @@ fn jsonrpc_error_response(status: StatusCode, id: Value, code: i64, message: &st
 }
 
 // ============================================================
-// Legacy SSE handlers (2024-11-05 / 2025-03-26) / 旧版 SSE 处理器
+// Legacy SSE handlers (2024-11-05 to 2025-03-26).
+// 旧版 SSE 处理器（2024-11-05 到 2025-03-26）。
 // ============================================================
 
 fn sse_event_stream(

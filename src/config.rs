@@ -10,11 +10,11 @@ pub enum SkillRootConfigEntry {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct NamedSkillRootConfig {
-    /// 中文：技能根的稳定名称，例如 ROOT、USER 或某个项目标识符。
-    /// English: Stable skill-root name such as ROOT, USER, or one project identifier.
+    /// Stable skill-root name such as ROOT, USER, or one project identifier.
+    /// 技能根的稳定名称，例如 ROOT、USER 或某个项目标识符。
     pub name: String,
-    /// 中文：技能根目录路径。
-    /// English: Physical skills root directory path.
+    /// Physical skills root directory path.
+    /// 技能根目录路径。
     pub path: String,
 }
 
@@ -24,73 +24,73 @@ pub struct NamedSkillRootConfig {
 
 #[derive(Deserialize, Debug, Default)]
 pub struct Config {
-    /// 中文：HTTP 传输监听地址，例如 "127.0.0.1:19201"。
-    /// English: HTTP transport listen address, for example "127.0.0.1:19201".
+    /// HTTP transport listen address, for example "127.0.0.1:19201".
+    /// HTTP 传输监听地址，例如 "127.0.0.1:19201"。
     #[serde(default = "default_http_addr")]
     pub http: Option<String>,
 
-    /// 中文：gRPC 管理/插件服务监听地址，例如 "127.0.0.1:19202"。
-    /// English: gRPC service listen address for plugin/management, for example "127.0.0.1:19202".
+    /// gRPC service listen address for plugin/management, for example "127.0.0.1:19202".
+    /// gRPC 管理/插件服务监听地址，例如 "127.0.0.1:19202"。
     #[serde(default = "default_grpc_addr")]
     pub grpc: Option<String>,
 
-    /// 中文：VMM（VulcanMemoryMesh）gRPC 服务地址，例如 "http://localhost:50053"。
-    /// English: VMM (VulcanMemoryMesh) gRPC service endpoint, for example "http://localhost:50053".
+    /// VMM (VulcanMemoryMesh) gRPC service endpoint, for example "http://localhost:50053".
+    /// VMM（VulcanMemoryMesh）gRPC 服务地址，例如 "http://localhost:50053"。
     pub vmm: Option<String>,
 
-    /// 中文：自定义技能覆盖目录，例如 "~/.vulcan/vulcan-mcp/skills/"；
-    /// 设置后，该目录中的技能可覆盖或禁用系统内置技能。
-    /// English: Custom skill override directory, for example "~/.vulcan/vulcan-mcp/skills/".
+    /// Custom skill override directory, for example "~/.vulcan/vulcan-mcp/skills/".
+    /// 自定义技能覆盖目录，例如 "~/.vulcan/vulcan-mcp/skills/"；
     /// When set, skills in this directory override or disable system skills.
+    /// 设置后，该目录中的技能可覆盖或禁用系统内置技能。
     #[serde(alias = "lua_skills_override")]
     pub skills_override: Option<String>,
 
-    /// English: Ordered skill roots from highest priority to lowest priority for the default runtime environment.
+    /// Ordered skill roots from highest priority to lowest priority for the default runtime environment.
     /// 默认运行环境使用的有序技能根目录列表，按从高优先级到低优先级排列。
     pub skill_roots: Option<Vec<SkillRootConfigEntry>>,
 
-    /// English: Optional runtime root directory that owns configs, skills, dependencies, databases, temp, libs, and lua_packages.
+    /// Optional runtime root directory that owns configs, skills, dependencies, databases, temp, libs, and lua_packages.
     /// 宿主完整运行根目录，可统一承载 configs、skills、dependencies、databases、temp、libs 与 lua_packages。
     pub runtime_root: Option<String>,
 
-    /// 中文：共享工具缓存最大条目数，默认 1000。
-    /// English: Maximum number of entries in the shared tool cache. Defaults to 1000.
+    /// Maximum number of entries in the shared tool cache. Defaults to 1000.
+    /// 共享工具缓存最大条目数，默认 1000。
     pub tool_cache_max_entries: Option<usize>,
 
-    /// 中文：共享工具缓存默认 TTL（秒），默认 1800 秒。
-    /// English: Default TTL in seconds for the shared tool cache. Defaults to 1800 seconds.
+    /// Default TTL in seconds for the shared tool cache. Defaults to 1800 seconds.
+    /// 共享工具缓存默认 TTL（秒），默认 1800 秒。
     pub tool_cache_default_ttl_secs: Option<u64>,
 
-    /// 中文：共享工具缓存允许的最大 TTL（秒），默认 1800 秒。
-    /// English: Maximum allowed TTL in seconds for the shared tool cache. Defaults to 1800 seconds.
+    /// Maximum allowed TTL in seconds for the shared tool cache. Defaults to 1800 seconds.
+    /// 共享工具缓存允许的最大 TTL（秒），默认 1800 秒。
     pub tool_cache_max_ttl_secs: Option<u64>,
 
-    /// 中文：Lua 虚拟机池最小实例数，默认 1。
-    /// English: Minimum number of Lua VM instances kept warm in the pool. Defaults to 1.
+    /// Minimum number of Lua VM instances kept warm in the pool. Defaults to 1.
+    /// Lua 虚拟机池最小实例数，默认 1。
     pub lua_vm_pool_min_size: Option<usize>,
 
-    /// 中文：Lua 虚拟机池最大实例数，默认 4。
-    /// English: Maximum number of Lua VM instances allowed in the pool. Defaults to 4.
+    /// Maximum number of Lua VM instances allowed in the pool. Defaults to 4.
+    /// Lua 虚拟机池最大实例数，默认 4。
     pub lua_vm_pool_max_size: Option<usize>,
 
-    /// 中文：Lua 虚拟机空闲多久后允许销毁（秒），默认 300 秒。
-    /// English: Idle lifetime in seconds before an excess Lua VM can be destroyed. Defaults to 300 seconds.
+    /// Idle lifetime in seconds before an excess Lua VM can be destroyed. Defaults to 300 seconds.
+    /// Lua 虚拟机空闲多久后允许销毁（秒），默认 300 秒。
     pub lua_vm_pool_idle_ttl_secs: Option<u64>,
 
-    /// 中文：受保护技能标识符列表，这些名称只允许由 system tools 维护。
-    /// English: Protected skill identifiers that may only be maintained through system tools.
+    /// Protected skill identifiers that may only be maintained through system tools.
+    /// 受保护技能标识符列表，这些名称只允许由 system tools 维护。
     pub protected_skills: Option<Vec<String>>,
 
-    /// 中文：依赖目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `dependencies`。
-    /// English: Dependency directory name, fixed as a sibling of the skills root under the same parent. Defaults to `dependencies`.
+    /// Dependency directory name, fixed as a sibling of the skills root under the same parent. Defaults to `dependencies`.
+    /// 依赖目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `dependencies`。
     pub dependency_dir_name: Option<String>,
 
-    /// 中文：状态目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `state`。
-    /// English: State directory name, fixed as a sibling of the skills root under the same parent. Defaults to `state`.
+    /// State directory name, fixed as a sibling of the skills root under the same parent. Defaults to `state`.
+    /// 状态目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `state`。
     pub state_dir_name: Option<String>,
 
-    /// 中文：数据库目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `databases`。
-    /// English: Database directory name, fixed as a sibling of the skills root under the same parent. Defaults to `databases`.
+    /// Database directory name, fixed as a sibling of the skills root under the same parent. Defaults to `databases`.
+    /// 数据库目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `databases`。
     pub database_dir_name: Option<String>,
 }
 
@@ -103,21 +103,24 @@ fn default_grpc_addr() -> Option<String> {
 }
 
 impl Config {
-    /// 中文：从指定 YAML 文件路径加载配置。
-    /// English: Load configuration from the given YAML file path.
+    /// Load configuration from the given YAML file path.
+    /// 从指定 YAML 文件路径加载配置。
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
         let config: Config = serde_yaml::from_str(&content)?;
         Ok(config)
     }
 
-    /// 中文：按优先级加载配置：
-    /// 1. `-config` / `--config` 命令行参数；
-    /// 2. `<exe_parent>/configs/config.yaml` 运行时输出目录配置。
+    /// 1. `-config`
+    /// 按优先级加载配置：
+    /// 2. `<exe_parent>
+    /// `--config` 命令行参数；
+    /// configs
+    /// config.yaml` 运行时输出目录配置。
+    /// Load configuration with the following priority:
     /// 仓库内默认模板文件位于 `runtime/configs/config.yaml`，构建时会同步到输出目录。
-    /// 如果未找到配置，则直接退出。
-    /// English: Load configuration with the following priority:
     /// 1. `-config` / `--config` CLI argument;
+    /// 如果未找到配置，则直接退出。
     /// 2. `<exe_parent>/configs/config.yaml` in the runtime output directory.
     /// The repository template lives at `runtime/configs/config.yaml` and is synced during build.
     /// Exit immediately if no config file is found.
@@ -151,8 +154,8 @@ impl Config {
     }
 }
 
-/// 中文：在命令行参数中查找 -config 或 --config。
-/// English: Look for -config or --config in argv.
+/// Look for -config or --config in argv.
+/// 在命令行参数中查找 -config 或 --config。
 fn find_config_arg() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     for i in 0..args.len() {
@@ -165,7 +168,7 @@ fn find_config_arg() -> Option<String> {
     None
 }
 
-/// English: Look for -runtime-root or --runtime-root in argv.
+/// Look for -runtime-root or --runtime-root in argv.
 /// 在命令行参数中查找 -runtime-root 或 --runtime-root。
 fn find_runtime_root_arg() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
@@ -179,7 +182,7 @@ fn find_runtime_root_arg() -> Option<String> {
     None
 }
 
-/// English: Resolve the config path under one explicit runtime root.
+/// Resolve the config path under one explicit runtime root.
 /// 从显式给定的运行根目录下解析配置文件路径。
 fn find_runtime_root_config(runtime_root: String) -> Option<String> {
     let config_path = std::path::PathBuf::from(runtime_root)
@@ -192,10 +195,10 @@ fn find_runtime_root_config(runtime_root: String) -> Option<String> {
     }
 }
 
-/// 中文：在运行中可执行文件的上级输出目录中查找 configs/config.yaml。
-/// 仓库模板文件位于 runtime/configs/config.yaml，构建后会复制到这里。
-/// English: Find configs/config.yaml in the parent output directory of the running executable.
+/// Find configs/config.yaml in the parent output directory of the running executable.
+/// 在运行中可执行文件的上级输出目录中查找 configs/config.yaml。
 /// The repository template lives in runtime/configs/config.yaml and is copied here during build.
+/// 仓库模板文件位于 runtime/configs/config.yaml，构建后会复制到这里。
 fn find_exe_parent_config() -> Option<String> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;

@@ -15,7 +15,7 @@ use vulcan_luaskills::{
     DEFAULT_TOOL_CACHE_MAX_TTL_SECS, set_log_callback,
 };
 
-/// English: Install the host-side LuaSkills log callback so runtime events flow into the MCP host logger.
+/// Install the host-side LuaSkills log callback so runtime events flow into the MCP host logger.
 /// 宿主侧安装 LuaSkills 日志回调，让运行时事件统一流入 MCP 宿主日志器。
 pub fn install_luaskills_log_callback() {
     let callback: RuntimeLogCallback = Arc::new(|event: &RuntimeLogEvent| match event.level {
@@ -26,7 +26,7 @@ pub fn install_luaskills_log_callback() {
     set_log_callback(Some(callback));
 }
 
-/// English: Convert one MCP request context into the generic runtime request context expected by the LuaSkills library.
+/// Convert one MCP request context into the generic runtime request context expected by the LuaSkills library.
 /// 把一份 MCP 请求上下文转换为 LuaSkills 库期望的通用运行时请求上下文。
 pub fn build_runtime_request_context(request_context: &RequestContext) -> RuntimeRequestContext {
     RuntimeRequestContext {
@@ -44,7 +44,7 @@ pub fn build_runtime_request_context(request_context: &RequestContext) -> Runtim
     }
 }
 
-/// English: Build one host-injected runtime invocation context from MCP request context, client budgets, and tool config.
+/// Build one host-injected runtime invocation context from MCP request context, client budgets, and tool config.
 /// 基于 MCP 请求上下文、客户端预算与工具配置构造一份宿主注入式运行时调用上下文。
 pub fn build_runtime_invocation_context(
     request_context: Option<&RequestContext>,
@@ -60,7 +60,7 @@ pub fn build_runtime_invocation_context(
     )
 }
 
-/// English: Build one LuaSkills engine options object from the current MCP host runtime layout.
+/// Build one LuaSkills engine options object from the current MCP host runtime layout.
 /// 基于当前 MCP 宿主运行目录布局构造一份 LuaSkills 引擎选项对象。
 pub fn build_luaskills_engine_options(
     config: &Config,
@@ -119,7 +119,7 @@ pub fn build_luaskills_engine_options(
     Ok(LuaEngineOptions::new(pool_config, host_options))
 }
 
-/// English: Resolve the runtime root directory according to host configuration first and fallback layouts second.
+/// Resolve the runtime root directory according to host configuration first and fallback layouts second.
 /// 优先按宿主配置、其次按回退布局解析运行根目录。
 pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
     if let Some(configured_root) = config
@@ -147,7 +147,7 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
     None
 }
 
-/// English: Resolve the ordered default skill roots from host configuration and runtime layout.
+/// Resolve the ordered default skill roots from host configuration and runtime layout.
 /// 从宿主配置与运行时布局解析默认环境使用的有序技能根目录列表。
 pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSkillRoot>, String> {
     let mut ordered_roots = Vec::new();
@@ -158,21 +158,12 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     let mut push_unique_root = |name: String, path: PathBuf| -> Result<(), String> {
         let normalized_name = name.trim().to_string();
         if !seen_root_names.insert(normalized_name.clone()) {
-            return Err(format!(
-                "duplicate skill root name '{}' is not allowed / 不允许重复配置技能根名称 '{}'",
-                normalized_name, normalized_name
-            ));
+            return Err(format!("duplicate skill root name '{}' is not allowed", normalized_name));
         }
         let normalized_storage_path = normalize_skill_root_path(&path)?;
         let normalized_path = normalize_skill_root_key(&normalized_storage_path);
         if !seen_roots.insert(normalized_path) {
-            return Err(format!(
-                "duplicate skill root '{}' at {} is not allowed / 不允许重复配置技能根 '{}' ({})",
-                name,
-                normalized_storage_path.display(),
-                name,
-                normalized_storage_path.display()
-            ));
+            return Err(format!("duplicate skill root '{}' at {} is not allowed", name, normalized_storage_path.display()));
         }
         ordered_roots.push(RuntimeSkillRoot {
             name: normalized_name,
@@ -188,20 +179,14 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
                     let name = named.name.trim();
                     let path = named.path.trim();
                     if name.is_empty() || path.is_empty() {
-                        return Err(format!(
-                            "skill_roots[{}] must declare non-empty name and path / skill_roots[{}] 必须提供非空的 name 与 path",
-                            index, index
-                        ));
+                        return Err(format!("skill_roots[{}] must declare non-empty name and path", index));
                     }
                     push_unique_root(name.to_string(), PathBuf::from(path))?;
                 }
                 SkillRootConfigEntry::Path(path) => {
                     let trimmed = path.trim();
                     if trimmed.is_empty() {
-                        return Err(format!(
-                            "skill_roots[{}] path must not be empty / skill_roots[{}] 的路径不能为空",
-                            index, index
-                        ));
+                        return Err(format!("skill_roots[{}] path must not be empty", index));
                     }
                     let generated = if synthesized_index == 1 {
                         "ROOT".to_string()
@@ -252,7 +237,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     Ok(implicit_roots)
 }
 
-/// English: Validate one skill root path according to strict or implicit runtime-root rules.
+/// Validate one skill root path according to strict or implicit runtime-root rules.
 /// 按严格模式或隐式根规则校验单个技能根路径是否合法。
 fn validate_skill_root_directory(
     root: &RuntimeSkillRoot,
@@ -260,53 +245,27 @@ fn validate_skill_root_directory(
 ) -> Result<(), String> {
     if !root.skills_dir.exists() {
         if strict_missing {
-            return Err(format!(
-                "configured skill root '{}' does not exist: {} / 显式配置的技能根 '{}' 不存在：{}",
-                root.name,
-                root.skills_dir.display(),
-                root.name,
-                root.skills_dir.display()
-            ));
+            return Err(format!("configured skill root '{}' does not exist: {}", root.name, root.skills_dir.display()));
         }
-        return Err(format!(
-            "implicit skill root '{}' does not exist: {} / 隐式技能根 '{}' 不存在：{}",
-            root.name,
-            root.skills_dir.display(),
-            root.name,
-            root.skills_dir.display()
-        ));
+        return Err(format!("implicit skill root '{}' does not exist: {}", root.name, root.skills_dir.display()));
     }
 
     if !root.skills_dir.is_dir() {
-        return Err(format!(
-            "skill root '{}' is not a directory: {} / 技能根 '{}' 不是目录：{}",
-            root.name,
-            root.skills_dir.display(),
-            root.name,
-            root.skills_dir.display()
-        ));
+        return Err(format!("skill root '{}' is not a directory: {}", root.name, root.skills_dir.display()));
     }
 
     Ok(())
 }
 
-/// English: Normalize one skill-root path into a stable deduplication key.
-/// 将单个技能根路径归一化为稳定的去重键。
-/// English: Normalize one skill-root path into a stable absolute path for runtime storage and validation.
-/// 灏嗗崟涓妧鑳芥牴璺緞褰掍竴鍖栦负鐢ㄤ簬杩愯鏃跺瓨鍌ㄤ笌鏍￠獙鐨勭ǔ瀹氱粷瀵硅矾寰勩€?
+/// Normalize one skill-root path into a stable absolute path for runtime storage and validation.
+/// 将单个技能根路径归一化为用于运行时存储与校验的稳定绝对路径。
 pub fn normalize_skill_root_path(path: &std::path::Path) -> Result<PathBuf, String> {
     let absolute_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()
             .map_err(|error| {
-                format!(
-                    "failed to resolve current directory while normalizing skill root '{}': {} / 褰掍竴鍖栨妧鑳芥牴 '{}' 鏃舵棤娉曡幏鍙栧綋鍓嶇洰褰曪細{}",
-                    path.display(),
-                    error,
-                    path.display(),
-                    error
-                )
+                format!("failed to resolve current directory while normalizing skill root '{}': {}", path.display(), error)
             })?
             .join(path)
     };
@@ -326,7 +285,7 @@ pub fn normalize_skill_root_key(path: &std::path::Path) -> String {
     }
 }
 
-/// English: Validate that every skill root maps to one unique sibling runtime space.
+/// Validate that every skill root maps to one unique sibling runtime space.
 /// 校验每个技能根都映射到唯一的同级运行时空间。
 pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Result<(), String> {
     let mut seen_space_parents = HashSet::new();
@@ -334,10 +293,7 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
     for root in skill_roots {
         let normalized_name = root.name.trim().to_string();
         if !seen_root_names.insert(normalized_name.clone()) {
-            return Err(format!(
-                "skill root name '{}' is duplicated in one runtime chain / 同一运行时根链中存在重复的技能根名称 '{}'",
-                normalized_name, normalized_name
-            ));
+            return Err(format!("skill root name '{}' is duplicated in one runtime chain", normalized_name));
         }
         let parent = root
             .skills_dir
@@ -346,19 +302,13 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
             .unwrap_or_else(|| root.skills_dir.clone());
         let normalized_parent = normalize_skill_root_key(&parent);
         if !seen_space_parents.insert(normalized_parent) {
-            return Err(format!(
-                "skill root '{}' at {} shares the same sibling runtime space with another root; each root must use a unique parent directory / 技能根 '{}' ({}) 与其他技能根共享同一个同级运行时空间；每个技能根必须使用唯一父目录",
-                root.name,
-                root.skills_dir.display(),
-                root.name,
-                root.skills_dir.display()
-            ));
+            return Err(format!("skill root '{}' at {} shares the same sibling runtime space with another root; each root must use a unique parent directory", root.name, root.skills_dir.display()));
         }
     }
     Ok(())
 }
 
-/// English: Resolve the host-provided protected skill policy from environment and built-in defaults.
+/// Resolve the host-provided protected skill policy from environment and built-in defaults.
 /// 从环境变量与内建默认值解析宿主提供的受保护技能策略。
 fn resolve_skill_protection_config(config: &Config) -> SkillProtectionConfig {
     let mut protected_skill_ids = vec!["vulcan-runtime".to_string()];
@@ -393,7 +343,7 @@ fn resolve_skill_protection_config(config: &Config) -> SkillProtectionConfig {
     SkillProtectionConfig { protected_skill_ids }
 }
 
-/// English: Resolve the host-side cache policy that should be injected into the LuaSkills library.
+/// Resolve the host-side cache policy that should be injected into the LuaSkills library.
 /// 解析应由宿主注入到 LuaSkills 库中的缓存策略。
 pub fn build_luaskills_cache_config(
     max_entries: Option<usize>,
@@ -407,7 +357,7 @@ pub fn build_luaskills_cache_config(
     }
 }
 
-/// English: Map one generic runtime entry descriptor into the MCP `Tool` object exposed to clients.
+/// Map one generic runtime entry descriptor into the MCP `Tool` object exposed to clients.
 /// 把一份通用运行时入口描述映射为对外暴露给 MCP 客户端的 `Tool` 对象。
 pub fn map_runtime_entry_to_mcp_tool(entry: &RuntimeEntryDescriptor) -> Tool {
     let mut props = serde_json::Map::new();
@@ -446,7 +396,7 @@ pub fn map_runtime_entry_to_mcp_tool(entry: &RuntimeEntryDescriptor) -> Tool {
     )
 }
 
-/// English: Convert the host-side client budget snapshot into the exact spill-render input still used by the MCP host.
+/// Convert the host-side client budget snapshot into the exact spill-render input still used by the MCP host.
 /// 把宿主侧客户端预算快照转换为 MCP 宿主当前仍在使用的溢出渲染输入。
 pub fn client_budget_snapshot_for_render(
     request_context: Option<&RequestContext>,
@@ -456,7 +406,7 @@ pub fn client_budget_snapshot_for_render(
     resolve_client_budget_snapshot(request_context, tool_name, skill_name)
 }
 
-/// English: Resolve the Lua resources directory according to the current MCP host layout.
+/// Resolve the Lua resources directory according to the current MCP host layout.
 /// 按当前 MCP 宿主布局解析 Lua 资源目录。
 fn resolve_runtime_resources_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
     let runtime_resources_dir = runtime_root.join("resources");
@@ -467,7 +417,7 @@ fn resolve_runtime_resources_dir(runtime_root: &std::path::Path) -> Option<PathB
     None
 }
 
-/// English: Resolve the root directory that contains host-provided native libraries.
+/// Resolve the root directory that contains host-provided native libraries.
 /// 解析宿主提供原生动态库所在的根目录。
 fn resolve_host_library_root(runtime_root: &std::path::Path) -> Option<PathBuf> {
     if let Some(sqlite_path) = resolve_host_library_path(runtime_root, sqlite_library_file_name()) {
@@ -483,7 +433,7 @@ fn resolve_host_library_root(runtime_root: &std::path::Path) -> Option<PathBuf> 
     None
 }
 
-/// English: Resolve the host-managed lua_packages directory according to runtime output first and repository output second.
+/// Resolve the host-managed lua_packages directory according to runtime output first and repository output second.
 /// 先按运行时输出目录、再按仓库输出目录解析宿主管理的 lua_packages 目录。
 fn resolve_lua_packages_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
     let runtime_path = runtime_root.join("lua_packages");
@@ -493,7 +443,7 @@ fn resolve_lua_packages_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-/// English: Resolve the current user's home directory when a default skill override root needs to be derived.
+/// Resolve the current user's home directory when a default skill override root needs to be derived.
 /// 在需要推导默认技能覆盖根目录时解析当前用户主目录。
 fn home_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
@@ -511,7 +461,7 @@ fn home_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-/// English: Resolve one host-side dynamic-library path from the unified runtime root.
+/// Resolve one host-side dynamic-library path from the unified runtime root.
 /// 从统一运行根中解析一条宿主动态库路径。
 fn resolve_host_library_path(runtime_root: &std::path::Path, file_name: &str) -> Option<PathBuf> {
     let explicit_env_key = if file_name.contains("sqlite") {
@@ -534,7 +484,7 @@ fn resolve_host_library_path(runtime_root: &std::path::Path, file_name: &str) ->
     None
 }
 
-/// English: Return the host-owned MCP tool names that must stay reserved from LuaSkills canonical entry generation.
+/// Return the host-owned MCP tool names that must stay reserved from LuaSkills canonical entry generation.
 /// 返回必须从 LuaSkills canonical 入口生成中保留的宿主 MCP 工具名称集合。
 pub fn host_reserved_tool_names() -> Vec<String> {
     vec![
@@ -554,7 +504,7 @@ pub fn host_reserved_tool_names() -> Vec<String> {
     ]
 }
 
-/// English: Return the current platform-specific SQLite dynamic library filename.
+/// Return the current platform-specific SQLite dynamic library filename.
 /// 返回当前平台对应的 SQLite 动态库文件名。
 fn sqlite_library_file_name() -> &'static str {
     #[cfg(target_os = "windows")]
@@ -571,7 +521,7 @@ fn sqlite_library_file_name() -> &'static str {
     }
 }
 
-/// English: Return the current platform-specific LanceDB dynamic library filename.
+/// Return the current platform-specific LanceDB dynamic library filename.
 /// 返回当前平台对应的 LanceDB 动态库文件名。
 fn lancedb_library_file_name() -> &'static str {
     #[cfg(target_os = "windows")]

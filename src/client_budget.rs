@@ -7,36 +7,36 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
-/// 中文：客户端预算默认的安全内联字节上限；当外部配置未提供任何规则时回退到该值。
-/// English: Default safe inline byte budget used when no external rule can be resolved.
+/// Default safe inline byte budget used when no external rule can be resolved.
+/// 客户端预算默认的安全内联字节上限；当外部配置未提供任何规则时回退到该值。
 const DEFAULT_INLINE_BYTES_LIMIT: u64 = 10_000;
 
-/// 中文：按 token 折算为字节时的默认倍率；用户要求默认按 3 倍处理。
-/// English: Default token-to-byte multiplier. Per user requirement this defaults to 3.
+/// Default token-to-byte multiplier. Per user requirement this defaults to 3.
+/// 按 token 折算为字节时的默认倍率；用户要求默认按 3 倍处理。
 const DEFAULT_BYTES_PER_TOKEN: u64 = 3;
 
-/// 中文：宿主在向 Lua 暴露实际字节预算前预留的安全比例，默认保留 5% 冗余。
-/// English: Safety ratio applied by the host before exposing effective byte budgets to Lua, reserving 5% headroom by default.
+/// Safety ratio applied by the host before exposing effective byte budgets to Lua, reserving 5% headroom by default.
+/// 宿主在向 Lua 暴露实际字节预算前预留的安全比例，默认保留 5% 冗余。
 const DEFAULT_SAFE_BYTES_RATIO: f64 = 0.95;
 
-/// 中文：当客户端配置显式“不限”时，对 Lua 暴露的实际字节上限默认封顶 200KB。
-/// English: Default hard byte cap exposed to Lua when a client configuration explicitly declares "unlimited".
+/// Default hard byte cap exposed to Lua when a client configuration explicitly declares "unlimited".
+/// 当客户端配置显式“不限”时，对 Lua 暴露的实际字节上限默认封顶 200KB。
 const DEFAULT_UNLIMITED_BYTES_CAP: u64 = 200 * 1024;
 
-/// 中文：全局缓存客户端预算配置，支持启动预载与显式热重载。
-/// English: Global cached client-budget configuration with support for startup preload and explicit hot reload.
+/// Global cached client-budget configuration with support for startup preload and explicit hot reload.
+/// 全局缓存客户端预算配置，支持启动预载与显式热重载。
 static CLIENT_BUDGET_RUNTIME: OnceLock<RwLock<ClientBudgetRuntime>> = OnceLock::new();
 
-/// 中文：客户端预算运行时缓存状态，包含已解析配置与来源路径。
-/// English: Runtime cache state for client budgets, containing the parsed config and its source path.
+/// Runtime cache state for client budgets, containing the parsed config and its source path.
+/// 客户端预算运行时缓存状态，包含已解析配置与来源路径。
 #[derive(Debug, Clone, Default)]
 struct ClientBudgetRuntime {
     config: ClientBudgetConfig,
     source_path: Option<PathBuf>,
 }
 
-/// 中文：客户端预算加载报告，用于启动日志和热重载返回值。
-/// English: Client-budget load report used for startup logs and hot-reload return values.
+/// Client-budget load report used for startup logs and hot-reload return values.
+/// 客户端预算加载报告，用于启动日志和热重载返回值。
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientBudgetLoadReport {
     pub source_path: Option<String>,
@@ -46,8 +46,8 @@ pub struct ClientBudgetLoadReport {
     pub resolved_previews: BTreeMap<String, Value>,
 }
 
-/// 中文：客户端预算配置根对象，包含默认估算规则、默认预算以及按客户端匹配的预算规则。
-/// English: Root client-budget configuration containing default estimation rules, fallback budgets, and per-client budget rules.
+/// Root client-budget configuration containing default estimation rules, fallback budgets, and per-client budget rules.
+/// 客户端预算配置根对象，包含默认估算规则、默认预算以及按客户端匹配的预算规则。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientBudgetConfig {
     #[serde(default)]
@@ -56,8 +56,8 @@ pub struct ClientBudgetConfig {
     pub clients: Vec<ClientBudgetRule>,
 }
 
-/// 中文：客户端预算的默认配置，既包含预算默认值，也包含估算倍率默认值。
-/// English: Default client-budget settings containing both fallback budget values and fallback estimation multipliers.
+/// Default client-budget settings containing both fallback budget values and fallback estimation multipliers.
+/// 客户端预算的默认配置，既包含预算默认值，也包含估算倍率默认值。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientBudgetDefaults {
     #[serde(default)]
@@ -66,8 +66,8 @@ pub struct ClientBudgetDefaults {
     pub budgets: BudgetScopesConfig,
 }
 
-/// 中文：客户端预算匹配规则，按客户端名称 pattern 生效。
-/// English: Client budget matching rule activated by a client-name pattern.
+/// Client budget matching rule activated by a client-name pattern.
+/// 客户端预算匹配规则，按客户端名称 pattern 生效。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientBudgetRule {
     pub pattern: String,
@@ -77,8 +77,8 @@ pub struct ClientBudgetRule {
     pub budgets: BudgetScopesConfig,
 }
 
-/// 中文：预算估算倍率配置，仅保留 tokens→bytes、安全比例与 unlimited→bytes cap 三类统一控制。
-/// English: Budget estimation config that only keeps tokens-to-bytes, safety ratio, and unlimited-to-bytes-cap conversion controls.
+/// Budget estimation config that only keeps tokens-to-bytes, safety ratio, and unlimited-to-bytes-cap conversion controls.
+/// 预算估算倍率配置，仅保留 tokens→bytes、安全比例与 unlimited→bytes cap 三类统一控制。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BudgetEstimationConfig {
     pub bytes_per_token: Option<u64>,
@@ -86,12 +86,12 @@ pub struct BudgetEstimationConfig {
     pub unlimited_bytes_cap: Option<u64>,
 }
 
-/// 中文：预算场景配置，第一层 key 为场景名（如 tool_result、file_read），第二层 key 为度量名（如 tokens、lines、bytes）。
-/// English: Budget scope config. The first key is the budget scope (such as tool_result or file_read), and the second key is the metric (such as tokens, lines, or bytes).
+/// Budget scope config. The first key is the budget scope (such as tool_result or file_read), and the second key is the metric (such as tokens, lines, or bytes).
+/// 预算场景配置，第一层 key 为场景名（如 tool_result、file_read），第二层 key 为度量名（如 tokens、lines、bytes）。
 pub type BudgetScopesConfig = BTreeMap<String, BTreeMap<String, BudgetMetricConfig>>;
 
-/// 中文：单个预算度量配置，包含默认值与外部配置源解析列表。
-/// English: Configuration for one budget metric, including a default value and an ordered list of external config sources.
+/// Configuration for one budget metric, including a default value and an ordered list of external config sources.
+/// 单个预算度量配置，包含默认值与外部配置源解析列表。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BudgetMetricConfig {
     pub default: Option<i64>,
@@ -101,8 +101,8 @@ pub struct BudgetMetricConfig {
     resolved_source_value: Option<ResolvedMetricValue>,
 }
 
-/// 中文：预算配置外部来源，支持 env / json / toml 三类输入。
-/// English: External budget source definition supporting env / json / toml inputs.
+/// External budget source definition supporting env / json / toml inputs.
+/// 预算配置外部来源，支持 env / json / toml 三类输入。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BudgetConfigSource {
     #[serde(rename = "type")]
@@ -112,20 +112,20 @@ pub struct BudgetConfigSource {
     pub field: Option<String>,
 }
 
-/// 中文：已解析预算值的内部表示，仅保留原始数值与来源。
-/// `-1` 代表外部配置显式不限，`None` 代表该度量未提供。
-/// English: Internal resolved budget value that preserves only the raw numeric value and its source.
+/// Internal resolved budget value that preserves only the raw numeric value and its source.
+/// 已解析预算值的内部表示，仅保留原始数值与来源。
 /// `-1` means an external config explicitly declares unlimited, while `None` means the metric is absent.
+/// `-1` 代表外部配置显式不限，`None` 代表该度量未提供。
 #[derive(Debug, Clone)]
 struct ResolvedMetricValue {
     value: Option<i64>,
     source: String,
 }
 
-/// 中文：最终暴露给 Lua 的客户端预算快照。
-/// 直接提供 `tool_result/file_read` 两个 scope，不再继续兼容旧的 `budgets` 嵌套旧结构。
-/// English: Final client-budget snapshot exposed to Lua.
+/// Final client-budget snapshot exposed to Lua.
+/// 最终暴露给 Lua 的客户端预算快照。
 /// It directly exposes the `tool_result/file_read` scopes and no longer keeps the old nested `budgets` compatibility structure.
+/// 直接提供 `tool_result/file_read` 两个 scope，不再继续兼容旧的 `budgets` 嵌套旧结构。
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientBudgetSnapshot {
     pub client_name: Option<String>,
@@ -137,8 +137,8 @@ pub struct ClientBudgetSnapshot {
     pub tool_config: Value,
 }
 
-/// 中文：最终生效的预算估算倍率快照。
-/// English: Snapshot of the final effective budget-estimation multipliers.
+/// Snapshot of the final effective budget-estimation multipliers.
+/// 最终生效的预算估算倍率快照。
 #[derive(Debug, Clone, Serialize)]
 pub struct EffectiveBudgetEstimation {
     pub bytes_per_token: u64,
@@ -146,18 +146,18 @@ pub struct EffectiveBudgetEstimation {
     pub unlimited_bytes_cap: u64,
 }
 
-/// 中文：最终暴露给 Lua 的单个预算场景信息；只保留直接可消费的 `bytes` 与 `lines`。
-/// `bytes` 永远有值，`lines=-1` 表示不限。
-/// English: Final budget-scope info exposed to Lua; only directly consumable `bytes` and `lines` remain.
+/// Final budget-scope info exposed to Lua; only directly consumable `bytes` and `lines` remain.
+/// 最终暴露给 Lua 的单个预算场景信息；只保留直接可消费的 `bytes` 与 `lines`。
 /// `bytes` always has a value, and `lines=-1` means unlimited.
+/// `bytes` 永远有值，`lines=-1` 表示不限。
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct EffectiveBudgetScope {
     pub bytes: u64,
     pub lines: i64,
 }
 
-/// 中文：确保客户端预算缓存已初始化；若尚未初始化则立即从磁盘加载。
-/// English: Ensure the client-budget cache is initialized, loading it from disk immediately on first access.
+/// Ensure the client-budget cache is initialized, loading it from disk immediately on first access.
+/// 确保客户端预算缓存已初始化；若尚未初始化则立即从磁盘加载。
 fn client_budget_runtime() -> &'static RwLock<ClientBudgetRuntime> {
     CLIENT_BUDGET_RUNTIME.get_or_init(|| {
         let runtime = load_client_budget_runtime().unwrap_or_default();
@@ -165,26 +165,26 @@ fn client_budget_runtime() -> &'static RwLock<ClientBudgetRuntime> {
     })
 }
 
-/// 中文：启动时预载客户端预算配置，便于尽早暴露配置格式问题。
-/// English: Preload the client-budget config during startup so format issues surface early.
+/// Preload the client-budget config during startup so format issues surface early.
+/// 启动时预载客户端预算配置，便于尽早暴露配置格式问题。
 pub fn preload_client_budget_config() -> Result<ClientBudgetLoadReport, String> {
     let runtime = load_client_budget_runtime()?;
     let report = build_client_budget_load_report(&runtime);
     let mut guard = client_budget_runtime().write().map_err(|_| {
-        "client budget runtime lock poisoned / 客户端预算缓存写锁已损坏".to_string()
+        "client budget runtime lock poisoned".to_string()
     })?;
     *guard = runtime;
     Ok(report)
 }
 
-/// 中文：显式热重载客户端预算配置，不会重新加载 `config.yaml` 等基础运行配置。
-/// English: Explicitly hot-reload client-budget config without reloading foundational configs such as `config.yaml`.
+/// Explicitly hot-reload client-budget config without reloading foundational configs such as `config.yaml`.
+/// 显式热重载客户端预算配置，不会重新加载 `config.yaml` 等基础运行配置。
 pub fn reload_client_budget_config() -> Result<ClientBudgetLoadReport, String> {
     preload_client_budget_config()
 }
 
-/// 中文：解析当前请求对应的客户端预算快照；当配置缺失或解析失败时，返回安全默认值。
-/// English: Resolve the client-budget snapshot for the current request; return a safe fallback when the config is missing or cannot be parsed.
+/// Resolve the client-budget snapshot for the current request; return a safe fallback when the config is missing or cannot be parsed.
+/// 解析当前请求对应的客户端预算快照；当配置缺失或解析失败时，返回安全默认值。
 pub fn resolve_client_budget_snapshot(
     request_context: Option<&RequestContext>,
     tool_name: Option<&str>,
@@ -259,8 +259,8 @@ pub fn resolve_client_budget_snapshot(
 }
 
 
-/// 中文：加载客户端预算配置；优先读取缓存，其次从运行时配置文件中解析。
-/// English: Load the client-budget config, preferring the in-memory cache and otherwise parsing the runtime YAML file.
+/// Load the client-budget config, preferring the in-memory cache and otherwise parsing the runtime YAML file.
+/// 加载客户端预算配置；优先读取缓存，其次从运行时配置文件中解析。
 fn load_client_budget_config() -> ClientBudgetConfig {
     match client_budget_runtime().read() {
         Ok(guard) => guard.config.clone(),
@@ -268,8 +268,8 @@ fn load_client_budget_config() -> ClientBudgetConfig {
     }
 }
 
-/// 中文：从磁盘加载客户端预算运行时状态。
-/// English: Load the client-budget runtime state from disk.
+/// Load the client-budget runtime state from disk.
+/// 从磁盘加载客户端预算运行时状态。
 fn load_client_budget_runtime() -> Result<ClientBudgetRuntime, String> {
     let source_path = find_client_budget_config_path();
     let Some(path) = source_path else {
@@ -277,18 +277,10 @@ fn load_client_budget_runtime() -> Result<ClientBudgetRuntime, String> {
     };
 
     let content = fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "Failed to read client budget config {} / 读取客户端预算配置失败: {}",
-            path.display(),
-            error
-        )
+        format!("Failed to read client budget config {}: {}", path.display(), error)
     })?;
     let mut parsed: ClientBudgetConfig = serde_yaml::from_str(&content).map_err(|error| {
-        format!(
-            "Failed to parse client budget config {} / 解析客户端预算配置失败: {}",
-            path.display(),
-            error
-        )
+        format!("Failed to parse client budget config {}: {}", path.display(), error)
     })?;
     resolve_budget_sources_in_place(&mut parsed);
 
@@ -298,8 +290,8 @@ fn load_client_budget_runtime() -> Result<ClientBudgetRuntime, String> {
     })
 }
 
-/// 中文：查找客户端预算配置文件；优先查运行时输出目录，其次回退到仓库内模板路径。
-/// English: Find the client-budget config file, preferring the runtime output directory and then falling back to the repository template path.
+/// Find the client-budget config file, preferring the runtime output directory and then falling back to the repository template path.
+/// 查找客户端预算配置文件；优先查运行时输出目录，其次回退到仓库内模板路径。
 fn find_client_budget_config_path() -> Option<PathBuf> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
@@ -318,8 +310,8 @@ fn find_client_budget_config_path() -> Option<PathBuf> {
     None
 }
 
-/// 中文：根据运行时状态构建客户端预算加载报告。
-/// English: Build a client-budget load report from the current runtime state.
+/// Build a client-budget load report from the current runtime state.
+/// 根据运行时状态构建客户端预算加载报告。
 fn build_client_budget_load_report(runtime: &ClientBudgetRuntime) -> ClientBudgetLoadReport {
     ClientBudgetLoadReport {
         source_path: runtime
@@ -338,8 +330,8 @@ fn build_client_budget_load_report(runtime: &ClientBudgetRuntime) -> ClientBudge
     }
 }
 
-/// 中文：把所有外部预算来源在启动/重载阶段预解析并写回配置结构，避免请求期再重复读取环境变量或用户配置文件。
-/// English: Pre-resolve all external budget sources during startup/reload and write the results back into the config so request handling no longer re-reads env vars or user config files.
+/// Pre-resolve all external budget sources during startup/reload and write the results back into the config so request handling no longer re-reads env vars or user config files.
+/// 把所有外部预算来源在启动/重载阶段预解析并写回配置结构，避免请求期再重复读取环境变量或用户配置文件。
 fn resolve_budget_sources_in_place(config: &mut ClientBudgetConfig) {
     resolve_scope_sources_in_place(&mut config.defaults.budgets);
     for client_rule in &mut config.clients {
@@ -347,8 +339,8 @@ fn resolve_budget_sources_in_place(config: &mut ClientBudgetConfig) {
     }
 }
 
-/// 中文：对某个预算 scope 集合内的所有 metric 做预解析。
-/// English: Pre-resolve every metric inside one budget-scope collection.
+/// Pre-resolve every metric inside one budget-scope collection.
+/// 对某个预算 scope 集合内的所有 metric 做预解析。
 fn resolve_scope_sources_in_place(scopes: &mut BudgetScopesConfig) {
     for metric_configs in scopes.values_mut() {
         for metric_config in metric_configs.values_mut() {
@@ -360,8 +352,8 @@ fn resolve_scope_sources_in_place(scopes: &mut BudgetScopesConfig) {
     }
 }
 
-/// 中文：构建预解析后的客户端预算摘要，便于启动和热重载时直接输出实际读取值。
-/// English: Build a preview of the pre-resolved client budgets so startup and reload can print the actual loaded values directly.
+/// Build a preview of the pre-resolved client budgets so startup and reload can print the actual loaded values directly.
+/// 构建预解析后的客户端预算摘要，便于启动和热重载时直接输出实际读取值。
 fn build_resolved_preview_map(config: &ClientBudgetConfig) -> BTreeMap<String, Value> {
     let mut previews = BTreeMap::new();
     for client_rule in &config.clients {
@@ -378,8 +370,8 @@ fn build_resolved_preview_map(config: &ClientBudgetConfig) -> BTreeMap<String, V
     previews
 }
 
-/// 中文：把某个客户端规则下的 scope 预算转换成结构化摘要。
-/// English: Convert one client's scope budgets into a structured preview value.
+/// Convert one client's scope budgets into a structured preview value.
+/// 把某个客户端规则下的 scope 预算转换成结构化摘要。
 fn build_scope_preview_value(
     scopes: &BudgetScopesConfig,
     estimation: &EffectiveBudgetEstimation,
@@ -444,10 +436,7 @@ fn build_scope_preview_value(
                 .next()
                 .unwrap_or_else(|| "default".to_string())
         } else {
-            format!(
-                "mixed({})",
-                source_set.into_keys().collect::<Vec<_>>().join(",")
-            )
+            format!("mixed({})", source_set.into_keys().collect::<Vec<_>>().join(","))
         };
 
         scope_map.insert(
@@ -465,8 +454,8 @@ fn build_scope_preview_value(
     Value::Object(scope_map)
 }
 
-/// 中文：匹配客户端预算规则，使用简单的 `*` / `?` 通配符匹配。
-/// English: Match a client-budget rule using simple `*` / `?` wildcard semantics.
+/// Match a client-budget rule using simple `*` / `?` wildcard semantics.
+/// 匹配客户端预算规则，使用简单的 `*` / `?` 通配符匹配。
 fn match_client_budget_rule<'a>(
     rules: &'a [ClientBudgetRule],
     client_name: &str,
@@ -476,8 +465,8 @@ fn match_client_budget_rule<'a>(
         .find(|rule| wildcard_match(&rule.pattern.to_lowercase(), &client_name.to_lowercase()))
 }
 
-/// 中文：合并默认估算配置与工具配置中的预算估算覆盖，生成最终估算倍率。
-/// English: Merge the default estimation config with budget-estimation overrides extracted from tool config.
+/// Merge the default estimation config with budget-estimation overrides extracted from tool config.
+/// 合并默认估算配置与工具配置中的预算估算覆盖，生成最终估算倍率。
 fn merge_effective_estimation(
     defaults: &BudgetEstimationConfig,
     client_override: Option<&BudgetEstimationConfig>,
@@ -504,8 +493,8 @@ fn merge_effective_estimation(
     }
 }
 
-/// 中文：解析单个预算场景的所有度量，并折算出最终对 Lua 暴露的 `bytes/lines` 数值。
-/// English: Resolve all metrics for a budget scope and derive the final `bytes/lines` numbers exposed to Lua.
+/// Resolve all metrics for a budget scope and derive the final `bytes/lines` numbers exposed to Lua.
+/// 解析单个预算场景的所有度量，并折算出最终对 Lua 暴露的 `bytes/lines` 数值。
 fn resolve_scope_budget(
     metric_configs: &BTreeMap<String, BudgetMetricConfig>,
     estimation: &EffectiveBudgetEstimation,
@@ -554,16 +543,16 @@ fn resolve_scope_budget(
     scope
 }
 
-/// 中文：把名义字节预算折算成宿主实际暴露给 Lua 的安全字节预算，始终保留至少 1 字节。
-/// English: Convert a nominal byte budget into the host-exposed safe byte budget for Lua, always keeping at least 1 byte.
+/// Convert a nominal byte budget into the host-exposed safe byte budget for Lua, always keeping at least 1 byte.
+/// 把名义字节预算折算成宿主实际暴露给 Lua 的安全字节预算，始终保留至少 1 字节。
 fn apply_safe_bytes_ratio(bytes: u64, ratio: f64) -> u64 {
     let normalized_ratio = normalize_safe_bytes_ratio(ratio);
     let adjusted = ((bytes as f64) * normalized_ratio).floor() as u64;
     adjusted.max(1)
 }
 
-/// 中文：归一化安全比例，非法值统一回退到默认的 0.95。
-/// English: Normalize the safety ratio, falling back to the default 0.95 when the input is invalid.
+/// Normalize the safety ratio, falling back to the default 0.95 when the input is invalid.
+/// 归一化安全比例，非法值统一回退到默认的 0.95。
 fn normalize_safe_bytes_ratio(ratio: f64) -> f64 {
     if !ratio.is_finite() || ratio <= 0.0 || ratio > 1.0 {
         DEFAULT_SAFE_BYTES_RATIO
@@ -572,8 +561,8 @@ fn normalize_safe_bytes_ratio(ratio: f64) -> f64 {
     }
 }
 
-/// 中文：解析单个预算度量的最终值，优先使用外部配置源，其次回退到 YAML 默认值。
-/// English: Resolve the final value for one budget metric, preferring external config sources and then falling back to the YAML default.
+/// Resolve the final value for one budget metric, preferring external config sources and then falling back to the YAML default.
+/// 解析单个预算度量的最终值，优先使用外部配置源，其次回退到 YAML 默认值。
 fn resolve_metric_value(metric_config: &BudgetMetricConfig) -> ResolvedMetricValue {
     if let Some(parsed) = metric_config.resolved_source_value.clone() {
         return parsed;
@@ -582,10 +571,10 @@ fn resolve_metric_value(metric_config: &BudgetMetricConfig) -> ResolvedMetricVal
     default_resolved_metric_value(metric_config)
 }
 
-/// 中文：把默认配置转换成统一的已解析预算值表示。
-/// 缺省值表示该度量未配置；`-1` 保留为“显式不限”的原始语义，后续再根据度量类型折算。
-/// English: Convert the YAML default into the unified resolved budget representation.
+/// Convert the YAML default into the unified resolved budget representation.
+/// 把默认配置转换成统一的已解析预算值表示。
 /// A missing default means the metric is absent, while `-1` preserves the raw "explicit unlimited" meaning for later conversion.
+/// 缺省值表示该度量未配置；`-1` 保留为“显式不限”的原始语义，后续再根据度量类型折算。
 fn default_resolved_metric_value(metric_config: &BudgetMetricConfig) -> ResolvedMetricValue {
     ResolvedMetricValue {
         value: metric_config.default,
@@ -593,8 +582,8 @@ fn default_resolved_metric_value(metric_config: &BudgetMetricConfig) -> Resolved
     }
 }
 
-/// 中文：从外部配置源中读取预算值，支持 env / json / toml。
-/// English: Read a budget value from an external source, supporting env / json / toml.
+/// Read a budget value from an external source, supporting env / json / toml.
+/// 从外部配置源中读取预算值，支持 env / json / toml。
 fn read_metric_from_source(source: &BudgetConfigSource) -> Option<ResolvedMetricValue> {
     match source.source_type.to_lowercase().as_str() {
         "env" => {
@@ -623,12 +612,12 @@ fn read_metric_from_source(source: &BudgetConfigSource) -> Option<ResolvedMetric
     }
 }
 
-/// 中文：将解析后的度量值折算成对 Lua 暴露的实际数值。
-/// - `bytes` / `tokens` 若为 `-1`，统一收敛到安全字节上限。
-/// - `lines` 若 `<= 0`，统一暴露为 `-1`。
-/// English: Convert a resolved metric value into the actual numeric value exposed to Lua.
+/// Convert a resolved metric value into the actual numeric value exposed to Lua.
+/// 将解析后的度量值折算成对 Lua 暴露的实际数值。
 /// - `bytes` / `tokens` use the safe byte cap when the raw value is `-1`.
+/// - 当原始值为 `-1` 时，`bytes` / `tokens` 会统一收敛到安全字节上限。
 /// - `lines` become `-1` when the raw value is `<= 0`.
+/// - 当原始值 `<= 0` 时，`lines` 会统一暴露为 `-1`。
 fn effective_metric_value(
     resolved: &ResolvedMetricValue,
     estimation: &EffectiveBudgetEstimation,
@@ -655,15 +644,15 @@ fn effective_metric_value(
     }
 }
 
-/// 中文：内部辅助结构，用来承载单个度量折算后的数值。
-/// English: Internal helper that carries the converted numeric value for one metric.
+/// Internal helper that carries the converted numeric value for one metric.
+/// 内部辅助结构，用来承载单个度量折算后的数值。
 struct EffectiveMetricNumericValue {
     metric_value: Option<u64>,
     line_value: i64,
 }
 
-/// 中文：解析单个文本字面量预算值；`-1` 代表显式不限，非负整数代表具体额度。
-/// English: Parse one textual budget literal. `-1` means explicit unlimited, while non-negative integers mean concrete limits.
+/// Parse one textual budget literal. `-1` means explicit unlimited, while non-negative integers mean concrete limits.
+/// 解析单个文本字面量预算值；`-1` 代表显式不限，非负整数代表具体额度。
 fn parse_metric_literal(raw_value: &str, source_name: &str) -> Option<ResolvedMetricValue> {
     let trimmed = raw_value.trim();
     if trimmed.is_empty() {
@@ -681,8 +670,8 @@ fn parse_metric_literal(raw_value: &str, source_name: &str) -> Option<ResolvedMe
     })
 }
 
-/// 中文：从 JSON 值中解析预算字面量；支持 number 和 string 两种表示。
-/// English: Parse a budget literal from a JSON value, supporting both number and string representations.
+/// Parse a budget literal from a JSON value, supporting both number and string representations.
+/// 从 JSON 值中解析预算字面量；支持 number 和 string 两种表示。
 fn parse_metric_json_value(target: &Value, source_name: &str) -> Option<ResolvedMetricValue> {
     match target {
         Value::Number(number) => parse_metric_literal(&number.to_string(), source_name),
@@ -691,8 +680,8 @@ fn parse_metric_json_value(target: &Value, source_name: &str) -> Option<Resolved
     }
 }
 
-/// 中文：沿点路径读取 JSON 字段，例如 `tools.truncateToolOutputLines`。
-/// English: Traverse a dotted JSON field path such as `tools.truncateToolOutputLines`.
+/// Traverse a dotted JSON field path such as `tools.truncateToolOutputLines`.
+/// 沿点路径读取 JSON 字段，例如 `tools.truncateToolOutputLines`。
 fn traverse_dotted_json_field<'a>(value: &'a Value, field_path: &str) -> Option<&'a Value> {
     let mut current = value;
     for field in field_path.split('.') {
@@ -702,8 +691,8 @@ fn traverse_dotted_json_field<'a>(value: &'a Value, field_path: &str) -> Option<
     Some(current)
 }
 
-/// 中文：展开 `~` 为当前用户 home 目录，便于配置文件路径跨环境复用。
-/// English: Expand `~` into the current user's home directory so config paths remain portable.
+/// Expand `~` into the current user's home directory so config paths remain portable.
+/// 展开 `~` 为当前用户 home 目录，便于配置文件路径跨环境复用。
 fn expand_user_home(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = home_dir() {
@@ -713,8 +702,8 @@ fn expand_user_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// 中文：获取当前用户 home 目录，兼容 Windows 与类 Unix 平台。
-/// English: Return the current user's home directory in a cross-platform way for Windows and Unix-like systems.
+/// Return the current user's home directory in a cross-platform way for Windows and Unix-like systems.
+/// 获取当前用户 home 目录，兼容 Windows 与类 Unix 平台。
 fn home_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -726,8 +715,8 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
-/// 中文：执行简单的 `*` / `?` 通配符匹配，用于客户端名与工具名规则。
-/// English: Perform simple `*` / `?` wildcard matching for client-name and tool-name rules.
+/// Perform simple `*` / `?` wildcard matching for client-name and tool-name rules.
+/// 执行简单的 `*` / `?` 通配符匹配，用于客户端名与工具名规则。
 fn wildcard_match(pattern: &str, text: &str) -> bool {
     let pattern_chars: Vec<char> = pattern.chars().collect();
     let text_chars: Vec<char> = text.chars().collect();
@@ -759,8 +748,8 @@ mod tests {
     use serde_yaml::from_str;
     use std::collections::BTreeMap;
 
-    /// 中文：验证 `-1` 会被正确解析为显式不限，而不是普通数值。
-    /// English: Verify that `-1` is parsed as explicit unlimited rather than a normal numeric value.
+    /// Verify that `-1` is parsed as explicit unlimited rather than a normal numeric value.
+    /// 验证 `-1` 会被正确解析为显式不限，而不是普通数值。
     #[test]
     fn parse_metric_literal_treats_minus_one_as_unlimited() {
         let parsed = parse_metric_literal("-1", "env").expect("expected unlimited metric");
@@ -768,8 +757,8 @@ mod tests {
         assert_eq!(parsed.source, "env");
     }
 
-    /// 中文：验证 tokens 与 bytes 同时存在时，会按最严格的 bytes 结果生成内联预算。
-    /// English: Verify that when tokens and bytes coexist, the inline byte budget uses the stricter effective byte value.
+    /// Verify that when tokens and bytes coexist, the inline byte budget uses the stricter effective byte value.
+    /// 验证 tokens 与 bytes 同时存在时，会按最严格的 bytes 结果生成内联预算。
     #[test]
     fn resolve_scope_budget_uses_lowest_effective_inline_bytes() {
         let estimation = EffectiveBudgetEstimation {
@@ -801,8 +790,8 @@ mod tests {
         assert_eq!(scope.lines, -1);
     }
 
-    /// 中文：验证宿主会先按安全比例收缩最终字节预算，再把结果暴露给 Lua。
-    /// English: Verify that the host shrinks the final byte budget with the safety ratio before exposing it to Lua.
+    /// Verify that the host shrinks the final byte budget with the safety ratio before exposing it to Lua.
+    /// 验证宿主会先按安全比例收缩最终字节预算，再把结果暴露给 Lua。
     #[test]
     fn resolve_scope_budget_applies_safe_bytes_ratio_before_exposing_to_lua() {
         let estimation = EffectiveBudgetEstimation {
@@ -826,8 +815,8 @@ mod tests {
         assert_eq!(scope.lines, -1);
     }
 
-    /// 中文：验证仅提供 lines 时不会再反向估算 bytes，最终字节预算保持默认值。
-    /// English: Verify that lines alone no longer back-compute bytes and the final byte budget remains on the default fallback.
+    /// Verify that lines alone no longer back-compute bytes and the final byte budget remains on the default fallback.
+    /// 验证仅提供 lines 时不会再反向估算 bytes，最终字节预算保持默认值。
     #[test]
     fn resolve_scope_budget_does_not_estimate_bytes_from_lines() {
         let estimation = EffectiveBudgetEstimation {
@@ -851,8 +840,8 @@ mod tests {
         assert_eq!(scope.lines, 2000);
     }
 
-    /// 中文：验证显式不限时不会把 unlimited 暴露给 Lua，而是回退到配置化的安全字节封顶。
-    /// English: Verify that explicit unlimited is not exposed to Lua and instead falls back to the configured safety byte cap.
+    /// Verify that explicit unlimited is not exposed to Lua and instead falls back to the configured safety byte cap.
+    /// 验证显式不限时不会把 unlimited 暴露给 Lua，而是回退到配置化的安全字节封顶。
     #[test]
     fn resolve_scope_budget_caps_unlimited_bytes_to_safe_limit() {
         let estimation = EffectiveBudgetEstimation {
@@ -884,8 +873,8 @@ mod tests {
         assert_eq!(scope.lines, -1);
     }
 
-    /// 中文：验证当仅存在默认回退时，bytes 始终有值且 lines 使用 -1 表达不限。
-    /// English: Verify that bytes always has a fallback value and lines uses -1 to represent unlimited.
+    /// Verify that bytes always has a fallback value and lines uses -1 to represent unlimited.
+    /// 验证当仅存在默认回退时，bytes 始终有值且 lines 使用 -1 表达不限。
     #[test]
     fn resolve_scope_budget_always_exposes_numeric_bytes_and_lines() {
         let estimation = EffectiveBudgetEstimation {
@@ -900,8 +889,8 @@ mod tests {
         assert_eq!(scope.lines, -1);
     }
 
-    /// 中文：验证在没有工具覆盖时，会稳定使用默认倍率。
-    /// English: Verify that the default multipliers are used stably when no tool override is present.
+    /// Verify that the default multipliers are used stably when no tool override is present.
+    /// 验证在没有工具覆盖时，会稳定使用默认倍率。
     #[test]
     fn merge_effective_estimation_uses_defaults_without_override() {
         let defaults = BudgetEstimationConfig {
@@ -916,8 +905,8 @@ mod tests {
         assert_eq!(estimation.unlimited_bytes_cap, 200 * 1024);
     }
 
-    /// 中文：验证运行时 YAML 规则能正确解析出我们约定的客户端与工具预算结构。
-    /// English: Verify that the runtime YAML rules parse into the expected client and tool budget structure.
+    /// Verify that the runtime YAML rules parse into the expected client and tool budget structure.
+    /// 验证运行时 YAML 规则能正确解析出我们约定的客户端与工具预算结构。
     #[test]
     fn client_budget_yaml_parses_expected_rules() {
         let yaml = include_str!("../runtime/configs/client_budgets.yaml");
@@ -944,8 +933,8 @@ mod tests {
         );
     }
 
-    /// 中文：验证当客户端未显式配置 file_read 时，会自动回退复用同客户端的 tool_result 预算。
-    /// English: Verify that when a client does not explicitly define file_read, it falls back to the same client's tool_result budget.
+    /// Verify that when a client does not explicitly define file_read, it falls back to the same client's tool_result budget.
+    /// 验证当客户端未显式配置 file_read 时，会自动回退复用同客户端的 tool_result 预算。
     #[test]
     fn resolve_client_budget_snapshot_falls_back_file_read_to_tool_result() {
         let yaml = include_str!("../runtime/configs/client_budgets.yaml");

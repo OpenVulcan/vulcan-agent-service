@@ -7,20 +7,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
-/// 中文：运行时工具配置缓存，保存已解析的工具配置映射与来源路径，支持启动预载与显式热重载。
-/// English: Runtime tool-config cache that stores parsed tool configurations and their source path, supporting startup preload and explicit hot reload.
+/// Runtime tool-config cache that stores parsed tool configurations and their source path, supporting startup preload and explicit hot reload.
+/// 运行时工具配置缓存，保存已解析的工具配置映射与来源路径，支持启动预载与显式热重载。
 static TOOL_CONFIG_RUNTIME: OnceLock<RwLock<ToolConfigRuntime>> = OnceLock::new();
 
-/// 中文：工具配置缓存的内部运行时状态。
-/// English: Internal runtime state for the cached tool configuration store.
+/// Internal runtime state for the cached tool configuration store.
+/// 工具配置缓存的内部运行时状态。
 #[derive(Debug, Clone, Default)]
 struct ToolConfigRuntime {
     configs: BTreeMap<String, Value>,
     source_path: Option<PathBuf>,
 }
 
-/// 中文：工具配置加载结果，便于启动日志与热重载结果输出。
-/// English: Tool-config load report used by startup logging and reload results.
+/// Tool-config load report used by startup logging and reload results.
+/// 工具配置加载结果，便于启动日志与热重载结果输出。
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolConfigLoadReport {
     pub source_path: Option<String>,
@@ -29,8 +29,8 @@ pub struct ToolConfigLoadReport {
     pub config_counts: BTreeMap<String, usize>,
 }
 
-/// 中文：确保工具配置缓存已经初始化；若尚未初始化则立即从磁盘加载一次。
-/// English: Ensure the tool-config cache has been initialized, loading it from disk immediately on the first access.
+/// Ensure the tool-config cache has been initialized, loading it from disk immediately on the first access.
+/// 确保工具配置缓存已经初始化；若尚未初始化则立即从磁盘加载一次。
 fn tool_config_runtime() -> &'static RwLock<ToolConfigRuntime> {
     TOOL_CONFIG_RUNTIME.get_or_init(|| {
         let runtime = load_tool_config_runtime().unwrap_or_default();
@@ -38,26 +38,26 @@ fn tool_config_runtime() -> &'static RwLock<ToolConfigRuntime> {
     })
 }
 
-/// 中文：启动时预载工具配置，便于尽早发现配置格式问题。
-/// English: Preload tool configs during startup so configuration issues are discovered early.
+/// Preload tool configs during startup so configuration issues are discovered early.
+/// 启动时预载工具配置，便于尽早发现配置格式问题。
 pub fn preload_tool_configs() -> Result<ToolConfigLoadReport, String> {
     let runtime = load_tool_config_runtime()?;
     let report = build_tool_config_load_report(&runtime);
     let mut guard = tool_config_runtime()
         .write()
-        .map_err(|_| "tool config runtime lock poisoned / 工具配置缓存写锁已损坏".to_string())?;
+        .map_err(|_| "tool config runtime lock poisoned".to_string())?;
     *guard = runtime;
     Ok(report)
 }
 
-/// 中文：显式热重载工具配置，不会重新加载 `config.yaml` 等基础运行配置。
-/// English: Explicitly hot-reload tool configs without reloading foundational runtime configs such as `config.yaml`.
+/// Explicitly hot-reload tool configs without reloading foundational runtime configs such as `config.yaml`.
+/// 显式热重载工具配置，不会重新加载 `config.yaml` 等基础运行配置。
 pub fn reload_tool_configs() -> Result<ToolConfigLoadReport, String> {
     preload_tool_configs()
 }
 
-/// 中文：读取当前 skill 的工具配置值；若不存在则返回空对象，便于 Lua 侧稳定消费。
-/// English: Resolve the tool config for the current skill; return an empty object when absent so Lua can consume it safely.
+/// Resolve the tool config for the current skill; return an empty object when absent so Lua can consume it safely.
+/// 读取当前 skill 的工具配置值；若不存在则返回空对象，便于 Lua 侧稳定消费。
 pub fn resolve_tool_config_value(skill_name: Option<&str>) -> Value {
     let normalized_skill_name = skill_name
         .map(str::trim)
@@ -80,8 +80,8 @@ pub fn resolve_tool_config_value(skill_name: Option<&str>) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-/// 中文：根据工具配置提取预算估算覆盖信息；只有扁平的一层标量键会生效。
-/// English: Extract budget-estimation overrides from tool config; only flat first-level scalar keys are honored.
+/// Extract budget-estimation overrides from tool config; only flat first-level scalar keys are honored.
+/// 根据工具配置提取预算估算覆盖信息；只有扁平的一层标量键会生效。
 pub fn resolve_tool_estimation_override(skill_name: Option<&str>) -> ToolEstimationOverride {
     let tool_config = resolve_tool_config_value(skill_name);
     let Some(object) = tool_config.as_object() else {
@@ -94,16 +94,16 @@ pub fn resolve_tool_estimation_override(skill_name: Option<&str>) -> ToolEstimat
     }
 }
 
-/// 中文：工具配置中可影响预算折算的覆盖项。
-/// English: Budget-estimation override fields that may be supplied through tool config.
+/// Budget-estimation override fields that may be supplied through tool config.
+/// 工具配置中可影响预算折算的覆盖项。
 #[derive(Debug, Clone, Default)]
 pub struct ToolEstimationOverride {
     pub bytes_per_token: Option<u64>,
     pub unlimited_bytes_cap: Option<u64>,
 }
 
-/// 中文：尝试把 JSON 值解析成无符号整数，支持 number 和 string 两种输入。
-/// English: Try to parse a JSON value into an unsigned integer, supporting both number and string inputs.
+/// Try to parse a JSON value into an unsigned integer, supporting both number and string inputs.
+/// 尝试把 JSON 值解析成无符号整数，支持 number 和 string 两种输入。
 fn value_as_u64(value: &Value) -> Option<u64> {
     match value {
         Value::Number(number) => number.as_u64(),
@@ -112,8 +112,8 @@ fn value_as_u64(value: &Value) -> Option<u64> {
     }
 }
 
-/// 中文：从磁盘加载工具配置运行时状态。
-/// English: Load the tool-config runtime state from disk.
+/// Load the tool-config runtime state from disk.
+/// 从磁盘加载工具配置运行时状态。
 fn load_tool_config_runtime() -> Result<ToolConfigRuntime, String> {
     let source_path = find_tool_config_path();
     let Some(path) = source_path else {
@@ -121,25 +121,13 @@ fn load_tool_config_runtime() -> Result<ToolConfigRuntime, String> {
     };
 
     let content = fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "Failed to read tool config file {} / 读取工具配置文件失败: {}",
-            path.display(),
-            error
-        )
+        format!("Failed to read tool config file {}: {}", path.display(), error)
     })?;
     let parsed_yaml: Value = serde_yaml::from_str(&content).map_err(|error| {
-        format!(
-            "Failed to parse tool config YAML {} / 解析工具配置 YAML 失败: {}",
-            path.display(),
-            error
-        )
+        format!("Failed to parse tool config YAML {}: {}", path.display(), error)
     })?;
     let configs = normalize_tool_config_root(&parsed_yaml).map_err(|error| {
-        format!(
-            "Invalid tool config file {} / 工具配置文件格式无效: {}",
-            path.display(),
-            error
-        )
+        format!("Invalid tool config file {}: {}", path.display(), error)
     })?;
 
     Ok(ToolConfigRuntime {
@@ -148,47 +136,41 @@ fn load_tool_config_runtime() -> Result<ToolConfigRuntime, String> {
     })
 }
 
-/// 中文：把原始 YAML 根对象规范化为 “skill_name -> flat config object” 的映射。
-/// English: Normalize the raw YAML root object into a `skill_name -> flat config object` mapping.
+/// Normalize the raw YAML root object into a `skill_name -> flat config object` mapping.
+/// 把原始 YAML 根对象规范化为 “skill_name -> flat config object” 的映射。
 fn normalize_tool_config_root(root: &Value) -> Result<BTreeMap<String, Value>, String> {
     let root_object = root
         .as_object()
-        .ok_or_else(|| "tool_configs.yaml root must be an object / 根节点必须是对象".to_string())?;
+        .ok_or_else(|| "tool_configs.yaml root must be an object".to_string())?;
 
     let mut configs = BTreeMap::new();
     for (skill_name, raw_config) in root_object {
         let normalized_name = skill_name.trim();
         if normalized_name.is_empty() {
-            return Err("tool config key must not be empty / 工具配置键不能为空".to_string());
+            return Err("tool config key must not be empty".to_string());
         }
         let normalized_value = normalize_flat_tool_config(raw_config).map_err(|error| {
-            format!(
-                "tool `{0}` config is invalid / 工具 `{0}` 配置无效: {1}",
-                normalized_name, error
-            )
+            format!("tool `{0}` config is invalid: {}, {}", normalized_name, error)
         })?;
         configs.insert(normalized_name.to_string(), normalized_value);
     }
     Ok(configs)
 }
 
-/// 中文：校验单个工具配置只包含一层标量或标量数组，不允许嵌套对象。
-/// English: Validate that one tool config only contains one level of scalar or scalar-array values, without nested objects.
+/// Validate that one tool config only contains one level of scalar or scalar-array values, without nested objects.
+/// 校验单个工具配置只包含一层标量或标量数组，不允许嵌套对象。
 fn normalize_flat_tool_config(raw_config: &Value) -> Result<Value, String> {
     let object = raw_config
         .as_object()
-        .ok_or_else(|| "tool config must be an object / 工具配置必须是对象".to_string())?;
+        .ok_or_else(|| "tool config must be an object".to_string())?;
 
     let mut normalized = Map::new();
     for (key, value) in object {
         if key.trim().is_empty() {
-            return Err("tool config field name must not be empty / 字段名不能为空".to_string());
+            return Err("tool config field name must not be empty".to_string());
         }
         validate_flat_tool_value(value).map_err(|error| {
-            format!(
-                "field `{}` is invalid / 字段 `{}` 无效: {}",
-                key, key, error
-            )
+            format!("field `{}` is invalid: {}, {}", key, key, error)
         })?;
         normalized.insert(key.clone(), value.clone());
     }
@@ -196,8 +178,8 @@ fn normalize_flat_tool_config(raw_config: &Value) -> Result<Value, String> {
     Ok(Value::Object(normalized))
 }
 
-/// 中文：校验工具配置值只能是标量、null 或标量数组。
-/// English: Validate that a tool-config value is either a scalar, null, or an array of scalars.
+/// Validate that a tool-config value is either a scalar, null, or an array of scalars.
+/// 校验工具配置值只能是标量、null 或标量数组。
 fn validate_flat_tool_value(value: &Value) -> Result<(), String> {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(()),
@@ -206,19 +188,19 @@ fn validate_flat_tool_value(value: &Value) -> Result<(), String> {
                 match item {
                     Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
                     _ => {
-                        return Err("arrays may only contain scalar values / 数组只能包含标量值"
+                        return Err("arrays may only contain scalar values"
                             .to_string());
                     }
                 }
             }
             Ok(())
         }
-        Value::Object(_) => Err("nested objects are not allowed / 不允许嵌套对象".to_string()),
+        Value::Object(_) => Err("nested objects are not allowed".to_string()),
     }
 }
 
-/// 中文：查找工具配置文件；优先使用运行时输出目录，其次回退到仓库模板目录。
-/// English: Find the tool-config file, preferring the runtime output directory and then falling back to the repository template directory.
+/// Find the tool-config file, preferring the runtime output directory and then falling back to the repository template directory.
+/// 查找工具配置文件；优先使用运行时输出目录，其次回退到仓库模板目录。
 fn find_tool_config_path() -> Option<PathBuf> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
@@ -237,8 +219,8 @@ fn find_tool_config_path() -> Option<PathBuf> {
     None
 }
 
-/// 中文：根据运行时状态构建统一的加载报告。
-/// English: Build a normalized load report from the current runtime state.
+/// Build a normalized load report from the current runtime state.
+/// 根据运行时状态构建统一的加载报告。
 fn build_tool_config_load_report(runtime: &ToolConfigRuntime) -> ToolConfigLoadReport {
     ToolConfigLoadReport {
         source_path: runtime
@@ -262,8 +244,8 @@ fn build_tool_config_load_report(runtime: &ToolConfigRuntime) -> ToolConfigLoadR
 mod tests {
     use super::*;
 
-    /// 中文：验证工具配置支持一层标量与数组值。
-    /// English: Verify that tool configs support one-level scalar values and arrays.
+    /// Verify that tool configs support one-level scalar values and arrays.
+    /// 验证工具配置支持一层标量与数组值。
     #[test]
     fn normalize_tool_config_root_accepts_flat_values_and_arrays() {
         let raw = json!({
@@ -280,8 +262,8 @@ mod tests {
         assert_eq!(normalized["vulcan-codekit"]["list"], json!(["x", "y", 3]));
     }
 
-    /// 中文：验证嵌套对象会被拒绝，避免工具配置无限膨胀。
-    /// English: Verify that nested objects are rejected to keep tool config intentionally shallow.
+    /// Verify that nested objects are rejected to keep tool config intentionally shallow.
+    /// 验证嵌套对象会被拒绝，避免工具配置无限膨胀。
     #[test]
     fn normalize_tool_config_root_rejects_nested_objects() {
         let raw = json!({

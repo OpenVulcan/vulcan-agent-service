@@ -43,10 +43,10 @@ use tool_config::preload_tool_configs;
 use tool_result_format::{HostRenderOptions, RuntimeInvocationResult, render_tool_result_text};
 use vulcan_luaskills::{LuaEngine, LuaVmPoolConfig};
 
-/// 中文：输出 `--call-tools` 的最终结果。
-/// 调试模式同样会注入模拟客户端上下文，因此预算解析也必须基于同一份请求上下文完成。
-/// English: Print the final `--call-tools` result.
+/// Print the final `--call-tools` result.
+/// 输出 `--call-tools` 的最终结果。
 /// The debug mode also injects a simulated client context, so budget resolution must use the same request context.
+/// 调试模式同样会注入模拟客户端上下文，因此预算解析也必须基于同一份请求上下文完成。
 fn print_call_tools_result(
     value: &RuntimeInvocationResult,
     skill_name: Option<&str>,
@@ -69,8 +69,8 @@ fn print_call_tools_result(
     Ok(())
 }
 
-/// 中文：把客户端预算预解析摘要格式化成人可直接阅读的启动日志。
-/// English: Format the resolved client-budget preview into startup logs that are easy for humans to read directly.
+/// Format the resolved client-budget preview into startup logs that are easy for humans to read directly.
+/// 把客户端预算预解析摘要格式化成人可直接阅读的启动日志。
 fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadReport) {
     for (client_pattern, preview) in &report.resolved_previews {
         let Some(scope_object) = preview.as_object() else {
@@ -104,10 +104,7 @@ fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadRepor
                 } else {
                     bytes
                 };
-                output_parts.push(format!(
-                    "tokens:{} rate:{} => bytes:{}",
-                    tokens, report.estimation.bytes_per_token, displayed_bytes
-                ));
+                output_parts.push(format!("tokens:{} rate:{} => bytes:{}", tokens, report.estimation.bytes_per_token, displayed_bytes));
             }
             if let Some(raw_bytes_value) = raw_bytes {
                 output_parts.push(format!("bytes:{}", raw_bytes_value));
@@ -124,19 +121,13 @@ fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadRepor
                 output_parts.push(format!("effective_bytes:{}", bytes));
             }
 
-            log_info(format!(
-                "[mcp_output_limit]client:{} {}({}) src={}",
-                client_pattern,
-                scope_name,
-                output_parts.join(", "),
-                source_summary
-            ));
+            log_info(format!("[mcp_output_limit]client:{} {}({}) src={}", client_pattern, scope_name, output_parts.join(", "), source_summary));
         }
     }
 }
 
-/// 中文：把工具配置预载摘要格式化成人可直接阅读的启动日志。
-/// English: Format the preloaded tool-config summary into startup logs that are directly readable by humans.
+/// Format the preloaded tool-config summary into startup logs that are directly readable by humans.
+/// 把工具配置预载摘要格式化成人可直接阅读的启动日志。
 fn print_tool_config_preload_log(report: &tool_config::ToolConfigLoadReport) {
     if report.tool_count == 0 {
         log_info("[tools_config]loaded none configs,count=0");
@@ -145,10 +136,7 @@ fn print_tool_config_preload_log(report: &tool_config::ToolConfigLoadReport) {
 
     for tool_name in &report.tool_names {
         let count = report.config_counts.get(tool_name).copied().unwrap_or(0);
-        log_info(format!(
-            "[tools_config]loaded {} configs,count={}",
-            tool_name, count
-        ));
+        log_info(format!("[tools_config]loaded {} configs,count={}", tool_name, count));
     }
 }
 
@@ -174,8 +162,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// 中文：异步主流程，根据运行模式决定是启动网络服务还是直接进入 tools 调试。
-/// English: Async main flow that decides between starting network services and entering direct tool-debug mode.
+/// Async main flow that decides between starting network services and entering direct tool-debug mode.
+/// 异步主流程，根据运行模式决定是启动网络服务还是直接进入 tools 调试。
 async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     install_luaskills_log_callback();
 
@@ -191,38 +179,38 @@ async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 中文：命令行运行模式。
-/// English: Command-line runtime mode.
+/// Command-line runtime mode.
+/// 命令行运行模式。
 enum RuntimeMode {
-    /// 中文：正常启动 HTTP/gRPC 服务。
-    /// English: Start the regular HTTP/gRPC services.
+    /// Start the regular HTTP/gRPC services.
+    /// 正常启动 HTTP/gRPC 服务。
     Serve,
-    /// 中文：仅初始化工具运行环境，并直接调用单个 tool 做本地调试。
-    /// 该模式会模拟一个固定客户端上下文，不读取 `config.yaml`，也不启动任何端口。
-    /// English: Initialize the tool runtime only and directly invoke a single tool for local debugging.
+    /// Initialize the tool runtime only and directly invoke a single tool for local debugging.
+    /// 仅初始化工具运行环境，并直接调用单个 tool 做本地调试。
     /// This mode simulates a fixed client context, does not read `config.yaml`, and does not open any ports.
+    /// 该模式会模拟一个固定客户端上下文，不读取 `config.yaml`，也不启动任何端口。
     CallTool {
         tool_name: String,
         arguments: Value,
         simulated_client_name: String,
     },
-    /// 中文：内部专用的 luaexec 子进程执行模式。
-    /// English: Internal-only luaexec subprocess execution mode.
+    /// Internal-only luaexec subprocess execution mode.
+    /// 内部专用的 luaexec 子进程执行模式。
     InternalLuaexecRequest { request_file: String },
 }
 
-/// 中文：`--call-tools` 调试模式使用的默认模拟客户端名称。
-/// English: Default simulated client name used by the `--call-tools` debug mode.
+/// Default simulated client name used by the `--call-tools` debug mode.
+/// `--call-tools` 调试模式使用的默认模拟客户端名称。
 const DEFAULT_CALL_TOOL_CLIENT_NAME: &str = "VulcanMcpTest";
 
-/// 中文：根据命令行参数解析运行模式。
-/// 支持：
-/// - `--call-tools <tool_name> [json_arguments]`
-/// - `--call-client-name <name>`：指定模拟客户端名称
-/// English: Parse the runtime mode from CLI arguments.
+/// Parse the runtime mode from CLI arguments.
+/// 根据命令行参数解析运行模式。
 /// Supported forms:
+/// 支持以下形式：
+/// - `--call-tools <tool_name> [json_arguments]`
 /// - `--call-tools <tool_name> [json_arguments]`
 /// - `--call-client-name <name>`: set the simulated client name
+/// - `--call-client-name <name>`：指定模拟客户端名称
 fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     for index in 0..args.len() {
@@ -260,10 +248,7 @@ fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
                         cursor += 2;
                     }
                     value if value.starts_with("--") => {
-                        return Err(format!(
-                            "Unknown --call-tools flag: {} / 未知的 --call-tools 调试参数: {}",
-                            value, value
-                        )
+                        return Err(format!("Unknown --call-tools flag: {}", value)
                         .into());
                     }
                     raw_json => {
@@ -284,8 +269,8 @@ fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     Ok(RuntimeMode::Serve)
 }
 
-/// 中文：构建并初始化 MCP Server，包括外部客户端、Lua Skills 与共享缓存。
-/// English: Build and initialize the MCP server, including external clients, Lua skills, and shared cache.
+/// Build and initialize the MCP server, including external clients, Lua skills, and shared cache.
+/// 构建并初始化 MCP Server，包括外部客户端、Lua Skills 与共享缓存。
 async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Error>> {
     let mut server = McpServer::new();
 
@@ -316,8 +301,8 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
     Ok(server)
 }
 
-/// 中文：运行默认的 HTTP/gRPC 服务模式。
-/// English: Run the default HTTP/gRPC service mode.
+/// Run the default HTTP/gRPC service mode.
+/// 运行默认的 HTTP/gRPC 服务模式。
 async fn run_network_transports(
     server: McpServer,
     cfg: &Config,
@@ -355,10 +340,10 @@ async fn run_network_transports(
     Ok(())
 }
 
-/// 中文：在不启动服务的情况下，直接初始化 Lua skill 并调用目标 tool，便于调试技能加载、依赖初始化与实际返回值。
-/// 该模式固定使用单 VM，并模拟一个完整的 MCP 请求上下文。
-/// English: Initialize Lua skills and invoke the target tool directly without starting transports.
+/// Initialize Lua skills and invoke the target tool directly without starting transports.
+/// 在不启动服务的情况下，直接初始化 Lua skill 并调用目标 tool，便于调试技能加载、依赖初始化与实际返回值。
 /// This mode always uses a single VM and simulates a complete MCP request context.
+/// 该模式固定使用单 VM，并模拟一个完整的 MCP 请求上下文。
 fn run_call_tool_mode(
     tool_name: &str,
     arguments: Value,
@@ -392,8 +377,8 @@ fn run_call_tool_mode(
     )
 }
 
-/// 中文：在本地调试模式下基于统一运行根构建一个完整加载 skills 的单虚拟机 LuaEngine。
-/// English: Build a single-VM LuaEngine with fully loaded skills from the unified runtime root for local debug modes.
+/// Build a single-VM LuaEngine with fully loaded skills from the unified runtime root for local debug modes.
+/// 在本地调试模式下基于统一运行根构建一个完整加载 skills 的单虚拟机 LuaEngine。
 fn build_single_vm_lua_engine_for_local_mode(
     config: &Config,
 ) -> Result<LuaEngine, Box<dyn std::error::Error>> {
@@ -415,8 +400,8 @@ fn build_single_vm_lua_engine_for_local_mode(
     Ok(engine)
 }
 
-/// 中文：内部 luaexec 子进程模式，按本地完整运行时初始化后执行单次隔离请求。
-/// English: Internal luaexec subprocess mode that initializes the full local runtime before executing one isolated request.
+/// Internal luaexec subprocess mode that initializes the full local runtime before executing one isolated request.
+/// 内部 luaexec 子进程模式，按本地完整运行时初始化后执行单次隔离请求。
 fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn std::error::Error>> {
     set_non_error_logging_enabled(false);
     install_luaskills_log_callback();
@@ -434,7 +419,7 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// English: Find the ordered skill-root chain for the default runtime environment.
+/// Find the ordered skill-root chain for the default runtime environment.
 /// 查找默认运行环境使用的有序技能根目录覆盖链。
 fn find_skill_roots(
     cfg: &config::Config,
@@ -443,8 +428,8 @@ fn find_skill_roots(
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
 }
 
-/// 中文：为 `--call-tools` 构造尽量贴近真实 MCP 请求的模拟上下文。
-/// English: Build a simulated request context for `--call-tools` that stays close to a real MCP request.
+/// Build a simulated request context for `--call-tools` that stays close to a real MCP request.
+/// 为 `--call-tools` 构造尽量贴近真实 MCP 请求的模拟上下文。
 fn build_call_tool_request_context(client_name: &str) -> RequestContext {
     RequestContext {
         transport: Some("call_tools".to_string()),
@@ -458,8 +443,8 @@ fn build_call_tool_request_context(client_name: &str) -> RequestContext {
     }
 }
 
-/// 中文：在宿主启动前预载可热重载的运行时配置文件，避免首次请求时才暴露配置问题。
-/// English: Preload hot-reloadable runtime config files before the host starts so configuration issues surface before the first request.
+/// Preload hot-reloadable runtime config files before the host starts so configuration issues surface before the first request.
+/// 在宿主启动前预载可热重载的运行时配置文件，避免首次请求时才暴露配置问题。
 fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
     let client_budget_report = preload_client_budget_config()
         .map_err(|error| format!("Failed to preload client budgets: {}", error))?;
@@ -471,7 +456,7 @@ fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// English: Prepend runtime-root libs/ to PATH so C dependency DLLs (zlib1.dll, etc.) are discoverable when Lua C modules load via FFI.
+/// Prepend runtime-root libs/ to PATH so C dependency DLLs (zlib1.dll, etc.) are discoverable when Lua C modules load via FFI.
 /// 将运行根下的 libs/ 前置到 PATH，保证 Lua C 模块通过 FFI 加载时能找到依赖 DLL。
 fn add_libs_to_path(config: &Config) {
     let Some(runtime_root) = resolve_runtime_root_from_config(config) else {
