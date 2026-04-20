@@ -1668,14 +1668,15 @@ impl McpServer {
             .unwrap_or("");
 
         let prompt_completion_values = if ref_type == "ref/prompt" {
-            self.lua_engine
-                .as_ref()
-                .and_then(|engine| {
-                    engine
+            match self.lua_engine.as_ref() {
+                Some(engine) => {
+                    let engine = engine
                         .read()
-                        .ok()
-                        .and_then(|engine| engine.prompt_argument_completions(ref_name, argument_name))
-                })
+                        .map_err(|_| (-32603, "Lua engine lock poisoned".to_string()))?;
+                    engine.prompt_argument_completions(ref_name, argument_name)
+                }
+                None => None,
+            }
         } else {
             None
         };
