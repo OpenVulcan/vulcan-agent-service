@@ -1,6 +1,23 @@
 use serde::Deserialize;
 use std::fs;
 
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum SkillRootConfigEntry {
+    Named(NamedSkillRootConfig),
+    Path(String),
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct NamedSkillRootConfig {
+    /// 中文：技能根的稳定名称，例如 ROOT、USER 或某个项目标识符。
+    /// English: Stable skill-root name such as ROOT, USER, or one project identifier.
+    pub name: String,
+    /// 中文：技能根目录路径。
+    /// English: Physical skills root directory path.
+    pub path: String,
+}
+
 // ============================================================
 // Configuration (loaded from YAML)
 // ============================================================
@@ -30,7 +47,7 @@ pub struct Config {
 
     /// English: Ordered skill roots from highest priority to lowest priority for the default runtime environment.
     /// 默认运行环境使用的有序技能根目录列表，按从高优先级到低优先级排列。
-    pub skill_roots: Option<Vec<String>>,
+    pub skill_roots: Option<Vec<SkillRootConfigEntry>>,
 
     /// English: Optional runtime root directory that owns configs, skills, dependencies, databases, temp, libs, and lua_packages.
     /// 宿主完整运行根目录，可统一承载 configs、skills、dependencies、databases、temp、libs 与 lua_packages。
@@ -63,6 +80,10 @@ pub struct Config {
     /// 中文：受保护技能标识符列表，这些名称只允许由 system tools 维护。
     /// English: Protected skill identifiers that may only be maintained through system tools.
     pub protected_skills: Option<Vec<String>>,
+
+    /// 中文：依赖目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `dependencies`。
+    /// English: Dependency directory name, fixed as a sibling of the skills root under the same parent. Defaults to `dependencies`.
+    pub dependency_dir_name: Option<String>,
 }
 
 fn default_http_addr() -> Option<String> {

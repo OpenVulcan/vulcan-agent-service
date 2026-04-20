@@ -1,5 +1,5 @@
 use crate::client_budget::{ClientBudgetSnapshot, resolve_client_budget_snapshot};
-use crate::config::Config;
+use crate::config::{Config, SkillRootConfigEntry};
 use crate::protocol::{RequestContext, Tool, ToolAnnotations};
 use crate::runtime_logging::{error as log_error, info as log_info, warn as log_warn};
 use crate::temp_maintenance::ensure_runtime_temp_dir;
@@ -11,7 +11,7 @@ use vulcan_luaskills::{
     LuaEngineOptions, LuaInvocationContext, LuaRuntimeHostOptions, LuaVmPoolConfig,
     RuntimeClientInfo, RuntimeEntryDescriptor, RuntimeLogCallback, RuntimeLogEvent,
     RuntimeLogLevel, RuntimeRequestContext, SkillProtectionConfig, ToolCacheConfig,
-    DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS, DEFAULT_TOOL_CACHE_MAX_ENTRIES,
+    RuntimeSkillRoot, DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS, DEFAULT_TOOL_CACHE_MAX_ENTRIES,
     DEFAULT_TOOL_CACHE_MAX_TTL_SECS, set_log_callback,
 };
 
@@ -71,7 +71,6 @@ pub fn build_luaskills_engine_options(
         resolve_runtime_root_from_config(config).ok_or("Failed to resolve runtime root")?;
     let runtime_temp_root = ensure_runtime_temp_dir()?;
     let temp_root = runtime_temp_root.join("mcp");
-    let tool_dependency_root = Some(runtime_root.join("dependencies").join("shared").join("tools"));
     let download_cache_root = Some(runtime_temp_root.join("downloads"));
     let lua_packages_dir = resolve_lua_packages_dir(&runtime_root);
     let host_library_root = resolve_host_library_root(&runtime_root);
@@ -80,14 +79,17 @@ pub fn build_luaskills_engine_options(
         resources_dir: resolve_runtime_resources_dir(&runtime_root),
         lua_packages_dir: lua_packages_dir.clone(),
         luaexec_program: std::env::current_exe().ok(),
-        tool_dependency_root,
         host_provided_tool_root: Some(runtime_root.join("bin").join("tools")),
-        lua_dependency_root: Some(runtime_root.join("dependencies").join("shared").join("lua")),
         host_provided_lua_root: lua_packages_dir,
-        ffi_dependency_root: Some(runtime_root.join("dependencies").join("shared").join("ffi")),
         host_provided_ffi_root: host_library_root,
         download_cache_root,
-        skill_state_root: Some(runtime_root.join("state").join("skills")),
+        dependency_dir_name: config
+            .dependency_dir_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "dependencies".to_string()),
+        lifecycle_dir_name: "__".to_string(),
         protection: resolve_skill_protection_config(config),
         allow_network_download: true,
         github_base_url: std::env::var("VULCAN_GITHUB_BASE_URL")
@@ -100,8 +102,6 @@ pub fn build_luaskills_engine_options(
             .filter(|value| !value.is_empty()),
         sqlite_library_path: resolve_host_library_path(&runtime_root, sqlite_library_file_name()),
         lancedb_library_path: resolve_host_library_path(&runtime_root, lancedb_library_file_name()),
-        sqlite_database_root: Some(runtime_root.join("databases").join("sqlite")),
-        lancedb_database_root: Some(runtime_root.join("databases").join("lancedb")),
         cache_config: Some(cache_config),
         reserved_entry_names: host_reserved_tool_names(),
     };
@@ -138,24 +138,46 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
 
 /// English: Resolve the ordered default skill roots from host configuration and runtime layout.
 /// 从宿主配置与运行时布局解析默认环境使用的有序技能根目录列表。
-pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<PathBuf> {
+pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<RuntimeSkillRoot> {
     let mut ordered_roots = Vec::new();
     let mut seen_roots = HashSet::new();
+    let mut synthesized_index = 1usize;
 
-    let mut push_unique_root = |path: PathBuf| {
-        let normalized = path.to_string_lossy().to_string();
+    let mut push_unique_root = |name: String, path: PathBuf| {
+        let normalized = format!("{}::{}", name, path.to_string_lossy());
         if seen_roots.insert(normalized) {
-            ordered_roots.push(path);
+            ordered_roots.push(RuntimeSkillRoot {
+                name,
+                skills_dir: path,
+            });
         }
     };
 
     if let Some(configured_roots) = &config.skill_roots {
         for value in configured_roots {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                continue;
+            match value {
+                SkillRootConfigEntry::Named(named) => {
+                    let name = named.name.trim();
+                    let path = named.path.trim();
+                    if name.is_empty() || path.is_empty() {
+                        continue;
+                    }
+                    push_unique_root(name.to_string(), PathBuf::from(path));
+                }
+                SkillRootConfigEntry::Path(path) => {
+                    let trimmed = path.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let generated = if synthesized_index == 1 {
+                        "ROOT".to_string()
+                    } else {
+                        format!("ROOT-{}", synthesized_index)
+                    };
+                    synthesized_index += 1;
+                    push_unique_root(generated, PathBuf::from(trimmed));
+                }
             }
-            push_unique_root(PathBuf::from(trimmed));
         }
     } else if let Some(override_root) = config
         .skills_override
@@ -164,18 +186,21 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        push_unique_root(override_root);
+        push_unique_root("USER".to_string(), override_root);
     } else if let Some(home) = home_dir() {
-        push_unique_root(home.join(".vulcan").join("vulcan-mcp").join("skills"));
+        push_unique_root(
+            "USER".to_string(),
+            home.join(".vulcan").join("vulcan-mcp").join("skills"),
+        );
     }
 
     if let Some(runtime_root) = resolve_runtime_root_from_config(config) {
-        push_unique_root(runtime_root.join("skills"));
+        push_unique_root("ROOT".to_string(), runtime_root.join("skills"));
     }
 
     ordered_roots
         .into_iter()
-        .filter(|path| path.exists())
+        .filter(|root| root.skills_dir.exists())
         .collect()
 }
 
@@ -245,6 +270,13 @@ pub fn map_runtime_entry_to_mcp_tool(entry: &RuntimeEntryDescriptor) -> Tool {
             required.push(parameter.name.clone());
         }
     }
+    props.insert(
+        "environment_id".to_string(),
+        json!({
+            "type": "string",
+            "description": "Optional explicit environment id used to route this tool call into one initialized project environment."
+        }),
+    );
 
     Tool::with_annotations(
         &entry.canonical_name,
@@ -354,7 +386,13 @@ pub fn host_reserved_tool_names() -> Vec<String> {
     vec![
         "vulcan-help-list".to_string(),
         "vulcan-help-detail".to_string(),
+        "vulcan-environment-init".to_string(),
+        "vulcan-environment-list".to_string(),
+        "vulcan-environment-reload".to_string(),
+        "vulcan-environment-remove".to_string(),
+        "vulcan-environment-inspect".to_string(),
         "vulcan-skill-enable".to_string(),
+        "vulcan-skill-list".to_string(),
         "vulcan-skill-disable".to_string(),
         "vulcan-skill-uninstall".to_string(),
         "vulcan-skill-reload".to_string(),

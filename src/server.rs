@@ -1,5 +1,9 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::fs;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
 use tokio::sync::Mutex;
@@ -10,14 +14,16 @@ use crate::config::Config;
 use crate::luaskills_host::{
     build_luaskills_engine_options, build_runtime_invocation_context, build_runtime_request_context,
     client_budget_snapshot_for_render, install_luaskills_log_callback, map_runtime_entry_to_mcp_tool,
+    resolve_runtime_root_from_config,
 };
 use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
 use crate::tool_config::reload_tool_configs;
 use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
 use vulcan_luaskills::{
-    LuaEngine, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
+    LuaEngine, LuaEngineOptions, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
     RuntimeSkillLifecycleEvent, RuntimeSkillLifecycleCallback, RuntimeSkillHelpDescriptor,
+    RuntimeSkillRoot,
     SkillUninstallOptions, ToolCacheConfig, set_entry_registry_callback,
     set_skill_lifecycle_callback,
 };
@@ -35,7 +41,25 @@ pub struct McpServer {
     #[allow(dead_code)] // reserved for VMM forwarding mode
     vmm: Option<VmmClient>,
     lua_engine: Option<Arc<StdRwLock<LuaEngine>>>,
-    lua_skill_roots: Option<Vec<std::path::PathBuf>>,
+    lua_engine_options: Option<LuaEngineOptions>,
+    lua_skill_roots: Option<Vec<RuntimeSkillRoot>>,
+    lua_environment_registry_dir: Option<PathBuf>,
+    lua_project_environments: Arc<StdRwLock<HashMap<String, LuaProjectEnvironment>>>,
+}
+
+#[derive(Clone)]
+struct LuaProjectEnvironment {
+    environment_id: String,
+    skill_roots: Vec<RuntimeSkillRoot>,
+    engine: Arc<StdRwLock<LuaEngine>>,
+}
+
+/// English: Persisted project-environment record stored under the host runtime state directory.
+/// 存放在宿主运行时状态目录中的项目环境持久化记录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedProjectEnvironmentRecord {
+    environment_id: String,
+    skills_dir: String,
 }
 
 struct ServerInner {
@@ -69,7 +93,10 @@ impl McpServer {
             inner: Arc::new(Mutex::new(inner)),
             vmm: None,
             lua_engine: None,
+            lua_engine_options: None,
             lua_skill_roots: None,
+            lua_environment_registry_dir: None,
+            lua_project_environments: Arc::new(StdRwLock::new(HashMap::new())),
         };
         server.register_defaults();
         server
@@ -90,19 +117,22 @@ impl McpServer {
     pub fn with_lua_skills(
         mut self,
         config: &Config,
-        skill_roots: &[std::path::PathBuf],
+        skill_roots: &[RuntimeSkillRoot],
         pool_config: LuaVmPoolConfig,
         cache_config: ToolCacheConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         install_luaskills_log_callback();
-        let mut engine =
-            LuaEngine::new(build_luaskills_engine_options(config, pool_config, cache_config)?)?;
+        let engine_options = build_luaskills_engine_options(config, pool_config, cache_config)?;
+        let mut engine = LuaEngine::new(engine_options.clone())?;
         engine.load_from_roots(skill_roots)?;
         let entries = engine.list_entries();
         eprintln!("[MCP] {} Lua skills loaded", entries.len());
         let engine = Arc::new(StdRwLock::new(engine));
         self.lua_engine = Some(engine.clone());
+        self.lua_engine_options = Some(engine_options);
         self.lua_skill_roots = Some(skill_roots.to_vec());
+        self.lua_environment_registry_dir = resolve_runtime_root_from_config(config)
+            .map(|runtime_root| runtime_root.join("state").join("environments"));
 
         let callback_inner = self.inner.clone();
         set_entry_registry_callback(Some(Arc::new(move |delta: &RuntimeEntryRegistryDelta| {
@@ -112,10 +142,12 @@ impl McpServer {
         let lifecycle_callback: RuntimeSkillLifecycleCallback =
             Arc::new(|event: &RuntimeSkillLifecycleEvent| {
                 eprintln!(
-                    "[LuaSkills:lifecycle] plane={:?} action={:?} skill={} status={} message={}",
+                    "[LuaSkills:lifecycle] plane={:?} action={:?} skill={} root={} dir={} status={} message={}",
                     event.plane,
                     event.action,
                     event.skill_id,
+                    event.root_name.as_deref().unwrap_or(""),
+                    event.skill_dir.as_deref().unwrap_or(""),
                     event.status,
                     event.message.as_deref().unwrap_or("")
                 );
@@ -132,6 +164,8 @@ impl McpServer {
             }
         }
 
+        self.restore_persisted_project_environments()?;
+
         Ok(self)
     }
 
@@ -144,7 +178,27 @@ impl McpServer {
             Tool::with_annotations(
                 "vulcan-help-list",
                 "List all registered strict LuaSkills help trees and their available flow descriptions. This MCP wrapper renders host-side Markdown from lib/system structured help data.",
-                json!({}),
+                json!({
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When omitted, the default environment is used."}
+                }),
+                vec![],
+                ToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-skill-list".to_string(),
+            Tool::with_annotations(
+                "vulcan-skill-list",
+                "List currently effective LuaSkills packages together with their resolved root name and physical skill directory so host or IDE integrations can understand which concrete skill instance is active.",
+                json!({
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When omitted, the default environment is used."}
+                }),
                 vec![],
                 ToolAnnotations {
                     read_only_hint: Some(true),
@@ -163,9 +217,99 @@ impl McpServer {
                 "Read one strict LuaSkills help flow from lib/system help data and render it as Markdown for MCP clients. Use flow=`main` to read the skill main help node.",
                 json!({
                     "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit` or `vulcan-runtime`."},
-                    "flow": {"type": "string", "description": "Help flow name. Use `main` for the skill main help node, or pass one declared workflow/topic name."}
+                    "flow": {"type": "string", "description": "Help flow name. Use `main` for the skill main help node, or pass one declared workflow/topic name."},
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When omitted, the default environment is used."}
                 }),
                 vec!["skill".to_string(), "flow".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-environment-init".to_string(),
+            Tool::with_annotations(
+                "vulcan-environment-init",
+                "Initialize or refresh one explicit project environment. The project environment root becomes the highest-priority named skill root and is layered above the default root chain.",
+                json!({
+                    "environment_id": {"type": "string", "description": "Stable project environment id, for example `project-a` or `workspace/foo`."},
+                    "skills_dir": {"type": "string", "description": "Physical skills directory of the project environment, for example `D:/project/.vulcan/luaskills`."}
+                }),
+                vec!["environment_id".to_string(), "skills_dir".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-environment-list".to_string(),
+            Tool::with_annotations(
+                "vulcan-environment-list",
+                "List initialized project environments together with their ordered skill roots.",
+                json!({}),
+                vec![],
+                ToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-environment-reload".to_string(),
+            Tool::with_annotations(
+                "vulcan-environment-reload",
+                "Reload one explicit project environment from its persisted or active skills directory and rebuild its effective LuaSkills runtime view.",
+                json!({
+                    "environment_id": {"type": "string", "description": "Stable project environment id to reload."}
+                }),
+                vec!["environment_id".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-environment-remove".to_string(),
+            Tool::with_annotations(
+                "vulcan-environment-remove",
+                "Remove one explicit project environment from the active registry and its persisted environment record. The physical project skills directory is retained by default.",
+                json!({
+                    "environment_id": {"type": "string", "description": "Stable project environment id to remove."}
+                }),
+                vec!["environment_id".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+
+        inner.host_tools.insert(
+            "vulcan-environment-inspect".to_string(),
+            Tool::with_annotations(
+                "vulcan-environment-inspect",
+                "Inspect one explicit project environment, including its ordered skill roots and currently effective skills.",
+                json!({
+                    "environment_id": {"type": "string", "description": "Stable project environment id to inspect."}
+                }),
+                vec!["environment_id".to_string()],
                 ToolAnnotations {
                     read_only_hint: Some(true),
                     destructive_hint: Some(false),
@@ -264,6 +408,383 @@ impl McpServer {
                 },
             ),
         );
+    }
+
+    /// English: Resolve the Lua engine for one optional project environment id, falling back to the default environment.
+    /// 根据可选项目环境标识解析对应的 Lua 引擎，缺省时回退到默认环境。
+    fn resolve_lua_engine_for_environment(
+        &self,
+        environment_id: Option<&str>,
+    ) -> Option<Arc<StdRwLock<LuaEngine>>> {
+        let normalized = environment_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        match normalized {
+            None => self.lua_engine.clone(),
+            Some(environment_id) => self
+                .lua_project_environments
+                .read()
+                .ok()
+                .and_then(|registry| registry.get(environment_id).cloned())
+                .map(|environment| environment.engine),
+        }
+    }
+
+    /// English: Initialize or refresh one explicit project environment and return its resolved descriptor.
+    /// 初始化或刷新单个显式项目环境，并返回其已解析描述信息。
+    async fn initialize_project_environment(
+        &self,
+        environment_id: &str,
+        skills_dir: &str,
+    ) -> Result<LuaProjectEnvironment, (i64, String)> {
+        let environment_id = environment_id.trim();
+        let skills_dir = skills_dir.trim();
+        if environment_id.is_empty() {
+            return Err((-32602, "environment_id must not be empty".to_string()));
+        }
+        if skills_dir.is_empty() {
+            return Err((-32602, "skills_dir must not be empty".to_string()));
+        }
+
+        let project_skills_dir = std::path::PathBuf::from(skills_dir);
+        let environment_id_owned = environment_id.to_string();
+        let server = self.clone();
+        let project_skills_dir_for_build = project_skills_dir.clone();
+        let environment = tokio::task::spawn_blocking(move || {
+            server.build_project_environment_sync(
+                &environment_id_owned,
+                &project_skills_dir_for_build,
+                true,
+            )
+        })
+        .await
+        .map_err(|error| {
+            (
+                -32603,
+                format!("Project environment init spawn error: {}", error),
+            )
+        })?
+        .map_err(|error| (-32603, error))?;
+
+        self.persist_project_environment_record(environment_id, &project_skills_dir)
+            .map_err(|error| (-32603, error))?;
+        self.lua_project_environments
+            .write()
+            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
+            .insert(environment_id.to_string(), environment.clone());
+        Ok(environment)
+    }
+
+    /// English: Return all initialized project environments sorted by environment id.
+    /// 返回按环境标识排序后的全部已初始化项目环境。
+    fn list_project_environments(&self) -> Vec<LuaProjectEnvironment> {
+        let mut environments = self
+            .lua_project_environments
+            .read()
+            .ok()
+            .map(|registry| registry.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        environments.sort_by(|left, right| left.environment_id.cmp(&right.environment_id));
+        environments
+    }
+
+    /// English: Return the state-directory root that stores persisted project-environment records.
+    /// 返回用于存放项目环境持久化记录的状态目录根路径。
+    fn environment_registry_dir(&self) -> Result<PathBuf, String> {
+        self.lua_environment_registry_dir
+            .clone()
+            .ok_or_else(|| "Lua environment registry directory is not initialized.".to_string())
+    }
+
+    /// English: Persist one project-environment record so the host can restore it on the next startup.
+    /// 持久化一份项目环境记录，便于宿主在下次启动时恢复该环境。
+    fn persist_project_environment_record(
+        &self,
+        environment_id: &str,
+        skills_dir: &Path,
+    ) -> Result<(), String> {
+        let registry_dir = self.environment_registry_dir()?;
+        fs::create_dir_all(&registry_dir).map_err(|error| {
+            format!(
+                "Failed to create environment registry directory {}: {}",
+                registry_dir.display(),
+                error
+            )
+        })?;
+        let record = PersistedProjectEnvironmentRecord {
+            environment_id: environment_id.to_string(),
+            skills_dir: skills_dir.display().to_string(),
+        };
+        let record_path = registry_dir.join(environment_record_file_name(environment_id));
+        let content = serde_json::to_string_pretty(&record)
+            .map_err(|error| format!("Failed to serialize project environment record: {}", error))?;
+        fs::write(&record_path, content).map_err(|error| {
+            format!(
+                "Failed to write project environment record {}: {}",
+                record_path.display(),
+                error
+            )
+        })
+    }
+
+    /// English: Delete one persisted project-environment record by environment id.
+    /// 按环境标识删除单条项目环境持久化记录。
+    fn remove_project_environment_record(&self, environment_id: &str) -> Result<bool, String> {
+        let registry_dir = self.environment_registry_dir()?;
+        let record_path = registry_dir.join(environment_record_file_name(environment_id));
+        if !record_path.exists() {
+            return Ok(false);
+        }
+        fs::remove_file(&record_path).map_err(|error| {
+            format!(
+                "Failed to remove project environment record {}: {}",
+                record_path.display(),
+                error
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// English: Load all persisted project-environment records from the current host state directory.
+    /// 从当前宿主状态目录加载全部项目环境持久化记录。
+    fn load_persisted_project_environment_records(
+        &self,
+    ) -> Result<Vec<PersistedProjectEnvironmentRecord>, String> {
+        let registry_dir = self.environment_registry_dir()?;
+        if !registry_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut records = Vec::new();
+        for entry in fs::read_dir(&registry_dir).map_err(|error| {
+            format!(
+                "Failed to read environment registry directory {}: {}",
+                registry_dir.display(),
+                error
+            )
+        })? {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "Failed to iterate environment registry directory {}: {}",
+                    registry_dir.display(),
+                    error
+                )
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let content = fs::read_to_string(&path).map_err(|error| {
+                format!(
+                    "Failed to read project environment record {}: {}",
+                    path.display(),
+                    error
+                )
+            })?;
+            let record: PersistedProjectEnvironmentRecord = serde_json::from_str(&content)
+                .map_err(|error| {
+                    format!(
+                        "Failed to parse project environment record {}: {}",
+                        path.display(),
+                        error
+                    )
+                })?;
+            records.push(record);
+        }
+        records.sort_by(|left, right| left.environment_id.cmp(&right.environment_id));
+        Ok(records)
+    }
+
+    /// English: Restore persisted project environments whose physical skills directories still exist.
+    /// 恢复物理技能目录仍然存在的已持久化项目环境。
+    fn restore_persisted_project_environments(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let records = self.load_persisted_project_environment_records()?;
+        for record in records {
+            let skills_dir = PathBuf::from(&record.skills_dir);
+            if !skills_dir.exists() {
+                eprintln!(
+                    "[LuaSkills] Skip restoring environment '{}' because skills dir does not exist: {}",
+                    record.environment_id,
+                    skills_dir.display()
+                );
+                continue;
+            }
+            match self.build_project_environment_sync(&record.environment_id, &skills_dir, false) {
+                Ok(environment) => {
+                    if let Ok(mut registry) = self.lua_project_environments.write() {
+                        registry.insert(record.environment_id.clone(), environment);
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[LuaSkills] Failed to restore persisted environment '{}': {}",
+                        record.environment_id, error
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// English: Build one project environment synchronously from the current default root chain and host engine options.
+    /// 基于当前默认根链与宿主引擎选项同步构建单个项目环境。
+    fn build_project_environment_sync(
+        &self,
+        environment_id: &str,
+        skills_dir: &Path,
+        create_if_missing: bool,
+    ) -> Result<LuaProjectEnvironment, String> {
+        let engine_options = self
+            .lua_engine_options
+            .clone()
+            .ok_or_else(|| "Lua engine options are not initialized.".to_string())?;
+        let default_roots = self
+            .lua_skill_roots
+            .clone()
+            .ok_or_else(|| "Default Lua skill roots are not initialized.".to_string())?;
+        if create_if_missing {
+            fs::create_dir_all(skills_dir).map_err(|error| {
+                format!(
+                    "Failed to create project skills directory {}: {}",
+                    skills_dir.display(),
+                    error
+                )
+            })?;
+        } else if !skills_dir.exists() {
+            return Err(format!(
+                "Project skills directory does not exist: {}",
+                skills_dir.display()
+            ));
+        }
+
+        let mut project_roots = vec![RuntimeSkillRoot {
+            name: environment_id.to_string(),
+            skills_dir: skills_dir.to_path_buf(),
+        }];
+        for root in default_roots {
+            if !project_roots
+                .iter()
+                .any(|existing| existing.skills_dir == root.skills_dir)
+            {
+                project_roots.push(root);
+            }
+        }
+
+        let mut engine = LuaEngine::new(engine_options).map_err(|error| error.to_string())?;
+        engine
+            .load_from_roots(&project_roots)
+            .map_err(|error| error.to_string())?;
+
+        Ok(LuaProjectEnvironment {
+            environment_id: environment_id.to_string(),
+            skill_roots: project_roots,
+            engine: Arc::new(StdRwLock::new(engine)),
+        })
+    }
+
+    /// English: Reload one explicit project environment and update its persisted host record.
+    /// 重新加载单个显式项目环境，并同步更新其宿主持久化记录。
+    async fn reload_project_environment(
+        &self,
+        environment_id: &str,
+    ) -> Result<LuaProjectEnvironment, (i64, String)> {
+        let environment_id = environment_id.trim();
+        if environment_id.is_empty() {
+            return Err((-32602, "environment_id must not be empty".to_string()));
+        }
+
+        let skills_dir = self
+            .lua_project_environments
+            .read()
+            .ok()
+            .and_then(|registry| registry.get(environment_id).cloned())
+            .and_then(|environment| environment.skill_roots.first().cloned())
+            .map(|root| root.skills_dir)
+            .or_else(|| {
+                self.load_persisted_project_environment_records()
+                    .ok()
+                    .and_then(|records| {
+                        records
+                            .into_iter()
+                            .find(|record| record.environment_id == environment_id)
+                            .map(|record| PathBuf::from(record.skills_dir))
+                    })
+            })
+            .ok_or_else(|| (-32602, format!("Environment '{}' is not registered.", environment_id)))?;
+
+        let environment_id_owned = environment_id.to_string();
+        let environment = {
+            let skills_dir_clone = skills_dir.clone();
+            let server = self.clone();
+            tokio::task::spawn_blocking(move || {
+                server.build_project_environment_sync(
+                    &environment_id_owned,
+                    &skills_dir_clone,
+                    false,
+                )
+            })
+            .await
+            .map_err(|error| {
+                (
+                    -32603,
+                    format!("Project environment reload spawn error: {}", error),
+                )
+            })?
+            .map_err(|error| (-32603, error))?
+        };
+
+        self.persist_project_environment_record(environment_id, &skills_dir)
+            .map_err(|error| (-32603, error))?;
+        self.lua_project_environments
+            .write()
+            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
+            .insert(environment_id.to_string(), environment.clone());
+        Ok(environment)
+    }
+
+    /// English: Remove one explicit project environment from memory and persistence without touching the physical skills directory.
+    /// 从内存与持久化中移除单个显式项目环境，但不触碰实际技能目录。
+    fn remove_project_environment(
+        &self,
+        environment_id: &str,
+    ) -> Result<(Option<LuaProjectEnvironment>, bool), (i64, String)> {
+        let environment_id = environment_id.trim();
+        if environment_id.is_empty() {
+            return Err((-32602, "environment_id must not be empty".to_string()));
+        }
+        let removed = self
+            .lua_project_environments
+            .write()
+            .map_err(|_| (-32603, "Project environment registry lock poisoned.".to_string()))?
+            .remove(environment_id);
+        let record_removed = self
+            .remove_project_environment_record(environment_id)
+            .map_err(|error| (-32603, error))?;
+        Ok((removed, record_removed))
+    }
+
+    /// English: Inspect one explicit project environment and return its resolved descriptor together with effective skills.
+    /// 检查单个显式项目环境，并返回其已解析描述及当前生效技能列表。
+    fn inspect_project_environment(
+        &self,
+        environment_id: &str,
+    ) -> Result<(LuaProjectEnvironment, Vec<RuntimeSkillHelpDescriptor>), (i64, String)> {
+        let environment_id = environment_id.trim();
+        if environment_id.is_empty() {
+            return Err((-32602, "environment_id must not be empty".to_string()));
+        }
+        let environment = self
+            .lua_project_environments
+            .read()
+            .ok()
+            .and_then(|registry| registry.get(environment_id).cloned())
+            .ok_or_else(|| (-32602, format!("Environment '{}' is not initialized.", environment_id)))?;
+        let effective_skills = environment
+            .engine
+            .read()
+            .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+            .list_skill_help();
+        Ok((environment, effective_skills))
     }
 
     /// Handle a single JSON-RPC message and return the JSON response (if any).
@@ -658,10 +1179,11 @@ impl McpServer {
             }
 
             "vulcan-help-list" => {
-                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref()).ok_or_else(|| {
                     (
                         -32603,
-                        "Lua engine not configured. Add skills directory.".to_string(),
+                        "Lua engine not configured or environment not initialized.".to_string(),
                     )
                 })?;
                 let help_tree = engine
@@ -675,11 +1197,88 @@ impl McpServer {
                 }
             }
 
-            "vulcan-help-detail" => {
-                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+            "vulcan-skill-list" => {
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref()).ok_or_else(|| {
                     (
                         -32603,
-                        "Lua engine not configured. Add skills directory.".to_string(),
+                        "Lua engine not configured or environment not initialized.".to_string(),
+                    )
+                })?;
+                let skill_tree = engine
+                    .read()
+                    .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+                    .list_skill_help();
+                let markdown = render_skill_list_markdown(&skill_tree);
+                ToolCallResult {
+                    content: vec![TextContent::text(&markdown)],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-environment-init" => {
+                let environment_id = required_string_argument(&args, "environment_id")?;
+                let skills_dir = required_string_argument(&args, "skills_dir")?;
+                let initialized = self
+                    .initialize_project_environment(&environment_id, &skills_dir)
+                    .await?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&render_environment_detail_markdown(&initialized))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-environment-list" => {
+                let environments = self.list_project_environments();
+                ToolCallResult {
+                    content: vec![TextContent::text(&render_environment_list_markdown(&environments))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-environment-reload" => {
+                let environment_id = required_string_argument(&args, "environment_id")?;
+                let reloaded = self.reload_project_environment(&environment_id).await?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&render_environment_detail_markdown(&reloaded))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-environment-remove" => {
+                let environment_id = required_string_argument(&args, "environment_id")?;
+                let (removed_environment, record_removed) =
+                    self.remove_project_environment(&environment_id)?;
+                let markdown = render_environment_remove_markdown(
+                    &environment_id,
+                    removed_environment.as_ref(),
+                    record_removed,
+                );
+                ToolCallResult {
+                    content: vec![TextContent::text(&markdown)],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-environment-inspect" => {
+                let environment_id = required_string_argument(&args, "environment_id")?;
+                let (environment, effective_skills) =
+                    self.inspect_project_environment(&environment_id)?;
+                ToolCallResult {
+                    content: vec![TextContent::text(&render_environment_inspect_markdown(
+                        &environment,
+                        &effective_skills,
+                    ))],
+                    is_error: None,
+                }
+            }
+
+            "vulcan-help-detail" => {
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let engine = self.resolve_lua_engine_for_environment(environment_id.as_deref()).ok_or_else(|| {
+                    (
+                        -32603,
+                        "Lua engine not configured or environment not initialized.".to_string(),
                     )
                 })?;
                 let skill_id = args
@@ -759,18 +1358,25 @@ impl McpServer {
             _ => {
                 // Check if this is a Lua skill
                 if let Some(engine) = &self.lua_engine {
-                    let is_skill = engine
+                    let environment_id = optional_string_argument(&args, "environment_id");
+                    let target_engine = self
+                        .resolve_lua_engine_for_environment(environment_id.as_deref())
+                        .unwrap_or_else(|| engine.clone());
+                    let is_skill = target_engine
                         .read()
                         .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
                         .is_skill(&tool.name);
                     if is_skill {
-                        let engine_clone = engine.clone();
+                        let engine_clone = target_engine.clone();
                         let tool_name = tool.name.clone();
-                        let skill_name = engine
+                        let skill_name = target_engine
                             .read()
                             .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
                             .skill_name_for_tool(&tool.name);
-                        let args_clone = args.clone();
+                        let mut args_clone = args.clone();
+                        if let Some(object) = args_clone.as_object_mut() {
+                            object.remove("environment_id");
+                        }
                         let request_context = request_context.clone();
                         let budget_request_context = request_context.clone();
                         let invocation_context = build_runtime_invocation_context(
@@ -969,6 +1575,10 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     let mut lines = vec!["# Vulcan Help List".to_string(), String::new()];
     for skill_help in help_tree {
         lines.push(format!("## `{}`", skill_help.skill_id));
+        lines.push(format!(
+            "- root: `{}`\n- dir: `{}`",
+            skill_help.root_name, skill_help.skill_dir
+        ));
         if !skill_help.main.description.trim().is_empty() {
             lines.push(skill_help.main.description.trim().to_string());
         }
@@ -990,6 +1600,27 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     lines.join("\n")
 }
 
+/// Render one structured skill list payload into user-facing Markdown.
+/// 把当前生效技能列表渲染成面向用户的 Markdown 文本。
+fn render_skill_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String {
+    if help_tree.is_empty() {
+        return "# Vulcan Skill List\n\nNo LuaSkills packages are currently active.".to_string();
+    }
+
+    let mut lines = vec!["# Vulcan Skill List".to_string(), String::new()];
+    for skill_help in help_tree {
+        lines.push(format!("## `{}`", skill_help.skill_id));
+        lines.push(format!("- root: `{}`", skill_help.root_name));
+        lines.push(format!("- dir: `{}`", skill_help.skill_dir));
+        if !skill_help.main.description.trim().is_empty() {
+            lines.push(format!("- description: {}", skill_help.main.description.trim()));
+        }
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
+}
+
 /// English: Return one required non-empty string argument from the current tool call payload.
 /// 从当前工具调用参数中读取一个必填且非空的字符串参数。
 fn required_string_argument(args: &Value, key: &str) -> Result<String, (i64, String)> {
@@ -999,6 +1630,16 @@ fn required_string_argument(args: &Value, key: &str) -> Result<String, (i64, Str
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())
         .ok_or_else(|| (-32602, format!("Missing required parameter: {}", key)))
+}
+
+/// English: Return one optional non-empty string argument from the current tool call payload.
+/// 从当前工具调用参数中读取一个可选且非空的字符串参数。
+fn optional_string_argument(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
 }
 
 /// English: Return one optional boolean argument from the current tool call payload with a safe default.
@@ -1049,4 +1690,110 @@ fn insert_skill_tool(inner: &mut ServerInner, tool: Tool) {
 /// 把一份结构化帮助详情载荷渲染成面向用户的 Markdown 文本。
 fn render_help_detail_markdown(detail: &RuntimeHelpDetail) -> String {
     detail.content.clone()
+}
+
+/// Render initialized project environments into user-facing Markdown.
+/// 把已初始化项目环境渲染成面向用户的 Markdown 文本。
+fn render_environment_list_markdown(environments: &[LuaProjectEnvironment]) -> String {
+    if environments.is_empty() {
+        return "# Vulcan Environment List\n\nNo explicit project environments are currently initialized.".to_string();
+    }
+
+    let mut lines = vec!["# Vulcan Environment List".to_string(), String::new()];
+    for environment in environments {
+        lines.push(format!("## `{}`", environment.environment_id));
+        for root in &environment.skill_roots {
+            lines.push(format!("- `{}` => `{}`", root.name, root.skills_dir.display()));
+        }
+        lines.push(String::new());
+    }
+    lines.join("\n")
+}
+
+/// Render one initialized project environment into user-facing Markdown.
+/// 把单个已初始化项目环境渲染成面向用户的 Markdown 文本。
+fn render_environment_detail_markdown(environment: &LuaProjectEnvironment) -> String {
+    let mut lines = vec![
+        "# Vulcan Environment Initialized".to_string(),
+        String::new(),
+        format!("- environment_id: `{}`", environment.environment_id),
+        "- roots:".to_string(),
+    ];
+    for root in &environment.skill_roots {
+        lines.push(format!("  - `{}` => `{}`", root.name, root.skills_dir.display()));
+    }
+    lines.join("\n")
+}
+
+/// English: Render one project-environment removal result into user-facing Markdown.
+/// 把单个项目环境移除结果渲染成面向用户的 Markdown 文本。
+fn render_environment_remove_markdown(
+    environment_id: &str,
+    environment: Option<&LuaProjectEnvironment>,
+    record_removed: bool,
+) -> String {
+    let mut lines = vec![
+        "# Vulcan Environment Removed".to_string(),
+        String::new(),
+        format!("- environment_id: `{}`", environment_id),
+        format!("- persisted_record_removed: `{}`", record_removed),
+    ];
+    if let Some(environment) = environment {
+        if let Some(primary_root) = environment.skill_roots.first() {
+            lines.push(format!(
+                "- retained_skills_dir: `{}`",
+                primary_root.skills_dir.display()
+            ));
+        }
+    } else {
+        lines.push("- active_environment_removed: `false`".to_string());
+    }
+    lines.push("- note: the physical skills directory is retained by default.".to_string());
+    lines.join("\n")
+}
+
+/// English: Render one inspected project environment and its effective skills into user-facing Markdown.
+/// 把单个项目环境及其当前生效技能渲染成面向用户的 Markdown 文本。
+fn render_environment_inspect_markdown(
+    environment: &LuaProjectEnvironment,
+    effective_skills: &[RuntimeSkillHelpDescriptor],
+) -> String {
+    let mut lines = vec![
+        "# Vulcan Environment Inspect".to_string(),
+        String::new(),
+        format!("- environment_id: `{}`", environment.environment_id),
+        "- roots:".to_string(),
+    ];
+    for root in &environment.skill_roots {
+        lines.push(format!("  - `{}` => `{}`", root.name, root.skills_dir.display()));
+    }
+    lines.push(String::new());
+    lines.push("## Effective Skills".to_string());
+    if effective_skills.is_empty() {
+        lines.push("No skills are currently active in this environment.".to_string());
+    } else {
+        for skill in effective_skills {
+            lines.push(format!(
+                "- `{}` => root `{}`, dir `{}`",
+                skill.skill_id, skill.root_name, skill.skill_dir
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// English: Build one deterministic record filename for the given environment id.
+/// 为给定环境标识生成确定性的记录文件名。
+fn environment_record_file_name(environment_id: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    environment_id.hash(&mut hasher);
+    let hash = hasher.finish();
+    let safe_name: String = environment_id
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
+            _ => '_',
+        })
+        .collect();
+    format!("{}-{:016x}.json", safe_name, hash)
 }

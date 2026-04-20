@@ -436,7 +436,7 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
 
 /// English: Find the ordered skill-root chain for the default runtime environment.
 /// 查找默认运行环境使用的有序技能根目录覆盖链。
-fn find_skill_roots(cfg: &config::Config) -> Vec<std::path::PathBuf> {
+fn find_skill_roots(cfg: &config::Config) -> Vec<vulcan_luaskills::RuntimeSkillRoot> {
     resolve_skill_roots_from_config(cfg)
 }
 
