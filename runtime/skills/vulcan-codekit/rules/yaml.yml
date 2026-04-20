@@ -1,0 +1,10 @@
+# YAML 结构规则 / YAML structural rules
+id: yaml-pair
+language: Yaml
+severity: info
+rule:
+  kind: block_mapping_pair
+metadata:
+  symbol_kind: property
+  container: false
+message: "pair"

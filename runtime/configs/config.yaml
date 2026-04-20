@@ -17,12 +17,19 @@ grpc: "127.0.0.1:19202"
 # 示例 / Example:
 # vmm: "http://127.0.0.1:50053"
 
-# 中文：Lua Skill 覆盖目录。用于覆盖 runtime/lua_skills 中的系统技能。
-# English: Lua Skill override directory used to override built-in skills from runtime/lua_skills.
+# 中文：技能覆盖目录。用于覆盖 runtime/skills 中的系统技能。
+# English: Skill override directory used to override built-in skills from runtime/skills.
 # Windows 示例 / Windows example:
-# lua_skills_override: "C:/Users/yourname/.vulcan/vulcan-mcp/lua_skills"
+# skills_override: "C:/Users/yourname/.vulcan/vulcan-mcp/skills"
 # Linux/macOS 示例 / Linux/macOS example:
-# lua_skills_override: "/home/yourname/.vulcan/vulcan-mcp/lua_skills"
+# skills_override: "/home/yourname/.vulcan/vulcan-mcp/skills"
+
+# 中文：可选的统一运行根目录。设置后，configs、skills、dependencies、databases、temp、libs、lua_packages 等目录都会从该根目录派生。
+# English: Optional unified runtime root. When set, configs, skills, dependencies, databases, temp, libs, and lua_packages are all derived from this root.
+# Windows 示例 / Windows example:
+# runtime_root: "D:/projects/vulcan-mcp-client/runtime"
+# Linux/macOS 示例 / Linux/macOS example:
+# runtime_root: "/opt/vulcan/runtime"
 
 # ============================================================
 # Lua VM Pool

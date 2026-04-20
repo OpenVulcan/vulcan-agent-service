@@ -27,7 +27,8 @@ use client_budget::preload_client_budget_config;
 use config::Config;
 use luaskills_host::{
     build_luaskills_cache_config, build_luaskills_engine_options,
-    build_runtime_invocation_context, client_budget_snapshot_for_render, install_luaskills_log_callback,
+    build_runtime_invocation_context, client_budget_snapshot_for_render,
+    install_luaskills_log_callback, resolve_runtime_root_from_config,
 };
 use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
@@ -162,26 +163,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_internal_luaexec_request_mode(&request_file)
         }
         RuntimeMode::Serve => {
+            let cfg = Config::load()?;
+            add_libs_to_path(&cfg);
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(async_main())
+            runtime.block_on(async_main(cfg))
         }
     }
 }
 
 /// 中文：异步主流程，根据运行模式决定是启动网络服务还是直接进入 tools 调试。
 /// English: Async main flow that decides between starting network services and entering direct tool-debug mode.
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = Config::load()?;
-
+async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     install_luaskills_log_callback();
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-
-    // Prepend output/libs/ to PATH so C dependency DLLs are found at runtime
-    add_libs_to_path();
 
     let server = build_server(&cfg).await?;
 
@@ -296,8 +294,8 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
     }
 
     // Load Lua skills from system directory, with optional user override
-    let lua_skills_loaded = find_lua_skill_dirs(&cfg);
-    if let Some((base_dir, override_dir)) = lua_skills_loaded {
+    let skill_dirs = find_skill_dirs(&cfg);
+    if let Some((base_dir, override_dir)) = skill_dirs {
         server = server.with_lua_skills(
             cfg,
             &base_dir,
@@ -370,9 +368,9 @@ fn run_call_tool_mode(
     install_luaskills_log_callback();
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-
-    add_libs_to_path();
-    let engine = build_single_vm_lua_engine_for_local_mode()?;
+    let config = Config::load()?;
+    add_libs_to_path(&config);
+    let engine = build_single_vm_lua_engine_for_local_mode(&config)?;
 
     if !engine.is_skill(tool_name) {
         return Err(format!("Unknown Lua skill tool for --call-tools: {}", tool_name).into());
@@ -394,15 +392,16 @@ fn run_call_tool_mode(
     )
 }
 
-/// 中文：在本地调试模式下构建一个完整加载 skills 的单虚拟机 LuaEngine。
-/// English: Build a single-VM LuaEngine with fully loaded skills for local debug modes.
-fn build_single_vm_lua_engine_for_local_mode() -> Result<LuaEngine, Box<dyn std::error::Error>> {
-    let (base_dir, override_dir) = find_lua_skill_dirs_for_call_tools()
-        .ok_or("Lua skill directory not found for local debug mode")?;
-    let config = Config::load()?;
+/// 中文：在本地调试模式下基于统一运行根构建一个完整加载 skills 的单虚拟机 LuaEngine。
+/// English: Build a single-VM LuaEngine with fully loaded skills from the unified runtime root for local debug modes.
+fn build_single_vm_lua_engine_for_local_mode(
+    config: &Config,
+) -> Result<LuaEngine, Box<dyn std::error::Error>> {
+    let (base_dir, override_dir) =
+        find_skill_dirs(config).ok_or("Lua skill directory not found for local debug mode")?;
 
     let mut engine = LuaEngine::new(build_luaskills_engine_options(
-        &config,
+        config,
         LuaVmPoolConfig {
             min_size: 1,
             max_size: 1,
@@ -421,11 +420,11 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
     install_luaskills_log_callback();
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-
-    add_libs_to_path();
+    let config = Config::load()?;
+    add_libs_to_path(&config);
 
     let request_json = std::fs::read_to_string(request_file)?;
-    let engine = build_single_vm_lua_engine_for_local_mode()?;
+    let engine = build_single_vm_lua_engine_for_local_mode(&config)?;
     let rendered = engine
         .execute_runlua_request_json_inline(&request_json)
         .map_err(|error| format!("internal luaexec failed: {}", error))?;
@@ -433,29 +432,20 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// Find Lua skill base and override directories.
-/// Returns (base_dir, Option<override_dir>) if skills exist.
-fn find_lua_skill_dirs(
-    cfg: &config::Config,
-) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
-    // Base directory: <exe_parent>/lua_skills/
-    let exe_path = std::env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
-    let parent = exe_dir.parent().unwrap_or(exe_dir);
-    let base_dir = parent.join("lua_skills");
+/// Find Lua skill base and override directories from the unified runtime root.
+/// 从统一运行根中解析 Lua skill 基目录与覆盖目录，并在存在时返回它们。
+fn find_skill_dirs(cfg: &config::Config) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    let runtime_root = resolve_runtime_root_from_config(cfg)?;
+    let base_dir = runtime_root.join("skills");
 
     if !base_dir.exists() {
         return None;
     }
 
-    // Override directory: from config or default ~/.vulcan/vulcan-mcp/lua_skills/
-    let override_dir = cfg.lua_skills_override.clone().or_else(|| {
+    // Override directory: from config or default ~/.vulcan/vulcan-mcp/skills/
+    let override_dir = cfg.skills_override.clone().or_else(|| {
         let home = home_dir()?;
-        Some(
-            home.join(".vulcan/vulcan-mcp/lua_skills")
-                .to_string_lossy()
-                .to_string(),
-        )
+        Some(home.join(".vulcan/vulcan-mcp/skills").to_string_lossy().to_string())
     });
 
     let override_path = override_dir.and_then(|p| {
@@ -481,33 +471,6 @@ fn build_call_tool_request_context(client_name: &str) -> RequestContext {
     }
 }
 
-/// 中文：`--call-tools` 调试模式专用的 skill 目录查找逻辑。
-/// 该模式不读取 `config.yaml`，只使用运行时输出目录与默认用户覆盖目录。
-/// English: Dedicated skill-directory discovery for `--call-tools`.
-/// This mode does not read `config.yaml`; it only uses the runtime output directory and the default user override directory.
-fn find_lua_skill_dirs_for_call_tools() -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)>
-{
-    let exe_path = std::env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
-    let parent = exe_dir.parent().unwrap_or(exe_dir);
-    let runtime_output_dir = parent.join("lua_skills");
-    let repository_dir = std::path::Path::new("runtime").join("lua_skills");
-    let base_dir = if runtime_output_dir.exists() {
-        runtime_output_dir
-    } else if repository_dir.exists() {
-        repository_dir
-    } else {
-        return None;
-    };
-
-    let override_path = home_dir().and_then(|home| {
-        let path = home.join(".vulcan/vulcan-mcp/lua_skills");
-        if path.exists() { Some(path) } else { None }
-    });
-
-    Some((base_dir, override_path))
-}
-
 /// 中文：在宿主启动前预载可热重载的运行时配置文件，避免首次请求时才暴露配置问题。
 /// English: Preload hot-reloadable runtime config files before the host starts so configuration issues surface before the first request.
 fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
@@ -521,17 +484,13 @@ fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Prepend output/libs/ to PATH so C dependency DLLs (zlib1.dll, etc.)
-/// are discoverable when Lua C modules load via FFI.
-fn add_libs_to_path() {
-    let Ok(exe_path) = std::env::current_exe() else {
+/// English: Prepend runtime-root libs/ to PATH so C dependency DLLs (zlib1.dll, etc.) are discoverable when Lua C modules load via FFI.
+/// 将运行根下的 libs/ 前置到 PATH，保证 Lua C 模块通过 FFI 加载时能找到依赖 DLL。
+fn add_libs_to_path(config: &Config) {
+    let Some(runtime_root) = resolve_runtime_root_from_config(config) else {
         return;
     };
-    let Some(exe_dir) = exe_path.parent() else {
-        return;
-    };
-    let parent = exe_dir.parent().unwrap_or(exe_dir);
-    let libs_dir = parent.join("libs");
+    let libs_dir = runtime_root.join("libs");
 
     if !libs_dir.exists() {
         return;

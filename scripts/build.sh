@@ -35,6 +35,16 @@ mkdir -p "$OUT_DIR"
 cp -f "$CARGO_TARGET" "$OUT_DIR/"
 echo "==> Binary copied to ${OUT_DIR}/"
 
+mkdir -p output/dependencies/shared/tools
+mkdir -p output/dependencies/shared/lua
+mkdir -p output/dependencies/shared/ffi
+mkdir -p output/dependencies/skill
+mkdir -p output/databases/sqlite
+mkdir -p output/databases/lancedb
+mkdir -p output/state/skills
+mkdir -p output/temp
+mkdir -p output/logs
+
 # Sync C dependency DLLs to output/libs/
 mkdir -p output/libs
 if [ -d "third_party/deps" ]; then
@@ -59,14 +69,33 @@ else
     echo "==> No runtime/configs directory found"
 fi
 
-# Sync runtime Lua skills to output/lua_skills/
-SKILLS_OUT="output/lua_skills"
+# Sync runtime shared resources to output/resources/
+mkdir -p output/resources
+if [ -d "runtime/resources" ] && [ "$(ls -A runtime/resources/ 2>/dev/null)" ]; then
+    cp -rf runtime/resources/* output/resources/
+    echo "==> Runtime shared resources synced to output/resources/"
+else
+    echo "==> No runtime/resources directory found"
+fi
+
+# Sync runtime Lua skills to output/skills/
+SKILLS_OUT="output/skills"
 mkdir -p "$SKILLS_OUT"
-if [ -d "runtime/lua_skills" ] && [ "$(ls -A runtime/lua_skills/ 2>/dev/null)" ]; then
-    cp -rf runtime/lua_skills/* "$SKILLS_OUT/"
+if [ -d "runtime/skills" ] && [ "$(ls -A runtime/skills/ 2>/dev/null)" ]; then
+    cp -rf runtime/skills/* "$SKILLS_OUT/"
     echo "==> Runtime Lua skills synced to $SKILLS_OUT/"
 else
-    echo "==> No runtime/lua_skills directory found"
+    echo "==> No runtime/skills directory found"
+fi
+
+# Sync host-provided runtime tools to output/bin/tools/
+HOST_TOOLS_OUT="output/bin/tools"
+mkdir -p "$HOST_TOOLS_OUT"
+if [ -d "runtime/bin/tools" ] && [ "$(ls -A runtime/bin/tools/ 2>/dev/null)" ]; then
+    cp -rf runtime/bin/tools/* "$HOST_TOOLS_OUT/"
+    echo "==> Host-provided runtime tools synced to $HOST_TOOLS_OUT/"
+else
+    echo "==> No runtime/bin/tools directory found"
 fi
 
 # Sync third-party Lua packages to output/lua_packages/

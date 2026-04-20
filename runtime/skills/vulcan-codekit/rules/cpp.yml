@@ -1,0 +1,46 @@
+# Cpp 结构规则 / Cpp structural rules
+id: cpp-function
+language: Cpp
+severity: info
+rule:
+  kind: function_definition
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
+---
+id: cpp-class
+language: Cpp
+severity: info
+rule:
+  kind: class_specifier
+  has:
+    field: name
+    kind: type_identifier
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: cpp-struct
+language: Cpp
+severity: info
+rule:
+  kind: struct_specifier
+  has:
+    field: name
+    kind: type_identifier
+metadata:
+  symbol_kind: struct
+  container: true
+message: "struct"
+---
+id: cpp-namespace
+language: Cpp
+severity: info
+rule:
+  kind: namespace_definition
+metadata:
+  symbol_kind: namespace
+  container: true
+message: "namespace"

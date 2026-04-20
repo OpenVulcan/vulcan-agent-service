@@ -18,7 +18,8 @@ use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
 use vulcan_luaskills::{
     LuaEngine, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
     RuntimeSkillLifecycleEvent, RuntimeSkillLifecycleCallback, RuntimeSkillHelpDescriptor,
-    ToolCacheConfig, set_entry_registry_callback, set_skill_lifecycle_callback,
+    SkillUninstallOptions, ToolCacheConfig, set_entry_registry_callback,
+    set_skill_lifecycle_callback,
 };
 
 // ============================================================
@@ -131,7 +132,7 @@ impl McpServer {
             let mut inner = self.inner.try_lock().unwrap();
             for entry in entries {
                 let tool = map_runtime_entry_to_mcp_tool(&entry);
-                inner.skill_tools.insert(tool.name.clone(), tool);
+                insert_skill_tool(&mut inner, tool);
             }
         }
 
@@ -219,9 +220,11 @@ impl McpServer {
             "vulcan-skill-uninstall".to_string(),
             Tool::with_annotations(
                 "vulcan-skill-uninstall",
-                "Uninstall one non-protected LuaSkills package through the ordinary skills plane and let the MCP host refresh its registered tools automatically.",
+                "Uninstall one non-protected LuaSkills package through the ordinary skills plane and let the MCP host refresh its registered tools automatically. SQLite and LanceDB data are retained by default unless explicit removal flags are set.",
                 json!({
-                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."}
+                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."},
+                    "remove_sqlite": {"type": "boolean", "description": "When true, also remove the skill-owned SQLite database directory. Default false."},
+                    "remove_lancedb": {"type": "boolean", "description": "When true, also remove the skill-owned LanceDB database directory. Default false."}
                 }),
                 vec!["skill".to_string()],
                 ToolAnnotations {
@@ -524,7 +527,7 @@ impl McpServer {
         let result = match tool.name.as_str() {
             "vulcan-skill-enable" => {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
                 let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
                     (-32603, "Lua skill base directory is not configured.".to_string())
@@ -553,7 +556,7 @@ impl McpServer {
 
             "vulcan-skill-disable" => {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
                 let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
                     (-32603, "Lua skill base directory is not configured.".to_string())
@@ -592,36 +595,54 @@ impl McpServer {
 
             "vulcan-skill-uninstall" => {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
                 let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
                     (-32603, "Lua skill base directory is not configured.".to_string())
                 })?;
                 let skill_id = required_string_argument(&args, "skill")?;
+                let remove_sqlite = optional_bool_argument(&args, "remove_sqlite", false)?;
+                let remove_lancedb = optional_bool_argument(&args, "remove_lancedb", false)?;
                 let engine = engine.clone();
                 let base_dir = base_dir.clone();
                 let override_dir = self.lua_skill_override_dir.clone();
                 let skill_id_for_call = skill_id.clone();
-                tokio::task::spawn_blocking(move || {
+                let uninstall_options = SkillUninstallOptions {
+                    remove_sqlite,
+                    remove_lancedb,
+                };
+                let uninstall_result = tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()
                         .map_err(|_| "Lua engine lock poisoned / Lua 引擎锁已损坏".to_string())?;
                     engine
-                        .uninstall_skill(&base_dir, override_dir.as_deref(), &skill_id_for_call)
+                        .uninstall_skill(
+                            &base_dir,
+                            override_dir.as_deref(),
+                            &skill_id_for_call,
+                            &uninstall_options,
+                        )
                         .map_err(|error| error.to_string())
                 })
                 .await
                 .map_err(|error| (-32603, format!("vulcan-skill-uninstall spawn error: {}", error)))?
                 .map_err(|error| (-32603, error))?;
                 ToolCallResult {
-                    content: vec![TextContent::text(&format!("Skill '{}' uninstalled.", skill_id))],
+                    content: vec![TextContent::text(&format!(
+                        "Skill '{}' uninstalled.\n- SQLite removed: {}\n- SQLite retained: {}\n- LanceDB removed: {}\n- LanceDB retained: {}",
+                        uninstall_result.skill_id,
+                        uninstall_result.sqlite_removed,
+                        uninstall_result.sqlite_retained,
+                        uninstall_result.lancedb_removed,
+                        uninstall_result.lancedb_retained
+                    ))],
                     is_error: None,
                 }
             }
 
             "vulcan-skill-reload" => {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add lua_skills directory.".to_string())
+                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
                 })?;
                 let base_dir = self.lua_skill_base_dir.as_ref().ok_or_else(|| {
                     (-32603, "Lua skill base directory is not configured.".to_string())
@@ -650,7 +671,7 @@ impl McpServer {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (
                         -32603,
-                        "Lua engine not configured. Add lua_skills directory.".to_string(),
+                        "Lua engine not configured. Add skills directory.".to_string(),
                     )
                 })?;
                 let help_tree = engine
@@ -668,7 +689,7 @@ impl McpServer {
                 let engine = self.lua_engine.as_ref().ok_or_else(|| {
                     (
                         -32603,
-                        "Lua engine not configured. Add lua_skills directory.".to_string(),
+                        "Lua engine not configured. Add skills directory.".to_string(),
                     )
                 })?;
                 let skill_id = args
@@ -990,6 +1011,17 @@ fn required_string_argument(args: &Value, key: &str) -> Result<String, (i64, Str
         .ok_or_else(|| (-32602, format!("Missing required parameter: {}", key)))
 }
 
+/// English: Return one optional boolean argument from the current tool call payload with a safe default.
+/// 从当前工具调用参数中读取一个可选布尔参数，并在缺失时返回安全默认值。
+fn optional_bool_argument(args: &Value, key: &str, default: bool) -> Result<bool, (i64, String)> {
+    match args.get(key) {
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| (-32602, format!("Parameter '{}' must be boolean", key))),
+        None => Ok(default),
+    }
+}
+
 /// English: Apply one runtime entry-registry delta to the MCP host tool registry.
 /// 把一份运行时入口注册表差异应用到 MCP 宿主工具注册表。
 fn apply_runtime_entry_registry_delta(
@@ -1001,12 +1033,26 @@ fn apply_runtime_entry_registry_delta(
     }
     for entry in &delta.updated_entries {
         let tool = map_runtime_entry_to_mcp_tool(entry);
-        inner.skill_tools.insert(tool.name.clone(), tool);
+        insert_skill_tool(inner, tool);
     }
     for entry in &delta.added_entries {
         let tool = map_runtime_entry_to_mcp_tool(entry);
-        inner.skill_tools.insert(tool.name.clone(), tool);
+        insert_skill_tool(inner, tool);
     }
+}
+
+/// English: Insert one LuaSkills-managed tool into the dynamic registry while rejecting host-reserved name collisions.
+/// 将单个 LuaSkills 动态工具插入动态注册表，并拒绝与宿主保留名称发生冲突。
+fn insert_skill_tool(inner: &mut ServerInner, tool: Tool) {
+    if inner.host_tools.contains_key(&tool.name) {
+        eprintln!(
+            "[LuaSkills] Skip dynamic tool '{}' because it collides with a host-owned tool",
+            tool.name
+        );
+        inner.skill_tools.remove(&tool.name);
+        return;
+    }
+    inner.skill_tools.insert(tool.name.clone(), tool);
 }
 
 /// Render one structured help detail payload into user-facing Markdown.

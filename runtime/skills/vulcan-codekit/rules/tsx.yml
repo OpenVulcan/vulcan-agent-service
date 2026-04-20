@@ -1,0 +1,154 @@
+# Tsx 结构规则 / Tsx structural rules
+id: tsx-class
+language: Tsx
+severity: info
+rule:
+  kind: class_declaration
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: tsx-interface
+language: Tsx
+severity: info
+rule:
+  kind: interface_declaration
+metadata:
+  symbol_kind: interface
+  container: true
+message: "interface"
+---
+id: tsx-enum
+language: Tsx
+severity: info
+rule:
+  kind: enum_declaration
+metadata:
+  symbol_kind: enum
+  container: true
+message: "enum"
+---
+id: tsx-type
+language: Tsx
+severity: info
+rule:
+  kind: type_alias_declaration
+metadata:
+  symbol_kind: type
+  container: false
+message: "type"
+---
+id: tsx-export-const-object
+language: Tsx
+severity: info
+rule:
+  pattern:
+    context: |
+      export const $NAME = {
+        $$$BODY
+      }
+    strictness: signature
+metadata:
+  symbol_kind: constant
+  container: false
+  name_capture: NAME
+message: "constant:$NAME"
+---
+id: tsx-export-const-object-satisfies
+language: Tsx
+severity: info
+rule:
+  pattern:
+    context: |
+      export const $NAME = {
+        $$$BODY
+      } satisfies $TYPE
+    strictness: signature
+metadata:
+  symbol_kind: constant
+  container: false
+  name_capture: NAME
+message: "constant:$NAME"
+---
+id: tsx-function
+language: Tsx
+severity: info
+rule:
+  kind: function_declaration
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
+---
+id: tsx-method
+language: Tsx
+severity: info
+rule:
+  kind: method_definition
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"
+---
+id: tsx-method-signature
+language: Tsx
+severity: info
+rule:
+  kind: method_signature
+metadata:
+  symbol_kind: method
+  container: false
+message: "method_signature"
+---
+id: tsx-arrow-block
+language: Tsx
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = ($$$PARAMS) => {
+        $$$BODY
+      }
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"
+---
+id: tsx-arrow-expression
+language: Tsx
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = ($$$PARAMS) => $BODY
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"
+---
+id: tsx-function-expression
+language: Tsx
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = function ($$$PARAMS) {
+        $$$BODY
+      }
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"

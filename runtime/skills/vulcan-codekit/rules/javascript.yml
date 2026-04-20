@@ -1,0 +1,98 @@
+# JavaScript 结构规则 / JavaScript structural rules
+id: javascript-class
+language: JavaScript
+severity: info
+rule:
+  kind: class_declaration
+metadata:
+  symbol_kind: class
+  container: true
+message: "class"
+---
+id: javascript-export-const-object
+language: JavaScript
+severity: info
+rule:
+  pattern:
+    context: |
+      export const $NAME = {
+        $$$BODY
+      }
+    strictness: signature
+metadata:
+  symbol_kind: constant
+  container: false
+  name_capture: NAME
+message: "constant:$NAME"
+---
+id: javascript-function
+language: JavaScript
+severity: info
+rule:
+  kind: function_declaration
+metadata:
+  symbol_kind: function
+  container: false
+message: "function"
+---
+id: javascript-method
+language: JavaScript
+severity: info
+rule:
+  kind: method_definition
+metadata:
+  symbol_kind: method
+  container: false
+message: "method"
+---
+id: javascript-arrow-block
+language: JavaScript
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = ($$$PARAMS) => {
+        $$$BODY
+      }
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"
+---
+id: javascript-arrow-expression
+language: JavaScript
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = ($$$PARAMS) => $BODY
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"
+---
+id: javascript-function-expression
+language: JavaScript
+severity: info
+rule:
+  pattern:
+    context: |
+      const $NAME = function ($$$PARAMS) {
+        $$$BODY
+      }
+    selector: variable_declarator
+    strictness: signature
+metadata:
+  symbol_kind: function
+  container: false
+  name_capture: NAME
+  params_capture: PARAMS
+message: "function:$NAME"

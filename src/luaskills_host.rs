@@ -4,7 +4,7 @@ use crate::protocol::{RequestContext, Tool, ToolAnnotations};
 use crate::runtime_logging::{error as log_error, info as log_info, warn as log_warn};
 use crate::temp_maintenance::ensure_runtime_temp_dir;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use vulcan_luaskills::{
     LuaEngineOptions, LuaInvocationContext, LuaRuntimeHostOptions, LuaVmPoolConfig,
@@ -66,24 +66,27 @@ pub fn build_luaskills_engine_options(
     pool_config: LuaVmPoolConfig,
     cache_config: ToolCacheConfig,
 ) -> Result<LuaEngineOptions, Box<dyn std::error::Error>> {
-    let temp_root = ensure_runtime_temp_dir()?.join("mcp");
-    let tool_dependency_root = resolve_tool_dependency_root();
-    let download_cache_root = Some(temp_root.join("__download_cache"));
-    let lua_packages_dir = resolve_lua_packages_dir();
-    let host_library_root = resolve_host_library_root();
+    let runtime_root =
+        resolve_runtime_root_from_config(config).ok_or("Failed to resolve runtime root")?;
+    let runtime_temp_root = ensure_runtime_temp_dir()?;
+    let temp_root = runtime_temp_root.join("mcp");
+    let tool_dependency_root = Some(runtime_root.join("dependencies").join("shared").join("tools"));
+    let download_cache_root = Some(runtime_temp_root.join("downloads"));
+    let lua_packages_dir = resolve_lua_packages_dir(&runtime_root);
+    let host_library_root = resolve_host_library_root(&runtime_root);
     let host_options = LuaRuntimeHostOptions {
         temp_dir: Some(temp_root.clone()),
-        resources_dir: resolve_runtime_resources_dir(),
+        resources_dir: resolve_runtime_resources_dir(&runtime_root),
         lua_packages_dir: lua_packages_dir.clone(),
         luaexec_program: std::env::current_exe().ok(),
         tool_dependency_root,
-        host_provided_tool_root: Some(temp_root.join("__host_tools")),
-        lua_dependency_root: Some(temp_root.join("__lua_packages")),
+        host_provided_tool_root: Some(runtime_root.join("bin").join("tools")),
+        lua_dependency_root: Some(runtime_root.join("dependencies").join("shared").join("lua")),
         host_provided_lua_root: lua_packages_dir,
-        ffi_dependency_root: Some(temp_root.join("__ffi")),
+        ffi_dependency_root: Some(runtime_root.join("dependencies").join("shared").join("ffi")),
         host_provided_ffi_root: host_library_root,
         download_cache_root,
-        skill_state_root: Some(temp_root.join("__skill_state")),
+        skill_state_root: Some(runtime_root.join("state").join("skills")),
         protection: resolve_skill_protection_config(config),
         allow_network_download: true,
         github_base_url: std::env::var("VULCAN_GITHUB_BASE_URL")
@@ -94,30 +97,42 @@ pub fn build_luaskills_engine_options(
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        sqlite_library_path: resolve_host_library_path(sqlite_library_file_name()),
-        lancedb_library_path: resolve_host_library_path(lancedb_library_file_name()),
-        sqlite_database_root: Some(temp_root.join("__database")),
-        lancedb_database_root: Some(temp_root.join("__lancedb")),
+        sqlite_library_path: resolve_host_library_path(&runtime_root, sqlite_library_file_name()),
+        lancedb_library_path: resolve_host_library_path(&runtime_root, lancedb_library_file_name()),
+        sqlite_database_root: Some(runtime_root.join("databases").join("sqlite")),
+        lancedb_database_root: Some(runtime_root.join("databases").join("lancedb")),
         cache_config: Some(cache_config),
+        reserved_entry_names: host_reserved_tool_names(),
     };
     Ok(LuaEngineOptions::new(pool_config, host_options))
 }
 
-/// English: Resolve the shared tool dependency root used by LuaSkills-managed executable dependencies.
-/// 解析供 LuaSkills 管理可执行工具依赖使用的共享根目录。
-fn resolve_tool_dependency_root() -> Option<PathBuf> {
+/// English: Resolve the runtime root directory according to host configuration first and fallback layouts second.
+/// 优先按宿主配置、其次按回退布局解析运行根目录。
+pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
+    if let Some(configured_root) = config
+        .runtime_root
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(PathBuf::from(configured_root));
+    }
+
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
     let exe_parent = exe_dir.parent().unwrap_or(exe_dir);
-    let runtime_path = exe_parent.join("lua_skills").join("__tools");
-    if runtime_path.exists() {
-        return Some(runtime_path);
+    let hosted_root = exe_parent.to_path_buf();
+    if hosted_root.join("skills").exists() || hosted_root.join("configs").exists() {
+        return Some(hosted_root);
     }
 
-    let repository_path = std::env::current_dir()
-        .ok()?
-        .join(Path::new("runtime").join("lua_skills").join("__tools"));
-    Some(repository_path)
+    let repository_root = std::env::current_dir().ok()?.join("runtime");
+    if repository_root.exists() {
+        return Some(repository_root);
+    }
+
+    None
 }
 
 /// English: Resolve the host-provided protected skill policy from environment and built-in defaults.
@@ -213,20 +228,10 @@ pub fn client_budget_snapshot_for_render(
 
 /// English: Resolve the Lua resources directory according to the current MCP host layout.
 /// 按当前 MCP 宿主布局解析 Lua 资源目录。
-fn resolve_runtime_resources_dir() -> Option<PathBuf> {
-    let exe_path = std::env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
-    let exe_parent = exe_dir.parent().unwrap_or(exe_dir);
-    let runtime_resources_dir = exe_parent.join("resources");
+fn resolve_runtime_resources_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
+    let runtime_resources_dir = runtime_root.join("resources");
     if runtime_resources_dir.exists() {
         return Some(runtime_resources_dir);
-    }
-
-    let repository_resources_dir = std::env::current_dir()
-        .ok()?
-        .join(Path::new("output").join("resources"));
-    if repository_resources_dir.exists() {
-        return Some(repository_resources_dir);
     }
 
     None
@@ -234,13 +239,13 @@ fn resolve_runtime_resources_dir() -> Option<PathBuf> {
 
 /// English: Resolve the root directory that contains host-provided native libraries.
 /// 解析宿主提供原生动态库所在的根目录。
-fn resolve_host_library_root() -> Option<PathBuf> {
-    if let Some(sqlite_path) = resolve_host_library_path(sqlite_library_file_name()) {
+fn resolve_host_library_root(runtime_root: &std::path::Path) -> Option<PathBuf> {
+    if let Some(sqlite_path) = resolve_host_library_path(runtime_root, sqlite_library_file_name()) {
         if let Some(parent) = sqlite_path.parent() {
             return Some(parent.to_path_buf());
         }
     }
-    if let Some(lancedb_path) = resolve_host_library_path(lancedb_library_file_name()) {
+    if let Some(lancedb_path) = resolve_host_library_path(runtime_root, lancedb_library_file_name()) {
         if let Some(parent) = lancedb_path.parent() {
             return Some(parent.to_path_buf());
         }
@@ -250,28 +255,17 @@ fn resolve_host_library_root() -> Option<PathBuf> {
 
 /// English: Resolve the host-managed lua_packages directory according to runtime output first and repository output second.
 /// 先按运行时输出目录、再按仓库输出目录解析宿主管理的 lua_packages 目录。
-fn resolve_lua_packages_dir() -> Option<PathBuf> {
-    let exe_path = std::env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
-    let exe_parent = exe_dir.parent().unwrap_or(exe_dir);
-    let runtime_path = exe_parent.join("lua_packages");
+fn resolve_lua_packages_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
+    let runtime_path = runtime_root.join("lua_packages");
     if runtime_path.exists() {
         return Some(runtime_path);
     }
-
-    let repository_path = std::env::current_dir()
-        .ok()?
-        .join(Path::new("output").join("lua_packages"));
-    if repository_path.exists() {
-        return Some(repository_path);
-    }
-
     None
 }
 
-/// English: Resolve one host-side dynamic-library path with runtime output precedence and repository fallback.
-/// 按运行时输出优先、仓库输出兜底的顺序解析一条宿主动态库路径。
-fn resolve_host_library_path(file_name: &str) -> Option<PathBuf> {
+/// English: Resolve one host-side dynamic-library path from the unified runtime root.
+/// 从统一运行根中解析一条宿主动态库路径。
+fn resolve_host_library_path(runtime_root: &std::path::Path, file_name: &str) -> Option<PathBuf> {
     let explicit_env_key = if file_name.contains("sqlite") {
         "VLDB_SQLITE_LIBRARY"
     } else {
@@ -284,22 +278,26 @@ fn resolve_host_library_path(file_name: &str) -> Option<PathBuf> {
         }
     }
 
-    let exe_path = std::env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
-    let exe_parent = exe_dir.parent().unwrap_or(exe_dir);
-    let runtime_path = exe_parent.join("libs").join(file_name);
+    let runtime_path = runtime_root.join("libs").join(file_name);
     if runtime_path.exists() {
         return Some(runtime_path);
     }
 
-    let repository_path = std::env::current_dir()
-        .ok()?
-        .join(Path::new("output").join("libs").join(file_name));
-    if repository_path.exists() {
-        return Some(repository_path);
-    }
-
     None
+}
+
+/// English: Return the host-owned MCP tool names that must stay reserved from LuaSkills canonical entry generation.
+/// 返回必须从 LuaSkills canonical 入口生成中保留的宿主 MCP 工具名称集合。
+pub fn host_reserved_tool_names() -> Vec<String> {
+    vec![
+        "vulcan-help-list".to_string(),
+        "vulcan-help-detail".to_string(),
+        "vulcan-skill-enable".to_string(),
+        "vulcan-skill-disable".to_string(),
+        "vulcan-skill-uninstall".to_string(),
+        "vulcan-skill-reload".to_string(),
+        "reload_vulcan_mcp_configs".to_string(),
+    ]
 }
 
 /// English: Return the current platform-specific SQLite dynamic library filename.

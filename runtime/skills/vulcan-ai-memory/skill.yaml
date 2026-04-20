@@ -1,0 +1,39 @@
+name: vulcan-ai-memory
+skill_id: vulcan-ai-memory
+debug: true
+lancedb:
+  enable: true
+  log_level: info
+  slow_log_enabled: true
+  slow_log_threshold_ms: 800
+help:
+  main:
+    description: Vulcan AI Memory 的主帮助，描述向量记忆测试入口与依赖边界。
+    file: help/help.md
+  topics:
+    - name: lancedb-test
+      description: LanceDB 记忆绑定测试说明。
+      file: help/lancedb-test.md
+entries:
+  - name: lancedb-test
+    description: "Verify the host-managed LanceDB binding for vulcan-ai-memory by creating a demo table, upserting one vector row, and performing one vector search."
+    lua_entry: runtime/vulcan-ai-memory-lancedb-test.lua
+    lua_module: vulcan_ai_memory_lancedb_test
+    help: lancedb-test
+    parameters:
+      - name: table_name
+        type: string
+        description: "Optional table name used for the test run. Defaults to ai_memory_test."
+        required: false
+      - name: record_id
+        type: string
+        description: "Optional stable record id. Defaults to memory-test-001."
+        required: false
+      - name: memory_text
+        type: string
+        description: "Optional memory text stored alongside the embedding. Defaults to a stable bilingual test sentence."
+        required: false
+      - name: overwrite_if_exists
+        type: boolean
+        description: "Whether to overwrite the demo table if it already exists. Defaults to true for a stable test loop."
+        required: false

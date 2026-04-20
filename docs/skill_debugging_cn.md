@@ -44,7 +44,7 @@
 构建后会同步：
 
 - `output/debug/vulcan-mcp.exe`
-- `output/lua_skills/`
+- `output/skills/`
 - `output/lua_packages/`
 - `output/configs/`
 
@@ -55,13 +55,13 @@
 例如调试 `vmcp-rg`：
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 例如调试 `vmcp-ast`：
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep\\main.lua","comment":false}'
+.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
 ```
 
 ## 4. 参数传递说明
@@ -111,7 +111,7 @@ PowerShell 下推荐：
 ### 5.2 调试 `vmcp-rg` 的函数体内容命中
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 预期：
@@ -145,7 +145,7 @@ PowerShell 下推荐：
   "rg_matches": 3,
   "files": [
     {
-      "file": "D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep\\main.lua",
+      "file": "D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua",
       "lines": 2087,
       "content": "local function validate_extension_argument(value) ... L744-803"
     }
@@ -168,7 +168,7 @@ PowerShell 下推荐：
 
 - tool 名称写错
 - `skill.json` 中没有注册该 tool
-- 构建后 `output/lua_skills` 尚未同步到最新版本
+- 构建后 `output/skills` 尚未同步到最新版本
 
 处理：
 
@@ -182,7 +182,7 @@ PowerShell 下推荐：
 
 如果 skill 声明了 `dependencies.yaml`，加载时会自动检查共享工具目录：
 
-- `output/lua_skills/__tools/bin/`
+- `output/bin/tools/`
 
 若缺失对应依赖，需先确保构建和依赖同步过程已完成。
 

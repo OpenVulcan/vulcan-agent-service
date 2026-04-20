@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vulcan CodeKit"
+  short_description: "Use codekit tools for repo mapping and safe edits"
+  default_prompt: "Use $vulcan-codekit to map this repository, choose the right files, and make safe codekit-guided edits when needed."

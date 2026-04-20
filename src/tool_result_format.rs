@@ -434,34 +434,64 @@ fn write_overflow_text_file(
     Ok(file_path)
 }
 
-/// 中文：根据当前可执行文件定位运行时 `lua_skills` 根目录；找不到时返回 `None`。
-/// English: Locate the runtime `lua_skills` root relative to the current executable; return `None` when it cannot be resolved.
-fn resolve_runtime_lua_skills_root() -> Option<PathBuf> {
+/// 中文：根据当前运行形态定位技能根目录；优先使用宿主运行目录，其次回退到仓库目录。
+/// English: Locate the skill root according to the current runtime layout, preferring the hosted runtime directory and then the repository layout.
+fn resolve_runtime_skills_root() -> Option<PathBuf> {
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
     let parent = exe_dir.parent().unwrap_or(exe_dir);
-    let lua_skills = parent.join("lua_skills");
-    if lua_skills.exists() {
-        Some(lua_skills)
-    } else {
-        None
+    let hosted_root = parent.join("skills");
+    if hosted_root.exists() {
+        return Some(hosted_root);
     }
+
+    let repository_root = std::env::current_dir().ok()?.join("runtime").join("skills");
+    if repository_root.exists() {
+        return Some(repository_root);
+    }
+
+    None
+}
+
+/// 中文：根据当前运行形态定位共享资源根目录；优先使用宿主运行目录，其次回退到仓库目录。
+/// English: Locate the shared resources root according to the current runtime layout, preferring the hosted runtime directory and then the repository layout.
+fn resolve_runtime_resources_root() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+    let parent = exe_dir.parent().unwrap_or(exe_dir);
+    let hosted_root = parent.join("resources");
+    if hosted_root.exists() {
+        return Some(hosted_root);
+    }
+
+    let repository_root = std::env::current_dir().ok()?.join("runtime").join("resources");
+    if repository_root.exists() {
+        return Some(repository_root);
+    }
+
+    None
 }
 
 /// 中文：按“skill 本地模板优先，公共模板兜底”的顺序查找模板文本。
 /// English: Load template text with skill-local templates taking priority over shared fallback templates.
 fn load_template_text(skill_name: Option<&str>, template_name: &str) -> Option<String> {
-    let root = resolve_runtime_lua_skills_root()?;
+    let skill_root = resolve_runtime_skills_root()?;
+    let resource_root = resolve_runtime_resources_root()?;
     let mut candidates = Vec::new();
 
     if let Some(skill_name) = skill_name {
         candidates.push(
-            root.join(skill_name)
+            skill_root
+                .join(skill_name)
                 .join("overflow_templates")
                 .join(template_name),
         );
     }
-    candidates.push(root.join("__template").join(template_name));
+    candidates.push(
+        resource_root
+            .join("overflow_templates")
+            .join(template_name),
+    );
 
     for path in candidates {
         if path.exists() {

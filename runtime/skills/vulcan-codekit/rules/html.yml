@@ -1,0 +1,10 @@
+# HTML 结构规则 / HTML structural rules
+id: html-element
+language: Html
+severity: info
+rule:
+  kind: element
+metadata:
+  symbol_kind: tag
+  container: true
+message: "tag"

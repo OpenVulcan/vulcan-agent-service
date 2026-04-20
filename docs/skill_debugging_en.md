@@ -44,7 +44,7 @@ If the tool takes no arguments, the third segment can be omitted:
 This syncs:
 
 - `output/debug/vulcan-mcp.exe`
-- `output/lua_skills/`
+- `output/skills/`
 - `output/lua_packages/`
 - `output/configs/`
 
@@ -55,13 +55,13 @@ For local tool debugging, use `output/debug/vulcan-mcp.exe`.
 Example for `vmcp-rg`:
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 Example for `vmcp-ast`:
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep\\main.lua","comment":false}'
+.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
 ```
 
 ## 4. Argument Format
@@ -111,7 +111,7 @@ Expected behavior:
 ### 5.2 Debug a function-body hit in `vmcp-rg`
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 Expected behavior:
@@ -145,7 +145,7 @@ Example `vmcp-rg` result:
   "rg_matches": 3,
   "files": [
     {
-      "file": "D:\\projects\\vulcan-mcp-client\\runtime\\lua_skills\\ast-grep\\main.lua",
+      "file": "D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua",
       "lines": 2087,
       "content": "local function validate_extension_argument(value) ... L744-803"
     }
@@ -168,7 +168,7 @@ Possible reasons:
 
 - the tool name is wrong
 - the tool is not registered in `skill.json`
-- `output/lua_skills` is not synced to the latest version
+- `output/skills` is not synced to the latest version
 
 Fix:
 
@@ -182,7 +182,7 @@ Then retry.
 
 If a skill declares `dependencies.yaml`, the loader checks the shared tool directory during load:
 
-- `output/lua_skills/__tools/bin/`
+- `output/bin/tools/`
 
 If the required binary is missing, make sure the build and dependency sync flow has completed.
 

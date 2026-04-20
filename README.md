@@ -30,7 +30,7 @@
 - 支持 MCP 多版本协议协商
 - 支持 HTTP 服务模式、gRPC 服务模式与本地调试模式
 - 通过本地依赖接入 `vulcan-luaskills`
-- 自动加载 `runtime/lua_skills/` 下符合规则的 LuaSkills
+- 自动加载 `runtime/skills/` 下符合规则的 LuaSkills
 - 把 skill entry 映射成 MCP tools
 - 提供宿主封装的 strict help 工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
@@ -52,7 +52,7 @@ LuaSkills 是当前 MCP 对外暴露的主能力面。
 这些 skill 已迁移到新的目录结构：
 
 ```text
-runtime/lua_skills/<skill>/
+runtime/skills/<skill>/
 ├─ skill.yaml
 ├─ help/
 ├─ runtime/
@@ -102,7 +102,16 @@ src/
 
 runtime/
 ├─ configs/               # 宿主配置
-└─ lua_skills/            # 官方内建 LuaSkills
+├─ skills/                # 官方内建 LuaSkills
+├─ dependencies/          # 宿主管理的共享/私有依赖
+├─ databases/             # SQLite / LanceDB 数据目录
+├─ resources/             # 宿主共享资源与公共模板
+├─ bin/                   # 宿主工具与程序二进制
+├─ libs/                  # 宿主提供原生动态库
+├─ lua_packages/          # 宿主提供 Lua 包目录
+├─ state/                 # 技能状态与安装状态
+├─ temp/                  # 临时下载与渲染产物
+└─ logs/                  # 日志目录
 ```
 
 ## 运行要求

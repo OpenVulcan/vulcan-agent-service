@@ -110,7 +110,7 @@ def build_runtime_override_config(base_config_path: Path, runtime_skill_dir: Pat
     temp_file = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
     with temp_file:
         temp_file.write(base_content.rstrip() + "\n")
-        temp_file.write(f'lua_skills_override: "{override_path}"\n')
+        temp_file.write(f'skills_override: "{override_path}"\n')
     return Path(temp_file.name)
 
 
@@ -205,7 +205,7 @@ def main() -> int:
     repo_root = args.repo_root.resolve()
     binary_path = args.binary.resolve()
     config_path = args.config.resolve()
-    runtime_skill_dir = repo_root / "runtime" / "lua_skills"
+    runtime_skill_dir = repo_root / "runtime" / "skills"
 
     if not binary_path.exists():
         raise FileNotFoundError(f"未找到可执行文件 / Binary not found: {binary_path}")

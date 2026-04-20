@@ -21,11 +21,16 @@ pub struct Config {
     /// English: VMM (VulcanMemoryMesh) gRPC service endpoint, for example "http://localhost:50053".
     pub vmm: Option<String>,
 
-    /// 中文：自定义 Lua Skill 覆盖目录，例如 "~/.vulcan/vulcan-mcp/lua_skills/"；
+    /// 中文：自定义技能覆盖目录，例如 "~/.vulcan/vulcan-mcp/skills/"；
     /// 设置后，该目录中的技能可覆盖或禁用系统内置技能。
-    /// English: Custom Lua skill override directory, for example "~/.vulcan/vulcan-mcp/lua_skills/".
+    /// English: Custom skill override directory, for example "~/.vulcan/vulcan-mcp/skills/".
     /// When set, skills in this directory override or disable system skills.
-    pub lua_skills_override: Option<String>,
+    #[serde(alias = "lua_skills_override")]
+    pub skills_override: Option<String>,
+
+    /// English: Optional runtime root directory that owns configs, skills, dependencies, databases, temp, libs, and lua_packages.
+    /// 宿主完整运行根目录，可统一承载 configs、skills、dependencies、databases、temp、libs 与 lua_packages。
+    pub runtime_root: Option<String>,
 
     /// 中文：共享工具缓存最大条目数，默认 1000。
     /// English: Maximum number of entries in the shared tool cache. Defaults to 1000.
@@ -84,11 +89,16 @@ impl Config {
     /// The repository template lives at `runtime/configs/config.yaml` and is synced during build.
     /// Exit immediately if no config file is found.
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let config_path = find_config_arg().or_else(find_exe_parent_config);
+        let config_path = find_config_arg()
+            .or_else(|| find_runtime_root_arg().and_then(find_runtime_root_config))
+            .or_else(find_exe_parent_config);
 
         match config_path {
             Some(path) => {
-                let config = Self::from_file(&path)?;
+                let mut config = Self::from_file(&path)?;
+                if let Some(runtime_root) = find_runtime_root_arg() {
+                    config.runtime_root = Some(runtime_root);
+                }
                 eprintln!("[Config] Loaded from: {}", path);
                 Ok(config)
             }
@@ -96,6 +106,7 @@ impl Config {
                 eprintln!("[Config] Error: No config file found.");
                 eprintln!("[Config] Searched:");
                 eprintln!("[Config]   - -config flag");
+                eprintln!("[Config]   - -runtime-root/--runtime-root + <runtime_root>/configs/config.yaml");
                 eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
                 eprintln!("[Config] Template source in repository: runtime/configs/config.yaml");
                 eprintln!(
@@ -119,6 +130,33 @@ fn find_config_arg() -> Option<String> {
         }
     }
     None
+}
+
+/// English: Look for -runtime-root or --runtime-root in argv.
+/// 在命令行参数中查找 -runtime-root 或 --runtime-root。
+fn find_runtime_root_arg() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "-runtime-root" || args[i] == "--runtime-root" {
+            if i + 1 < args.len() {
+                return Some(args[i + 1].clone());
+            }
+        }
+    }
+    None
+}
+
+/// English: Resolve the config path under one explicit runtime root.
+/// 从显式给定的运行根目录下解析配置文件路径。
+fn find_runtime_root_config(runtime_root: String) -> Option<String> {
+    let config_path = std::path::PathBuf::from(runtime_root)
+        .join("configs")
+        .join("config.yaml");
+    if config_path.exists() {
+        Some(config_path.to_string_lossy().to_string())
+    } else {
+        None
+    }
 }
 
 /// 中文：在运行中可执行文件的上级输出目录中查找 configs/config.yaml。
