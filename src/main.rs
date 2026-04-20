@@ -295,7 +295,7 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
     }
 
     // Load Lua skills from system directory, with optional user override
-    let skill_roots = find_skill_roots(&cfg);
+    let skill_roots = find_skill_roots(&cfg)?;
     if !skill_roots.is_empty() {
         server = server.with_lua_skills(
             cfg,
@@ -397,7 +397,7 @@ fn run_call_tool_mode(
 fn build_single_vm_lua_engine_for_local_mode(
     config: &Config,
 ) -> Result<LuaEngine, Box<dyn std::error::Error>> {
-    let skill_roots = find_skill_roots(config);
+    let skill_roots = find_skill_roots(config)?;
     if skill_roots.is_empty() {
         return Err("Lua skill directory not found for local debug mode".into());
     }
@@ -436,8 +436,11 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
 
 /// English: Find the ordered skill-root chain for the default runtime environment.
 /// 查找默认运行环境使用的有序技能根目录覆盖链。
-fn find_skill_roots(cfg: &config::Config) -> Vec<vulcan_luaskills::RuntimeSkillRoot> {
+fn find_skill_roots(
+    cfg: &config::Config,
+) -> Result<Vec<vulcan_luaskills::RuntimeSkillRoot>, Box<dyn std::error::Error>> {
     resolve_skill_roots_from_config(cfg)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
 }
 
 /// 中文：为 `--call-tools` 构造尽量贴近真实 MCP 请求的模拟上下文。

@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::luaskills_host::{
     build_luaskills_engine_options, build_runtime_invocation_context, build_runtime_request_context,
     client_budget_snapshot_for_render, install_luaskills_log_callback, map_runtime_entry_to_mcp_tool,
-    resolve_runtime_root_from_config,
+    resolve_runtime_root_from_config, validate_unique_skill_root_spaces,
 };
 use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
@@ -325,7 +325,8 @@ impl McpServer {
                 "vulcan-skill-enable",
                 "Enable one non-protected LuaSkills package through the ordinary skills plane and let the MCP host refresh its registered tools automatically.",
                 json!({
-                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."}
+                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."},
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When provided, the operation runs against that project environment instead of the default environment."}
                 }),
                 vec!["skill".to_string()],
                 ToolAnnotations {
@@ -344,7 +345,8 @@ impl McpServer {
                 "Disable one non-protected LuaSkills package through the ordinary skills plane and let the MCP host refresh its registered tools automatically.",
                 json!({
                     "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."},
-                    "reason": {"type": "string", "description": "Optional disable reason recorded into the skill state marker."}
+                    "reason": {"type": "string", "description": "Optional disable reason recorded into the skill state marker."},
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When provided, the operation runs against that project environment instead of the default environment."}
                 }),
                 vec!["skill".to_string()],
                 ToolAnnotations {
@@ -364,7 +366,8 @@ impl McpServer {
                 json!({
                     "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit`."},
                     "remove_sqlite": {"type": "boolean", "description": "When true, also remove the skill-owned SQLite database directory. Default false."},
-                    "remove_lancedb": {"type": "boolean", "description": "When true, also remove the skill-owned LanceDB database directory. Default false."}
+                    "remove_lancedb": {"type": "boolean", "description": "When true, also remove the skill-owned LanceDB database directory. Default false."},
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When provided, the operation runs against that project environment instead of the default environment."}
                 }),
                 vec!["skill".to_string()],
                 ToolAnnotations {
@@ -381,7 +384,9 @@ impl McpServer {
             Tool::with_annotations(
                 "vulcan-skill-reload",
                 "Reload LuaSkills from the current base and override directories, then let the MCP host refresh its registered tools from runtime entry deltas.",
-                json!({}),
+                json!({
+                    "environment_id": {"type": "string", "description": "Optional explicit environment id. When provided, the operation reloads that project environment instead of the default environment."}
+                }),
                 vec![],
                 ToolAnnotations {
                     read_only_hint: Some(false),
@@ -427,6 +432,42 @@ impl McpServer {
                 .ok()
                 .and_then(|registry| registry.get(environment_id).cloned())
                 .map(|environment| environment.engine),
+        }
+    }
+
+    /// English: Resolve the target Lua engine together with the effective skill-root chain for one optional environment id.
+    /// 为一个可选环境标识解析目标 Lua 引擎及其对应的有效技能根目录链。
+    fn resolve_lua_runtime_target(
+        &self,
+        environment_id: Option<&str>,
+    ) -> Result<(Arc<StdRwLock<LuaEngine>>, Vec<RuntimeSkillRoot>), (i64, String)> {
+        let normalized = environment_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        match normalized {
+            None => {
+                let engine = self.lua_engine.as_ref().ok_or_else(|| {
+                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
+                })?;
+                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
+                    (-32603, "Lua skill roots are not configured.".to_string())
+                })?;
+                Ok((engine.clone(), skill_roots.clone()))
+            }
+            Some(environment_id) => {
+                let environment = self
+                    .lua_project_environments
+                    .read()
+                    .ok()
+                    .and_then(|registry| registry.get(environment_id).cloned())
+                    .ok_or_else(|| {
+                        (
+                            -32602,
+                            format!("Lua project environment '{}' is not initialized.", environment_id),
+                        )
+                    })?;
+                Ok((environment.engine, environment.skill_roots))
+            }
         }
     }
 
@@ -669,6 +710,12 @@ impl McpServer {
                 project_roots.push(root);
             }
         }
+        validate_unique_skill_root_spaces(&project_roots).map_err(|error| {
+            format!(
+                "invalid project environment root chain for '{}': {} / 项目环境 '{}' 的技能根目录链无效：{}",
+                environment_id, error, environment_id, error
+            )
+        })?;
 
         let mut engine = LuaEngine::new(engine_options).map_err(|error| error.to_string())?;
         engine
@@ -1043,15 +1090,10 @@ impl McpServer {
         let args = req.arguments.unwrap_or_default();
         let result = match tool.name.as_str() {
             "vulcan-skill-enable" => {
-                let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
-                })?;
-                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill roots are not configured.".to_string())
-                })?;
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let (engine, skill_roots) =
+                    self.resolve_lua_runtime_target(environment_id.as_deref())?;
                 let skill_id = required_string_argument(&args, "skill")?;
-                let engine = engine.clone();
-                let skill_roots = skill_roots.clone();
                 let skill_id_for_call = skill_id.clone();
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
@@ -1071,20 +1113,15 @@ impl McpServer {
             }
 
             "vulcan-skill-disable" => {
-                let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
-                })?;
-                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill roots are not configured.".to_string())
-                })?;
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let (engine, skill_roots) =
+                    self.resolve_lua_runtime_target(environment_id.as_deref())?;
                 let skill_id = required_string_argument(&args, "skill")?;
                 let reason = args
                     .get("reason")
                     .and_then(|value| value.as_str())
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty());
-                let engine = engine.clone();
-                let skill_roots = skill_roots.clone();
                 let skill_id_for_call = skill_id.clone();
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
@@ -1108,17 +1145,12 @@ impl McpServer {
             }
 
             "vulcan-skill-uninstall" => {
-                let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
-                })?;
-                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill roots are not configured.".to_string())
-                })?;
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let (engine, skill_roots) =
+                    self.resolve_lua_runtime_target(environment_id.as_deref())?;
                 let skill_id = required_string_argument(&args, "skill")?;
                 let remove_sqlite = optional_bool_argument(&args, "remove_sqlite", false)?;
                 let remove_lancedb = optional_bool_argument(&args, "remove_lancedb", false)?;
-                let engine = engine.clone();
-                let skill_roots = skill_roots.clone();
                 let skill_id_for_call = skill_id.clone();
                 let uninstall_options = SkillUninstallOptions {
                     remove_sqlite,
@@ -1153,14 +1185,9 @@ impl McpServer {
             }
 
             "vulcan-skill-reload" => {
-                let engine = self.lua_engine.as_ref().ok_or_else(|| {
-                    (-32603, "Lua engine not configured. Add skills directory.".to_string())
-                })?;
-                let skill_roots = self.lua_skill_roots.as_ref().ok_or_else(|| {
-                    (-32603, "Lua skill roots are not configured.".to_string())
-                })?;
-                let engine = engine.clone();
-                let skill_roots = skill_roots.clone();
+                let environment_id = optional_string_argument(&args, "environment_id");
+                let (engine, skill_roots) =
+                    self.resolve_lua_runtime_target(environment_id.as_deref())?;
                 tokio::task::spawn_blocking(move || {
                     let mut engine = engine
                         .write()

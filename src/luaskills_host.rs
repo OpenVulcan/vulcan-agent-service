@@ -149,7 +149,7 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
 
 /// English: Resolve the ordered default skill roots from host configuration and runtime layout.
 /// 从宿主配置与运行时布局解析默认环境使用的有序技能根目录列表。
-pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<RuntimeSkillRoot> {
+pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSkillRoot>, String> {
     let mut ordered_roots = Vec::new();
     let mut seen_roots = HashSet::new();
     let mut synthesized_index = 1usize;
@@ -211,10 +211,12 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Vec<RuntimeSkillRoot>
         }
     }
 
-    ordered_roots
+    validate_unique_skill_root_spaces(&ordered_roots)?;
+    let existing_roots: Vec<RuntimeSkillRoot> = ordered_roots
         .into_iter()
         .filter(|root| root.skills_dir.exists())
-        .collect()
+        .collect();
+    Ok(existing_roots)
 }
 
 /// English: Normalize one skill-root path into a stable deduplication key.
@@ -229,6 +231,30 @@ fn normalize_skill_root_key(path: &std::path::Path) -> String {
     {
         rendered
     }
+}
+
+/// English: Validate that every skill root maps to one unique sibling runtime space.
+/// 校验每个技能根都映射到唯一的同级运行时空间。
+pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Result<(), String> {
+    let mut seen_space_parents = HashSet::new();
+    for root in skill_roots {
+        let parent = root
+            .skills_dir
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| root.skills_dir.clone());
+        let normalized_parent = normalize_skill_root_key(&parent);
+        if !seen_space_parents.insert(normalized_parent) {
+            return Err(format!(
+                "skill root '{}' at {} shares the same sibling runtime space with another root; each root must use a unique parent directory / 技能根 '{}' ({}) 与其他技能根共享同一个同级运行时空间；每个技能根必须使用唯一父目录",
+                root.name,
+                root.skills_dir.display(),
+                root.name,
+                root.skills_dir.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// English: Resolve the host-provided protected skill policy from environment and built-in defaults.
