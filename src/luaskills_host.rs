@@ -154,14 +154,22 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     let mut seen_roots = HashSet::new();
     let mut synthesized_index = 1usize;
 
-    let mut push_unique_root = |name: String, path: PathBuf| {
+    let mut push_unique_root = |name: String, path: PathBuf| -> Result<(), String> {
         let normalized_path = normalize_skill_root_key(&path);
-        if seen_roots.insert(normalized_path) {
-            ordered_roots.push(RuntimeSkillRoot {
+        if !seen_roots.insert(normalized_path) {
+            return Err(format!(
+                "duplicate skill root '{}' at {} is not allowed / 不允许重复配置技能根 '{}' ({})",
                 name,
-                skills_dir: path,
-            });
+                path.display(),
+                name,
+                path.display()
+            ));
         }
+        ordered_roots.push(RuntimeSkillRoot {
+            name,
+            skills_dir: path,
+        });
+        Ok(())
     };
 
     if let Some(configured_roots) = &config.skill_roots {
@@ -173,7 +181,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
                     if name.is_empty() || path.is_empty() {
                         continue;
                     }
-                    push_unique_root(name.to_string(), PathBuf::from(path));
+                    push_unique_root(name.to_string(), PathBuf::from(path))?;
                 }
                 SkillRootConfigEntry::Path(path) => {
                     let trimmed = path.trim();
@@ -186,7 +194,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
                         format!("ROOT-{}", synthesized_index)
                     };
                     synthesized_index += 1;
-                    push_unique_root(generated, PathBuf::from(trimmed));
+                    push_unique_root(generated, PathBuf::from(trimmed))?;
                 }
             }
         }
@@ -197,31 +205,44 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        push_unique_root("USER".to_string(), override_root);
+        push_unique_root("USER".to_string(), override_root)?;
     } else if let Some(home) = home_dir() {
         push_unique_root(
             "USER".to_string(),
             home.join(".vulcan").join("vulcan-mcp").join("skills"),
-        );
+        )?;
     }
 
     if let Some(runtime_root) = resolve_runtime_root_from_config(config) {
         if config.skill_roots.is_none() {
-            push_unique_root("ROOT".to_string(), runtime_root.join("skills"));
+            push_unique_root("ROOT".to_string(), runtime_root.join("skills"))?;
         }
     }
 
     validate_unique_skill_root_spaces(&ordered_roots)?;
-    let existing_roots: Vec<RuntimeSkillRoot> = ordered_roots
+    if config.skill_roots.is_some() {
+        for root in &ordered_roots {
+            if !root.skills_dir.exists() {
+                return Err(format!(
+                    "configured skill root '{}' does not exist: {} / 显式配置的技能根 '{}' 不存在：{}",
+                    root.name,
+                    root.skills_dir.display(),
+                    root.name,
+                    root.skills_dir.display()
+                ));
+            }
+        }
+        return Ok(ordered_roots);
+    }
+    Ok(ordered_roots
         .into_iter()
         .filter(|root| root.skills_dir.exists())
-        .collect();
-    Ok(existing_roots)
+        .collect())
 }
 
 /// English: Normalize one skill-root path into a stable deduplication key.
 /// 将单个技能根路径归一化为稳定的去重键。
-fn normalize_skill_root_key(path: &std::path::Path) -> String {
+pub fn normalize_skill_root_key(path: &std::path::Path) -> String {
     let rendered = path.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
     {

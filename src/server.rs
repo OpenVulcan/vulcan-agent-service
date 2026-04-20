@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::luaskills_host::{
     build_luaskills_engine_options, build_runtime_invocation_context, build_runtime_request_context,
     client_budget_snapshot_for_render, install_luaskills_log_callback, map_runtime_entry_to_mcp_tool,
-    resolve_runtime_root_from_config, validate_unique_skill_root_spaces,
+    normalize_skill_root_key, resolve_runtime_root_from_config, validate_unique_skill_root_spaces,
 };
 use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
@@ -702,11 +702,11 @@ impl McpServer {
             name: environment_id.to_string(),
             skills_dir: skills_dir.to_path_buf(),
         }];
+        let mut seen_root_keys = std::collections::HashSet::new();
+        seen_root_keys.insert(normalize_skill_root_key(skills_dir));
         for root in default_roots {
-            if !project_roots
-                .iter()
-                .any(|existing| existing.skills_dir == root.skills_dir)
-            {
+            let normalized_key = normalize_skill_root_key(&root.skills_dir);
+            if seen_root_keys.insert(normalized_key) {
                 project_roots.push(root);
             }
         }
