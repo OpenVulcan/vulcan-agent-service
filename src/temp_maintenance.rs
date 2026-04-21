@@ -23,6 +23,10 @@ struct TempMaintenanceState {
 /// 全局临时目录清理状态，确保同一天内不会重复做“跨日清理”。
 static TEMP_MAINTENANCE_STATE: OnceLock<Mutex<TempMaintenanceState>> = OnceLock::new();
 
+/// Optional explicit runtime root captured from host configuration so temp maintenance follows the unified runtime layout.
+/// 从宿主配置捕获的可选显式运行根目录，用于让临时目录维护遵循统一运行时布局。
+static CONFIGURED_RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
 /// Cleanup trigger type. `Startup` forces cleanup on process start, while `DayBoundary` is used by the background cross-day pass.
 /// 清理触发类型。`Startup` 表示启动时强制清理，`DayBoundary` 表示跨日后的后台清理。
 #[derive(Debug, Clone, Copy)]
@@ -45,15 +49,34 @@ fn current_day_key(now: SystemTime) -> u64 {
     ((local_date.year() as i64) << 9 | local_date.ordinal0() as i64) as u64
 }
 
-/// Resolve the runtime temp root. The rule is `<exe_parent_parent>/temp`.
-/// 解析运行时 temp 根目录，规则为“可执行文件目录的上级目录/temp”。
-pub fn resolve_runtime_temp_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+/// Register one configured runtime root so temp maintenance resolves under the same unified runtime layout.
+/// 注册一份显式运行根目录，让临时目录维护与统一运行时布局保持一致。
+pub fn initialize_runtime_temp_root(runtime_root: Option<&Path>) {
+    if let Some(root) = runtime_root {
+        let _ = CONFIGURED_RUNTIME_ROOT.set(root.to_path_buf());
+    }
+}
+
+/// Derive the temp directory from an explicit runtime root when provided, otherwise from the executable output layout.
+/// 当提供显式运行根目录时从其派生 temp 目录，否则按可执行文件输出布局派生。
+fn derive_runtime_temp_dir(
+    explicit_runtime_root: Option<&Path>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(root) = explicit_runtime_root {
+        return Ok(root.join("temp"));
+    }
     let exe_path = std::env::current_exe()?;
     let exe_dir = exe_path
         .parent()
         .ok_or("runtime temp dir: executable directory not found")?;
     let runtime_root = exe_dir.parent().unwrap_or(exe_dir);
     Ok(runtime_root.join("temp"))
+}
+
+/// Resolve the runtime temp root. Configured runtime roots take precedence over executable-derived fallbacks.
+/// 解析运行时 temp 根目录。显式配置的运行根优先，其次才是基于可执行文件位置的回退规则。
+pub fn resolve_runtime_temp_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    derive_runtime_temp_dir(CONFIGURED_RUNTIME_ROOT.get().map(PathBuf::as_path))
 }
 
 /// Ensure the runtime temp directory exists and return its path.
@@ -140,4 +163,18 @@ pub fn spawn_cross_day_cleanup_task() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Explicit runtime roots should own the temp directory so all runtime artifacts stay under one unified root.
+    /// 显式运行根目录应接管 temp 目录位置，以保证所有运行时产物都位于统一根目录之下。
+    #[test]
+    fn derive_runtime_temp_dir_prefers_explicit_runtime_root() {
+        let root = std::env::temp_dir().join("vulcan-mcp-temp-maintenance-test-root");
+        let derived = derive_runtime_temp_dir(Some(&root)).expect("temp dir should derive");
+        assert_eq!(derived, root.join("temp"));
+    }
 }

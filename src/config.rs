@@ -1,6 +1,112 @@
 use serde::Deserialize;
 use std::fs;
 
+/// Database provider mode selected by the MCP host for one LuaSkills backend.
+/// MCP 宿主为单个 LuaSkills 数据库后端选择的 provider 模式。
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseProviderModeConfig {
+    /// Use the direct dynamic-library backend.
+    /// 使用直接动态库后端。
+    #[default]
+    DynamicLibrary,
+    /// Forward through host callback contracts.
+    /// 通过宿主回调协议转发。
+    HostCallback,
+    /// Forward through the external space controller service.
+    /// 通过外部空间控制器服务转发。
+    SpaceController,
+}
+
+/// Database callback transport mode selected when one backend uses host callbacks.
+/// 当后端使用宿主回调时选择的回调传输模式。
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseCallbackModeConfig {
+    /// Use the structured standard callback ABI.
+    /// 使用结构化标准回调 ABI。
+    #[default]
+    Standard,
+    /// Use the JSON callback ABI.
+    /// 使用 JSON 回调 ABI。
+    Json,
+}
+
+/// Controller process mode selected when the MCP host auto-spawns one local controller.
+/// 当 MCP 宿主自动拉起本地控制器时选择的进程模式。
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceControllerProcessModeConfig {
+    /// Keep the controller alive until an explicit external stop happens.
+    /// 保持控制器持续运行，直到外部显式停止。
+    Service,
+    /// Allow the controller to stop itself after idle timeouts.
+    /// 允许控制器在空闲超时后自行停止。
+    #[default]
+    Managed,
+}
+
+/// Host-level controller configuration forwarded into LuaSkills when one backend selects `space_controller`.
+/// 当某个后端选择 `space_controller` 时转发给 LuaSkills 的宿主级控制器配置。
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SpaceControllerConfig {
+    /// Optional explicit controller endpoint.
+    /// 可选的显式控制器端点。
+    pub endpoint: Option<String>,
+    /// Whether the host may auto-spawn the controller when the endpoint is unavailable.
+    /// 当控制器端点不可用时宿主是否允许自动拉起控制器。
+    #[serde(default = "default_true")]
+    pub auto_spawn: bool,
+    /// Optional local executable path for one copied controller binary.
+    /// 本地复制后的控制器可执行文件可选路径。
+    pub executable_path: Option<String>,
+    /// Process mode used for one auto-spawned controller process.
+    /// 自动拉起控制器进程时使用的进程模式。
+    #[serde(default)]
+    pub process_mode: SpaceControllerProcessModeConfig,
+    /// Optional minimum uptime in seconds.
+    /// 可选的最小存活秒数。
+    pub minimum_uptime_secs: Option<u64>,
+    /// Optional idle timeout in seconds.
+    /// 可选的空闲超时秒数。
+    pub idle_timeout_secs: Option<u64>,
+    /// Optional default lease TTL in seconds.
+    /// 可选的默认租约 TTL 秒数。
+    pub default_lease_ttl_secs: Option<u64>,
+    /// Optional connect timeout in seconds.
+    /// 可选的连接超时秒数。
+    pub connect_timeout_secs: Option<u64>,
+    /// Optional startup timeout in seconds.
+    /// 可选的启动超时秒数。
+    pub startup_timeout_secs: Option<u64>,
+    /// Optional startup retry interval in milliseconds.
+    /// 可选的启动重试间隔毫秒数。
+    pub startup_retry_interval_ms: Option<u64>,
+    /// Optional lease renew interval in seconds.
+    /// 可选的租约续约间隔秒数。
+    pub lease_renew_interval_secs: Option<u64>,
+}
+
+impl Default for SpaceControllerConfig {
+    /// Return one safe-by-default controller configuration matching the shared managed controller model.
+    /// 返回一套默认安全且匹配共享托管控制器模型的控制器配置。
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            auto_spawn: true,
+            executable_path: None,
+            process_mode: SpaceControllerProcessModeConfig::Managed,
+            minimum_uptime_secs: None,
+            idle_timeout_secs: None,
+            default_lease_ttl_secs: None,
+            connect_timeout_secs: None,
+            startup_timeout_secs: None,
+            startup_retry_interval_ms: None,
+            lease_renew_interval_secs: None,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum SkillRootConfigEntry {
@@ -22,7 +128,7 @@ pub struct NamedSkillRootConfig {
 // Configuration (loaded from YAML)
 // ============================================================
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Clone, Default)]
 pub struct Config {
     /// HTTP transport listen address, for example "127.0.0.1:19201".
     /// HTTP 传输监听地址，例如 "127.0.0.1:19201"。
@@ -92,6 +198,31 @@ pub struct Config {
     /// Database directory name, fixed as a sibling of the skills root under the same parent. Defaults to `databases`.
     /// 数据库目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `databases`。
     pub database_dir_name: Option<String>,
+    /// SQLite provider mode selected for the LuaSkills host runtime.
+    /// 为 LuaSkills 宿主运行时选择的 SQLite provider 模式。
+    #[serde(default)]
+    pub sqlite_provider_mode: DatabaseProviderModeConfig,
+    /// SQLite callback mode selected when SQLite uses `host_callback`.
+    /// 当 SQLite 使用 `host_callback` 时选择的回调模式。
+    #[serde(default)]
+    pub sqlite_callback_mode: DatabaseCallbackModeConfig,
+    /// LanceDB provider mode selected for the LuaSkills host runtime.
+    /// 为 LuaSkills 宿主运行时选择的 LanceDB provider 模式。
+    #[serde(default)]
+    pub lancedb_provider_mode: DatabaseProviderModeConfig,
+    /// LanceDB callback mode selected when LanceDB uses `host_callback`.
+    /// 当 LanceDB 使用 `host_callback` 时选择的回调模式。
+    #[serde(default)]
+    pub lancedb_callback_mode: DatabaseCallbackModeConfig,
+    /// Shared controller configuration used when one backend selects `space_controller`.
+    /// 当某个后端选择 `space_controller` 时使用的共享控制器配置。
+    #[serde(default)]
+    pub space_controller: SpaceControllerConfig,
+
+    /// Loaded config file path captured after deserialization for stable relative-path resolution.
+    /// 反序列化后记录的配置文件路径，用于稳定解析相对路径。
+    #[serde(skip)]
+    pub loaded_config_path: Option<String>,
 }
 
 fn default_http_addr() -> Option<String> {
@@ -102,12 +233,19 @@ fn default_grpc_addr() -> Option<String> {
     Some("127.0.0.1:19202".to_string())
 }
 
+/// Return the default boolean `true` used by controller auto-spawn options.
+/// 返回控制器自动拉起选项使用的默认布尔值 `true`。
+fn default_true() -> bool {
+    true
+}
+
 impl Config {
     /// Load configuration from the given YAML file path.
     /// 从指定 YAML 文件路径加载配置。
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let mut config: Config = serde_yaml::from_str(&content)?;
+        config.loaded_config_path = Some(path.to_string());
         Ok(config)
     }
 
@@ -142,7 +280,9 @@ impl Config {
                 eprintln!("[Config] Error: No config file found.");
                 eprintln!("[Config] Searched:");
                 eprintln!("[Config]   - -config flag");
-                eprintln!("[Config]   - -runtime-root/--runtime-root + <runtime_root>/configs/config.yaml");
+                eprintln!(
+                    "[Config]   - -runtime-root/--runtime-root + <runtime_root>/configs/config.yaml"
+                );
                 eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
                 eprintln!("[Config] Template source in repository: runtime/configs/config.yaml");
                 eprintln!(

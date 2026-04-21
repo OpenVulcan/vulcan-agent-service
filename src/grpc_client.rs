@@ -53,7 +53,10 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.healthz(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={}, trace_id={}", inner.status, inner.trace_id))
+        Ok(format!(
+            "status={}, trace_id={}",
+            inner.status, inner.trace_id
+        ))
     }
 
     /// List project paths registered in VMM.
@@ -68,7 +71,11 @@ impl VmmClient {
             .iter()
             .map(|p| p.display_path.clone())
             .collect();
-        Ok(format!("projects={}, trace_id={}", projects.join(", "), inner.trace_id))
+        Ok(format!(
+            "projects={}, trace_id={}",
+            projects.join(", "),
+            inner.trace_id
+        ))
     }
 
     /// Resolve a project reference and return a summarized project description.
@@ -88,7 +95,10 @@ impl VmmClient {
             .as_ref()
             .map(|p| p.display_path.clone())
             .unwrap_or_default();
-        Ok(format!("message={}, project={}, trace_id={}", inner.message, path, inner.trace_id))
+        Ok(format!(
+            "message={}, project={}, trace_id={}",
+            inner.message, path, inner.trace_id
+        ))
     }
 
     /// Ensure a project exists and create it if confirmation is granted.
@@ -113,7 +123,10 @@ impl VmmClient {
             .as_ref()
             .map(|p| p.display_path.clone())
             .unwrap_or_default();
-        Ok(format!("message={}, exists={}, project={}, trace_id={}", inner.message, inner.exists, path, inner.trace_id))
+        Ok(format!(
+            "message={}, exists={}, project={}, trace_id={}",
+            inner.message, inner.exists, path, inner.trace_id
+        ))
     }
 
     /// Delete the specified project and its derived data.
@@ -133,7 +146,16 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("message={}, needs_confirm={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}", inner.message, inner.needs_confirm, inner.deleted_sessions, inner.deleted_messages, inner.deleted_memories, inner.deleted_vector_rows, inner.trace_id))
+        Ok(format!(
+            "message={}, needs_confirm={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
+            inner.message,
+            inner.needs_confirm,
+            inner.deleted_sessions,
+            inner.deleted_messages,
+            inner.deleted_memories,
+            inner.deleted_vector_rows,
+            inner.trace_id
+        ))
     }
 
     /// Migrate project data to a new path.
@@ -155,7 +177,16 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("message={}, needs_confirm={}, migrated_sessions={}, migrated_messages={}, migrated_memories={}, rebuilt_vector={}, trace_id={}", inner.message, inner.needs_confirm, inner.migrated_sessions, inner.migrated_messages, inner.migrated_memories, inner.rebuilt_vector_rows, inner.trace_id))
+        Ok(format!(
+            "message={}, needs_confirm={}, migrated_sessions={}, migrated_messages={}, migrated_memories={}, rebuilt_vector={}, trace_id={}",
+            inner.message,
+            inner.needs_confirm,
+            inner.migrated_sessions,
+            inner.migrated_messages,
+            inner.migrated_memories,
+            inner.rebuilt_vector_rows,
+            inner.trace_id
+        ))
     }
 
     /// Resolve a user reference and optionally create the user.
@@ -177,7 +208,10 @@ impl VmmClient {
             .as_ref()
             .map(|u| format!("{}({})", u.user_name, u.user_id))
             .unwrap_or_default();
-        Ok(format!("message={}, user={}, created={}, exists={}, trace_id={}", inner.message, user_info, inner.created, inner.exists, inner.trace_id))
+        Ok(format!(
+            "message={}, user={}, created={}, exists={}, trace_id={}",
+            inner.message, user_info, inner.created, inner.exists, inner.trace_id
+        ))
     }
 
     /// List all user summaries.
@@ -192,7 +226,11 @@ impl VmmClient {
             .iter()
             .map(|u| format!("{}({})", u.user_name, u.user_id))
             .collect();
-        Ok(format!("users={}, trace_id={}", users.join(", "), inner.trace_id))
+        Ok(format!(
+            "users={}, trace_id={}",
+            users.join(", "),
+            inner.trace_id
+        ))
     }
 
     /// Delete a user and its related data.
@@ -214,7 +252,17 @@ impl VmmClient {
             .as_ref()
             .map(|u| format!("{}({})", u.user_name, u.user_id))
             .unwrap_or_default();
-        Ok(format!("message={}, requires_confirmation={}, user={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}", inner.message, inner.requires_confirmation, user_info, inner.deleted_sessions, inner.deleted_messages, inner.deleted_memories, inner.deleted_vector_rows, inner.trace_id))
+        Ok(format!(
+            "message={}, requires_confirmation={}, user={}, deleted_sessions={}, deleted_messages={}, deleted_memories={}, deleted_vector={}, trace_id={}",
+            inner.message,
+            inner.requires_confirmation,
+            user_info,
+            inner.deleted_sessions,
+            inner.deleted_messages,
+            inner.deleted_memories,
+            inner.deleted_vector_rows,
+            inner.trace_id
+        ))
     }
 
     /// Fetch profile nodes.
@@ -238,7 +286,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("node_count={}, trace_id={}", inner.nodes.len(), inner.trace_id))
+        Ok(format!(
+            "node_count={}, trace_id={}",
+            inner.nodes.len(),
+            inner.trace_id
+        ))
     }
 
     /// Fetch the aggregated profile bundle text.
@@ -262,7 +314,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("combined_text_len={}, trace_id={}", inner.combined_text.len(), inner.trace_id))
+        Ok(format!(
+            "combined_text_len={}, trace_id={}",
+            inner.combined_text.len(),
+            inner.trace_id
+        ))
     }
 
     /// Apply a profile instruction.
@@ -286,7 +342,13 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("instruction_id={}, accepted_nodes={}, retired_nodes={}, trace_id={}", inner.instruction_id, inner.accepted_nodes.len(), inner.retired_nodes.len(), inner.trace_id))
+        Ok(format!(
+            "instruction_id={}, accepted_nodes={}, retired_nodes={}, trace_id={}",
+            inner.instruction_id,
+            inner.accepted_nodes.len(),
+            inner.retired_nodes.len(),
+            inner.trace_id
+        ))
     }
 
     /// Execute memory-event search.
@@ -311,7 +373,12 @@ impl VmmClient {
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         let total: usize = inner.results.iter().map(|r| r.hits.len()).sum();
-        Ok(format!("total_hits={}, query_groups={}, trace_id={}", total, inner.results.len(), inner.trace_id))
+        Ok(format!(
+            "total_hits={}, query_groups={}, trace_id={}",
+            total,
+            inner.results.len(),
+            inner.trace_id
+        ))
     }
 
     /// Load conversation details by turn ids.
@@ -324,7 +391,11 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("turns_loaded={}, trace_id={}", inner.turns.len(), inner.trace_id))
+        Ok(format!(
+            "turns_loaded={}, trace_id={}",
+            inner.turns.len(),
+            inner.trace_id
+        ))
     }
 
     /// Write structured memories.
@@ -349,7 +420,12 @@ impl VmmClient {
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
         let deduped: usize = inner.items.iter().filter(|i| i.deduped).count();
-        Ok(format!("written={}, deduped={}, trace_id={}", inner.items.len(), deduped, inner.trace_id))
+        Ok(format!(
+            "written={}, deduped={}, trace_id={}",
+            inner.items.len(),
+            deduped,
+            inner.trace_id
+        ))
     }
 
     /// Upsert scratchpad key/value items into VMM.
@@ -385,7 +461,14 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, affected={}, inserted={}, updated={}", inner.status, inner.msg, inner.affected_count, inner.inserted_count, inner.updated_count))
+        Ok(format!(
+            "status={:?}, msg={}, affected={}, inserted={}, updated={}",
+            inner.status,
+            inner.msg,
+            inner.affected_count,
+            inner.inserted_count,
+            inner.updated_count
+        ))
     }
 
     /// Delete keys from the VMM scratchpad.
@@ -413,7 +496,10 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, affected={}", inner.status, inner.msg, inner.affected_count))
+        Ok(format!(
+            "status={:?}, msg={}, affected={}",
+            inner.status, inner.msg, inner.affected_count
+        ))
     }
 
     /// Read records from the VMM scratchpad.
@@ -437,7 +523,10 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, plan_name={}, item_count={}", inner.status, inner.msg, inner.plan_name, inner.item_count))
+        Ok(format!(
+            "status={:?}, msg={}, plan_name={}, item_count={}",
+            inner.status, inner.msg, inner.plan_name, inner.item_count
+        ))
     }
 
     /// List all keys stored in the VMM scratchpad.
@@ -459,7 +548,10 @@ impl VmmClient {
             .await
             .map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("status={:?}, msg={}, plan_name={}, key_count={}", inner.status, inner.msg, inner.plan_name, inner.key_count))
+        Ok(format!(
+            "status={:?}, msg={}, plan_name={}, key_count={}",
+            inner.status, inner.msg, inner.plan_name, inner.key_count
+        ))
     }
 
     /// Clean the VMM scratchpad scope.
@@ -500,7 +592,10 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.chat_compact(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("accepted={}, updated={}, compacted_turn_id={}, trace_id={}", inner.accepted, inner.updated, inner.compacted_turn_id, inner.trace_id))
+        Ok(format!(
+            "accepted={}, updated={}, compacted_turn_id={}, trace_id={}",
+            inner.accepted, inner.updated, inner.compacted_turn_id, inner.trace_id
+        ))
     }
 
     /// Execute the PreCheck flow.
@@ -523,7 +618,13 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.pre_check(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("should_inject={}, context_items={}, degraded={}, trace_id={}", inner.should_inject, inner.context_items.len(), inner.degraded, inner.trace_id))
+        Ok(format!(
+            "should_inject={}, context_items={}, degraded={}, trace_id={}",
+            inner.should_inject,
+            inner.context_items.len(),
+            inner.degraded,
+            inner.trace_id
+        ))
     }
 
     /// Execute the PostAction flow.
@@ -548,6 +649,9 @@ impl VmmClient {
         let mut client = self.client.lock().await;
         let resp = client.post_action(req).await.map_err(|e| e.to_string())?;
         let inner = resp.into_inner();
-        Ok(format!("accepted={}, trace_id={}", inner.accepted, inner.trace_id))
+        Ok(format!(
+            "accepted={}, trace_id={}",
+            inner.accepted, inner.trace_id
+        ))
     }
 }

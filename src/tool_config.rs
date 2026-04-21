@@ -121,14 +121,21 @@ fn load_tool_config_runtime() -> Result<ToolConfigRuntime, String> {
     };
 
     let content = fs::read_to_string(&path).map_err(|error| {
-        format!("Failed to read tool config file {}: {}", path.display(), error)
+        format!(
+            "Failed to read tool config file {}: {}",
+            path.display(),
+            error
+        )
     })?;
     let parsed_yaml: Value = serde_yaml::from_str(&content).map_err(|error| {
-        format!("Failed to parse tool config YAML {}: {}", path.display(), error)
+        format!(
+            "Failed to parse tool config YAML {}: {}",
+            path.display(),
+            error
+        )
     })?;
-    let configs = normalize_tool_config_root(&parsed_yaml).map_err(|error| {
-        format!("Invalid tool config file {}: {}", path.display(), error)
-    })?;
+    let configs = normalize_tool_config_root(&parsed_yaml)
+        .map_err(|error| format!("Invalid tool config file {}: {}", path.display(), error))?;
 
     Ok(ToolConfigRuntime {
         configs,
@@ -150,7 +157,10 @@ fn normalize_tool_config_root(root: &Value) -> Result<BTreeMap<String, Value>, S
             return Err("tool config key must not be empty".to_string());
         }
         let normalized_value = normalize_flat_tool_config(raw_config).map_err(|error| {
-            format!("tool `{0}` config is invalid: {}, {}", normalized_name, error)
+            format!(
+                "tool `{0}` config is invalid: {}, {}",
+                normalized_name, error
+            )
         })?;
         configs.insert(normalized_name.to_string(), normalized_value);
     }
@@ -169,9 +179,8 @@ fn normalize_flat_tool_config(raw_config: &Value) -> Result<Value, String> {
         if key.trim().is_empty() {
             return Err("tool config field name must not be empty".to_string());
         }
-        validate_flat_tool_value(value).map_err(|error| {
-            format!("field `{}` is invalid: {}, {}", key, key, error)
-        })?;
+        validate_flat_tool_value(value)
+            .map_err(|error| format!("field `{}` is invalid: {}, {}", key, key, error))?;
         normalized.insert(key.clone(), value.clone());
     }
 
@@ -188,8 +197,7 @@ fn validate_flat_tool_value(value: &Value) -> Result<(), String> {
                 match item {
                     Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
                     _ => {
-                        return Err("arrays may only contain scalar values"
-                            .to_string());
+                        return Err("arrays may only contain scalar values".to_string());
                     }
                 }
             }

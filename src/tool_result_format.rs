@@ -15,7 +15,6 @@ const TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR: &str = "Tool output exceeds the current M
 const DEFAULT_TRUNCATE_NOTICE: &str =
     "Content has been truncated because it exceeds the current MCP client limit.";
 
-
 /// Host render options that make the final rendering decisions explicit at the host layer.
 /// 宿主渲染选项，明确哪些最终处理决定属于宿主层。
 #[derive(Debug, Clone, Default)]
@@ -36,13 +35,9 @@ pub fn render_tool_result_text(
     let policy = resolve_overflow_policy(skill_name, output);
     match policy.mode {
         OverflowMode::Truncate => render_truncate_text(output, skill_name, &policy, client_budget),
-        OverflowMode::Page => render_page_text(
-            output,
-            skill_name,
-            &policy,
-            client_budget,
-            render_options,
-        ),
+        OverflowMode::Page => {
+            render_page_text(output, skill_name, &policy, client_budget, render_options)
+        }
     }
 }
 
@@ -247,10 +242,7 @@ fn resolve_budget_scope(
 
 /// Decide whether the content already fits within the target budget and can bypass host overflow handling.
 /// 判断正文是否已在目标预算内，无需再进入宿主超限处理。
-fn content_fits_budget(
-    output: &RuntimeInvocationResult,
-    budget: &EffectiveBudgetScope,
-) -> bool {
+fn content_fits_budget(output: &RuntimeInvocationResult, budget: &EffectiveBudgetScope) -> bool {
     let within_bytes = output.content_bytes <= budget.bytes as usize;
     let within_lines = budget.lines <= 0 || output.content_lines <= budget.lines as usize;
     within_bytes && within_lines
@@ -396,7 +388,15 @@ fn render_chunk_lines(chunk_plan: &OverflowChunkPlan) -> String {
         .iter()
         .enumerate()
         .map(|(index, chunk)| {
-            format!("- read_{:02}: offset={}, limit={}, start_line={}, end_line={}, bytes={}", index + 1, chunk.offset, chunk.limit, chunk.start_line, chunk.end_line, chunk.byte_count)
+            format!(
+                "- read_{:02}: offset={}, limit={}, start_line={}, end_line={}, bytes={}",
+                index + 1,
+                chunk.offset,
+                chunk.limit,
+                chunk.start_line,
+                chunk.end_line,
+                chunk.byte_count
+            )
         })
         .collect::<Vec<String>>()
         .join("\n")
@@ -415,7 +415,11 @@ fn write_overflow_text_file(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("failed to read system time: {}", error))?;
-    let file_name = format!("tool_output_{}_{}.md", policy.template_name.replace('.', "_"), now.as_millis());
+    let file_name = format!(
+        "tool_output_{}_{}.md",
+        policy.template_name.replace('.', "_"),
+        now.as_millis()
+    );
     let file_path = spill_root.join(file_name);
     fs::write(&file_path, content)
         .map_err(|error| format!("failed to write overflow file: {}", error))?;
@@ -452,7 +456,10 @@ fn resolve_runtime_resources_root() -> Option<PathBuf> {
         return Some(hosted_root);
     }
 
-    let repository_root = std::env::current_dir().ok()?.join("runtime").join("resources");
+    let repository_root = std::env::current_dir()
+        .ok()?
+        .join("runtime")
+        .join("resources");
     if repository_root.exists() {
         return Some(repository_root);
     }
@@ -475,11 +482,7 @@ fn load_template_text(skill_name: Option<&str>, template_name: &str) -> Option<S
                 .join(template_name),
         );
     }
-    candidates.push(
-        resource_root
-            .join("overflow_templates")
-            .join(template_name),
-    );
+    candidates.push(resource_root.join("overflow_templates").join(template_name));
 
     for path in candidates {
         if path.exists() {

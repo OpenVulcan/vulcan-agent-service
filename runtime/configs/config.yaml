@@ -53,6 +53,37 @@ grpc: "127.0.0.1:19202"
 # English: Database directory name. It is always created as a sibling of the skills root; only the directory name is configurable.
 # database_dir_name: "databases"
 
+# 中文：SQLite provider 模式。默认 dynamic_library，可选 host_callback / space_controller。
+# English: SQLite provider mode. Default is dynamic_library; available values are host_callback / space_controller.
+# sqlite_provider_mode: "dynamic_library"
+
+# 中文：当 SQLite 使用 host_callback 时的回调模式。默认 standard，可选 json。
+# English: Callback mode used when SQLite runs in host_callback mode. Default is standard; json is also available.
+# sqlite_callback_mode: "standard"
+
+# 中文：LanceDB provider 模式。默认 dynamic_library，可选 host_callback / space_controller。
+# English: LanceDB provider mode. Default is dynamic_library; available values are host_callback / space_controller.
+# lancedb_provider_mode: "dynamic_library"
+
+# 中文：当 LanceDB 使用 host_callback 时的回调模式。默认 standard，可选 json。
+# English: Callback mode used when LanceDB runs in host_callback mode. Default is standard; json is also available.
+# lancedb_callback_mode: "standard"
+
+# 中文：space_controller 配置。启用 controller 模式时，宿主可在这里指定共享端点、自动拉起策略和本地复制后的可执行文件路径。
+# English: space_controller settings. When controller mode is enabled, the host may define the shared endpoint, auto-spawn policy, and the copied local executable path here.
+# space_controller:
+#   endpoint: "http://127.0.0.1:19801"
+#   auto_spawn: true
+#   executable_path: "D:/projects/vulcan-mcp-client/runtime/bin/tools/vldb-controller.exe"
+#   process_mode: "managed"
+#   minimum_uptime_secs: 300
+#   idle_timeout_secs: 900
+#   default_lease_ttl_secs: 120
+#   connect_timeout_secs: 5
+#   startup_timeout_secs: 15
+#   startup_retry_interval_ms: 250
+#   lease_renew_interval_secs: 30
+
 # ============================================================
 # Lua VM Pool
 # 中文：Lua 虚拟机池配置。用于并发复用 Lua 运行时，降低频繁建虚拟机的开销。

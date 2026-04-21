@@ -170,9 +170,9 @@ fn client_budget_runtime() -> &'static RwLock<ClientBudgetRuntime> {
 pub fn preload_client_budget_config() -> Result<ClientBudgetLoadReport, String> {
     let runtime = load_client_budget_runtime()?;
     let report = build_client_budget_load_report(&runtime);
-    let mut guard = client_budget_runtime().write().map_err(|_| {
-        "client budget runtime lock poisoned".to_string()
-    })?;
+    let mut guard = client_budget_runtime()
+        .write()
+        .map_err(|_| "client budget runtime lock poisoned".to_string())?;
     *guard = runtime;
     Ok(report)
 }
@@ -258,7 +258,6 @@ pub fn resolve_client_budget_snapshot(
     }
 }
 
-
 /// Load the client-budget config, preferring the in-memory cache and otherwise parsing the runtime YAML file.
 /// 加载客户端预算配置；优先读取缓存，其次从运行时配置文件中解析。
 fn load_client_budget_config() -> ClientBudgetConfig {
@@ -277,10 +276,18 @@ fn load_client_budget_runtime() -> Result<ClientBudgetRuntime, String> {
     };
 
     let content = fs::read_to_string(&path).map_err(|error| {
-        format!("Failed to read client budget config {}: {}", path.display(), error)
+        format!(
+            "Failed to read client budget config {}: {}",
+            path.display(),
+            error
+        )
     })?;
     let mut parsed: ClientBudgetConfig = serde_yaml::from_str(&content).map_err(|error| {
-        format!("Failed to parse client budget config {}: {}", path.display(), error)
+        format!(
+            "Failed to parse client budget config {}: {}",
+            path.display(),
+            error
+        )
     })?;
     resolve_budget_sources_in_place(&mut parsed);
 
@@ -436,7 +443,10 @@ fn build_scope_preview_value(
                 .next()
                 .unwrap_or_else(|| "default".to_string())
         } else {
-            format!("mixed({})", source_set.into_keys().collect::<Vec<_>>().join(","))
+            format!(
+                "mixed({})",
+                source_set.into_keys().collect::<Vec<_>>().join(",")
+            )
         };
 
         scope_map.insert(

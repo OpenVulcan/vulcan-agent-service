@@ -1,18 +1,23 @@
 use crate::client_budget::{ClientBudgetSnapshot, resolve_client_budget_snapshot};
-use crate::config::{Config, SkillRootConfigEntry};
+use crate::config::{
+    Config, DatabaseCallbackModeConfig, DatabaseProviderModeConfig, SkillRootConfigEntry,
+    SpaceControllerProcessModeConfig,
+};
 use crate::protocol::{RequestContext, Tool, ToolAnnotations};
 use crate::runtime_logging::{error as log_error, info as log_info, warn as log_warn};
 use crate::temp_maintenance::ensure_runtime_temp_dir;
 use serde_json::{Value, json};
-use std::path::PathBuf;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use vulcan_luaskills::{
-    LuaEngineOptions, LuaInvocationContext, LuaRuntimeCapabilityOptions, LuaRuntimeHostOptions,
+    DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS, DEFAULT_TOOL_CACHE_MAX_ENTRIES,
+    DEFAULT_TOOL_CACHE_MAX_TTL_SECS, LuaEngineOptions, LuaInvocationContext,
+    LuaRuntimeCapabilityOptions, LuaRuntimeDatabaseCallbackMode, LuaRuntimeDatabaseProviderMode,
+    LuaRuntimeHostOptions, LuaRuntimeSpaceControllerOptions, LuaRuntimeSpaceControllerProcessMode,
     LuaVmPoolConfig, RuntimeClientInfo, RuntimeEntryDescriptor, RuntimeLogCallback,
     RuntimeLogEvent, RuntimeLogLevel, RuntimeRequestContext, RuntimeSkillRoot,
-    SkillProtectionConfig, ToolCacheConfig, DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS,
-    DEFAULT_TOOL_CACHE_MAX_ENTRIES, DEFAULT_TOOL_CACHE_MAX_TTL_SECS, set_log_callback,
+    SkillProtectionConfig, ToolCacheConfig, set_log_callback,
 };
 
 /// Install the host-side LuaSkills log callback so runtime events flow into the MCP host logger.
@@ -112,7 +117,12 @@ pub fn build_luaskills_engine_options(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         sqlite_library_path: resolve_host_library_path(&runtime_root, sqlite_library_file_name()),
+        sqlite_provider_mode: map_database_provider_mode(config.sqlite_provider_mode),
+        sqlite_callback_mode: map_database_callback_mode(config.sqlite_callback_mode),
         lancedb_library_path: resolve_host_library_path(&runtime_root, lancedb_library_file_name()),
+        lancedb_provider_mode: map_database_provider_mode(config.lancedb_provider_mode),
+        lancedb_callback_mode: map_database_callback_mode(config.lancedb_callback_mode),
+        space_controller: resolve_space_controller_options(config, &runtime_root)?,
         cache_config: Some(cache_config),
         reserved_entry_names: host_reserved_tool_names(),
         capabilities: LuaRuntimeCapabilityOptions {
@@ -120,6 +130,169 @@ pub fn build_luaskills_engine_options(
         },
     };
     Ok(LuaEngineOptions::new(pool_config, host_options))
+}
+
+/// Map one host config provider mode into the LuaSkills provider mode enum.
+/// 将宿主配置中的 provider 模式映射为 LuaSkills provider 模式枚举。
+fn map_database_provider_mode(mode: DatabaseProviderModeConfig) -> LuaRuntimeDatabaseProviderMode {
+    match mode {
+        DatabaseProviderModeConfig::DynamicLibrary => {
+            LuaRuntimeDatabaseProviderMode::DynamicLibrary
+        }
+        DatabaseProviderModeConfig::HostCallback => LuaRuntimeDatabaseProviderMode::HostCallback,
+        DatabaseProviderModeConfig::SpaceController => {
+            LuaRuntimeDatabaseProviderMode::SpaceController
+        }
+    }
+}
+
+/// Map one host config callback mode into the LuaSkills callback mode enum.
+/// 将宿主配置中的回调模式映射为 LuaSkills 回调模式枚举。
+fn map_database_callback_mode(mode: DatabaseCallbackModeConfig) -> LuaRuntimeDatabaseCallbackMode {
+    match mode {
+        DatabaseCallbackModeConfig::Standard => LuaRuntimeDatabaseCallbackMode::Standard,
+        DatabaseCallbackModeConfig::Json => LuaRuntimeDatabaseCallbackMode::Json,
+    }
+}
+
+/// Map one host config controller process mode into the LuaSkills controller process mode enum.
+/// 将宿主配置中的控制器进程模式映射为 LuaSkills 控制器进程模式枚举。
+fn map_space_controller_process_mode(
+    mode: SpaceControllerProcessModeConfig,
+) -> LuaRuntimeSpaceControllerProcessMode {
+    match mode {
+        SpaceControllerProcessModeConfig::Service => LuaRuntimeSpaceControllerProcessMode::Service,
+        SpaceControllerProcessModeConfig::Managed => LuaRuntimeSpaceControllerProcessMode::Managed,
+    }
+}
+
+/// Resolve the effective controller executable path from explicit config first and conventional copied runtime path second.
+/// 优先使用显式配置、其次使用约定的运行时复制路径来解析控制器可执行文件路径。
+fn resolve_space_controller_executable_path(
+    config: &Config,
+    runtime_root: &std::path::Path,
+) -> Result<Option<PathBuf>, String> {
+    if let Some(configured_path) = config
+        .space_controller
+        .executable_path
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        let candidate_path = PathBuf::from(configured_path);
+        let normalized_path = if candidate_path.is_absolute() {
+            candidate_path
+        } else {
+            runtime_root.join(candidate_path)
+        };
+        if !normalized_path.exists() {
+            return Err(format!(
+                "space_controller.executable_path does not exist: {}",
+                normalized_path.display()
+            ));
+        }
+        if !normalized_path.is_file() {
+            return Err(format!(
+                "space_controller.executable_path is not a file: {}",
+                normalized_path.display()
+            ));
+        }
+        return Ok(Some(normalized_path));
+    }
+    let copied_path = runtime_root
+        .join("bin")
+        .join("tools")
+        .join(space_controller_executable_file_name());
+    if !copied_path.exists() {
+        return Ok(None);
+    }
+    if !copied_path.is_file() {
+        return Err(format!(
+            "space_controller fallback executable path is not a file: {}",
+            copied_path.display()
+        ));
+    }
+    Ok(Some(copied_path))
+}
+
+/// Resolve the host-facing shared controller options from the MCP config and runtime layout.
+/// 基于 MCP 配置与运行时布局解析宿主侧共享控制器选项。
+fn resolve_space_controller_options(
+    config: &Config,
+    runtime_root: &std::path::Path,
+) -> Result<LuaRuntimeSpaceControllerOptions, String> {
+    let defaults = LuaRuntimeSpaceControllerOptions::default();
+    Ok(LuaRuntimeSpaceControllerOptions {
+        endpoint: config
+            .space_controller
+            .endpoint
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        auto_spawn: config.space_controller.auto_spawn,
+        executable_path: resolve_space_controller_executable_path(config, runtime_root)?,
+        process_mode: map_space_controller_process_mode(config.space_controller.process_mode),
+        minimum_uptime_secs: config
+            .space_controller
+            .minimum_uptime_secs
+            .unwrap_or(defaults.minimum_uptime_secs),
+        idle_timeout_secs: config
+            .space_controller
+            .idle_timeout_secs
+            .unwrap_or(defaults.idle_timeout_secs),
+        default_lease_ttl_secs: config
+            .space_controller
+            .default_lease_ttl_secs
+            .unwrap_or(defaults.default_lease_ttl_secs),
+        connect_timeout_secs: config
+            .space_controller
+            .connect_timeout_secs
+            .unwrap_or(defaults.connect_timeout_secs),
+        startup_timeout_secs: config
+            .space_controller
+            .startup_timeout_secs
+            .unwrap_or(defaults.startup_timeout_secs),
+        startup_retry_interval_ms: config
+            .space_controller
+            .startup_retry_interval_ms
+            .unwrap_or(defaults.startup_retry_interval_ms),
+        lease_renew_interval_secs: config
+            .space_controller
+            .lease_renew_interval_secs
+            .unwrap_or(defaults.lease_renew_interval_secs),
+    })
+}
+
+/// Return the platform-specific controller executable filename used by the MCP host runtime.
+/// 返回 MCP 宿主运行时使用的平台相关控制器可执行文件名。
+fn space_controller_executable_file_name() -> &'static str {
+    if cfg!(windows) {
+        "vldb-controller.exe"
+    } else {
+        "vldb-controller"
+    }
+}
+
+/// Resolve the stable base directory used for relative host configuration paths.
+/// 解析宿主配置中相对路径应当依附的稳定基准目录。
+fn resolve_config_base_dir(config: &Config) -> Option<PathBuf> {
+    config
+        .loaded_config_path
+        .as_ref()
+        .map(PathBuf::from)
+        .and_then(|path| {
+            let config_dir = path.parent()?.to_path_buf();
+            let use_parent_of_configs = config_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.eq_ignore_ascii_case("configs"))
+                .unwrap_or(false);
+            if use_parent_of_configs {
+                config_dir.parent().map(std::path::Path::to_path_buf)
+            } else {
+                Some(config_dir)
+            }
+        })
 }
 
 /// Resolve the runtime root directory according to host configuration first and fallback layouts second.
@@ -131,7 +304,18 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     {
-        return Some(PathBuf::from(configured_root));
+        let candidate_root = PathBuf::from(configured_root);
+        let normalized_root = if candidate_root.is_absolute() {
+            candidate_root
+        } else if let Some(config_base_dir) = resolve_config_base_dir(config) {
+            config_base_dir.join(candidate_root)
+        } else {
+            std::env::current_dir().ok()?.join(candidate_root)
+        };
+        if !normalized_root.exists() || !normalized_root.is_dir() {
+            return None;
+        }
+        return Some(normalized_root);
     }
 
     let exe_path = std::env::current_exe().ok()?;
@@ -157,16 +341,35 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     let mut seen_roots = HashSet::new();
     let mut seen_root_names = HashSet::new();
     let mut synthesized_index = 1usize;
+    let config_base_dir = resolve_config_base_dir(config);
+
+    let resolve_configured_path = |raw_path: &str| -> PathBuf {
+        let candidate_path = PathBuf::from(raw_path);
+        if candidate_path.is_absolute() {
+            candidate_path
+        } else if let Some(base_dir) = &config_base_dir {
+            base_dir.join(candidate_path)
+        } else {
+            candidate_path
+        }
+    };
 
     let mut push_unique_root = |name: String, path: PathBuf| -> Result<(), String> {
         let normalized_name = name.trim().to_string();
         if !seen_root_names.insert(normalized_name.clone()) {
-            return Err(format!("duplicate skill root name '{}' is not allowed", normalized_name));
+            return Err(format!(
+                "duplicate skill root name '{}' is not allowed",
+                normalized_name
+            ));
         }
         let normalized_storage_path = normalize_skill_root_path(&path)?;
         let normalized_path = normalize_skill_root_key(&normalized_storage_path);
         if !seen_roots.insert(normalized_path) {
-            return Err(format!("duplicate skill root '{}' at {} is not allowed", name, normalized_storage_path.display()));
+            return Err(format!(
+                "duplicate skill root '{}' at {} is not allowed",
+                name,
+                normalized_storage_path.display()
+            ));
         }
         ordered_roots.push(RuntimeSkillRoot {
             name: normalized_name,
@@ -182,9 +385,12 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
                     let name = named.name.trim();
                     let path = named.path.trim();
                     if name.is_empty() || path.is_empty() {
-                        return Err(format!("skill_roots[{}] must declare non-empty name and path", index));
+                        return Err(format!(
+                            "skill_roots[{}] must declare non-empty name and path",
+                            index
+                        ));
                     }
-                    push_unique_root(name.to_string(), PathBuf::from(path))?;
+                    push_unique_root(name.to_string(), resolve_configured_path(path))?;
                 }
                 SkillRootConfigEntry::Path(path) => {
                     let trimmed = path.trim();
@@ -197,7 +403,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
                         format!("ROOT-{}", synthesized_index)
                     };
                     synthesized_index += 1;
-                    push_unique_root(generated, PathBuf::from(trimmed))?;
+                    push_unique_root(generated, resolve_configured_path(trimmed))?;
                 }
             }
         }
@@ -206,7 +412,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+        .map(resolve_configured_path)
     {
         push_unique_root("USER".to_string(), override_root)?;
     } else if let Some(home) = home_dir() {
@@ -248,13 +454,25 @@ fn validate_skill_root_directory(
 ) -> Result<(), String> {
     if !root.skills_dir.exists() {
         if strict_missing {
-            return Err(format!("configured skill root '{}' does not exist: {}", root.name, root.skills_dir.display()));
+            return Err(format!(
+                "configured skill root '{}' does not exist: {}",
+                root.name,
+                root.skills_dir.display()
+            ));
         }
-        return Err(format!("implicit skill root '{}' does not exist: {}", root.name, root.skills_dir.display()));
+        return Err(format!(
+            "implicit skill root '{}' does not exist: {}",
+            root.name,
+            root.skills_dir.display()
+        ));
     }
 
     if !root.skills_dir.is_dir() {
-        return Err(format!("skill root '{}' is not a directory: {}", root.name, root.skills_dir.display()));
+        return Err(format!(
+            "skill root '{}' is not a directory: {}",
+            root.name,
+            root.skills_dir.display()
+        ));
     }
 
     Ok(())
@@ -268,7 +486,11 @@ pub fn normalize_skill_root_path(path: &std::path::Path) -> Result<PathBuf, Stri
     } else {
         std::env::current_dir()
             .map_err(|error| {
-                format!("failed to resolve current directory while normalizing skill root '{}': {}", path.display(), error)
+                format!(
+                    "failed to resolve current directory while normalizing skill root '{}': {}",
+                    path.display(),
+                    error
+                )
             })?
             .join(path)
     };
@@ -296,7 +518,10 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
     for root in skill_roots {
         let normalized_name = root.name.trim().to_string();
         if !seen_root_names.insert(normalized_name.clone()) {
-            return Err(format!("skill root name '{}' is duplicated in one runtime chain", normalized_name));
+            return Err(format!(
+                "skill root name '{}' is duplicated in one runtime chain",
+                normalized_name
+            ));
         }
         let parent = root
             .skills_dir
@@ -305,7 +530,11 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
             .unwrap_or_else(|| root.skills_dir.clone());
         let normalized_parent = normalize_skill_root_key(&parent);
         if !seen_space_parents.insert(normalized_parent) {
-            return Err(format!("skill root '{}' at {} shares the same sibling runtime space with another root; each root must use a unique parent directory", root.name, root.skills_dir.display()));
+            return Err(format!(
+                "skill root '{}' at {} shares the same sibling runtime space with another root; each root must use a unique parent directory",
+                root.name,
+                root.skills_dir.display()
+            ));
         }
     }
     Ok(())
@@ -343,7 +572,9 @@ fn resolve_skill_protection_config(config: &Config) -> SkillProtectionConfig {
             }
         }
     }
-    SkillProtectionConfig { protected_skill_ids }
+    SkillProtectionConfig {
+        protected_skill_ids,
+    }
 }
 
 /// Resolve the host-side cache policy that should be injected into the LuaSkills library.
@@ -428,7 +659,8 @@ fn resolve_host_library_root(runtime_root: &std::path::Path) -> Option<PathBuf> 
             return Some(parent.to_path_buf());
         }
     }
-    if let Some(lancedb_path) = resolve_host_library_path(runtime_root, lancedb_library_file_name()) {
+    if let Some(lancedb_path) = resolve_host_library_path(runtime_root, lancedb_library_file_name())
+    {
         if let Some(parent) = lancedb_path.parent() {
             return Some(parent.to_path_buf());
         }
@@ -458,9 +690,7 @@ fn home_dir() -> Option<std::path::PathBuf> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOME")
-            .ok()
-            .map(std::path::PathBuf::from)
+        std::env::var("HOME").ok().map(std::path::PathBuf::from)
     }
 }
 
@@ -538,5 +768,349 @@ fn lancedb_library_file_name() -> &'static str {
     #[cfg(target_os = "macos")]
     {
         "libvldb_lancedb.dylib"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, SpaceControllerConfig};
+
+    /// Build one unique temporary directory path for one test case.
+    /// 为单个测试用例构建唯一的临时目录路径。
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "vulcan-mcp-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    /// Create one minimal runtime root layout used by host option resolution tests.
+    /// 创建一份供宿主选项解析测试使用的最小运行时根目录布局。
+    fn create_runtime_root_for_test(root: &PathBuf) {
+        std::fs::create_dir_all(root.join("skills")).expect("failed to create skills directory");
+        std::fs::create_dir_all(root.join("bin").join("tools"))
+            .expect("failed to create tools directory");
+    }
+
+    /// Default config should keep both database backends on the dynamic-library path.
+    /// 默认配置应保持两个数据库后端都走动态库路径。
+    #[test]
+    fn default_config_keeps_dynamic_library_modes() {
+        let root = unique_test_dir("dynamic-library-default");
+        create_runtime_root_for_test(&root);
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let options =
+            resolve_space_controller_options(&config, &root).expect("controller options failed");
+        assert_eq!(
+            map_database_provider_mode(config.sqlite_provider_mode),
+            LuaRuntimeDatabaseProviderMode::DynamicLibrary
+        );
+        assert_eq!(
+            map_database_provider_mode(config.lancedb_provider_mode),
+            LuaRuntimeDatabaseProviderMode::DynamicLibrary
+        );
+        assert!(options.endpoint.is_none());
+        assert!(options.executable_path.is_none());
+        assert!(options.auto_spawn);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Controller config should map endpoint, spawn policy, process mode, and copied executable path correctly.
+    /// 控制器配置应正确映射端点、拉起策略、进程模式与复制后的可执行文件路径。
+    #[test]
+    fn controller_config_maps_to_space_controller_options() {
+        let root = unique_test_dir("space-controller");
+        create_runtime_root_for_test(&root);
+        let copied_executable = root
+            .join("bin")
+            .join("tools")
+            .join(space_controller_executable_file_name());
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create copied controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            sqlite_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            lancedb_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            space_controller: SpaceControllerConfig {
+                endpoint: Some("http://127.0.0.1:29801".to_string()),
+                auto_spawn: true,
+                executable_path: None,
+                process_mode: SpaceControllerProcessModeConfig::Service,
+                minimum_uptime_secs: Some(600),
+                idle_timeout_secs: Some(1800),
+                default_lease_ttl_secs: Some(90),
+                connect_timeout_secs: Some(3),
+                startup_timeout_secs: Some(20),
+                startup_retry_interval_ms: Some(100),
+                lease_renew_interval_secs: Some(15),
+            },
+            ..Config::default()
+        };
+        let options =
+            resolve_space_controller_options(&config, &root).expect("controller options failed");
+        assert_eq!(
+            map_database_provider_mode(config.sqlite_provider_mode),
+            LuaRuntimeDatabaseProviderMode::SpaceController
+        );
+        assert_eq!(
+            map_database_provider_mode(config.lancedb_provider_mode),
+            LuaRuntimeDatabaseProviderMode::SpaceController
+        );
+        assert_eq!(options.endpoint.as_deref(), Some("http://127.0.0.1:29801"));
+        assert_eq!(options.executable_path.as_ref(), Some(&copied_executable));
+        assert_eq!(
+            options.process_mode,
+            LuaRuntimeSpaceControllerProcessMode::Service
+        );
+        assert_eq!(options.minimum_uptime_secs, 600);
+        assert_eq!(options.idle_timeout_secs, 1800);
+        assert_eq!(options.default_lease_ttl_secs, 90);
+        assert_eq!(options.connect_timeout_secs, 3);
+        assert_eq!(options.startup_timeout_secs, 20);
+        assert_eq!(options.startup_retry_interval_ms, 100);
+        assert_eq!(options.lease_renew_interval_secs, 15);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Building engine options with controller mode should preserve the copied executable path and provider selections.
+    /// 使用控制器模式构建引擎选项时，应保留复制后的可执行文件路径和 provider 选择结果。
+    #[test]
+    fn build_engine_options_maps_space_controller_configuration() {
+        let root = unique_test_dir("engine-options-controller");
+        create_runtime_root_for_test(&root);
+        let copied_executable = root
+            .join("bin")
+            .join("tools")
+            .join(space_controller_executable_file_name());
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create copied controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            sqlite_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            lancedb_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            space_controller: SpaceControllerConfig {
+                endpoint: Some("http://127.0.0.1:29801".to_string()),
+                auto_spawn: true,
+                executable_path: None,
+                process_mode: SpaceControllerProcessModeConfig::Managed,
+                ..SpaceControllerConfig::default()
+            },
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let options = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect("failed to build luaskills engine options");
+        assert_eq!(
+            options.host_options.sqlite_provider_mode,
+            LuaRuntimeDatabaseProviderMode::SpaceController
+        );
+        assert_eq!(
+            options.host_options.lancedb_provider_mode,
+            LuaRuntimeDatabaseProviderMode::SpaceController
+        );
+        assert_eq!(
+            options.host_options.space_controller.endpoint.as_deref(),
+            Some("http://127.0.0.1:29801")
+        );
+        assert_eq!(
+            options
+                .host_options
+                .space_controller
+                .executable_path
+                .as_ref(),
+            Some(&copied_executable)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Relative controller executable paths should be resolved against the runtime root instead of the current working directory.
+    /// 相对控制器可执行文件路径应基于 runtime_root 解析，而不是依赖当前工作目录。
+    #[test]
+    fn controller_config_resolves_relative_executable_path_under_runtime_root() {
+        let root = unique_test_dir("controller-relative-executable");
+        create_runtime_root_for_test(&root);
+        let relative_executable = PathBuf::from("bin")
+            .join("tools")
+            .join(space_controller_executable_file_name());
+        let copied_executable = root.join(&relative_executable);
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create relative controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            space_controller: SpaceControllerConfig {
+                executable_path: Some(relative_executable.to_string_lossy().to_string()),
+                ..SpaceControllerConfig::default()
+            },
+            ..Config::default()
+        };
+        let options =
+            resolve_space_controller_options(&config, &root).expect("controller options failed");
+        assert_eq!(options.executable_path.as_ref(), Some(&copied_executable));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Missing explicit controller executable paths should fail during host option construction instead of being deferred to runtime.
+    /// 缺失的显式控制器可执行文件路径应在宿主选项构建阶段直接失败，而不是延迟到运行时。
+    #[test]
+    fn build_engine_options_rejects_missing_controller_executable_path() {
+        let root = unique_test_dir("controller-missing-executable");
+        create_runtime_root_for_test(&root);
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            sqlite_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            lancedb_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            space_controller: SpaceControllerConfig {
+                executable_path: Some("bin/tools/missing-vldb-controller.exe".to_string()),
+                ..SpaceControllerConfig::default()
+            },
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("missing executable path should fail");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("space_controller.executable_path does not exist"),
+            "unexpected error: {rendered}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Fallback copied controller paths should also be validated as files, not merely as existing paths.
+    /// 回退复制得到的控制器路径也应校验为文件，不能仅按存在性接受。
+    #[test]
+    fn build_engine_options_rejects_directory_shaped_fallback_controller_path() {
+        let root = unique_test_dir("controller-directory-fallback");
+        create_runtime_root_for_test(&root);
+        let copied_executable_dir = root
+            .join("bin")
+            .join("tools")
+            .join(space_controller_executable_file_name());
+        std::fs::create_dir_all(&copied_executable_dir)
+            .expect("failed to create directory-shaped fallback path");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            sqlite_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            lancedb_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("directory-shaped fallback path should fail");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("space_controller fallback executable path is not a file"),
+            "unexpected error: {rendered}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Relative runtime_root should be resolved against the loaded config file directory instead of the current working directory.
+    /// 相对 runtime_root 应基于已加载配置文件所在目录解析，而不是依赖当前工作目录。
+    #[test]
+    fn resolve_runtime_root_uses_config_file_directory_for_relative_paths() {
+        let base_dir = unique_test_dir("runtime-root-relative");
+        let config_dir = base_dir.join("configs");
+        let runtime_root = base_dir.join("runtime");
+        std::fs::create_dir_all(&config_dir).expect("failed to create config directory");
+        std::fs::create_dir_all(runtime_root.join("skills"))
+            .expect("failed to create runtime skills directory");
+        let config = Config {
+            runtime_root: Some("runtime".to_string()),
+            loaded_config_path: Some(config_dir.join("config.yaml").to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let resolved =
+            resolve_runtime_root_from_config(&config).expect("runtime root should resolve");
+        assert_eq!(resolved, runtime_root);
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// Relative configured skill roots should be resolved from the stable config base directory instead of the current working directory.
+    /// 相对技能根配置应基于稳定的配置基准目录解析，而不是依赖当前工作目录。
+    #[test]
+    fn resolve_skill_roots_uses_config_base_dir_for_relative_paths() {
+        let base_dir = unique_test_dir("skill-root-relative");
+        let config_dir = base_dir.join("configs");
+        let skills_dir = base_dir.join("project-skills");
+        std::fs::create_dir_all(&config_dir).expect("failed to create config directory");
+        std::fs::create_dir_all(&skills_dir).expect("failed to create relative skills directory");
+        let config = Config {
+            skill_roots: Some(vec![SkillRootConfigEntry::Named(
+                crate::config::NamedSkillRootConfig {
+                    name: "PROJECT_A".to_string(),
+                    path: "project-skills".to_string(),
+                },
+            )]),
+            loaded_config_path: Some(config_dir.join("config.yaml").to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let skill_roots =
+            resolve_skill_roots_from_config(&config).expect("skill roots should resolve");
+        assert_eq!(skill_roots.len(), 1);
+        assert_eq!(
+            normalize_skill_root_key(&skill_roots[0].skills_dir),
+            normalize_skill_root_key(&skills_dir)
+        );
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// Invalid explicit runtime_root values should be rejected during resolution instead of flowing deeper into runtime assembly.
+    /// 无效的显式 runtime_root 应在解析阶段被拒绝，而不是继续流入更深的运行时装配链路。
+    #[test]
+    fn resolve_runtime_root_rejects_missing_or_non_directory_paths() {
+        let base_dir = unique_test_dir("runtime-root-invalid");
+        let file_path = base_dir.join("runtime-file");
+        std::fs::create_dir_all(&base_dir).expect("failed to create base directory");
+        std::fs::write(&file_path, b"not-a-directory").expect("failed to create runtime file");
+
+        let missing_config = Config {
+            runtime_root: Some(
+                base_dir
+                    .join("missing-runtime")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            ..Config::default()
+        };
+        assert!(
+            resolve_runtime_root_from_config(&missing_config).is_none(),
+            "missing runtime root should be rejected"
+        );
+
+        let file_config = Config {
+            runtime_root: Some(file_path.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        assert!(
+            resolve_runtime_root_from_config(&file_config).is_none(),
+            "file-shaped runtime root should be rejected"
+        );
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 }

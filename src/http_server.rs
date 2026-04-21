@@ -316,7 +316,10 @@ async fn handle_initialize_request(
             Err(error) => {
                 return plain_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("initialize params could not be reconstructed after success: {}", error),
+                    &format!(
+                        "initialize params could not be reconstructed after success: {}",
+                        error
+                    ),
                 );
             }
         };
@@ -486,13 +489,19 @@ async fn validate_session_protocol(
         if negotiate_version(header_version).is_none() {
             return Err(plain_response(
                 StatusCode::BAD_REQUEST,
-                &format!("Unsupported MCP-Protocol-Version header: {}", header_version),
+                &format!(
+                    "Unsupported MCP-Protocol-Version header: {}",
+                    header_version
+                ),
             ));
         }
         if header_version != session_version {
             return Err(plain_response(
                 StatusCode::BAD_REQUEST,
-                &format!("MCP-Protocol-Version header mismatch. Expected {}, got {}.", session_version, header_version),
+                &format!(
+                    "MCP-Protocol-Version header mismatch. Expected {}, got {}.",
+                    session_version, header_version
+                ),
             ));
         }
     }

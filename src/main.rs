@@ -26,18 +26,17 @@ pub mod pb_mcp {
 use client_budget::preload_client_budget_config;
 use config::Config;
 use luaskills_host::{
-    build_luaskills_cache_config, build_luaskills_engine_options,
-    build_runtime_invocation_context, client_budget_snapshot_for_render,
-    install_luaskills_log_callback, resolve_runtime_root_from_config,
-    resolve_skill_roots_from_config,
+    build_luaskills_cache_config, build_luaskills_engine_options, build_runtime_invocation_context,
+    client_budget_snapshot_for_render, install_luaskills_log_callback,
+    resolve_runtime_root_from_config, resolve_skill_roots_from_config,
 };
 use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
 use serde_json::{Value, json};
 use server::McpServer;
 use temp_maintenance::{
-    CleanupTrigger, ensure_runtime_temp_dir, maintain_runtime_temp_dir,
-    spawn_cross_day_cleanup_task,
+    CleanupTrigger, ensure_runtime_temp_dir, initialize_runtime_temp_root,
+    maintain_runtime_temp_dir, spawn_cross_day_cleanup_task,
 };
 use tool_config::preload_tool_configs;
 use tool_result_format::{HostRenderOptions, RuntimeInvocationResult, render_tool_result_text};
@@ -104,7 +103,10 @@ fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadRepor
                 } else {
                     bytes
                 };
-                output_parts.push(format!("tokens:{} rate:{} => bytes:{}", tokens, report.estimation.bytes_per_token, displayed_bytes));
+                output_parts.push(format!(
+                    "tokens:{} rate:{} => bytes:{}",
+                    tokens, report.estimation.bytes_per_token, displayed_bytes
+                ));
             }
             if let Some(raw_bytes_value) = raw_bytes {
                 output_parts.push(format!("bytes:{}", raw_bytes_value));
@@ -121,7 +123,13 @@ fn print_client_budget_preload_log(report: &client_budget::ClientBudgetLoadRepor
                 output_parts.push(format!("effective_bytes:{}", bytes));
             }
 
-            log_info(format!("[mcp_output_limit]client:{} {}({}) src={}", client_pattern, scope_name, output_parts.join(", "), source_summary));
+            log_info(format!(
+                "[mcp_output_limit]client:{} {}({}) src={}",
+                client_pattern,
+                scope_name,
+                output_parts.join(", "),
+                source_summary
+            ));
         }
     }
 }
@@ -136,7 +144,10 @@ fn print_tool_config_preload_log(report: &tool_config::ToolConfigLoadReport) {
 
     for tool_name in &report.tool_names {
         let count = report.config_counts.get(tool_name).copied().unwrap_or(0);
-        log_info(format!("[tools_config]loaded {} configs,count={}", tool_name, count));
+        log_info(format!(
+            "[tools_config]loaded {} configs,count={}",
+            tool_name, count
+        ));
     }
 }
 
@@ -166,6 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// 异步主流程，根据运行模式决定是启动网络服务还是直接进入 tools 调试。
 async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     install_luaskills_log_callback();
+    initialize_runtime_temp_root(resolve_runtime_root_from_config(&cfg).as_deref());
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
@@ -248,8 +260,7 @@ fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
                         cursor += 2;
                     }
                     value if value.starts_with("--") => {
-                        return Err(format!("Unknown --call-tools flag: {}", value)
-                        .into());
+                        return Err(format!("Unknown --call-tools flag: {}", value).into());
                     }
                     raw_json => {
                         arguments = serde_json::from_str::<Value>(raw_json)?;
@@ -351,9 +362,10 @@ fn run_call_tool_mode(
 ) -> Result<(), Box<dyn std::error::Error>> {
     set_non_error_logging_enabled(false);
     install_luaskills_log_callback();
+    let config = Config::load()?;
+    initialize_runtime_temp_root(resolve_runtime_root_from_config(&config).as_deref());
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-    let config = Config::load()?;
     add_libs_to_path(&config);
     let engine = build_single_vm_lua_engine_for_local_mode(&config)?;
 
@@ -363,8 +375,11 @@ fn run_call_tool_mode(
 
     let skill_name = engine.skill_name_for_tool(tool_name);
     let request_context = build_call_tool_request_context(simulated_client_name);
-    let invocation_context =
-        build_runtime_invocation_context(Some(&request_context), Some(tool_name), skill_name.as_deref());
+    let invocation_context = build_runtime_invocation_context(
+        Some(&request_context),
+        Some(tool_name),
+        skill_name.as_deref(),
+    );
     let result = engine
         .call_skill(tool_name, &arguments, Some(&invocation_context))
         .map_err(|error| format!("call-tools failed for {}: {}", tool_name, error))?;
@@ -405,9 +420,10 @@ fn build_single_vm_lua_engine_for_local_mode(
 fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn std::error::Error>> {
     set_non_error_logging_enabled(false);
     install_luaskills_log_callback();
+    let config = Config::load()?;
+    initialize_runtime_temp_root(resolve_runtime_root_from_config(&config).as_deref());
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs()?;
-    let config = Config::load()?;
     add_libs_to_path(&config);
 
     let request_json = std::fs::read_to_string(request_file)?;
