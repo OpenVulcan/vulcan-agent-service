@@ -8,11 +8,11 @@ use std::path::PathBuf;
 use std::collections::HashSet;
 use std::sync::Arc;
 use vulcan_luaskills::{
-    LuaEngineOptions, LuaInvocationContext, LuaRuntimeHostOptions, LuaVmPoolConfig,
-    RuntimeClientInfo, RuntimeEntryDescriptor, RuntimeLogCallback, RuntimeLogEvent,
-    RuntimeLogLevel, RuntimeRequestContext, SkillProtectionConfig, ToolCacheConfig,
-    RuntimeSkillRoot, DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS, DEFAULT_TOOL_CACHE_MAX_ENTRIES,
-    DEFAULT_TOOL_CACHE_MAX_TTL_SECS, set_log_callback,
+    LuaEngineOptions, LuaInvocationContext, LuaRuntimeCapabilityOptions, LuaRuntimeHostOptions,
+    LuaVmPoolConfig, RuntimeClientInfo, RuntimeEntryDescriptor, RuntimeLogCallback,
+    RuntimeLogEvent, RuntimeLogLevel, RuntimeRequestContext, RuntimeSkillRoot,
+    SkillProtectionConfig, ToolCacheConfig, DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS,
+    DEFAULT_TOOL_CACHE_MAX_ENTRIES, DEFAULT_TOOL_CACHE_MAX_TTL_SECS, set_log_callback,
 };
 
 /// Install the host-side LuaSkills log callback so runtime events flow into the MCP host logger.
@@ -115,6 +115,9 @@ pub fn build_luaskills_engine_options(
         lancedb_library_path: resolve_host_library_path(&runtime_root, lancedb_library_file_name()),
         cache_config: Some(cache_config),
         reserved_entry_names: host_reserved_tool_names(),
+        capabilities: LuaRuntimeCapabilityOptions {
+            enable_skill_management_bridge: false,
+        },
     };
     Ok(LuaEngineOptions::new(pool_config, host_options))
 }
