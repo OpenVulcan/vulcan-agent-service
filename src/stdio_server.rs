@@ -1,7 +1,5 @@
 use serde_json::{Value, json};
-use tokio::io::{
-    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter,
-};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::protocol::{
     InitializeRequest, PROTOCOL_VERSION_LATEST, RequestContext, negotiate_version,
@@ -17,9 +15,9 @@ struct StdioSessionState {
     request_context: Option<RequestContext>,
 }
 
-/// Run the MCP server over stdio using Content-Length framed JSON-RPC messages.
-/// 使用 Content-Length 分帧的 JSON-RPC 消息通过 stdio 运行 MCP 服务。
-pub async fn run_stdio(server: McpServer) -> Result<McpServer, Box<dyn std::error::Error>> {
+/// Run the MCP server over stdio using newline-delimited JSON-RPC messages.
+/// 使用换行分隔的 JSON-RPC 消息通过 stdio 运行 MCP 服务。
+pub async fn run_stdio(server: McpServer) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[MCP] Starting stdio transport on stdin/stdout ...");
 
     let stdin = tokio::io::stdin();
@@ -40,7 +38,7 @@ pub async fn run_stdio(server: McpServer) -> Result<McpServer, Box<dyn std::erro
     }
 
     writer.flush().await?;
-    Ok(server)
+    Ok(())
 }
 
 /// Handle one stdio-delivered JSON-RPC message and update session state when initialize succeeds.
@@ -157,55 +155,34 @@ fn negotiated_protocol_from_initialize(response: &Value) -> Option<String> {
     None
 }
 
-/// Read one Content-Length framed JSON-RPC message from stdio.
-/// 从 stdio 中读取一条使用 Content-Length 分帧的 JSON-RPC 消息。
+/// Read one newline-delimited JSON-RPC message from stdio.
+/// 从 stdio 中读取一条按换行分隔的 JSON-RPC 消息。
 async fn read_stdio_message<R>(
     reader: &mut BufReader<R>,
 ) -> Result<Option<Value>, Box<dyn std::error::Error>>
 where
     R: AsyncRead + Unpin,
 {
-    let mut content_length: Option<usize> = None;
-    let mut saw_header = false;
-
     loop {
         let mut line = String::new();
         let bytes_read = reader.read_line(&mut line).await?;
 
         if bytes_read == 0 {
-            if saw_header {
-                return Err("Unexpected EOF while reading stdio headers.".into());
-            }
             return Ok(None);
         }
 
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
-            break;
+            continue;
         }
-
-        saw_header = true;
-        let Some((header_name, header_value)) = trimmed.split_once(':') else {
-            return Err(format!("Invalid stdio header line: {}", trimmed).into());
-        };
-
-        if header_name.eq_ignore_ascii_case("Content-Length") {
-            content_length = Some(header_value.trim().parse::<usize>()?);
-        }
+        let message = serde_json::from_str::<Value>(trimmed)
+            .map_err(|error| format!("Invalid stdio JSON-RPC line: {} ({})", trimmed, error))?;
+        return Ok(Some(message));
     }
-
-    let Some(message_length) = content_length else {
-        return Err("Missing Content-Length header for stdio message.".into());
-    };
-
-    let mut body = vec![0_u8; message_length];
-    reader.read_exact(&mut body).await?;
-    let message = serde_json::from_slice::<Value>(&body)?;
-    Ok(Some(message))
 }
 
-/// Write one Content-Length framed JSON-RPC message to stdio.
-/// 向 stdio 写出一条使用 Content-Length 分帧的 JSON-RPC 消息。
+/// Write one newline-delimited JSON-RPC message to stdio.
+/// 向 stdio 写出一条按换行分隔的 JSON-RPC 消息。
 async fn write_stdio_message<W>(
     writer: &mut BufWriter<W>,
     message: &Value,
@@ -213,10 +190,9 @@ async fn write_stdio_message<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let body = serde_json::to_vec(message)?;
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    writer.write_all(header.as_bytes()).await?;
-    writer.write_all(&body).await?;
+    let body = serde_json::to_string(message)?;
+    writer.write_all(body.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
     writer.flush().await?;
     Ok(())
 }

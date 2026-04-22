@@ -173,7 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            let server = runtime.block_on(async_main_stdio(cfg))?;
+            let server = runtime.block_on(async_build_stdio_server(cfg))?;
+            runtime.block_on(async_run_stdio_server(server.clone()))?;
             drop(server);
             Ok(())
         }
@@ -206,19 +207,22 @@ async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Async main flow that builds one initialized server and serves it through stdio.
-/// 构建一份已初始化服务并通过 stdio 对外提供的异步主流程。
-async fn async_main_stdio(cfg: Config) -> Result<McpServer, Box<dyn std::error::Error>> {
+/// Async stdio bootstrap flow that prepares one initialized server without starting network transports.
+/// 为 stdio 模式准备一份已初始化服务且不启动网络传输的异步引导流程。
+async fn async_build_stdio_server(cfg: Config) -> Result<McpServer, Box<dyn std::error::Error>> {
     install_luaskills_log_callback();
     initialize_runtime_temp_root(resolve_runtime_root_from_config(&cfg).as_deref());
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs(&cfg)?;
 
-    let server = build_server(&cfg).await?;
+    build_server(&cfg).await
+}
 
+/// Async stdio serving flow that runs one already prepared server on stdin/stdout only.
+/// 仅通过标准输入输出运行一份已准备服务实例的异步 stdio 服务流程。
+async fn async_run_stdio_server(server: McpServer) -> Result<(), Box<dyn std::error::Error>> {
     spawn_cross_day_cleanup_task();
-
     stdio_server::run_stdio(server).await
 }
 
