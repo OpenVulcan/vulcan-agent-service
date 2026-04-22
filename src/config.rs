@@ -243,9 +243,10 @@ impl Config {
     /// Load configuration from the given YAML file path.
     /// 从指定 YAML 文件路径加载配置。
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
+        let normalized_path = normalize_cli_config_path(path).unwrap_or_else(|| path.into());
+        let content = fs::read_to_string(&normalized_path)?;
         let mut config: Config = serde_yaml::from_str(&content)?;
-        config.loaded_config_path = Some(path.to_string());
+        config.loaded_config_path = Some(normalized_path.to_string_lossy().to_string());
         Ok(config)
     }
 
@@ -263,15 +264,23 @@ impl Config {
     /// The repository template lives at `runtime/configs/config.yaml` and is synced during build.
     /// Exit immediately if no config file is found.
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let config_path = find_config_arg()
-            .or_else(|| find_runtime_root_arg().and_then(find_runtime_root_config))
+        let runtime_root_arg = find_runtime_root_arg()?;
+        let config_path = find_config_arg()?
+            .or_else(|| {
+                runtime_root_arg
+                    .as_deref()
+                    .and_then(find_runtime_root_config)
+            })
             .or_else(find_exe_parent_config);
 
         match config_path {
             Some(path) => {
                 let mut config = Self::from_file(&path)?;
-                if let Some(runtime_root) = find_runtime_root_arg() {
-                    config.runtime_root = Some(runtime_root);
+                if let Some(runtime_root) = runtime_root_arg
+                    .as_deref()
+                    .and_then(normalize_cli_runtime_root_arg)
+                {
+                    config.runtime_root = Some(runtime_root.to_string_lossy().to_string());
                 }
                 eprintln!("[Config] Loaded from: {}", path);
                 Ok(config)
@@ -296,42 +305,75 @@ impl Config {
 
 /// Look for -config or --config in argv.
 /// 在命令行参数中查找 -config 或 --config。
-fn find_config_arg() -> Option<String> {
+fn find_config_arg() -> Result<Option<String>, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    for i in 0..args.len() {
-        if args[i] == "-config" || args[i] == "--config" {
-            if i + 1 < args.len() {
-                return Some(args[i + 1].clone());
-            }
-        }
-    }
-    None
+    parse_cli_path_flag_from_args(&args, &["-config", "--config"])
 }
 
 /// Look for -runtime-root or --runtime-root in argv.
 /// 在命令行参数中查找 -runtime-root 或 --runtime-root。
-fn find_runtime_root_arg() -> Option<String> {
+fn find_runtime_root_arg() -> Result<Option<String>, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
+}
+
+/// Parse one CLI path flag from argv and fail early when the flag is missing a concrete value.
+/// 从 argv 解析单个 CLI 路径标志，并在缺少实际取值时尽早失败。
+fn parse_cli_path_flag_from_args(
+    args: &[String],
+    flags: &[&str],
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     for i in 0..args.len() {
-        if args[i] == "-runtime-root" || args[i] == "--runtime-root" {
-            if i + 1 < args.len() {
-                return Some(args[i + 1].clone());
+        if flags.iter().any(|flag| args[i] == *flag) {
+            let flag = args[i].as_str();
+            let Some(value) = args.get(i + 1) else {
+                return Err(format!("{flag} requires a value").into());
+            };
+            if value.starts_with("--") || value.starts_with('-') {
+                return Err(format!("{flag} requires a value").into());
             }
+            return Ok(Some(value.clone()));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Resolve the config path under one explicit runtime root.
 /// 从显式给定的运行根目录下解析配置文件路径。
-fn find_runtime_root_config(runtime_root: String) -> Option<String> {
-    let config_path = std::path::PathBuf::from(runtime_root)
+fn find_runtime_root_config(runtime_root: &str) -> Option<String> {
+    let config_path = normalize_cli_runtime_root_arg(runtime_root)?
         .join("configs")
         .join("config.yaml");
     if config_path.exists() {
         Some(config_path.to_string_lossy().to_string())
     } else {
         None
+    }
+}
+
+/// Normalize one CLI runtime-root argument so relative paths are anchored to the current working directory immediately.
+/// 规范化一份 CLI runtime-root 参数，使相对路径立即锚定到当前工作目录。
+fn normalize_cli_runtime_root_arg(runtime_root: &str) -> Option<std::path::PathBuf> {
+    let candidate_root = std::path::PathBuf::from(runtime_root);
+    if candidate_root.is_absolute() {
+        Some(candidate_root)
+    } else {
+        std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.join(candidate_root))
+    }
+}
+
+/// Normalize one CLI config path so relative paths are anchored to the current working directory immediately.
+/// 规范化一份 CLI 配置文件路径，使相对路径立即锚定到当前工作目录。
+fn normalize_cli_config_path(config_path: &str) -> Option<std::path::PathBuf> {
+    let candidate_path = std::path::PathBuf::from(config_path);
+    if candidate_path.is_absolute() {
+        Some(candidate_path)
+    } else {
+        std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.join(candidate_path))
     }
 }
 
@@ -348,5 +390,71 @@ fn find_exe_parent_config() -> Option<String> {
         Some(config_path.to_string_lossy().to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Relative runtime-root CLI arguments should be normalized against the current working directory immediately.
+    /// 相对 runtime-root CLI 参数应当立即相对当前工作目录完成规范化。
+    #[test]
+    fn normalize_cli_runtime_root_arg_anchors_relative_paths_to_cwd() {
+        let cwd = std::env::current_dir().expect("cwd should resolve");
+        let normalized =
+            normalize_cli_runtime_root_arg("runtime").expect("runtime root should normalize");
+        assert_eq!(normalized, cwd.join("runtime"));
+    }
+
+    /// Relative config CLI arguments should be normalized against the current working directory immediately.
+    /// 相对配置文件 CLI 参数应当立即相对当前工作目录完成规范化。
+    #[test]
+    fn normalize_cli_config_path_anchors_relative_paths_to_cwd() {
+        let cwd = std::env::current_dir().expect("cwd should resolve");
+        let normalized = normalize_cli_config_path("runtime/configs/config.yaml")
+            .expect("config path should normalize");
+        assert_eq!(
+            normalized,
+            cwd.join("runtime").join("configs").join("config.yaml")
+        );
+    }
+
+    /// CLI config flags should fail early when the next argv token is another flag instead of a path.
+    /// 当 CLI config 标志后面直接跟着另一个标志时，应尽早失败。
+    #[test]
+    fn parse_cli_path_flag_rejects_missing_config_value() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--config".to_string(),
+            "--runtime-root".to_string(),
+            "runtime".to_string(),
+        ];
+        let error = parse_cli_path_flag_from_args(&args, &["-config", "--config"])
+            .expect_err("missing config value should fail");
+        assert!(
+            error.to_string().contains("--config requires a value"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// CLI runtime-root flags should fail early when the next argv token is another flag instead of a path.
+    /// 当 CLI runtime-root 标志后面直接跟着另一个标志时，应尽早失败。
+    #[test]
+    fn parse_cli_path_flag_rejects_missing_runtime_root_value() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--runtime-root".to_string(),
+            "--config".to_string(),
+            "runtime/configs/config.yaml".to_string(),
+        ];
+        let error = parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
+            .expect_err("missing runtime-root value should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("--runtime-root requires a value"),
+            "unexpected error: {error}"
+        );
     }
 }

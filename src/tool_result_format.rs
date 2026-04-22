@@ -2,6 +2,7 @@ use crate::client_budget::{ClientBudgetSnapshot, EffectiveBudgetScope};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 pub use vulcan_luaskills::RuntimeInvocationResult;
 use vulcan_luaskills::ToolOverflowMode;
@@ -15,6 +16,10 @@ const TOOL_OUTPUT_EXCEEDS_LIMIT_ERROR: &str = "Tool output exceeds the current M
 const DEFAULT_TRUNCATE_NOTICE: &str =
     "Content has been truncated because it exceeds the current MCP client limit.";
 
+/// Shared runtime roots used by overflow template discovery so hosted and isolated runtimes read the same template set.
+/// 供超限模板发现链使用的共享运行根信息，确保托管运行与隔离运行读取同一套模板。
+static TOOL_RESULT_TEMPLATE_RUNTIME: OnceLock<RwLock<ToolResultTemplateRuntime>> = OnceLock::new();
+
 /// Host render options that make the final rendering decisions explicit at the host layer.
 /// 宿主渲染选项，明确哪些最终处理决定属于宿主层。
 #[derive(Debug, Clone, Default)]
@@ -22,6 +27,46 @@ pub struct HostRenderOptions {
     /// Host-managed spill directory used only when page mode needs to persist oversized output.
     /// 宿主管理的超限文件输出目录；仅在分页模式真正落盘时使用。
     pub spill_root: Option<PathBuf>,
+    /// Optional ordered skill-root chain used to resolve overflow templates for the current render call.
+    /// 当前渲染调用可选使用的有序技能根目录链，用于解析超限模板。
+    pub template_skill_roots: Vec<PathBuf>,
+    /// Optional shared resources root used to resolve fallback overflow templates for the current render call.
+    /// 当前渲染调用可选使用的共享资源根目录，用于解析兜底超限模板。
+    pub template_resources_root: Option<PathBuf>,
+}
+
+/// Runtime template discovery roots used by host overflow rendering.
+/// 宿主超限渲染使用的模板发现根集合。
+#[derive(Debug, Clone, Default)]
+struct ToolResultTemplateRuntime {
+    /// Ordered skill-root directories from highest priority to lowest priority.
+    /// 按从高到低优先级排列的技能根目录列表。
+    skill_roots: Vec<PathBuf>,
+    /// Shared resources root used for fallback templates.
+    /// 用于兜底模板的共享资源根目录。
+    resources_root: Option<PathBuf>,
+}
+
+/// Return the shared runtime template discovery store.
+/// 返回共享的运行时模板发现存储。
+fn tool_result_template_runtime() -> &'static RwLock<ToolResultTemplateRuntime> {
+    TOOL_RESULT_TEMPLATE_RUNTIME.get_or_init(|| RwLock::new(ToolResultTemplateRuntime::default()))
+}
+
+/// Initialize the runtime template discovery roots so overflow templates follow the selected runtime root and skill-root chain.
+/// 初始化运行时模板发现根，使超限模板跟随当前选中的运行根与技能根链。
+pub fn initialize_tool_result_template_roots(
+    skill_roots: &[PathBuf],
+    resources_root: Option<&Path>,
+) -> Result<(), String> {
+    let mut guard = tool_result_template_runtime()
+        .write()
+        .map_err(|_| "tool result template runtime lock poisoned".to_string())?;
+    *guard = ToolResultTemplateRuntime {
+        skill_roots: skill_roots.to_vec(),
+        resources_root: resources_root.map(Path::to_path_buf),
+    };
+    Ok(())
 }
 
 /// Unified host-side renderer that accepts the runtime intermediate result and decides between inline, truncate, or page under the host policy.
@@ -34,7 +79,9 @@ pub fn render_tool_result_text(
 ) -> String {
     let policy = resolve_overflow_policy(skill_name, output);
     match policy.mode {
-        OverflowMode::Truncate => render_truncate_text(output, skill_name, &policy, client_budget),
+        OverflowMode::Truncate => {
+            render_truncate_text(output, skill_name, &policy, client_budget, render_options)
+        }
         OverflowMode::Page => {
             render_page_text(output, skill_name, &policy, client_budget, render_options)
         }
@@ -121,6 +168,7 @@ fn render_truncate_text(
     skill_name: Option<&str>,
     policy: &OverflowPolicy,
     client_budget: Option<&ClientBudgetSnapshot>,
+    render_options: &HostRenderOptions,
 ) -> String {
     let tool_result_budget = resolve_budget_scope(client_budget, BudgetScopeKind::ToolResult);
     if content_fits_budget(output, &tool_result_budget) {
@@ -137,7 +185,9 @@ fn render_truncate_text(
     context.insert("truncated_content", truncated_content);
     context.insert("truncate_notice", DEFAULT_TRUNCATE_NOTICE.to_string());
 
-    if let Some(template_text) = load_template_text(skill_name, policy.template_name.as_str()) {
+    if let Some(template_text) =
+        load_template_text(skill_name, policy.template_name.as_str(), render_options)
+    {
         return render_template_text(&template_text, &context);
     }
 
@@ -209,7 +259,9 @@ fn render_page_text(
     context.insert("optional_summary_section", String::new());
     context.insert("scope_advice_section", String::new());
 
-    if let Some(template_text) = load_template_text(skill_name, policy.template_name.as_str()) {
+    if let Some(template_text) =
+        load_template_text(skill_name, policy.template_name.as_str(), render_options)
+    {
         return render_template_text(&template_text, &context);
     }
 
@@ -445,9 +497,33 @@ fn resolve_runtime_skills_root() -> Option<PathBuf> {
     None
 }
 
+/// Resolve the ordered skill-root chain used by template discovery.
+/// 解析模板发现链使用的有序技能根目录集合。
+fn resolve_runtime_skill_roots(render_options: &HostRenderOptions) -> Vec<PathBuf> {
+    if !render_options.template_skill_roots.is_empty() {
+        return render_options.template_skill_roots.clone();
+    }
+    if let Ok(guard) = tool_result_template_runtime().read() {
+        if !guard.skill_roots.is_empty() {
+            return guard.skill_roots.clone();
+        }
+    }
+
+    resolve_runtime_skills_root().into_iter().collect()
+}
+
 /// Locate the shared resources root according to the current runtime layout, preferring the hosted runtime directory and then the repository layout.
 /// 根据当前运行形态定位共享资源根目录；优先使用宿主运行目录，其次回退到仓库目录。
-fn resolve_runtime_resources_root() -> Option<PathBuf> {
+fn resolve_runtime_resources_root(render_options: &HostRenderOptions) -> Option<PathBuf> {
+    if let Some(resources_root) = &render_options.template_resources_root {
+        return Some(resources_root.clone());
+    }
+    if let Ok(guard) = tool_result_template_runtime().read() {
+        if let Some(resources_root) = &guard.resources_root {
+            return Some(resources_root.clone());
+        }
+    }
+
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
     let parent = exe_dir.parent().unwrap_or(exe_dir);
@@ -469,20 +545,28 @@ fn resolve_runtime_resources_root() -> Option<PathBuf> {
 
 /// Load template text with skill-local templates taking priority over shared fallback templates.
 /// 按“skill 本地模板优先，公共模板兜底”的顺序查找模板文本。
-fn load_template_text(skill_name: Option<&str>, template_name: &str) -> Option<String> {
-    let skill_root = resolve_runtime_skills_root()?;
-    let resource_root = resolve_runtime_resources_root()?;
+fn load_template_text(
+    skill_name: Option<&str>,
+    template_name: &str,
+    render_options: &HostRenderOptions,
+) -> Option<String> {
+    let skill_roots = resolve_runtime_skill_roots(render_options);
+    let resource_root = resolve_runtime_resources_root(render_options);
     let mut candidates = Vec::new();
 
     if let Some(skill_name) = skill_name {
-        candidates.push(
-            skill_root
-                .join(skill_name)
-                .join("overflow_templates")
-                .join(template_name),
-        );
+        for skill_root in skill_roots {
+            candidates.push(
+                skill_root
+                    .join(skill_name)
+                    .join("overflow_templates")
+                    .join(template_name),
+            );
+        }
     }
-    candidates.push(resource_root.join("overflow_templates").join(template_name));
+    if let Some(resource_root) = resource_root {
+        candidates.push(resource_root.join("overflow_templates").join(template_name));
+    }
 
     for path in candidates {
         if path.exists() {
@@ -547,13 +631,36 @@ fn join_lines_with_trailing_newline(existing_lines: &[String], next_line: &str) 
 #[cfg(test)]
 mod tests {
     use super::{
-        HostRenderOptions, RuntimeInvocationResult, ToolOverflowMode, render_template_text,
-        render_tool_result_text,
+        HostRenderOptions, RuntimeInvocationResult, ToolOverflowMode,
+        initialize_tool_result_template_roots, render_template_text, render_tool_result_text,
     };
     use crate::client_budget::{ClientBudgetSnapshot, EffectiveBudgetScope};
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Return one shared mutex used to serialize template-runtime override tests.
+    /// 返回一个共享互斥锁，用于串行化模板运行根覆盖测试。
+    fn template_runtime_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Build one unique temporary directory path for one test case.
+    /// 为单个测试用例构建唯一的临时目录路径。
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "vulcan-mcp-tool-result-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        std::env::temp_dir().join(unique)
+    }
 
     fn sample_budget() -> ClientBudgetSnapshot {
         ClientBudgetSnapshot {
@@ -611,6 +718,7 @@ mod tests {
             Some(&sample_budget()),
             &HostRenderOptions {
                 spill_root: Some(PathBuf::from("target/test-runtime-page-output")),
+                ..HostRenderOptions::default()
             },
         );
         assert!(rendered.contains("# LARGE RESULT POINTER"));
@@ -634,6 +742,7 @@ mod tests {
             Some(&budget),
             &HostRenderOptions {
                 spill_root: Some(PathBuf::from("target/test-runtime-page-error")),
+                ..HostRenderOptions::default()
             },
         );
         assert_eq!(
@@ -649,5 +758,102 @@ mod tests {
         context.insert("truncate_notice", "cut".to_string());
         let rendered = render_template_text("{{truncated_content}}\n{{truncate_notice}}", &context);
         assert_eq!(rendered, "abc\ncut");
+    }
+
+    #[test]
+    fn render_tool_result_prefers_initialized_skill_root_templates() {
+        let _guard = template_runtime_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("template-runtime");
+        let skill_root = root.join("skills");
+        let resources_root = root.join("resources");
+        let skill_template = skill_root
+            .join("vulcan-codekit")
+            .join("overflow_templates")
+            .join("overflow_truncate.md");
+        std::fs::create_dir_all(skill_template.parent().expect("parent should exist"))
+            .expect("failed to create skill template directory");
+        std::fs::create_dir_all(resources_root.join("overflow_templates"))
+            .expect("failed to create resources template directory");
+        std::fs::write(
+            &skill_template,
+            "SKILL TEMPLATE\n{{truncated_content}}\n{{truncate_notice}}",
+        )
+        .expect("failed to write skill template");
+
+        initialize_tool_result_template_roots(
+            std::slice::from_ref(&skill_root),
+            Some(&resources_root),
+        )
+        .expect("template roots should initialize");
+
+        let rendered = render_tool_result_text(
+            &RuntimeInvocationResult::from_content_parts(
+                "line1\nline2\nline3".to_string(),
+                Some(ToolOverflowMode::Truncate),
+                None,
+            ),
+            Some("vulcan-codekit"),
+            Some(&sample_budget()),
+            &HostRenderOptions::default(),
+        );
+
+        assert!(rendered.contains("SKILL TEMPLATE"));
+
+        initialize_tool_result_template_roots(&[], None).expect("template roots should reset");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn render_tool_result_prefers_per_call_template_roots_for_project_environment() {
+        let _guard = template_runtime_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("template-runtime-project");
+        let default_skill_root = root.join("default-skills");
+        let project_skill_root = root.join("project-skills");
+        let resources_root = root.join("resources");
+        let default_template = default_skill_root
+            .join("vulcan-codekit")
+            .join("overflow_templates")
+            .join("overflow_truncate.md");
+        let project_template = project_skill_root
+            .join("vulcan-codekit")
+            .join("overflow_templates")
+            .join("overflow_truncate.md");
+        std::fs::create_dir_all(default_template.parent().expect("parent should exist"))
+            .expect("failed to create default template directory");
+        std::fs::create_dir_all(project_template.parent().expect("parent should exist"))
+            .expect("failed to create project template directory");
+        std::fs::create_dir_all(resources_root.join("overflow_templates"))
+            .expect("failed to create resources template directory");
+        std::fs::write(&default_template, "DEFAULT TEMPLATE")
+            .expect("failed to write default template");
+        std::fs::write(&project_template, "PROJECT TEMPLATE")
+            .expect("failed to write project template");
+
+        initialize_tool_result_template_roots(
+            std::slice::from_ref(&default_skill_root),
+            Some(&resources_root),
+        )
+        .expect("template roots should initialize");
+
+        let rendered = render_tool_result_text(
+            &RuntimeInvocationResult::from_content_parts(
+                "line1\nline2\nline3".to_string(),
+                Some(ToolOverflowMode::Truncate),
+                None,
+            ),
+            Some("vulcan-codekit"),
+            Some(&sample_budget()),
+            &HostRenderOptions {
+                template_skill_roots: vec![project_skill_root.clone()],
+                template_resources_root: Some(resources_root.clone()),
+                ..HostRenderOptions::default()
+            },
+        );
+
+        assert!(rendered.contains("PROJECT TEMPLATE"));
+        assert!(!rendered.contains("DEFAULT TEMPLATE"));
+
+        initialize_tool_result_template_roots(&[], None).expect("template roots should reset");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

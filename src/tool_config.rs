@@ -10,6 +10,9 @@ use std::sync::{OnceLock, RwLock};
 /// Runtime tool-config cache that stores parsed tool configurations and their source path, supporting startup preload and explicit hot reload.
 /// 运行时工具配置缓存，保存已解析的工具配置映射与来源路径，支持启动预载与显式热重载。
 static TOOL_CONFIG_RUNTIME: OnceLock<RwLock<ToolConfigRuntime>> = OnceLock::new();
+/// Optional explicit runtime-root override used to keep tool-config discovery aligned with one selected runtime.
+/// 可选的显式 runtime_root 覆盖，用于让工具配置发现链与当前选中的运行根保持一致。
+static TOOL_CONFIG_RUNTIME_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 
 /// Internal runtime state for the cached tool configuration store.
 /// 工具配置缓存的内部运行时状态。
@@ -36,6 +39,31 @@ fn tool_config_runtime() -> &'static RwLock<ToolConfigRuntime> {
         let runtime = load_tool_config_runtime().unwrap_or_default();
         RwLock::new(runtime)
     })
+}
+
+/// Return the shared runtime-root override store used by tool-config discovery.
+/// 返回工具配置发现链使用的共享运行根覆盖存储。
+fn tool_config_runtime_root() -> &'static RwLock<Option<PathBuf>> {
+    TOOL_CONFIG_RUNTIME_ROOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Initialize the runtime-root override used by tool-config preload and reload.
+/// 初始化供工具配置预载与热重载使用的运行根覆盖值。
+pub fn initialize_tool_config_runtime_root(runtime_root: Option<&Path>) -> Result<(), String> {
+    let mut guard = tool_config_runtime_root()
+        .write()
+        .map_err(|_| "tool config runtime-root lock poisoned".to_string())?;
+    *guard = runtime_root.map(std::path::Path::to_path_buf);
+    Ok(())
+}
+
+/// Read the current runtime-root override used by tool-config discovery.
+/// 读取当前工具配置发现链使用的运行根覆盖值。
+fn current_tool_config_runtime_root() -> Option<PathBuf> {
+    tool_config_runtime_root()
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
 }
 
 /// Preload tool configs during startup so configuration issues are discovered early.
@@ -210,18 +238,26 @@ fn validate_flat_tool_value(value: &Value) -> Result<(), String> {
 /// Find the tool-config file, preferring the runtime output directory and then falling back to the repository template directory.
 /// 查找工具配置文件；优先使用运行时输出目录，其次回退到仓库模板目录。
 fn find_tool_config_path() -> Option<PathBuf> {
+    if let Some(runtime_root) = current_tool_config_runtime_root() {
+        let runtime_path = runtime_root.join("configs").join("tool_configs.yaml");
+        if runtime_path.exists() && runtime_path.is_file() {
+            return Some(runtime_path);
+        }
+        return None;
+    }
+
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
     let parent_dir = exe_dir.parent()?;
     let runtime_path = parent_dir.join("configs").join("tool_configs.yaml");
-    if runtime_path.exists() {
+    if runtime_path.exists() && runtime_path.is_file() {
         return Some(runtime_path);
     }
 
     let repository_path = Path::new("runtime")
         .join("configs")
         .join("tool_configs.yaml");
-    if repository_path.exists() {
+    if repository_path.exists() && repository_path.is_file() {
         return Some(repository_path);
     }
     None
@@ -251,6 +287,14 @@ fn build_tool_config_load_report(runtime: &ToolConfigRuntime) -> ToolConfigLoadR
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Return one shared mutex used to serialize runtime-root override tests for tool-config loading.
+    /// 返回一个共享互斥锁，用于串行化工具配置加载中的运行根覆盖测试。
+    fn runtime_root_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     /// Verify that tool configs support one-level scalar values and arrays.
     /// 验证工具配置支持一层标量与数组值。
@@ -284,5 +328,35 @@ mod tests {
 
         let error = normalize_tool_config_root(&raw).expect_err("nested object must be rejected");
         assert!(error.contains("vulcan-codekit"));
+    }
+
+    /// Explicit runtime-root overrides should redirect tool-config preload to the selected runtime instead of the default output tree.
+    /// 显式 runtime_root 覆盖应把工具配置预载重定向到选中的运行根，而不是默认输出树。
+    #[test]
+    fn preload_tool_configs_prefers_explicit_runtime_root() {
+        let _guard = runtime_root_lock().lock().expect("lock should succeed");
+        let root = std::env::temp_dir().join(format!(
+            "vulcan-mcp-tool-config-runtime-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let config_path = root.join("configs").join("tool_configs.yaml");
+        std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
+            .expect("failed to create config directory");
+        std::fs::write(&config_path, "vulcan-codekit:\n  bytes_per_token: 17\n")
+            .expect("failed to write tool config");
+
+        initialize_tool_config_runtime_root(Some(&root)).expect("runtime root init should succeed");
+        let report = preload_tool_configs().expect("tool config preload should succeed");
+        assert_eq!(
+            report.source_path.as_deref(),
+            Some(config_path.to_string_lossy().as_ref())
+        );
+
+        initialize_tool_config_runtime_root(None).expect("runtime root clear should succeed");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

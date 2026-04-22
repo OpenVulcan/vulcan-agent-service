@@ -1666,11 +1666,16 @@ impl McpServer {
                 // Check if this is a Lua skill
                 if let Some(engine) = &self.lua_engine {
                     let environment_id = optional_string_argument(&args, "environment_id");
-                    let target_engine = match environment_id.as_deref() {
+                    let (target_engine, target_skill_roots) = match environment_id.as_deref() {
                         Some(environment_id) => {
-                            self.resolve_lua_engine_for_environment(Some(environment_id))?
+                            self.resolve_lua_runtime_target(Some(environment_id))?
                         }
-                        None => engine.clone(),
+                        None => (
+                            engine.clone(),
+                            self.lua_skill_roots.clone().ok_or_else(|| {
+                                (-32603, "Lua skill roots are not configured.".to_string())
+                            })?,
+                        ),
                     };
                     let is_skill = target_engine
                         .read()
@@ -1725,6 +1730,16 @@ impl McpServer {
                                         Some(&client_budget),
                                         &HostRenderOptions {
                                             spill_root: Some(spill_root),
+                                            template_skill_roots: target_skill_roots
+                                                .iter()
+                                                .map(|root| root.skills_dir.clone())
+                                                .collect(),
+                                            template_resources_root: self
+                                                .lua_engine_options
+                                                .as_ref()
+                                                .and_then(|options| {
+                                                    options.host_options.resources_dir.clone()
+                                                }),
                                         },
                                     ))],
                                     is_error: None,

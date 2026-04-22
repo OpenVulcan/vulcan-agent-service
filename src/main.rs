@@ -23,7 +23,7 @@ pub mod pb_mcp {
     tonic::include_proto!("vulcan.mcp.v1");
 }
 
-use client_budget::preload_client_budget_config;
+use client_budget::{initialize_client_budget_runtime_root, preload_client_budget_config};
 use config::Config;
 use luaskills_host::{
     build_luaskills_cache_config, build_luaskills_engine_options, build_runtime_invocation_context,
@@ -38,8 +38,11 @@ use temp_maintenance::{
     CleanupTrigger, ensure_runtime_temp_dir, initialize_runtime_temp_root,
     maintain_runtime_temp_dir, spawn_cross_day_cleanup_task,
 };
-use tool_config::preload_tool_configs;
-use tool_result_format::{HostRenderOptions, RuntimeInvocationResult, render_tool_result_text};
+use tool_config::{initialize_tool_config_runtime_root, preload_tool_configs};
+use tool_result_format::{
+    HostRenderOptions, RuntimeInvocationResult, initialize_tool_result_template_roots,
+    render_tool_result_text,
+};
 use vulcan_luaskills::{LuaEngine, LuaVmPoolConfig};
 
 /// Print the final `--call-tools` result.
@@ -62,6 +65,7 @@ fn print_call_tools_result(
             Some(&client_budget),
             &HostRenderOptions {
                 spill_root: Some(spill_root),
+                ..HostRenderOptions::default()
             },
         )
     );
@@ -164,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         RuntimeMode::Serve => {
             let cfg = Config::load()?;
-            add_libs_to_path(&cfg);
+            add_libs_to_path(&cfg)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
@@ -180,7 +184,7 @@ async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     initialize_runtime_temp_root(resolve_runtime_root_from_config(&cfg).as_deref());
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
-    preload_runtime_mcp_configs()?;
+    preload_runtime_mcp_configs(&cfg)?;
 
     let server = build_server(&cfg).await?;
 
@@ -225,6 +229,14 @@ const DEFAULT_CALL_TOOL_CLIENT_NAME: &str = "VulcanMcpTest";
 /// - `--call-client-name <name>`：指定模拟客户端名称
 fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    parse_runtime_mode_from_args(&args)
+}
+
+/// Parse the runtime mode from an explicit argv slice so CLI behavior stays unit-testable.
+/// 从显式 argv 切片解析运行模式，以保证 CLI 行为可被单元测试覆盖。
+fn parse_runtime_mode_from_args(
+    args: &[String],
+) -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     for index in 0..args.len() {
         if args[index] == "--internal-luaexec-request" {
             let request_file = args
@@ -256,7 +268,8 @@ fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
                     "--call-tools" => {
                         break;
                     }
-                    "-config" | "--config" => {
+                    "-config" | "--config" | "-runtime-root" | "--runtime-root" => {
+                        require_cli_flag_value(args, cursor, args[cursor].as_str())?;
                         cursor += 2;
                     }
                     value if value.starts_with("--") => {
@@ -280,6 +293,22 @@ fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     Ok(RuntimeMode::Serve)
 }
 
+/// Require one value after a CLI flag so malformed call-tools invocations fail early.
+/// 要求某个 CLI 标志后必须跟随一个值，以便尽早拒绝格式错误的 call-tools 调用。
+fn require_cli_flag_value(
+    args: &[String],
+    index: usize,
+    flag: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(next_value) = args.get(index + 1) else {
+        return Err(format!("{flag} requires a value").into());
+    };
+    if next_value.starts_with("--") {
+        return Err(format!("{flag} requires a value").into());
+    }
+    Ok(())
+}
+
 /// Build and initialize the MCP server, including external clients, Lua skills, and shared cache.
 /// 构建并初始化 MCP Server，包括外部客户端、Lua Skills 与共享缓存。
 async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Error>> {
@@ -292,6 +321,16 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
 
     // Load Lua skills from system directory, with optional user override
     let skill_roots = find_skill_roots(&cfg)?;
+    let runtime_root = resolve_runtime_root_from_config(cfg);
+    let resources_root = runtime_root.as_ref().map(|root| root.join("resources"));
+    initialize_tool_result_template_roots(
+        &skill_roots
+            .iter()
+            .map(|root| root.skills_dir.clone())
+            .collect::<Vec<_>>(),
+        resources_root.as_deref(),
+    )
+    .map_err(|error| format!("Failed to initialize tool result template roots: {}", error))?;
     if !skill_roots.is_empty() {
         server = server.with_lua_skills(
             cfg,
@@ -365,8 +404,8 @@ fn run_call_tool_mode(
     let config = Config::load()?;
     initialize_runtime_temp_root(resolve_runtime_root_from_config(&config).as_deref());
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
-    preload_runtime_mcp_configs()?;
-    add_libs_to_path(&config);
+    preload_runtime_mcp_configs(&config)?;
+    add_libs_to_path(&config)?;
     let engine = build_single_vm_lua_engine_for_local_mode(&config)?;
 
     if !engine.is_skill(tool_name) {
@@ -401,6 +440,16 @@ fn build_single_vm_lua_engine_for_local_mode(
     if skill_roots.is_empty() {
         return Err("Lua skill directory not found for local debug mode".into());
     }
+    let runtime_root = resolve_runtime_root_from_config(config);
+    let resources_root = runtime_root.as_ref().map(|root| root.join("resources"));
+    initialize_tool_result_template_roots(
+        &skill_roots
+            .iter()
+            .map(|root| root.skills_dir.clone())
+            .collect::<Vec<_>>(),
+        resources_root.as_deref(),
+    )
+    .map_err(|error| format!("Failed to initialize tool result template roots: {}", error))?;
 
     let mut engine = LuaEngine::new(build_luaskills_engine_options(
         config,
@@ -423,8 +472,8 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
     let config = Config::load()?;
     initialize_runtime_temp_root(resolve_runtime_root_from_config(&config).as_deref());
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
-    preload_runtime_mcp_configs()?;
-    add_libs_to_path(&config);
+    preload_runtime_mcp_configs(&config)?;
+    add_libs_to_path(&config)?;
 
     let request_json = std::fs::read_to_string(request_file)?;
     let engine = build_single_vm_lua_engine_for_local_mode(&config)?;
@@ -461,7 +510,12 @@ fn build_call_tool_request_context(client_name: &str) -> RequestContext {
 
 /// Preload hot-reloadable runtime config files before the host starts so configuration issues surface before the first request.
 /// 在宿主启动前预载可热重载的运行时配置文件，避免首次请求时才暴露配置问题。
-fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
+fn preload_runtime_mcp_configs(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime_root = resolve_runtime_root_from_config(cfg);
+    initialize_client_budget_runtime_root(runtime_root.as_deref())
+        .map_err(|error| format!("Failed to initialize client budget runtime root: {}", error))?;
+    initialize_tool_config_runtime_root(runtime_root.as_deref())
+        .map_err(|error| format!("Failed to initialize tool config runtime root: {}", error))?;
     let client_budget_report = preload_client_budget_config()
         .map_err(|error| format!("Failed to preload client budgets: {}", error))?;
     let tool_config_report = preload_tool_configs()
@@ -474,14 +528,21 @@ fn preload_runtime_mcp_configs() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Prepend runtime-root libs/ to PATH so C dependency DLLs (zlib1.dll, etc.) are discoverable when Lua C modules load via FFI.
 /// 将运行根下的 libs/ 前置到 PATH，保证 Lua C 模块通过 FFI 加载时能找到依赖 DLL。
-fn add_libs_to_path(config: &Config) {
+fn add_libs_to_path(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let Some(runtime_root) = resolve_runtime_root_from_config(config) else {
-        return;
+        return Ok(());
     };
     let libs_dir = runtime_root.join("libs");
 
     if !libs_dir.exists() {
-        return;
+        return Ok(());
+    }
+    if !libs_dir.is_dir() {
+        return Err(format!(
+            "runtime libs path is not a directory: {}",
+            libs_dir.display()
+        )
+        .into());
     }
 
     let libs_str = libs_dir.to_string_lossy().to_string();
@@ -495,5 +556,138 @@ fn add_libs_to_path(config: &Config) {
     let new_path = format!("{}{}{}", libs_str, separator, current_path);
     unsafe {
         std::env::set_var("PATH", new_path);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Return one shared mutex used to serialize PATH-dependent tests.
+    /// 返回一个共享互斥锁，用于串行化依赖 PATH 的测试。
+    fn environment_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Build one unique temporary directory path for one main-module test case.
+    /// 为 main 模块单个测试用例构建唯一临时目录路径。
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "vulcan-mcp-main-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    /// Call-tools mode should accept --runtime-root so isolated runtime validation can use the same CLI entrypoint.
+    /// call-tools 模式应当接受 --runtime-root，以便隔离运行根验证复用同一 CLI 入口。
+    #[test]
+    fn parse_runtime_mode_allows_runtime_root_in_call_tools_mode() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--call-tools".to_string(),
+            "demo-tool".to_string(),
+            "--runtime-root".to_string(),
+            "runtime".to_string(),
+            "{\"ok\":true}".to_string(),
+        ];
+        let mode = parse_runtime_mode_from_args(&args).expect("call-tools mode should parse");
+        match mode {
+            RuntimeMode::CallTool {
+                tool_name,
+                arguments,
+                simulated_client_name,
+            } => {
+                assert_eq!(tool_name, "demo-tool");
+                assert_eq!(arguments, json!({ "ok": true }));
+                assert_eq!(simulated_client_name, DEFAULT_CALL_TOOL_CLIENT_NAME);
+            }
+            RuntimeMode::Serve | RuntimeMode::InternalLuaexecRequest { .. } => {
+                panic!("expected call-tools runtime mode");
+            }
+        }
+    }
+
+    /// Call-tools mode should reject runtime-root flags that do not carry a concrete value.
+    /// call-tools 模式应拒绝未携带实际取值的 runtime-root 标志。
+    #[test]
+    fn parse_runtime_mode_rejects_missing_runtime_root_value_in_call_tools_mode() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--call-tools".to_string(),
+            "demo-tool".to_string(),
+            "--runtime-root".to_string(),
+        ];
+        let error = match parse_runtime_mode_from_args(&args) {
+            Ok(_) => panic!("missing value should fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("--runtime-root requires a value"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Call-tools mode should reject config flags that are immediately followed by another flag.
+    /// call-tools 模式应拒绝后面直接跟着其他标志的 config 标志。
+    #[test]
+    fn parse_runtime_mode_rejects_missing_config_value_in_call_tools_mode() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--call-tools".to_string(),
+            "demo-tool".to_string(),
+            "--config".to_string(),
+            "--call-client-name".to_string(),
+            "tester".to_string(),
+        ];
+        let error = match parse_runtime_mode_from_args(&args) {
+            Ok(_) => panic!("missing value should fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("--config requires a value"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// File-shaped runtime libs paths should be rejected before PATH mutation begins.
+    /// 文件形态的运行时 libs 路径应在修改 PATH 之前被拒绝。
+    #[test]
+    fn add_libs_to_path_rejects_file_shaped_runtime_libs_dir() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("runtime-libs-file");
+        std::fs::create_dir_all(&root).expect("failed to create runtime root");
+        let libs_file = root.join("libs");
+        std::fs::write(&libs_file, b"not-a-directory").expect("failed to create libs file");
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+
+        let error = add_libs_to_path(&config).expect_err("file-shaped libs path should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime libs path is not a directory"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            std::env::var("PATH").unwrap_or_default(),
+            original_path,
+            "PATH should remain unchanged when libs path is invalid"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

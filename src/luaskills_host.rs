@@ -77,11 +77,30 @@ pub fn build_luaskills_engine_options(
     let runtime_temp_root = ensure_runtime_temp_dir()?;
     let temp_root = runtime_temp_root.join("mcp");
     let download_cache_root = Some(runtime_temp_root.join("downloads"));
-    let lua_packages_dir = resolve_lua_packages_dir(&runtime_root);
-    let host_library_root = resolve_host_library_root(&runtime_root);
+    let lua_packages_dir = resolve_lua_packages_dir(&runtime_root)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let sqlite_provider_mode = map_database_provider_mode(config.sqlite_provider_mode);
+    let lancedb_provider_mode = map_database_provider_mode(config.lancedb_provider_mode);
+    let sqlite_library_path =
+        if sqlite_provider_mode == LuaRuntimeDatabaseProviderMode::DynamicLibrary {
+            resolve_host_library_path(&runtime_root, sqlite_library_file_name())
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?
+        } else {
+            None
+        };
+    let lancedb_library_path =
+        if lancedb_provider_mode == LuaRuntimeDatabaseProviderMode::DynamicLibrary {
+            resolve_host_library_path(&runtime_root, lancedb_library_file_name())
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?
+        } else {
+            None
+        };
+    let host_library_root =
+        resolve_host_library_root(sqlite_library_path.as_ref(), lancedb_library_path.as_ref());
     let host_options = LuaRuntimeHostOptions {
         temp_dir: Some(temp_root.clone()),
-        resources_dir: resolve_runtime_resources_dir(&runtime_root),
+        resources_dir: resolve_runtime_resources_dir(&runtime_root)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         lua_packages_dir: lua_packages_dir.clone(),
         luaexec_program: std::env::current_exe().ok(),
         host_provided_tool_root: Some(runtime_root.join("bin").join("tools")),
@@ -116,13 +135,18 @@ pub fn build_luaskills_engine_options(
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        sqlite_library_path: resolve_host_library_path(&runtime_root, sqlite_library_file_name()),
-        sqlite_provider_mode: map_database_provider_mode(config.sqlite_provider_mode),
+        sqlite_library_path,
+        sqlite_provider_mode,
         sqlite_callback_mode: map_database_callback_mode(config.sqlite_callback_mode),
-        lancedb_library_path: resolve_host_library_path(&runtime_root, lancedb_library_file_name()),
-        lancedb_provider_mode: map_database_provider_mode(config.lancedb_provider_mode),
+        lancedb_library_path,
+        lancedb_provider_mode,
         lancedb_callback_mode: map_database_callback_mode(config.lancedb_callback_mode),
-        space_controller: resolve_space_controller_options(config, &runtime_root)?,
+        space_controller: resolve_effective_space_controller_options(
+            config,
+            &runtime_root,
+            sqlite_provider_mode,
+            lancedb_provider_mode,
+        )?,
         cache_config: Some(cache_config),
         reserved_entry_names: host_reserved_tool_names(),
         capabilities: LuaRuntimeCapabilityOptions {
@@ -153,6 +177,16 @@ fn map_database_callback_mode(mode: DatabaseCallbackModeConfig) -> LuaRuntimeDat
         DatabaseCallbackModeConfig::Standard => LuaRuntimeDatabaseCallbackMode::Standard,
         DatabaseCallbackModeConfig::Json => LuaRuntimeDatabaseCallbackMode::Json,
     }
+}
+
+/// Decide whether at least one backend is currently routed through the external space controller.
+/// 判断当前是否至少有一个后端实际通过外部空间控制器路由。
+fn uses_space_controller(
+    sqlite_provider_mode: LuaRuntimeDatabaseProviderMode,
+    lancedb_provider_mode: LuaRuntimeDatabaseProviderMode,
+) -> bool {
+    sqlite_provider_mode == LuaRuntimeDatabaseProviderMode::SpaceController
+        || lancedb_provider_mode == LuaRuntimeDatabaseProviderMode::SpaceController
 }
 
 /// Map one host config controller process mode into the LuaSkills controller process mode enum.
@@ -263,6 +297,20 @@ fn resolve_space_controller_options(
     })
 }
 
+/// Resolve controller options only when one active backend actually uses controller mode.
+/// 仅在当前活跃后端实际启用控制器模式时解析控制器选项。
+fn resolve_effective_space_controller_options(
+    config: &Config,
+    runtime_root: &std::path::Path,
+    sqlite_provider_mode: LuaRuntimeDatabaseProviderMode,
+    lancedb_provider_mode: LuaRuntimeDatabaseProviderMode,
+) -> Result<LuaRuntimeSpaceControllerOptions, String> {
+    if uses_space_controller(sqlite_provider_mode, lancedb_provider_mode) {
+        return resolve_space_controller_options(config, runtime_root);
+    }
+    Ok(LuaRuntimeSpaceControllerOptions::default())
+}
+
 /// Return the platform-specific controller executable filename used by the MCP host runtime.
 /// 返回 MCP 宿主运行时使用的平台相关控制器可执行文件名。
 fn space_controller_executable_file_name() -> &'static str {
@@ -319,15 +367,29 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
     }
 
     let exe_path = std::env::current_exe().ok()?;
+    let current_dir = std::env::current_dir().ok()?;
+    resolve_implicit_runtime_root_from_paths(&current_dir, &exe_path)
+}
+
+/// Resolve one implicit runtime root from the current directory and executable path fallback chain.
+/// 基于当前工作目录与可执行文件路径的回退链解析一份隐式运行根。
+fn resolve_implicit_runtime_root_from_paths(
+    current_dir: &std::path::Path,
+    exe_path: &std::path::Path,
+) -> Option<PathBuf> {
     let exe_dir = exe_path.parent()?;
     let exe_parent = exe_dir.parent().unwrap_or(exe_dir);
     let hosted_root = exe_parent.to_path_buf();
-    if hosted_root.join("skills").exists() || hosted_root.join("configs").exists() {
+    let hosted_skills_dir = hosted_root.join("skills");
+    let hosted_configs_dir = hosted_root.join("configs");
+    if (hosted_skills_dir.exists() && hosted_skills_dir.is_dir())
+        || (hosted_configs_dir.exists() && hosted_configs_dir.is_dir())
+    {
         return Some(hosted_root);
     }
 
-    let repository_root = std::env::current_dir().ok()?.join("runtime");
-    if repository_root.exists() {
+    let repository_root = current_dir.join("runtime");
+    if repository_root.exists() && repository_root.is_dir() {
         return Some(repository_root);
     }
 
@@ -642,25 +704,35 @@ pub fn client_budget_snapshot_for_render(
 
 /// Resolve the Lua resources directory according to the current MCP host layout.
 /// 按当前 MCP 宿主布局解析 Lua 资源目录。
-fn resolve_runtime_resources_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
+fn resolve_runtime_resources_dir(
+    runtime_root: &std::path::Path,
+) -> Result<Option<PathBuf>, String> {
     let runtime_resources_dir = runtime_root.join("resources");
     if runtime_resources_dir.exists() {
-        return Some(runtime_resources_dir);
+        if !runtime_resources_dir.is_dir() {
+            return Err(format!(
+                "runtime resources path is not a directory: {}",
+                runtime_resources_dir.display()
+            ));
+        }
+        return Ok(Some(runtime_resources_dir));
     }
 
-    None
+    Ok(None)
 }
 
 /// Resolve the root directory that contains host-provided native libraries.
 /// 解析宿主提供原生动态库所在的根目录。
-fn resolve_host_library_root(runtime_root: &std::path::Path) -> Option<PathBuf> {
-    if let Some(sqlite_path) = resolve_host_library_path(runtime_root, sqlite_library_file_name()) {
+fn resolve_host_library_root(
+    sqlite_library_path: Option<&PathBuf>,
+    lancedb_library_path: Option<&PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(sqlite_path) = sqlite_library_path {
         if let Some(parent) = sqlite_path.parent() {
             return Some(parent.to_path_buf());
         }
     }
-    if let Some(lancedb_path) = resolve_host_library_path(runtime_root, lancedb_library_file_name())
-    {
+    if let Some(lancedb_path) = lancedb_library_path {
         if let Some(parent) = lancedb_path.parent() {
             return Some(parent.to_path_buf());
         }
@@ -670,12 +742,18 @@ fn resolve_host_library_root(runtime_root: &std::path::Path) -> Option<PathBuf> 
 
 /// Resolve the host-managed lua_packages directory according to runtime output first and repository output second.
 /// 先按运行时输出目录、再按仓库输出目录解析宿主管理的 lua_packages 目录。
-fn resolve_lua_packages_dir(runtime_root: &std::path::Path) -> Option<PathBuf> {
+fn resolve_lua_packages_dir(runtime_root: &std::path::Path) -> Result<Option<PathBuf>, String> {
     let runtime_path = runtime_root.join("lua_packages");
     if runtime_path.exists() {
-        return Some(runtime_path);
+        if !runtime_path.is_dir() {
+            return Err(format!(
+                "runtime lua_packages path is not a directory: {}",
+                runtime_path.display()
+            ));
+        }
+        return Ok(Some(runtime_path));
     }
-    None
+    Ok(None)
 }
 
 /// Resolve the current user's home directory when a default skill override root needs to be derived.
@@ -696,7 +774,10 @@ fn home_dir() -> Option<std::path::PathBuf> {
 
 /// Resolve one host-side dynamic-library path from the unified runtime root.
 /// 从统一运行根中解析一条宿主动态库路径。
-fn resolve_host_library_path(runtime_root: &std::path::Path, file_name: &str) -> Option<PathBuf> {
+fn resolve_host_library_path(
+    runtime_root: &std::path::Path,
+    file_name: &str,
+) -> Result<Option<PathBuf>, String> {
     let explicit_env_key = if file_name.contains("sqlite") {
         "VLDB_SQLITE_LIBRARY"
     } else {
@@ -705,16 +786,35 @@ fn resolve_host_library_path(runtime_root: &std::path::Path, file_name: &str) ->
     if let Ok(explicit) = std::env::var(explicit_env_key) {
         let trimmed = explicit.trim();
         if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed));
+            let explicit_path = PathBuf::from(trimmed);
+            if !explicit_path.exists() {
+                return Err(format!(
+                    "{explicit_env_key} does not exist: {}",
+                    explicit_path.display()
+                ));
+            }
+            if !explicit_path.is_file() {
+                return Err(format!(
+                    "{explicit_env_key} is not a file: {}",
+                    explicit_path.display()
+                ));
+            }
+            return Ok(Some(explicit_path));
         }
     }
 
     let runtime_path = runtime_root.join("libs").join(file_name);
     if runtime_path.exists() {
-        return Some(runtime_path);
+        if !runtime_path.is_file() {
+            return Err(format!(
+                "runtime library path is not a file: {}",
+                runtime_path.display()
+            ));
+        }
+        return Ok(Some(runtime_path));
     }
 
-    None
+    Ok(None)
 }
 
 /// Return the host-owned MCP tool names that must stay reserved from LuaSkills canonical entry generation.
@@ -775,6 +875,14 @@ fn lancedb_library_file_name() -> &'static str {
 mod tests {
     use super::*;
     use crate::config::{Config, SpaceControllerConfig};
+    use std::sync::{Mutex, OnceLock};
+
+    /// Return one shared mutex used to serialize environment-variable dependent tests.
+    /// 返回一个共享互斥锁，用于串行化依赖环境变量的测试。
+    fn environment_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     /// Build one unique temporary directory path for one test case.
     /// 为单个测试用例构建唯一的临时目录路径。
@@ -886,6 +994,7 @@ mod tests {
     /// 使用控制器模式构建引擎选项时，应保留复制后的可执行文件路径和 provider 选择结果。
     #[test]
     fn build_engine_options_maps_space_controller_configuration() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
         let root = unique_test_dir("engine-options-controller");
         create_runtime_root_for_test(&root);
         let copied_executable = root
@@ -968,6 +1077,7 @@ mod tests {
     /// 缺失的显式控制器可执行文件路径应在宿主选项构建阶段直接失败，而不是延迟到运行时。
     #[test]
     fn build_engine_options_rejects_missing_controller_executable_path() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
         let root = unique_test_dir("controller-missing-executable");
         create_runtime_root_for_test(&root);
         let config = Config {
@@ -996,10 +1106,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Broken controller executable paths should be ignored when no backend actually uses controller mode.
+    /// 当没有任何后端实际使用控制器模式时，损坏的控制器可执行文件路径应被忽略。
+    #[test]
+    fn build_engine_options_ignores_bad_controller_path_for_non_controller_modes() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("controller-path-ignored-for-dynamic-library");
+        create_runtime_root_for_test(&root);
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            sqlite_provider_mode: DatabaseProviderModeConfig::DynamicLibrary,
+            lancedb_provider_mode: DatabaseProviderModeConfig::HostCallback,
+            space_controller: SpaceControllerConfig {
+                executable_path: Some("bin/tools/missing-vldb-controller.exe".to_string()),
+                endpoint: Some("http://127.0.0.1:19801".to_string()),
+                ..SpaceControllerConfig::default()
+            },
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let options = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect("non-controller modes should ignore broken controller configuration");
+        assert_eq!(
+            options.host_options.sqlite_provider_mode,
+            LuaRuntimeDatabaseProviderMode::DynamicLibrary
+        );
+        assert_eq!(
+            options.host_options.lancedb_provider_mode,
+            LuaRuntimeDatabaseProviderMode::HostCallback
+        );
+        assert!(options.host_options.space_controller.endpoint.is_none());
+        assert!(
+            options
+                .host_options
+                .space_controller
+                .executable_path
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Fallback copied controller paths should also be validated as files, not merely as existing paths.
     /// 回退复制得到的控制器路径也应校验为文件，不能仅按存在性接受。
     #[test]
     fn build_engine_options_rejects_directory_shaped_fallback_controller_path() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
         let root = unique_test_dir("controller-directory-fallback");
         create_runtime_root_for_test(&root);
         let copied_executable_dir = root
@@ -1112,5 +1268,242 @@ mod tests {
             "file-shaped runtime root should be rejected"
         );
         let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// File-shaped implicit repository runtime paths should not be accepted as valid fallback runtime roots.
+    /// 文件形态的隐式仓库 runtime 路径不应被接受为合法的回退运行根。
+    #[test]
+    fn resolve_implicit_runtime_root_rejects_file_shaped_repository_runtime_path() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let base_dir = unique_test_dir("implicit-runtime-file");
+        let fake_exe = base_dir.join("bin").join("vulcan-mcp.exe");
+        let runtime_file = base_dir.join("runtime");
+        std::fs::create_dir_all(fake_exe.parent().expect("fake exe parent should exist"))
+            .expect("failed to create fake exe parent");
+        std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
+        std::fs::write(&runtime_file, b"not-a-directory").expect("failed to create runtime file");
+
+        let resolved = resolve_implicit_runtime_root_from_paths(&base_dir, &fake_exe);
+        assert!(
+            resolved.is_none(),
+            "file-shaped implicit runtime root should be rejected"
+        );
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// Invalid explicit SQLite library environment paths should be rejected during host option construction.
+    /// 无效的显式 SQLite 动态库环境变量路径应在宿主选项构建阶段被拒绝。
+    #[test]
+    fn build_engine_options_rejects_missing_sqlite_library_env_path() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("sqlite-library-env-missing");
+        create_runtime_root_for_test(&root);
+        unsafe {
+            std::env::set_var(
+                "VLDB_SQLITE_LIBRARY",
+                root.join("missing-sqlite.dll")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("missing sqlite library env path should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("VLDB_SQLITE_LIBRARY does not exist"),
+            "unexpected error: {error}"
+        );
+        unsafe {
+            std::env::remove_var("VLDB_SQLITE_LIBRARY");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Directory-shaped explicit LanceDB library environment paths should be rejected during host option construction.
+    /// 目录形态的显式 LanceDB 动态库环境变量路径应在宿主选项构建阶段被拒绝。
+    #[test]
+    fn build_engine_options_rejects_directory_lancedb_library_env_path() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("lancedb-library-env-directory");
+        create_runtime_root_for_test(&root);
+        let directory_path = root.join("fake-lancedb-dir");
+        std::fs::create_dir_all(&directory_path).expect("directory path should exist");
+        unsafe {
+            std::env::set_var(
+                "VLDB_LANCEDB_LIBRARY",
+                directory_path.to_string_lossy().to_string(),
+            );
+        }
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("directory-shaped lancedb library env path should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("VLDB_LANCEDB_LIBRARY is not a file"),
+            "unexpected error: {error}"
+        );
+        unsafe {
+            std::env::remove_var("VLDB_LANCEDB_LIBRARY");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Non-dynamic-library modes should ignore broken dynamic-library environment variables instead of failing host option construction.
+    /// 非动态库模式应忽略损坏的动态库环境变量，而不是让宿主选项构建失败。
+    #[test]
+    fn build_engine_options_ignores_bad_library_env_paths_for_controller_mode() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("controller-ignores-bad-library-env");
+        create_runtime_root_for_test(&root);
+        unsafe {
+            std::env::set_var(
+                "VLDB_SQLITE_LIBRARY",
+                root.join("missing-sqlite.dll")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            std::env::set_var(
+                "VLDB_LANCEDB_LIBRARY",
+                root.join("missing-lancedb.dll")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            sqlite_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            lancedb_provider_mode: DatabaseProviderModeConfig::SpaceController,
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let options = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect("controller mode should ignore bad dynamic-library env paths");
+        assert!(options.host_options.sqlite_library_path.is_none());
+        assert!(options.host_options.lancedb_library_path.is_none());
+        assert!(options.host_options.host_provided_ffi_root.is_none());
+        unsafe {
+            std::env::remove_var("VLDB_SQLITE_LIBRARY");
+            std::env::remove_var("VLDB_LANCEDB_LIBRARY");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Directory-shaped runtime library fallback paths should be rejected instead of being treated as valid library files.
+    /// 目录形态的运行根动态库回退路径应被拒绝，不能被当作有效库文件接受。
+    #[test]
+    fn build_engine_options_rejects_directory_shaped_runtime_sqlite_library_path() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("sqlite-library-runtime-directory");
+        create_runtime_root_for_test(&root);
+        let runtime_library_dir = root.join("libs").join(sqlite_library_file_name());
+        std::fs::create_dir_all(&runtime_library_dir)
+            .expect("failed to create directory-shaped runtime library path");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("directory-shaped runtime library path should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime library path is not a file"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// File-shaped runtime resources directories should be rejected during host option construction.
+    /// 文件形态的运行时 resources 目录应在宿主选项构建阶段被拒绝。
+    #[test]
+    fn build_engine_options_rejects_file_shaped_runtime_resources_dir() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("runtime-resources-file");
+        create_runtime_root_for_test(&root);
+        let resources_file = root.join("resources");
+        std::fs::write(&resources_file, b"not-a-directory")
+            .expect("failed to create file-shaped resources path");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("file-shaped runtime resources dir should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime resources path is not a directory"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// File-shaped runtime lua_packages directories should be rejected during host option construction.
+    /// 文件形态的运行时 lua_packages 目录应在宿主选项构建阶段被拒绝。
+    #[test]
+    fn build_engine_options_rejects_file_shaped_runtime_lua_packages_dir() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("runtime-lua-packages-file");
+        create_runtime_root_for_test(&root);
+        let lua_packages_file = root.join("lua_packages");
+        std::fs::write(&lua_packages_file, b"not-a-directory")
+            .expect("failed to create file-shaped lua_packages path");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("file-shaped runtime lua_packages dir should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime lua_packages path is not a directory"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

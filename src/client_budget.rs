@@ -26,6 +26,9 @@ const DEFAULT_UNLIMITED_BYTES_CAP: u64 = 200 * 1024;
 /// Global cached client-budget configuration with support for startup preload and explicit hot reload.
 /// 全局缓存客户端预算配置，支持启动预载与显式热重载。
 static CLIENT_BUDGET_RUNTIME: OnceLock<RwLock<ClientBudgetRuntime>> = OnceLock::new();
+/// Optional explicit runtime-root override used to keep client-budget discovery aligned with one selected runtime.
+/// 可选的显式 runtime_root 覆盖，用于让客户端预算发现链与当前选中的运行根保持一致。
+static CLIENT_BUDGET_RUNTIME_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 
 /// Runtime cache state for client budgets, containing the parsed config and its source path.
 /// 客户端预算运行时缓存状态，包含已解析配置与来源路径。
@@ -165,6 +168,31 @@ fn client_budget_runtime() -> &'static RwLock<ClientBudgetRuntime> {
     })
 }
 
+/// Return the shared runtime-root override store used by client-budget discovery.
+/// 返回客户端预算发现链使用的共享运行根覆盖存储。
+fn client_budget_runtime_root() -> &'static RwLock<Option<PathBuf>> {
+    CLIENT_BUDGET_RUNTIME_ROOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Initialize the runtime-root override used by client-budget preload and reload.
+/// 初始化供客户端预算预载与热重载使用的运行根覆盖值。
+pub fn initialize_client_budget_runtime_root(runtime_root: Option<&Path>) -> Result<(), String> {
+    let mut guard = client_budget_runtime_root()
+        .write()
+        .map_err(|_| "client budget runtime-root lock poisoned".to_string())?;
+    *guard = runtime_root.map(std::path::Path::to_path_buf);
+    Ok(())
+}
+
+/// Read the current runtime-root override used by client-budget discovery.
+/// 读取当前客户端预算发现链使用的运行根覆盖值。
+fn current_client_budget_runtime_root() -> Option<PathBuf> {
+    client_budget_runtime_root()
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
 /// Preload the client-budget config during startup so format issues surface early.
 /// 启动时预载客户端预算配置，便于尽早暴露配置格式问题。
 pub fn preload_client_budget_config() -> Result<ClientBudgetLoadReport, String> {
@@ -300,18 +328,26 @@ fn load_client_budget_runtime() -> Result<ClientBudgetRuntime, String> {
 /// Find the client-budget config file, preferring the runtime output directory and then falling back to the repository template path.
 /// 查找客户端预算配置文件；优先查运行时输出目录，其次回退到仓库内模板路径。
 fn find_client_budget_config_path() -> Option<PathBuf> {
+    if let Some(runtime_root) = current_client_budget_runtime_root() {
+        let runtime_path = runtime_root.join("configs").join("client_budgets.yaml");
+        if runtime_path.exists() && runtime_path.is_file() {
+            return Some(runtime_path);
+        }
+        return None;
+    }
+
     let exe_path = std::env::current_exe().ok()?;
     let exe_dir = exe_path.parent()?;
     let parent_dir = exe_dir.parent()?;
     let runtime_path = parent_dir.join("configs").join("client_budgets.yaml");
-    if runtime_path.exists() {
+    if runtime_path.exists() && runtime_path.is_file() {
         return Some(runtime_path);
     }
 
     let repository_path = Path::new("runtime")
         .join("configs")
         .join("client_budgets.yaml");
-    if repository_path.exists() {
+    if repository_path.exists() && repository_path.is_file() {
         return Some(repository_path);
     }
     None
@@ -757,6 +793,14 @@ mod tests {
     use super::*;
     use serde_yaml::from_str;
     use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Return one shared mutex used to serialize runtime-root override tests for client-budget loading.
+    /// 返回一个共享互斥锁，用于串行化客户端预算加载中的运行根覆盖测试。
+    fn runtime_root_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     /// Verify that `-1` is parsed as explicit unlimited rather than a normal numeric value.
     /// 验证 `-1` 会被正确解析为显式不限，而不是普通数值。
@@ -979,5 +1023,39 @@ mod tests {
             .expect("file_read fallback budget should exist");
         assert_eq!(tool_result.bytes, file_read.bytes);
         assert_eq!(tool_result.lines, file_read.lines);
+    }
+
+    /// Explicit runtime-root overrides should redirect client-budget preload to the selected runtime instead of the default output tree.
+    /// 显式 runtime_root 覆盖应把客户端预算预载重定向到选中的运行根，而不是默认输出树。
+    #[test]
+    fn preload_client_budget_config_prefers_explicit_runtime_root() {
+        let _guard = runtime_root_lock().lock().expect("lock should succeed");
+        let root = std::env::temp_dir().join(format!(
+            "vulcan-mcp-client-budget-runtime-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let config_path = root.join("configs").join("client_budgets.yaml");
+        std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
+            .expect("failed to create config directory");
+        std::fs::write(
+            &config_path,
+            "defaults:\n  budgets:\n    tool_result:\n      bytes:\n        default: 1234\n",
+        )
+        .expect("failed to write client budget config");
+
+        initialize_client_budget_runtime_root(Some(&root))
+            .expect("runtime root init should succeed");
+        let report = preload_client_budget_config().expect("client budget preload should succeed");
+        assert_eq!(
+            report.source_path.as_deref(),
+            Some(config_path.to_string_lossy().as_ref())
+        );
+
+        initialize_client_budget_runtime_root(None).expect("runtime root clear should succeed");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
