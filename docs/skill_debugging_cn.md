@@ -186,6 +186,22 @@ PowerShell 下推荐：
 
 若缺失对应依赖，需先确保构建和依赖同步过程已完成。
 
+需要额外区分两类宿主产物：
+
+- `output/bin/tools/`
+  - 共享命令行工具目录，例如 `rg`、`ast-grep`
+- `output/bin/vldb-controller.exe`
+  - 数据库控制器主程序
+  - 不属于 `bin/tools`
+
+如果当前调试的是会访问 SQLite / LanceDB 的 skill，还需要额外确认：
+
+- 已执行过 `make deps host` 与 `make build`
+- `output/bin/vldb-controller.exe` 已存在
+- 如果 `space_controller.auto_spawn=true`，则 `space_controller.endpoint` 必须是本地可拉起地址
+- 如果连接远端 controller，则应设置 `auto_spawn=false`，并提前保证远端 controller 已启动
+- 若手工替换了 controller 二进制，需保证其 release tag 与当前仓库锁定的 `vldb-controller-client` 一致
+
 ### 7.3 调试结果与运行中服务不一致
 
 `--call-tools` 使用的是**本地当前构建产物**，不一定等同于你当前正在运行的 `output/bin` 进程。

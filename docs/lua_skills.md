@@ -593,7 +593,9 @@ dependencies:
 
 运行规则：
 
-- 宿主提供工具目录固定为运行根下的 `bin/tools/`（正式构建默认即 `output/bin/tools/`），托管下载依赖则进入运行根下的 `dependencies/`
+- 宿主提供工具目录固定为运行根下的 `bin/tools/`（正式构建默认即 `output/bin/tools/`），托管下载依赖仍进入运行根下的 `dependencies/`
+- `bin/tools/` 仅表示宿主提供的共享命令行工具目录，不是数据库 controller 目录；`vldb-controller(.exe)` 固定放在 `output/bin/`
+- 当前 `vulcan-mcp-client` 产品固定采用 controller-only 数据库访问模型，skill 应假设数据库能力由宿主通过 controller 统一提供
 - 会先检查 `install_as` 对应文件是否已存在，存在则直接跳过
 - 支持 `asset_name`、`install_as`、`archive_path` 中使用 `{tag}` 与 `{version}` 占位符
 - 当前支持直接文件、`.zip`、`.tar.gz` / `.tgz` 安装

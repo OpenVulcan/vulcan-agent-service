@@ -53,28 +53,21 @@ grpc: "127.0.0.1:19202"
 # English: Database directory name. It is always created as a sibling of the skills root; only the directory name is configurable.
 # database_dir_name: "databases"
 
-# 中文：SQLite provider 模式。默认 dynamic_library，可选 host_callback / space_controller。
-# English: SQLite provider mode. Default is dynamic_library; available values are host_callback / space_controller.
-# sqlite_provider_mode: "dynamic_library"
-
-# 中文：当 SQLite 使用 host_callback 时的回调模式。默认 standard，可选 json。
-# English: Callback mode used when SQLite runs in host_callback mode. Default is standard; json is also available.
-# sqlite_callback_mode: "standard"
-
-# 中文：LanceDB provider 模式。默认 dynamic_library，可选 host_callback / space_controller。
-# English: LanceDB provider mode. Default is dynamic_library; available values are host_callback / space_controller.
-# lancedb_provider_mode: "dynamic_library"
-
-# 中文：当 LanceDB 使用 host_callback 时的回调模式。默认 standard，可选 json。
-# English: Callback mode used when LanceDB runs in host_callback mode. Default is standard; json is also available.
-# lancedb_callback_mode: "standard"
-
-# 中文：space_controller 配置。启用 controller 模式时，宿主可在这里指定共享端点、自动拉起策略和本地复制后的可执行文件路径。
-# English: space_controller settings. When controller mode is enabled, the host may define the shared endpoint, auto-spawn policy, and the copied local executable path here.
+# 中文：MCP 宿主固定通过 space_controller 访问 SQLite 与 LanceDB，以避免多实例并发访问同一数据库时的文件锁冲突。
+# English: The MCP host always accesses SQLite and LanceDB through space_controller so concurrent MCP instances avoid direct file-lock conflicts.
+# 中文：当前产品固定通过 controller-only 方式访问数据库，不提供数据库模式切换项。
+# English: The current MCP product uses a controller-only database access model and does not expose database mode switches.
+# 中文：space_controller 配置用于指定共享端点、自动拉起策略和本地复制后的可执行文件路径。
+# English: space_controller settings define the shared endpoint, auto-spawn policy, and copied local executable path.
+# 中文：若 auto_spawn=true，则 endpoint 必须是本地可拉起地址；远端 controller 只能与 auto_spawn=false 搭配使用。
+# English: When auto_spawn=true, endpoint must be a locally spawnable address. Remote controllers must be used with auto_spawn=false.
+# 中文：建议优先通过 make deps host + make build 同步 controller 二进制，避免 output/bin/vldb-controller.exe 与当前锁定的 vldb-controller-client release tag 漂移。
+# English: Prefer make deps host + make build to sync the controller binary so output/bin/vldb-controller.exe does not drift from the currently pinned vldb-controller-client release tag.
 # space_controller:
 #   endpoint: "http://127.0.0.1:19801"
 #   auto_spawn: true
-#   executable_path: "D:/projects/vulcan-mcp-client/output/bin/tools/vldb-controller.exe"
+#   executable_path: "D:/projects/vulcan-mcp-client/output/bin/vldb-controller.exe"
+#   # 默认可省略；执行 make deps host + build 后会自动从 output/bin/vldb-controller.exe 发现
 #   process_mode: "managed"
 #   minimum_uptime_secs: 300
 #   idle_timeout_secs: 900

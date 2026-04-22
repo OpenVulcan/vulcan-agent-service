@@ -2504,7 +2504,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vldb-controller-client"
 version = "0.1.0"
-source = "git+https://github.com/OpenVulcan/vldb-controller.git?rev=255683d0f2fc9116051afb3730c4e0319ad1d786#255683d0f2fc9116051afb3730c4e0319ad1d786"
+source = "git+https://github.com/OpenVulcan/vldb-controller.git?tag=v0.1.0#f2b27189db6ef5cd6a60a08015ea70f84bf50abd"
 dependencies = [
  "prost",
  "protoc-bin-vendored",

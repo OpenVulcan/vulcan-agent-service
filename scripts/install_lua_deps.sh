@@ -22,7 +22,6 @@ LIST_SEP=$'\036'
 ensure_dir() { mkdir -p "$1"; }
 
 get_current_platform() {
-    # 将当前系统规范化为配置文件使用的 os 键。
     # Normalize the current system to the os key used by the config file.
     case "$(uname -s)" in
         Darwin) echo "macos" ;;
@@ -31,7 +30,6 @@ get_current_platform() {
 }
 
 config_os_matches() {
-    # 判断配置行是否适用于当前平台。
     # Check whether a config line applies to the current platform.
     local config_os="$1"
     local current_platform
@@ -40,7 +38,6 @@ config_os_matches() {
 }
 
 append_assoc_list() {
-    # 以分隔符追加关联数组中的列表值。
     # Append a list item to an associative-array entry using a stable separator.
     local array_name="$1" key="$2" value="$3"
     local -n arr="$array_name"
@@ -52,11 +49,6 @@ append_assoc_list() {
 }
 
 resolve_config_ref() {
-    # 解析配置引用：
-    # 1. dep:<name>[/subpath]
-    # 2. tool:<subpath>
-    # 3. path:<subpath>
-    # 其他值按字面量返回。
     # Resolve config references:
     # 1. dep:<name>[/subpath]
     # 2. tool:<subpath>
@@ -380,14 +372,12 @@ GITHUB_REPO="OpenVulcan/vulcan-mcp"
 RELEASE_TAG="deps-v1"
 
 find_local_archive() {
-    # 在 third_party 顶层及其直接子目录中查找匹配的本地压缩包。
     # Find a matching local archive under third_party and its direct child directories.
     local asset_name="$1"
     find "$THIRD_PARTY" -maxdepth 2 -type f -name "$asset_name" | sort -r | head -1
 }
 
 get_prebuilt_deps_platform() {
-    # 根据当前操作系统与架构，推导 lua-deps 预编译资产名后缀。
     # Derive the lua-deps prebuilt asset suffix for the current OS and architecture.
     local machine
     machine="$(uname -m)"
@@ -577,7 +567,6 @@ if ! { [ -f "$LUAJIT_SO" ] || [ -f "$LUAJIT_DYLIB" ] || [ -f "$LUAJIT_BIN" ]; } 
     echo "==> Searching cargo target for LuaJIT build output..."
     select_luajit_build_out() {
         # Prefer candidates that already contain built artifacts, then sort by artifact timestamp before directory freshness.
-        # 优先选择已经带构建产物的候选目录，再按产物时间排序，最后才回退到目录时间。
         python3 - "$PROJECT_DIR" <<'PY'
 import os
 import sys

@@ -186,6 +186,22 @@ If a skill declares `dependencies.yaml`, the loader checks the shared tool direc
 
 If the required binary is missing, make sure the build and dependency sync flow has completed.
 
+Also keep the two host-side paths separate:
+
+- `output/bin/tools/`
+  - shared command-line tools such as `rg` and `ast-grep`
+- `output/bin/vldb-controller.exe`
+  - the database controller executable
+  - this is not part of `bin/tools`
+
+If the skill being debugged touches SQLite or LanceDB, also verify that:
+
+- you have already run `make deps host` and `make build`
+- `output/bin/vldb-controller.exe` exists
+- when `space_controller.auto_spawn=true`, `space_controller.endpoint` is a locally spawnable address
+- when using a remote controller, `auto_spawn=false` is set and the remote controller is already running
+- if you manually replace the controller binary, its release tag still matches the `vldb-controller-client` version locked by the current repository
+
 ### 7.3 Results differ from the currently running service
 
 `--call-tools` uses the **current local build output**, which may not match a separately running `output/bin` process.

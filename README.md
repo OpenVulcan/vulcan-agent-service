@@ -1,7 +1,7 @@
 # vulcan-mcp
 
 `vulcan-mcp` 是 Vulcan 生态中的 **MCP 宿主与协议适配层**。  
-它不再承担 LuaSkills 核运行时真相，而是基于 [`vulcan-luaskills`](https://github.com/OpenVulcan/vulcan-luaskills) 提供：
+它基于 [`vulcan-luaskills`](https://github.com/OpenVulcan/vulcan-luaskills) 提供：
 
 - MCP 协议接入
 - HTTP / gRPC 服务与本地调试模式
@@ -30,11 +30,48 @@
 - 支持 MCP 多版本协议协商
 - 支持 HTTP 服务模式、gRPC 服务模式与本地调试模式
 - 通过本地依赖接入 `vulcan-luaskills`
+- 数据库访问固定走 `space_controller` 控制器模式
 - 自动加载运行根下符合规则的 LuaSkills
 - 把 skill entry 映射成 MCP tools
 - 提供宿主封装的 strict help 工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
 - 支持宿主级 `client_budgets.yaml` 与 `tool_configs.yaml`
+
+## 数据库访问模型
+
+`vulcan-mcp` 采用 **controller-only** 产品形态：
+
+- SQLite 只通过 `vldb-controller` 访问
+- LanceDB 只通过 `vldb-controller` 访问
+- MCP 宿主固定使用控制器模式，不暴露数据库 provider 模式切换
+
+这样做的原因很直接：
+
+- MCP 宿主可能被多开
+- 多实例可能同时访问同一 workspace / user space 数据库
+- 只有把数据库 ownership 收口到独立 controller 进程，才能真正避免直连数据库导致的文件锁冲突
+
+因此运行时需要准备：
+
+- `output/bin/vldb-controller(.exe)`
+  - 可通过 `make deps host` 自动下载对应平台 release 产物，构建时会自动复制到这里
+
+通用宿主工具依赖则位于：
+
+- `output/bin/tools`
+
+同时建议通过 `runtime/configs/config.yaml` 中的 `space_controller` 段配置：
+
+- `endpoint`
+- `auto_spawn`
+- `executable_path`
+- `process_mode`
+
+其中有三个约束需要特别注意：
+
+- `auto_spawn=true` 只能和**本地可拉起**的 controller endpoint 搭配使用
+- 如果 `endpoint` 指向远端 controller，则必须改为 `auto_spawn=false`，并由外部保证 controller 已经启动
+- `output/bin/vldb-controller(.exe)` 应尽量通过 `make deps host + make build` 生成；如果手工替换二进制，必须确保它与当前仓库锁定的 `vldb-controller-client` 使用同一 release tag，避免静默版本漂移
 
 ## 当前公开方式
 
@@ -63,7 +100,7 @@ runtime/skills/<skill>/
 
 ### 2. Help 工具
 
-help 不再通过 skill tool 直接暴露，而是由宿主包装为：
+help 由宿主包装为：
 
 - `vulcan-help-list`
 - `vulcan-help-detail`
@@ -77,8 +114,8 @@ help 不再通过 skill tool 直接暴露，而是由宿主包装为：
 
 ### 3. RunLua 暴露策略
 
-`runlua` 的 system 能力仍然保留在 `vulcan-luaskills` 内部与 `vulcan.runtime.lua.exec` 链路中，  
-但 `vulcan-mcp` **不再直接公开 `runlua` MCP tool**。
+`runlua` 的 system 能力保留在 `vulcan-luaskills` 内部与 `vulcan.runtime.lua.exec` 链路中，  
+`vulcan-mcp` 通过 `vulcan-runtime` skill 对外提供对应执行能力。
 
 MCP 侧推荐通过 `vulcan-runtime` skill 使用：
 
@@ -112,8 +149,8 @@ output/
 ├─ dependencies/          # 运行期共享/私有依赖
 ├─ databases/             # SQLite / LanceDB 数据目录
 ├─ resources/             # 实际运行使用的共享资源
-├─ bin/                   # 宿主工具与程序二进制
-├─ libs/                  # 宿主提供原生动态库
+├─ bin/                   # 宿主主程序与 controller
+├─ libs/                  # 宿主提供通用原生动态库
 ├─ lua_packages/          # 宿主提供 Lua 包目录
 ├─ state/                 # 技能状态与安装状态
 ├─ temp/                  # 临时下载与渲染产物
@@ -183,7 +220,7 @@ vulcan-luaskills = { path = "../vulcan-luaskills" }
 
 ## 运行目录约定
 
-- `runtime/` 只保留仓库内的基础模板文件，不再承载数据库、下载缓存、动态库或宿主工具产物
+- `runtime/` 用于存放仓库内的基础模板文件
 - `output/` 是实际运行根，构建时会把 `runtime/configs`、`runtime/resources`、`runtime/skills` 同步进去
 - 运行期产生的：
   - `dependencies`
@@ -191,8 +228,11 @@ vulcan-luaskills = { path = "../vulcan-luaskills" }
   - `temp`
   - `logs`
   - `libs`
-  - `bin/tools`
   都应位于 `output/` 下
+- `output/bin` 只用于宿主级主程序与 controller 这类系统可执行文件
+- `output/bin/tools` 用于共享命令行工具依赖，例如 `rg`、`ast-grep`
+- `output/bin/tools` 不是数据库 controller 目录；`vldb-controller(.exe)` 固定放在 `output/bin/`
+- `output/libs` 用于宿主提供通用原生依赖
 
 ## 后续方向
 

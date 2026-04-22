@@ -109,7 +109,6 @@ if (Test-Path "runtime\resources") {
 }
 
 # Sync build-time runtime resource manifests to output/resources/
-# 中文：将脚本侧维护的 Lua 扩展能力清单复制到输出目录，供运行时动态读取能力列表。
 $LuaPackagesManifestSource = Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt"
 if (Test-Path -LiteralPath (Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt")) {
     if (-not (Test-Path $ResourcesOut)) { New-Item -ItemType Directory -Path $ResourcesOut -Force | Out-Null }
@@ -128,10 +127,30 @@ if (Test-Path "runtime\skills") {
 }
 
 # Prepare output/bin/tools/ as the host runtime tool directory.
-# 中文：runtime/ 不再承载宿主工具产物；这里仅确保 output/bin/tools 存在，供本地复制或安装流程写入。
 $HostToolsOut = Join-Path $BaseOutDir "bin\tools"
 if (-not (Test-Path $HostToolsOut)) { New-Item -ItemType Directory -Path $HostToolsOut -Force | Out-Null }
 Write-Host "==> Host tool output directory prepared at $HostToolsOut\"
+
+# Copy the host-installed vldb-controller executable to output/bin/ when the dependency bootstrap has prepared it.
+$ControllerOut = Join-Path $BaseOutDir "bin"
+if (-not (Test-Path $ControllerOut)) { New-Item -ItemType Directory -Path $ControllerOut -Force | Out-Null }
+$ControllerBinaryName = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+    "vldb-controller.exe"
+} else {
+    "vldb-controller"
+}
+$ControllerBinarySource = Join-Path $ProjectDir "third_party\vldb_controller\bin\$ControllerBinaryName"
+if (Test-Path $ControllerBinarySource) {
+    if (-not (Get-Item -LiteralPath $ControllerBinarySource).PSIsContainer) {
+        Copy-Item -Force $ControllerBinarySource "$ControllerOut\$ControllerBinaryName"
+        Write-Host "==> vldb-controller synced to $ControllerOut\"
+    } else {
+        Write-Error "vldb-controller source path is not a file: $ControllerBinarySource"
+        exit 1
+    }
+} else {
+    Write-Host "==> No third_party/vldb_controller/bin/$ControllerBinaryName found"
+}
 
 # Sync third-party Lua packages to output/lua_packages/
 # Only copy runtime-relevant directories: lib/lua/, share/lua/

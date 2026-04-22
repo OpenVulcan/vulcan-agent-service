@@ -1,37 +1,6 @@
 use serde::Deserialize;
 use std::fs;
 
-/// Database provider mode selected by the MCP host for one LuaSkills backend.
-/// MCP 宿主为单个 LuaSkills 数据库后端选择的 provider 模式。
-#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DatabaseProviderModeConfig {
-    /// Use the direct dynamic-library backend.
-    /// 使用直接动态库后端。
-    #[default]
-    DynamicLibrary,
-    /// Forward through host callback contracts.
-    /// 通过宿主回调协议转发。
-    HostCallback,
-    /// Forward through the external space controller service.
-    /// 通过外部空间控制器服务转发。
-    SpaceController,
-}
-
-/// Database callback transport mode selected when one backend uses host callbacks.
-/// 当后端使用宿主回调时选择的回调传输模式。
-#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DatabaseCallbackModeConfig {
-    /// Use the structured standard callback ABI.
-    /// 使用结构化标准回调 ABI。
-    #[default]
-    Standard,
-    /// Use the JSON callback ABI.
-    /// 使用 JSON 回调 ABI。
-    Json,
-}
-
 /// Controller process mode selected when the MCP host auto-spawns one local controller.
 /// 当 MCP 宿主自动拉起本地控制器时选择的进程模式。
 #[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -46,8 +15,8 @@ pub enum SpaceControllerProcessModeConfig {
     Managed,
 }
 
-/// Host-level controller configuration forwarded into LuaSkills when one backend selects `space_controller`.
-/// 当某个后端选择 `space_controller` 时转发给 LuaSkills 的宿主级控制器配置。
+/// Host-level controller configuration forwarded into the controller-only LuaSkills runtime.
+/// 转发给 controller-only LuaSkills 运行时的宿主级控制器配置。
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SpaceControllerConfig {
     /// Optional explicit controller endpoint.
@@ -198,24 +167,8 @@ pub struct Config {
     /// Database directory name, fixed as a sibling of the skills root under the same parent. Defaults to `databases`.
     /// 数据库目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `databases`。
     pub database_dir_name: Option<String>,
-    /// SQLite provider mode selected for the LuaSkills host runtime.
-    /// 为 LuaSkills 宿主运行时选择的 SQLite provider 模式。
-    #[serde(default)]
-    pub sqlite_provider_mode: DatabaseProviderModeConfig,
-    /// SQLite callback mode selected when SQLite uses `host_callback`.
-    /// 当 SQLite 使用 `host_callback` 时选择的回调模式。
-    #[serde(default)]
-    pub sqlite_callback_mode: DatabaseCallbackModeConfig,
-    /// LanceDB provider mode selected for the LuaSkills host runtime.
-    /// 为 LuaSkills 宿主运行时选择的 LanceDB provider 模式。
-    #[serde(default)]
-    pub lancedb_provider_mode: DatabaseProviderModeConfig,
-    /// LanceDB callback mode selected when LanceDB uses `host_callback`.
-    /// 当 LanceDB 使用 `host_callback` 时选择的回调模式。
-    #[serde(default)]
-    pub lancedb_callback_mode: DatabaseCallbackModeConfig,
-    /// Shared controller configuration used when one backend selects `space_controller`.
-    /// 当某个后端选择 `space_controller` 时使用的共享控制器配置。
+    /// Shared controller configuration used by the MCP host runtime.
+    /// MCP 宿主运行时使用的共享控制器配置。
     #[serde(default)]
     pub space_controller: SpaceControllerConfig,
 

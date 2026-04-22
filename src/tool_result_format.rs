@@ -488,10 +488,7 @@ fn resolve_runtime_skills_root() -> Option<PathBuf> {
 
 /// Resolve the implicit fallback skills root from the current directory and executable path.
 /// 基于当前工作目录与可执行文件路径解析隐式回退技能根目录。
-fn resolve_runtime_skills_root_from_paths(
-    current_dir: &Path,
-    exe_path: &Path,
-) -> Option<PathBuf> {
+fn resolve_runtime_skills_root_from_paths(current_dir: &Path, exe_path: &Path) -> Option<PathBuf> {
     let exe_dir = exe_path.parent()?;
     let parent = exe_dir.parent().unwrap_or(exe_dir);
     let hosted_root = parent.join("skills");
@@ -882,8 +879,7 @@ mod tests {
         let fake_exe = exe_dir.join("vulcan-mcp.exe");
         std::fs::create_dir_all(&exe_dir).expect("failed to create fake exe directory");
         std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
-        std::fs::create_dir_all(root.join("output"))
-            .expect("failed to create hosted root parent");
+        std::fs::create_dir_all(root.join("output")).expect("failed to create hosted root parent");
         std::fs::write(root.join("output").join("skills"), b"not-a-directory")
             .expect("failed to create file-shaped hosted skills path");
         std::fs::create_dir_all(root.join("runtime"))

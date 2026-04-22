@@ -35,7 +35,7 @@ mkdir -p "$OUT_DIR"
 cp -f "$CARGO_TARGET" "$OUT_DIR/"
 echo "==> Binary copied to ${OUT_DIR}/"
 
-mkdir -p output/dependencies/shared/tools
+mkdir -p output/bin/tools
 mkdir -p output/dependencies/shared/lua
 mkdir -p output/dependencies/shared/ffi
 mkdir -p output/dependencies/skill
@@ -89,10 +89,25 @@ else
 fi
 
 # Prepare output/bin/tools/ as the host runtime tool directory.
-# 中文：runtime/ 不再承载宿主工具产物；这里仅确保 output/bin/tools 存在，供本地复制或安装流程写入。
 HOST_TOOLS_OUT="output/bin/tools"
 mkdir -p "$HOST_TOOLS_OUT"
 echo "==> Host tool output directory prepared at $HOST_TOOLS_OUT/"
+
+# Copy the host-installed vldb-controller executable to output/bin/ when the dependency bootstrap has prepared it.
+CONTROLLER_OUT="output/bin"
+mkdir -p "$CONTROLLER_OUT"
+CONTROLLER_BINARY_SOURCE="third_party/vldb_controller/bin/vldb-controller"
+if [ -e "$CONTROLLER_BINARY_SOURCE" ]; then
+    if [ -f "$CONTROLLER_BINARY_SOURCE" ]; then
+        cp -f "$CONTROLLER_BINARY_SOURCE" "$CONTROLLER_OUT/"
+        echo "==> vldb-controller synced to $CONTROLLER_OUT/"
+    else
+        echo "ERROR: vldb-controller source path is not a file: $CONTROLLER_BINARY_SOURCE" >&2
+        exit 1
+    fi
+else
+    echo "==> No third_party/vldb_controller/bin/vldb-controller found"
+fi
 
 # Sync third-party Lua packages to output/lua_packages/
 # Only copy runtime-relevant directories: lib/lua/, share/lua/

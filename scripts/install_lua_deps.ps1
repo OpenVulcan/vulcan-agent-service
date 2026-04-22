@@ -9,7 +9,6 @@ $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path $PSScriptRoot -Parent
 Set-Location $ProjectDir
 
-# 统一使用 RuntimeInformation 做平台探测，兼容 Windows PowerShell 5.1 与 PowerShell 7+。
 # Use RuntimeInformation for platform detection so the script behaves consistently on Windows PowerShell 5.1 and PowerShell 7+.
 $script:IsWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 $script:IsMacOSPlatform   = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
@@ -39,7 +38,7 @@ function Ensure-Dir {
 function Get-CurrentArchitectureKey {
     <#
     .SYNOPSIS
-    获取当前 CPU 架构标识 / Get the current CPU architecture key.
+    Get the current CPU architecture key.
     #>
     $Arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
     switch ($Arch) {
@@ -52,7 +51,7 @@ function Get-CurrentArchitectureKey {
 function Get-PrebuiltDepsPlatform {
     <#
     .SYNOPSIS
-    获取当前平台对应的 lua-deps 资产名后缀 / Resolve the lua-deps asset suffix for the current platform.
+    Resolve the lua-deps asset suffix for the current platform.
     #>
     $ArchKey = Get-CurrentArchitectureKey
 
@@ -77,7 +76,7 @@ function Get-PrebuiltDepsPlatform {
 function Find-LocalArchive {
     <#
     .SYNOPSIS
-    在 third_party 顶层及其直接子目录中查找匹配的本地压缩包 / Find a matching local archive under third_party and its direct child directories.
+    Find a matching local archive under third_party and its direct child directories.
     #>
     param([string]$AssetName)
 
@@ -477,11 +476,9 @@ function Activate-LocalTools {
 function Get-CurrentPlatformKey {
     <#
     .SYNOPSIS
-    获取当前平台标识 / Get the current platform key.
+    Get the current platform key.
 
     .DESCRIPTION
-    将当前运行环境规范化为 `windows`、`linux`、`macos` 三种配置键，
-    供 `lua_packages.txt` 的平台过滤逻辑复用。
     Normalize the current runtime into one of the configuration keys:
     `windows`, `linux`, or `macos`, so the same filtering logic can be reused by `lua_packages.txt`.
     #>
@@ -493,10 +490,9 @@ function Get-CurrentPlatformKey {
 function Test-ConfigOsMatch {
     <#
     .SYNOPSIS
-    判断配置行是否适用于当前平台 / Check whether a config line applies to the current platform.
+    Check whether a config line applies to the current platform.
 
     .PARAMETER ConfigOs
-    配置文件中声明的平台键。
     Platform key declared in the configuration file.
     #>
     param([string]$ConfigOs)
@@ -508,14 +504,12 @@ function Test-ConfigOsMatch {
 function Join-BaseWithRelativePath {
     <#
     .SYNOPSIS
-    以平台无关方式拼接相对路径 / Join a relative path in a platform-neutral way.
+    Join a relative path in a platform-neutral way.
 
     .PARAMETER BasePath
-    起始目录。
     Base directory.
 
     .PARAMETER RelativePath
-    使用 `/` 或 `\` 分隔的相对路径。
     Relative path that may use `/` or `\` separators.
     #>
     param(
@@ -534,14 +528,9 @@ function Join-BaseWithRelativePath {
 function Resolve-ConfigReference {
     <#
     .SYNOPSIS
-    解析配置引用值 / Resolve a config reference value.
+    Resolve a config reference value.
 
     .DESCRIPTION
-    支持三类引用：
-    1. `dep:<name>[/subpath]`：依赖安装根目录及其子路径
-    2. `tool:<subpath>`：`third_party/tools` 下的工具路径
-    3. `path:<subpath>`：项目根目录下的相对路径
-    未命中前缀时按字面量返回。
     Supports three reference kinds:
     1. `dep:<name>[/subpath]`: dependency install root and optional child path
     2. `tool:<subpath>`: tool path under `third_party/tools`
@@ -583,18 +572,14 @@ function Resolve-ConfigReference {
 function Ensure-UnameStub {
     <#
     .SYNOPSIS
-    为依赖类 Unix 小工具的 Lua 构建脚本创建最小兼容桩 / Create minimal shims for Lua build scripts that expect Unix-style helper commands.
+    Create minimal shims for Lua build scripts that expect Unix-style helper commands.
 
     .DESCRIPTION
-    某些 Lua rock（例如 lyaml）在 Windows 上仍会执行 `uname -s` 来判断平台，
-    也会把 `true` 当成可选的文档生成占位命令。
-    Windows PowerShell 默认不提供这些命令，因此这里在项目内创建一组只返回必要结果的轻量脚本。
     Some Lua rocks (for example lyaml) still call `uname -s` to detect the platform on Windows,
     and also expect `true` to exist as an optional doc-generation placeholder command.
     Windows PowerShell does not provide these commands by default, so we create lightweight project-local shims that return only the values these builds need.
 
     .OUTPUTS
-    [string] uname 桩脚本所在目录。
     [string] Directory containing the uname shim.
     #>
     $UnameDir = Join-Path $ToolsDir "uname"
@@ -1004,7 +989,6 @@ if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
     Write-Host "==> LuaJIT SDK already exists at $LuaJITDir (reusing)"
 } else {
     # Prefer candidates that already contain a built DLL, then sort by DLL timestamp before falling back to directory freshness.
-    # 优先选择已经带有 DLL 的候选目录，再按 DLL 时间排序，最后才回退到目录时间。
     $MluaCandidates = Get-ChildItem -Path "$ProjectDir\target" -Recurse -Directory -Filter "luajit-build" -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match "mlua-sys" } |
         ForEach-Object {
@@ -1059,12 +1043,12 @@ if ((Test-Path $LuaJITDLL) -and (Test-Path $LuaIncludeDir)) {
             Write-Host "==> Ensuring LuaJIT DLL build prerequisites (Perl + VS BuildTools)..."
             $PerlResult = Detect-Tool "perl" { Check-Perl } { Install-Perl } "perl (LuaJIT DLL build)"
             if (-not $PerlResult) {
-                throw "Perl is required to build LuaJIT DLL on Windows / Windows 下构建 LuaJIT DLL 需要 Perl"
+                throw "Perl is required to build the LuaJIT DLL on Windows."
             }
 
             $VsResult = Detect-Tool "vs" { Check-VsTools } { Install-VsTools } "VS BuildTools (LuaJIT DLL build)"
             if (-not $VsResult) {
-                throw "VS BuildTools is required to build LuaJIT DLL on Windows / Windows 下构建 LuaJIT DLL 需要 VS BuildTools"
+                throw "VS BuildTools is required to build the LuaJIT DLL on Windows."
             }
 
             Activate-LocalTools
@@ -1305,7 +1289,6 @@ if ($AllDepNames.Count -eq 0) {
 Write-Host "`n=== Step 4: Installing Lua packages ==="
 
 if ($script:IsWindowsPlatform) {
-    # 让 LuaRocks 在运行期感知 VS 开发环境，从而自动切换到 windows/MSVC 平台配置。
     # Expose the VS developer environment so LuaRocks picks the windows/MSVC platform instead of MinGW defaults.
     Ensure-UnameStub | Out-Null
     $vsResult = Detect-Tool "vs" { Check-VsTools } { Install-VsTools } "VS BuildTools (LuaRocks C module builds)"
