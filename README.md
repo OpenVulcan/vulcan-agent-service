@@ -4,7 +4,7 @@
 它基于 [`vulcan-luaskills`](https://github.com/OpenVulcan/vulcan-luaskills) 提供：
 
 - MCP 协议接入
-- HTTP / gRPC 服务与本地调试模式
+- HTTP / gRPC / stdio 服务与本地调试模式
 - 宿主配置读取与策略注入
 - MCP 结果渲染、分页与截断处理
 - system tools 的宿主包装
@@ -28,7 +28,7 @@
 ## 主要能力
 
 - 支持 MCP 多版本协议协商
-- 支持 HTTP 服务模式、gRPC 服务模式与本地调试模式
+- 支持 HTTP 服务模式、gRPC 服务模式、stdio 服务模式与本地调试模式
 - 通过本地依赖接入 `vulcan-luaskills`
 - 数据库访问固定走 `space_controller` 控制器模式
 - 自动加载运行根下符合规则的 LuaSkills
@@ -201,6 +201,20 @@ cargo check
 
 ```bash
 cargo test
+```
+
+### stdio 启动
+
+当宿主需要以标准输入输出方式被外部 MCP 客户端直接拉起时，可使用：
+
+```bash
+cargo run -- --stdio
+```
+
+构建产物则可直接执行：
+
+```bash
+./output/bin/vulcan-mcp --stdio
 ```
 
 ## 与 `vulcan-luaskills` 的关系

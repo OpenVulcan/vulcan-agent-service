@@ -11,6 +11,7 @@ mod runtime_logging;
 mod server;
 #[allow(dead_code)]
 mod session;
+mod stdio_server;
 mod temp_maintenance;
 mod tool_config;
 mod tool_result_format;
@@ -166,6 +167,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         RuntimeMode::InternalLuaexecRequest { request_file } => {
             run_internal_luaexec_request_mode(&request_file)
         }
+        RuntimeMode::Stdio => {
+            let cfg = Config::load()?;
+            add_libs_to_path(&cfg)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let server = runtime.block_on(async_main_stdio(cfg))?;
+            drop(server);
+            Ok(())
+        }
         RuntimeMode::Serve => {
             let cfg = Config::load()?;
             add_libs_to_path(&cfg)?;
@@ -195,9 +206,28 @@ async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Async main flow that builds one initialized server and serves it through stdio.
+/// 构建一份已初始化服务并通过 stdio 对外提供的异步主流程。
+async fn async_main_stdio(cfg: Config) -> Result<McpServer, Box<dyn std::error::Error>> {
+    install_luaskills_log_callback();
+    initialize_runtime_temp_root(resolve_runtime_root_from_config(&cfg).as_deref());
+
+    maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
+    preload_runtime_mcp_configs(&cfg)?;
+
+    let server = build_server(&cfg).await?;
+
+    spawn_cross_day_cleanup_task();
+
+    stdio_server::run_stdio(server).await
+}
+
 /// Command-line runtime mode.
 /// 命令行运行模式。
 enum RuntimeMode {
+    /// Start the MCP server on stdio using Content-Length framed JSON-RPC.
+    /// 使用 Content-Length 分帧 JSON-RPC 的 stdio 方式启动 MCP 服务。
+    Stdio,
     /// Start the regular HTTP/gRPC services.
     /// 正常启动 HTTP/gRPC 服务。
     Serve,
@@ -244,6 +274,11 @@ fn parse_runtime_mode_from_args(
                 .ok_or("--internal-luaexec-request requires a file path")?
                 .clone();
             return Ok(RuntimeMode::InternalLuaexecRequest { request_file });
+        }
+    }
+    for argument in args {
+        if argument == "--stdio" {
+            return Ok(RuntimeMode::Stdio);
         }
     }
     for index in 0..args.len() {
@@ -601,6 +636,7 @@ mod tests {
         ];
         let mode = parse_runtime_mode_from_args(&args).expect("call-tools mode should parse");
         match mode {
+            RuntimeMode::Stdio => {}
             RuntimeMode::CallTool {
                 tool_name,
                 arguments,
@@ -612,6 +648,22 @@ mod tests {
             }
             RuntimeMode::Serve | RuntimeMode::InternalLuaexecRequest { .. } => {
                 panic!("expected call-tools runtime mode");
+            }
+        }
+    }
+
+    /// Stdio mode should be selectable directly so MCP can run over stdin/stdout without opening ports.
+    /// stdio 模式应可被直接选中，以便 MCP 通过标准输入输出运行而无需打开端口。
+    #[test]
+    fn parse_runtime_mode_accepts_stdio_mode() {
+        let args = vec!["vulcan-mcp.exe".to_string(), "--stdio".to_string()];
+        let mode = parse_runtime_mode_from_args(&args).expect("stdio mode should parse");
+        match mode {
+            RuntimeMode::Stdio => {}
+            RuntimeMode::Serve
+            | RuntimeMode::CallTool { .. }
+            | RuntimeMode::InternalLuaexecRequest { .. } => {
+                panic!("expected stdio runtime mode");
             }
         }
     }
