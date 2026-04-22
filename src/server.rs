@@ -168,7 +168,7 @@ impl McpServer {
                 "vulcan-help-detail",
                 "Read one strict LuaSkills help flow from lib/system help data and render it as Markdown for MCP clients. Use flow=`main` to read the skill package description node.",
                 json!({
-                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit` or `vulcan-runtime`."},
+                    "skill": {"type": "string", "description": "Target skill id, for example `vulcan-codekit` or `vulcan-lua`."},
                     "flow": {"type": "string", "description": "Help flow name. Use `main` for the skill package description node, or pass one declared workflow/topic name."}
                 }),
                 vec!["skill".to_string(), "flow".to_string()],

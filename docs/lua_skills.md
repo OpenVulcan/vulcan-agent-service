@@ -737,57 +737,38 @@ dependencies: []
 - 如果多个 tool 复用同一个 Lua 文件，请确保它们的 `lua_module` 唯一
 - 建议始终保留 `__demo` 目录作为“多 group、多入口”的复制模板
 
-## `vulcan-runtime` 工具说明
+## `vulcan-lua` 工具说明
 
-`vulcan-runtime` 是当前仓库内置的运行时执行 skill，当前主要提供两个执行工具：
+`vulcan-lua` 是当前仓库内置的运行时执行 skill，当前提供一个统一执行工具：
 
-- `vulcan-runtime-lua-exec`
-- `vulcan-runtime-lua-file`
+- `vulcan-lua-run`
+
+包级帮助说明仍然保留在：
+
+- `vulcan-help-detail`
+  - `skill=vulcan-lua`
+  - `flow=main`
 
 它们都遵循当前工具返回规则：
 
 - tool 必须返回字符串
-- `vulcan-runtime` 的执行结果固定返回 Markdown 字符串
+- `vulcan-lua` 的执行结果固定返回 Markdown 字符串
 - `print(...)` 会被捕获到返回结果中
 - `return table` 会转成格式化 JSON 文本
 - 多返回值会按顺序逐项展示
 - 长输出只允许截断，不分页
 
-### `vulcan-help-detail`
+### `vulcan-lua-run`
 
-运行时帮助不再作为公开 skill tool 单独暴露，而是由宿主通过 system help 能力封装。
-
-在当前 MCP 宿主中：
-
-- 使用 `vulcan-help-detail`
-- 传入 `skill=vulcan-runtime`
-- 再传入 `flow=main`、`lua-exec` 或 `lua-file`
-
-它负责说明：
-
-- 什么时候该用 `vulcan-runtime-lua-exec`
-- 什么时候该用 `vulcan-runtime-lua-file`
-- 当前支持的 `vulcan.*` API
-- 当前禁用能力
-- 输出规则
-- 超时规则
-- 当前构建实际带上的 Lua 扩展库清单
-
-推荐约束：
-
-- 在调用 `vulcan-runtime-lua-exec` 或 `vulcan-runtime-lua-file` 前，先调用一次 `vulcan-help-detail`
-- 帮助能力属于 system tools，宿主可以重命名、重映射或选择不公开
-
-### `vulcan-runtime-lua-exec`
-
-用于执行一段临时 Lua 代码。
+用于统一执行一段临时 Lua 代码，或执行一个已有 Lua 文件。
 
 输入结构：
 
 ```json
 {
   "task": "可选任务说明",
-  "code": "必填，Lua 源码",
+  "code": "可选，内联 Lua 源码",
+  "file": "可选，Lua 文件路径",
   "args": {},
   "timeout_ms": 60000
 }
@@ -797,16 +778,35 @@ dependencies: []
 
 - `task`
   - 可选
+  - 默认不传
   - 仅用于结果头部展示
 - `code`
-  - 必填
-  - 真正执行的 Lua 代码
+  - 可选
+  - 默认不传
+  - 用于短小的内联 Lua 执行
+- `file`
+  - 可选
+  - 默认不传
+  - 用于执行一个现有 `.lua` 文件
+  - 运行时会自动切换 `cwd` 到该文件所在目录
 - `args`
   - 可选
+  - 默认 `{}` 
   - 会在执行环境中以局部变量 `args` 暴露
 - `timeout_ms`
   - 可选
   - 默认 `60000`
+
+额外约束：
+
+- `code` 与 `file` 必须且只能传一个
+- 传 `code` 时，适合一次性、短小、临时执行
+- 传 `file` 时，适合已有脚本、需要相对路径、或多步骤逻辑
+- `task` 如果传入，必须是字符串
+- `args` 如果传入，必须是对象 table
+- `timeout_ms` 如果传入，必须是大于 `0` 的数字
+- 纯空白字符串会按“未传入”处理
+- 输入不合法时，不会进入执行阶段，而是直接返回 `Runtime Input Error`
 
 适用场景建议：
 
@@ -815,43 +815,16 @@ dependencies: []
 - 一次性数据转换
 - 快速网络探测
 - 命令编排
-
-### `vulcan-runtime-lua-file`
-
-用于执行一个已有 Lua 文件。
-
-输入结构：
-
-```json
-{
-  "task": "可选任务说明",
-  "file": "必填，Lua 文件路径",
-  "args": {},
-  "timeout_ms": 60000
-}
-```
-
-字段语义：
-
-- `file`
-  - 必填
-  - 指向要执行的 Lua 文件
-- 其余字段与 `vulcan-lua-exec` 一致
+- 已沉淀成独立脚本的多步骤逻辑
 
 运行时行为：
 
-- 执行期间自动把 `cwd` 切换到目标文件目录
+- 使用 `file` 模式时，执行期间自动把 `cwd` 切换到目标文件目录
 - 同时注入：
   - `vulcan.entry_file`
   - `vulcan.entry_dir`
 
-适用场景建议：
-
-- 逻辑已经沉淀成独立脚本
-- 需要文件相对路径能力
-- 多步骤逻辑写成独立文件更清晰
-
-### `vulcan-runtime` 的额外边界
+### `vulcan-lua` 的额外边界
 
 - 执行环境内 `vulcan.luaexec` 会被移除，因此不允许递归再次进入执行器
 - 执行环境内 `vulcan.log` 与 `vulcan.cache_*` 不注册
@@ -862,7 +835,7 @@ dependencies: []
 - 宿主对字节预算会再应用安全比例，因此 Lua 实际拿到的最终 `bytes` 可能小于配置原值
 - 同时仍禁止：
   - 调用当前发起 `luaexec` 的工具自身
-- 在 `vulcan-lua-exec` / `vulcan-lua-file` 中再次调用这两个执行工具
+- 在 `vulcan-lua-run` 中再次调用当前执行工具
 
 ## `vulcan-curl` 工具说明
 

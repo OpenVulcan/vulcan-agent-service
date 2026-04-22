@@ -603,7 +603,7 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
 /// Resolve the host-provided protected skill policy from environment and built-in defaults.
 /// 从环境变量与内建默认值解析宿主提供的受保护技能策略。
 fn resolve_skill_protection_config(config: &Config) -> SkillProtectionConfig {
-    let mut protected_skill_ids = vec!["vulcan-runtime".to_string()];
+    let mut protected_skill_ids = vec!["vulcan-lua".to_string()];
     if let Some(configured) = &config.protected_skills {
         for item in configured {
             let normalized = item.trim();

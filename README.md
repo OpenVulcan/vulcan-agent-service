@@ -80,7 +80,7 @@
 LuaSkills 是当前 MCP 对外暴露的主能力面。  
 官方 skill 目前包括：
 
-- `vulcan-runtime`
+- `vulcan-lua`
 - `vulcan-codekit`
 - `vulcan-curl`
 - `vulcan-ai-memory`
@@ -115,12 +115,11 @@ help 由宿主包装为：
 ### 3. RunLua 暴露策略
 
 `runlua` 的 system 能力保留在 `vulcan-luaskills` 内部与 `vulcan.runtime.lua.exec` 链路中，  
-`vulcan-mcp` 通过 `vulcan-runtime` skill 对外提供对应执行能力。
+`vulcan-mcp` 通过 `vulcan-lua` skill 对外提供对应执行能力。
 
-MCP 侧推荐通过 `vulcan-runtime` skill 使用：
+MCP 侧推荐通过 `vulcan-lua` skill 使用：
 
-- `vulcan-runtime-lua-exec`
-- `vulcan-runtime-lua-file`
+- `vulcan-lua-run`
 
 ## 仓库结构
 

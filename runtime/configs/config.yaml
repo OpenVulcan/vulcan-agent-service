@@ -102,4 +102,4 @@ lua_vm_pool_idle_ttl_secs: 600
 # English: Protected skill names. Skills in this list may only be maintained through host-side system tools, not the ordinary skills plane.
 # 示例 / Example:
 # protected_skills:
-#   - "vulcan-runtime"
+#   - "vulcan-lua"
