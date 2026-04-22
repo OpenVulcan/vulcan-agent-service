@@ -103,7 +103,8 @@ pub fn build_luaskills_engine_options(
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         lua_packages_dir: lua_packages_dir.clone(),
         luaexec_program: std::env::current_exe().ok(),
-        host_provided_tool_root: Some(runtime_root.join("bin").join("tools")),
+        host_provided_tool_root: resolve_host_provided_tool_root(&runtime_root)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         host_provided_lua_root: lua_packages_dir,
         host_provided_ffi_root: host_library_root,
         download_cache_root,
@@ -719,6 +720,21 @@ fn resolve_runtime_resources_dir(
     }
 
     Ok(None)
+}
+
+/// Resolve the host-provided tool root and reject file-shaped runtime bin/tools paths early.
+/// 解析宿主提供工具根目录，并在 runtime bin/tools 为文件形态时尽早拒绝。
+fn resolve_host_provided_tool_root(
+    runtime_root: &std::path::Path,
+) -> Result<Option<PathBuf>, String> {
+    let tool_root = runtime_root.join("bin").join("tools");
+    if tool_root.exists() && !tool_root.is_dir() {
+        return Err(format!(
+            "host-provided tool root is not a directory: {}",
+            tool_root.display()
+        ));
+    }
+    Ok(Some(tool_root))
 }
 
 /// Resolve the root directory that contains host-provided native libraries.
@@ -1502,6 +1518,38 @@ mod tests {
             error
                 .to_string()
                 .contains("runtime lua_packages path is not a directory"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// File-shaped host-provided tool roots should be rejected during host option construction.
+    /// 文件形态的宿主工具根目录应在宿主选项构建阶段被拒绝。
+    #[test]
+    fn build_engine_options_rejects_file_shaped_host_provided_tool_root() {
+        let _guard = environment_lock().lock().expect("lock should succeed");
+        let root = unique_test_dir("runtime-host-tools-file");
+        create_runtime_root_for_test(&root);
+        let tool_root = root.join("bin").join("tools");
+        std::fs::remove_dir_all(&tool_root).expect("failed to clear tools directory");
+        std::fs::write(&tool_root, b"not-a-directory")
+            .expect("failed to create file-shaped tools path");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+        let cache_config = ToolCacheConfig::default();
+        let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+            .expect_err("file-shaped host tool root should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("host-provided tool root is not a directory"),
             "unexpected error: {error}"
         );
         let _ = std::fs::remove_dir_all(&root);

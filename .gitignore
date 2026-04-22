@@ -8,5 +8,13 @@
 /runtime/lua_skills/__tools/
 /runtime/lua_skills/__database/
 /runtime/lua_skills/__lancedb/
+/runtime/bin/
+/runtime/databases/
+/runtime/dependencies/
+/runtime/libs/
+/runtime/logs/
+/runtime/lua_packages/
+/runtime/state/
+/runtime/temp/
 /docs/plan/
 /docs/completed/

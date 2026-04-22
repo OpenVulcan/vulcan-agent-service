@@ -127,15 +127,11 @@ if (Test-Path "runtime\skills") {
     Write-Host "==> No runtime/skills directory found"
 }
 
-# Sync host-provided runtime tools to output/bin/tools/
+# Prepare output/bin/tools/ as the host runtime tool directory.
+# 中文：runtime/ 不再承载宿主工具产物；这里仅确保 output/bin/tools 存在，供本地复制或安装流程写入。
 $HostToolsOut = Join-Path $BaseOutDir "bin\tools"
 if (-not (Test-Path $HostToolsOut)) { New-Item -ItemType Directory -Path $HostToolsOut -Force | Out-Null }
-if (Test-Path "runtime\bin\tools") {
-    Copy-Item -Force -Recurse "runtime\bin\tools\*" "$HostToolsOut\"
-    Write-Host "==> Host-provided runtime tools synced to $HostToolsOut\"
-} else {
-    Write-Host "==> No runtime/bin/tools directory found"
-}
+Write-Host "==> Host tool output directory prepared at $HostToolsOut\"
 
 # Sync third-party Lua packages to output/lua_packages/
 # Only copy runtime-relevant directories: lib/lua/, share/lua/

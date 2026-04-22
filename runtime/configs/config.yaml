@@ -32,14 +32,14 @@ grpc: "127.0.0.1:19202"
 #   - name: "USER"
 #     path: "C:/Users/yourname/.vulcan/luaskills"
 #   - name: "ROOT"
-#     path: "D:/projects/vulcan-mcp-client/runtime/skills"
+#     path: "D:/projects/vulcan-mcp-client/output/skills"
 
 # 中文：可选的统一运行根目录。设置后，configs、skills、dependencies、databases、temp、libs、lua_packages 等目录都会从该根目录派生。
 # English: Optional unified runtime root. When set, configs, skills, dependencies, databases, temp, libs, and lua_packages are all derived from this root.
 # Windows 示例 / Windows example:
-# runtime_root: "D:/projects/vulcan-mcp-client/runtime"
+# runtime_root: "D:/projects/vulcan-mcp-client/output"
 # Linux/macOS 示例 / Linux/macOS example:
-# runtime_root: "/opt/vulcan/runtime"
+# runtime_root: "/opt/vulcan/output"
 
 # 中文：依赖目录名称。它会被固定创建在 skills 根目录的同级目录下，位置不可变，仅名称可配。
 # English: Dependency directory name. It is always created as a sibling of the skills root; only the directory name is configurable.
@@ -74,7 +74,7 @@ grpc: "127.0.0.1:19202"
 # space_controller:
 #   endpoint: "http://127.0.0.1:19801"
 #   auto_spawn: true
-#   executable_path: "D:/projects/vulcan-mcp-client/runtime/bin/tools/vldb-controller.exe"
+#   executable_path: "D:/projects/vulcan-mcp-client/output/bin/tools/vldb-controller.exe"
 #   process_mode: "managed"
 #   minimum_uptime_secs: 300
 #   idle_timeout_secs: 900

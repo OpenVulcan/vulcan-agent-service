@@ -88,15 +88,11 @@ else
     echo "==> No runtime/skills directory found"
 fi
 
-# Sync host-provided runtime tools to output/bin/tools/
+# Prepare output/bin/tools/ as the host runtime tool directory.
+# 中文：runtime/ 不再承载宿主工具产物；这里仅确保 output/bin/tools 存在，供本地复制或安装流程写入。
 HOST_TOOLS_OUT="output/bin/tools"
 mkdir -p "$HOST_TOOLS_OUT"
-if [ -d "runtime/bin/tools" ] && [ "$(ls -A runtime/bin/tools/ 2>/dev/null)" ]; then
-    cp -rf runtime/bin/tools/* "$HOST_TOOLS_OUT/"
-    echo "==> Host-provided runtime tools synced to $HOST_TOOLS_OUT/"
-else
-    echo "==> No runtime/bin/tools directory found"
-fi
+echo "==> Host tool output directory prepared at $HOST_TOOLS_OUT/"
 
 # Sync third-party Lua packages to output/lua_packages/
 # Only copy runtime-relevant directories: lib/lua/, share/lua/

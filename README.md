@@ -30,7 +30,7 @@
 - 支持 MCP 多版本协议协商
 - 支持 HTTP 服务模式、gRPC 服务模式与本地调试模式
 - 通过本地依赖接入 `vulcan-luaskills`
-- 自动加载 `runtime/skills/` 下符合规则的 LuaSkills
+- 自动加载运行根下符合规则的 LuaSkills
 - 把 skill entry 映射成 MCP tools
 - 提供宿主封装的 strict help 工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
@@ -101,11 +101,17 @@ src/
 └─ session.rs             # HTTP session
 
 runtime/
-├─ configs/               # 宿主配置
-├─ skills/                # 官方内建 LuaSkills
-├─ dependencies/          # 宿主管理的共享/私有依赖
+├─ configs/               # 仓库内配置模板
+├─ skills/                # 官方内建 LuaSkills 模板
+├─ resources/             # 仓库内共享资源与公共模板
+└─ examples/              # 示例 skill 与模板
+
+output/
+├─ configs/               # 构建同步后的运行配置
+├─ skills/                # 实际运行使用的技能目录
+├─ dependencies/          # 运行期共享/私有依赖
 ├─ databases/             # SQLite / LanceDB 数据目录
-├─ resources/             # 宿主共享资源与公共模板
+├─ resources/             # 实际运行使用的共享资源
 ├─ bin/                   # 宿主工具与程序二进制
 ├─ libs/                  # 宿主提供原生动态库
 ├─ lua_packages/          # 宿主提供 Lua 包目录
@@ -174,6 +180,19 @@ vulcan-luaskills = { path = "../vulcan-luaskills" }
 
 - `vulcan-luaskills`：运行时库
 - `vulcan-mcp`：MCP 宿主
+
+## 运行目录约定
+
+- `runtime/` 只保留仓库内的基础模板文件，不再承载数据库、下载缓存、动态库或宿主工具产物
+- `output/` 是实际运行根，构建时会把 `runtime/configs`、`runtime/resources`、`runtime/skills` 同步进去
+- 运行期产生的：
+  - `dependencies`
+  - `databases`
+  - `temp`
+  - `logs`
+  - `libs`
+  - `bin/tools`
+  都应位于 `output/` 下
 
 ## 后续方向
 

@@ -482,15 +482,25 @@ fn write_overflow_text_file(
 /// 根据当前运行形态定位技能根目录；优先使用宿主运行目录，其次回退到仓库目录。
 fn resolve_runtime_skills_root() -> Option<PathBuf> {
     let exe_path = std::env::current_exe().ok()?;
+    let current_dir = std::env::current_dir().ok()?;
+    resolve_runtime_skills_root_from_paths(&current_dir, &exe_path)
+}
+
+/// Resolve the implicit fallback skills root from the current directory and executable path.
+/// 基于当前工作目录与可执行文件路径解析隐式回退技能根目录。
+fn resolve_runtime_skills_root_from_paths(
+    current_dir: &Path,
+    exe_path: &Path,
+) -> Option<PathBuf> {
     let exe_dir = exe_path.parent()?;
     let parent = exe_dir.parent().unwrap_or(exe_dir);
     let hosted_root = parent.join("skills");
-    if hosted_root.exists() {
+    if hosted_root.exists() && hosted_root.is_dir() {
         return Some(hosted_root);
     }
 
-    let repository_root = std::env::current_dir().ok()?.join("runtime").join("skills");
-    if repository_root.exists() {
+    let repository_root = current_dir.join("runtime").join("skills");
+    if repository_root.exists() && repository_root.is_dir() {
         return Some(repository_root);
     }
 
@@ -525,18 +535,25 @@ fn resolve_runtime_resources_root(render_options: &HostRenderOptions) -> Option<
     }
 
     let exe_path = std::env::current_exe().ok()?;
+    let current_dir = std::env::current_dir().ok()?;
+    resolve_runtime_resources_root_from_paths(&current_dir, &exe_path)
+}
+
+/// Resolve the implicit fallback resources root from the current directory and executable path.
+/// 基于当前工作目录与可执行文件路径解析隐式回退共享资源根目录。
+fn resolve_runtime_resources_root_from_paths(
+    current_dir: &Path,
+    exe_path: &Path,
+) -> Option<PathBuf> {
     let exe_dir = exe_path.parent()?;
     let parent = exe_dir.parent().unwrap_or(exe_dir);
     let hosted_root = parent.join("resources");
-    if hosted_root.exists() {
+    if hosted_root.exists() && hosted_root.is_dir() {
         return Some(hosted_root);
     }
 
-    let repository_root = std::env::current_dir()
-        .ok()?
-        .join("runtime")
-        .join("resources");
-    if repository_root.exists() {
+    let repository_root = current_dir.join("runtime").join("resources");
+    if repository_root.exists() && repository_root.is_dir() {
         return Some(repository_root);
     }
 
@@ -633,6 +650,7 @@ mod tests {
     use super::{
         HostRenderOptions, RuntimeInvocationResult, ToolOverflowMode,
         initialize_tool_result_template_roots, render_template_text, render_tool_result_text,
+        resolve_runtime_resources_root_from_paths, resolve_runtime_skills_root_from_paths,
     };
     use crate::client_budget::{ClientBudgetSnapshot, EffectiveBudgetScope};
     use serde_json::json;
@@ -854,6 +872,39 @@ mod tests {
         assert!(!rendered.contains("DEFAULT TEMPLATE"));
 
         initialize_tool_result_template_roots(&[], None).expect("template roots should reset");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn implicit_template_roots_reject_file_shaped_skills_and_resources_paths() {
+        let root = unique_test_dir("template-runtime-file-shaped");
+        let exe_dir = root.join("output").join("bin");
+        let fake_exe = exe_dir.join("vulcan-mcp.exe");
+        std::fs::create_dir_all(&exe_dir).expect("failed to create fake exe directory");
+        std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
+        std::fs::create_dir_all(root.join("output"))
+            .expect("failed to create hosted root parent");
+        std::fs::write(root.join("output").join("skills"), b"not-a-directory")
+            .expect("failed to create file-shaped hosted skills path");
+        std::fs::create_dir_all(root.join("runtime"))
+            .expect("failed to create repository runtime parent");
+        std::fs::write(root.join("runtime").join("resources"), b"not-a-directory")
+            .expect("failed to create file-shaped repository resources path");
+
+        let hosted_cwd = root.join("repo");
+        std::fs::create_dir_all(&hosted_cwd).expect("failed to create cwd");
+        assert!(
+            resolve_runtime_skills_root_from_paths(&hosted_cwd, &fake_exe).is_none(),
+            "file-shaped fallback skills path should be rejected"
+        );
+
+        let repo_cwd = root.join("repo-two");
+        std::fs::create_dir_all(&repo_cwd).expect("failed to create repository cwd");
+        assert!(
+            resolve_runtime_resources_root_from_paths(&repo_cwd, &fake_exe).is_none(),
+            "file-shaped fallback resources path should be rejected"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

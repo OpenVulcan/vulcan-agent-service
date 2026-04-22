@@ -167,7 +167,7 @@ python scripts/verify_vmcp_ast_comment_notes.py
 
 - 每个 skill 最多只绑定一个 LanceDB 库
 - 库名固定等于 **skill 目录名**
-- 宿主会自动使用 `runtime/databases/lancedb/<skill_dir_name>` 作为数据库目录
+- 宿主会自动使用 `output/databases/lancedb/<skill_dir_name>` 作为数据库目录
 - 若目录不存在，宿主会自动创建
 - Lua 不负责创建/删除数据库，只负责在该固定库内创建表、写入、检索和删表
 - 未开启 `lancedb_enable` 的 skill 不会获得可用的 `vulcan.lancedb` 上下文
@@ -593,7 +593,7 @@ dependencies:
 
 运行规则：
 
-- 宿主提供工具目录固定为 `runtime/bin/tools/`，托管下载依赖则进入 `runtime/dependencies/`
+- 宿主提供工具目录固定为运行根下的 `bin/tools/`（正式构建默认即 `output/bin/tools/`），托管下载依赖则进入运行根下的 `dependencies/`
 - 会先检查 `install_as` 对应文件是否已存在，存在则直接跳过
 - 支持 `asset_name`、`install_as`、`archive_path` 中使用 `{tag}` 与 `{version}` 占位符
 - 当前支持直接文件、`.zip`、`.tar.gz` / `.tgz` 安装
