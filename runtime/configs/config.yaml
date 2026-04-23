@@ -14,7 +14,10 @@ grpc: "127.0.0.1:19202"
 
 # 中文：VulcanMemoryMesh (VMM) gRPC 服务地址。启用画像、记忆等能力时使用。
 # English: VulcanMemoryMesh (VMM) gRPC service endpoint for memory/profile features.
+# 中文：vmm 仅保存端点；只有 vmm_enable=true 时才会连接，并自动跳过由 VMM 替代的 AI 记忆 skill。
+# English: `vmm` only stores the endpoint; the host connects only when `vmm_enable=true` and then skips the AI memory skill replaced by VMM.
 # 示例 / Example:
+# vmm_enable: false
 # vmm: "http://127.0.0.1:50053"
 
 # 中文：技能覆盖目录。用于覆盖 runtime/skills 中的系统技能。
@@ -106,3 +109,11 @@ lua_vm_pool_idle_ttl_secs: 600
 # 示例 / Example:
 # protected_skills:
 #   - "vulcan-lua"
+
+# 中文：强制跳过的技能 ID 列表。默认不配置；配置后会在依赖准备、数据库绑定和 entry 注册前跳过对应 skill。
+# English: Skill IDs that must be skipped. Leave unset by default; matched skills are skipped before dependency setup, database binding, and entry registration.
+# 中文：当 vmm_enable=true 且 vmm 非空时，宿主会自动跳过 vulcan-ai-memory；vulcan-work-memory 仍继续走 SQLite skill。
+# English: When `vmm_enable=true` and `vmm` is non-empty, the host automatically skips `vulcan-ai-memory`; `vulcan-work-memory` keeps using the SQLite skill path.
+# 示例 / Example:
+# ignored_skill_ids:
+#   - "custom-ai-memory"

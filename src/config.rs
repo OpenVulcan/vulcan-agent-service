@@ -113,6 +113,11 @@ pub struct Config {
     /// VMM（VulcanMemoryMesh）gRPC 服务地址，例如 "http://localhost:50053"。
     pub vmm: Option<String>,
 
+    /// Whether the host enables the configured VMM gRPC client integration.
+    /// 宿主是否启用已配置的 VMM gRPC 客户端集成。
+    #[serde(default)]
+    pub vmm_enable: bool,
+
     /// Custom skill override directory, for example "~/.vulcan/vulcan-mcp/skills/".
     /// 自定义技能覆盖目录，例如 "~/.vulcan/vulcan-mcp/skills/"；
     /// When set, skills in this directory override or disable system skills.
@@ -155,6 +160,10 @@ pub struct Config {
     /// Protected skill identifiers that may only be maintained through system tools.
     /// 受保护技能标识符列表，这些名称只允许由 system tools 维护。
     pub protected_skills: Option<Vec<String>>,
+
+    /// Skill identifiers that the host must skip before dependency and database setup.
+    /// 宿主需要在依赖与数据库初始化前跳过的技能标识符列表。
+    pub ignored_skill_ids: Option<Vec<String>>,
 
     /// Dependency directory name, fixed as a sibling of the skills root under the same parent. Defaults to `dependencies`.
     /// 依赖目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `dependencies`。

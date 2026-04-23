@@ -353,8 +353,15 @@ fn require_cli_flag_value(
 async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Error>> {
     let mut server = McpServer::new();
 
-    // Connect VMM gRPC client if configured.
-    if let Some(endpoint) = &cfg.vmm {
+    // Connect the VMM gRPC client only when explicitly enabled.
+    // 仅在显式启用时连接 VMM gRPC 客户端。
+    if cfg.vmm_enable {
+        let endpoint = cfg
+            .vmm
+            .as_deref()
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .ok_or("vmm_enable=true requires a non-empty vmm endpoint")?;
         server = server.with_vmm(endpoint).await?;
     }
 

@@ -19,6 +19,10 @@ use vulcan_luaskills::{
     SkillProtectionConfig, ToolCacheConfig, set_log_callback,
 };
 
+/// Built-in AI memory skill that is superseded when a VMM gRPC endpoint is configured.
+/// 配置 VMM gRPC 端点时会被替代的内置 AI 记忆技能。
+const VMM_REPLACED_AI_MEMORY_SKILL_ID: &str = "vulcan-ai-memory";
+
 /// Install the host-side LuaSkills log callback so runtime events flow into the MCP host logger.
 /// 宿主侧安装 LuaSkills 日志回调，让运行时事件统一流入 MCP 宿主日志器。
 pub fn install_luaskills_log_callback() {
@@ -136,6 +140,7 @@ pub fn build_luaskills_engine_options(
         space_controller: resolve_space_controller_options(config, &runtime_root)?,
         cache_config: Some(cache_config),
         reserved_entry_names: host_reserved_tool_names(),
+        ignored_skill_ids: resolve_ignored_skill_ids(config),
         capabilities: LuaRuntimeCapabilityOptions {
             enable_skill_management_bridge: false,
         },
@@ -648,6 +653,45 @@ fn resolve_skill_protection_config(config: &Config) -> SkillProtectionConfig {
     }
 }
 
+/// Resolve the host-level skill ignore list and add the AI memory skill when VMM is configured.
+/// 解析宿主级技能忽略列表，并在配置 VMM 时自动加入 AI 记忆技能。
+fn resolve_ignored_skill_ids(config: &Config) -> Vec<String> {
+    let mut ignored_skill_ids = Vec::new();
+    if let Some(configured) = &config.ignored_skill_ids {
+        for item in configured {
+            push_unique_skill_id(&mut ignored_skill_ids, item);
+        }
+    }
+
+    if config.vmm_enable
+        && config
+            .vmm
+            .as_ref()
+            .map(|endpoint| !endpoint.trim().is_empty())
+            .unwrap_or(false)
+    {
+        push_unique_skill_id(&mut ignored_skill_ids, VMM_REPLACED_AI_MEMORY_SKILL_ID);
+    }
+
+    ignored_skill_ids
+}
+
+/// Push one non-empty skill identifier while preserving order and avoiding case-insensitive duplicates.
+/// 加入一个非空技能标识符，同时保持顺序并避免大小写不敏感的重复项。
+fn push_unique_skill_id(skill_ids: &mut Vec<String>, skill_id: &str) {
+    let normalized = skill_id.trim();
+    if normalized.is_empty() {
+        return;
+    }
+    if skill_ids
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(normalized))
+    {
+        return;
+    }
+    skill_ids.push(normalized.to_string());
+}
+
 /// Resolve the host-side cache policy that should be injected into the LuaSkills library.
 /// 解析应由宿主注入到 LuaSkills 库中的缓存策略。
 pub fn build_luaskills_cache_config(
@@ -869,6 +913,143 @@ mod tests {
         assert!(options.endpoint.is_none());
         assert!(options.executable_path.is_none());
         assert!(options.auto_spawn);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ignored skill config should be forwarded into LuaSkills host options without enabling it by default.
+    /// 技能忽略配置应转发到 LuaSkills 宿主选项，同时默认不启用任何忽略项。
+    #[test]
+    fn build_engine_options_forwards_configured_ignored_skill_ids() {
+        let _guard = acquire_environment_lock();
+        let root = unique_test_dir("ignored-skill-config");
+        create_runtime_root_for_test(&root);
+        let copied_executable = root
+            .join("bin")
+            .join(space_controller_executable_file_name());
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create copied controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ignored_skill_ids: Some(vec![
+                "  custom-ai-memory  ".to_string(),
+                "CUSTOM-AI-MEMORY".to_string(),
+                "".to_string(),
+            ]),
+            ..Config::default()
+        };
+
+        let options = build_luaskills_engine_options(
+            &config,
+            LuaVmPoolConfig {
+                min_size: 1,
+                max_size: 2,
+                idle_ttl_secs: 60,
+            },
+            ToolCacheConfig::default(),
+        )
+        .expect("failed to build luaskills engine options");
+
+        assert_eq!(
+            options.host_options.ignored_skill_ids,
+            vec!["custom-ai-memory".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// VMM configuration should ignore only the AI memory skill while keeping work memory on the SQLite skill path.
+    /// 配置 VMM 时应只忽略 AI 记忆技能，并保留工作记忆继续走 SQLite skill 路径。
+    #[test]
+    fn build_engine_options_ignores_ai_memory_only_when_vmm_is_configured() {
+        let _guard = acquire_environment_lock();
+        let root = unique_test_dir("ignored-skill-vmm");
+        create_runtime_root_for_test(&root);
+        let copied_executable = root
+            .join("bin")
+            .join(space_controller_executable_file_name());
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create copied controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            vmm_enable: true,
+            vmm: Some("http://127.0.0.1:50053".to_string()),
+            ignored_skill_ids: Some(vec!["custom-skill".to_string()]),
+            ..Config::default()
+        };
+
+        let options = build_luaskills_engine_options(
+            &config,
+            LuaVmPoolConfig {
+                min_size: 1,
+                max_size: 2,
+                idle_ttl_secs: 60,
+            },
+            ToolCacheConfig::default(),
+        )
+        .expect("failed to build luaskills engine options");
+
+        assert!(
+            options
+                .host_options
+                .ignored_skill_ids
+                .contains(&"custom-skill".to_string())
+        );
+        assert!(
+            options
+                .host_options
+                .ignored_skill_ids
+                .contains(&"vulcan-ai-memory".to_string())
+        );
+        assert!(
+            !options
+                .host_options
+                .ignored_skill_ids
+                .contains(&"vulcan-work-memory".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A configured VMM endpoint should not skip AI memory unless VMM is explicitly enabled.
+    /// 仅配置 VMM 端点但未显式启用时，不应跳过 AI 记忆技能。
+    #[test]
+    fn build_engine_options_keeps_ai_memory_when_vmm_is_disabled() {
+        let _guard = acquire_environment_lock();
+        let root = unique_test_dir("ignored-skill-vmm-disabled");
+        create_runtime_root_for_test(&root);
+        let copied_executable = root
+            .join("bin")
+            .join(space_controller_executable_file_name());
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create copied controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            vmm_enable: false,
+            vmm: Some("http://127.0.0.1:50053".to_string()),
+            ..Config::default()
+        };
+
+        let options = build_luaskills_engine_options(
+            &config,
+            LuaVmPoolConfig {
+                min_size: 1,
+                max_size: 2,
+                idle_ttl_secs: 60,
+            },
+            ToolCacheConfig::default(),
+        )
+        .expect("failed to build luaskills engine options");
+
+        assert!(
+            !options
+                .host_options
+                .ignored_skill_ids
+                .contains(&"vulcan-ai-memory".to_string())
+        );
+        assert!(
+            !options
+                .host_options
+                .ignored_skill_ids
+                .contains(&"vulcan-work-memory".to_string())
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

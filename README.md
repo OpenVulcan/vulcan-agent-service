@@ -97,6 +97,10 @@ LuaSkills 是当前 MCP 对外暴露的主能力面。
 - `vulcan-ai-memory`
 - `vulcan-work-memory`
 
+`vulcan-ai-memory` 默认以 skill 形式加载。  
+如果显式配置 `vmm_enable=true` 且提供 `vmm` gRPC 端点，宿主会跳过 `vulcan-ai-memory`，由 VMM 接管 AI 记忆能力。  
+`vulcan-work-memory` 不属于 VMM gRPC 接管范围，会继续走 SQLite skill。
+
 这些 skill 已迁移到新的目录结构：
 
 ```text
