@@ -132,6 +132,26 @@ MCP 侧推荐通过 `vulcan-lua` skill 使用：
 
 - `vulcan-lua-run`
 
+### 4. Client Match Override
+
+当前客户端预算匹配默认使用 MCP 请求里上报的 `clientInfo.name`。  
+若某些宿主集成上报的是通用壳名称，例如 `mcphost`、`Copilot` 等，而不是实际产品名，可通过环境变量强制覆盖：
+
+- `VULCAN_CLIENT_MATCH_NAME`
+
+只要该环境变量存在且非空，宿主就会用这个值替换原本获取到的客户端名参与匹配。  
+`stdio` 模式推荐直接使用该环境变量。  
+`http` / `sse` 模式推荐通过请求头传递：
+
+- `Vulcan-Client-Match-Name`
+
+只要该请求头存在且非空，宿主就会优先用它替换当前请求实际拿到的客户端名参与匹配。  
+覆盖优先级为：
+
+1. `Vulcan-Client-Match-Name`
+2. `VULCAN_CLIENT_MATCH_NAME`
+3. `clientInfo.name`
+
 ## 仓库结构
 
 ```text

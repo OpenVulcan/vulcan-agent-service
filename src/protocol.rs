@@ -238,6 +238,10 @@ pub struct RequestContext {
     /// 客户端在 initialize 或注册阶段上报的客户端标识信息。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_info: Option<ClientInfo>,
+    /// Optional host-side override used to force the effective client match name for policy resolution.
+    /// 宿主侧可选覆盖值，用于强制指定策略解析时使用的客户端匹配名称。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_match_name_override: Option<String>,
     /// Raw client capabilities payload preserved from initialize.
     /// 从 initialize 中保留的客户端能力原始负载。
     #[serde(default = "default_request_context_capabilities")]
@@ -255,6 +259,7 @@ impl Default for RequestContext {
             session_id: None,
             protocol_version: None,
             client_info: None,
+            client_match_name_override: None,
             client_capabilities: default_request_context_capabilities(),
         }
     }

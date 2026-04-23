@@ -97,6 +97,7 @@ fn build_initialize_request_context(
         session_id: Some("stdio".to_string()),
         protocol_version: Some(protocol_version),
         client_info: initialize_request.client_info,
+        client_match_name_override: None,
         client_capabilities: initialize_request.capabilities,
     }))
 }

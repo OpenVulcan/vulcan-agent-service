@@ -1,5 +1,10 @@
 # 中文：客户端预算解析规则。
 # English: Client budget resolution rules.
+#
+# 中文：若设置环境变量 `VULCAN_CLIENT_MATCH_NAME`，宿主会用该值强制覆盖当前客户端匹配名。
+# English: When `VULCAN_CLIENT_MATCH_NAME` is set, the host force-overrides the current client match name with that value.
+# 中文：HTTP / SSE 请求也可通过 `Vulcan-Client-Match-Name` 请求头强制覆盖当前客户端匹配名。
+# English: HTTP / SSE requests can also force-override the current client match name with the `Vulcan-Client-Match-Name` header.
 
 defaults:
   estimation:

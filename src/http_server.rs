@@ -17,6 +17,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_HEADER;
 use crate::protocol::{
     InitializeRequest, PROTOCOL_VERSION_LATEST, RequestContext, negotiate_version,
 };
@@ -331,6 +332,7 @@ async fn handle_initialize_request(
             session_id: None,
             protocol_version: Some(protocol_version),
             client_info: initialize_request.client_info,
+            client_match_name_override: client_match_name_override_header_value(&headers),
             client_capabilities: initialize_request.capabilities,
         })
         .await;
@@ -368,6 +370,10 @@ async fn handle_streamable_request(
         Some(context) => context,
         None => return plain_response(StatusCode::NOT_FOUND, "Session not found."),
     };
+    let request_context = merge_header_client_match_name_override(
+        request_context,
+        client_match_name_override_header_value(&headers),
+    );
 
     let Some(response) = state
         .server
@@ -411,6 +417,10 @@ async fn handle_streamable_notification(
     }
 
     if let Some(request_context) = state.sessions.request_context(&session_id).await {
+        let request_context = merge_header_client_match_name_override(
+            request_context,
+            client_match_name_override_header_value(&headers),
+        );
         let _ = state
             .server
             .handle_message_with_context(&msg, request_context)
@@ -442,6 +452,10 @@ async fn handle_streamable_client_response(
     }
 
     if let Some(request_context) = state.sessions.request_context(&session_id).await {
+        let request_context = merge_header_client_match_name_override(
+            request_context,
+            client_match_name_override_header_value(&headers),
+        );
         let _ = state
             .server
             .handle_message_with_context(&msg, request_context)
@@ -571,6 +585,28 @@ fn extract_session_id(query: &McpQuery, headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// Read the optional client-match-name override header used by Vulcan host policy matching.
+/// 读取 Vulcan 宿主策略匹配使用的可选客户端匹配名称覆盖请求头。
+fn client_match_name_override_header_value(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(CLIENT_MATCH_NAME_OVERRIDE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Merge a request-level header override into the stored request context.
+/// 将请求级请求头覆盖值合并进已保存的请求上下文。
+fn merge_header_client_match_name_override(
+    mut request_context: RequestContext,
+    client_match_name_override: Option<String>,
+) -> RequestContext {
+    if client_match_name_override.is_some() {
+        request_context.client_match_name_override = client_match_name_override;
+    }
+    request_context
+}
+
 /// Build a plain-text HTTP response
 /// 构造纯文本 HTTP 响应。
 fn plain_response(status: StatusCode, message: &str) -> Response {
@@ -636,6 +672,7 @@ async fn handle_sse_get(
 
 async fn handle_sse_post(
     State(state): State<AppState>,
+    headers: HeaderMap,
     query: Query<HashMap<String, String>>,
     body: String,
 ) -> StatusCode {
@@ -652,10 +689,64 @@ async fn handle_sse_post(
         Err(_) => return StatusCode::BAD_REQUEST,
     };
 
-    let response = state.server.handle_message(&msg).await;
+    let request_context = RequestContext {
+        transport: Some("legacy_sse".to_string()),
+        session_id: Some(session_id.clone()),
+        client_match_name_override: client_match_name_override_header_value(&headers),
+        ..RequestContext::default()
+    };
+
+    let response = state
+        .server
+        .handle_message_with_context(&msg, request_context)
+        .await;
     if let Some(resp) = response {
         let _ = state.sse_sessions.send(&session_id, resp).await;
     }
 
     StatusCode::ACCEPTED
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        client_match_name_override_header_value, merge_header_client_match_name_override,
+    };
+    use crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_HEADER;
+    use crate::protocol::RequestContext;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    /// Header parsing should read the exact override value and ignore absent headers.
+    /// 请求头解析应读取明确覆盖值，并在缺失时返回空结果。
+    #[test]
+    fn client_match_name_override_header_value_reads_override_when_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CLIENT_MATCH_NAME_OVERRIDE_HEADER,
+            HeaderValue::from_static("qoder"),
+        );
+        assert_eq!(
+            client_match_name_override_header_value(&headers).as_deref(),
+            Some("qoder")
+        );
+
+        let empty_headers = HeaderMap::new();
+        assert_eq!(client_match_name_override_header_value(&empty_headers), None);
+    }
+
+    /// Request-level header overrides should replace any stored session override for the current request.
+    /// 请求级请求头覆盖值应替换当前请求使用的已保存会话覆盖值。
+    #[test]
+    fn merge_header_client_match_name_override_replaces_stored_override() {
+        let request_context = RequestContext {
+            client_match_name_override: Some("mcphost".to_string()),
+            ..RequestContext::default()
+        };
+
+        let merged = merge_header_client_match_name_override(
+            request_context,
+            Some("qoder".to_string()),
+        );
+        assert_eq!(merged.client_match_name_override.as_deref(), Some("qoder"));
+    }
 }

@@ -22,6 +22,12 @@ const DEFAULT_SAFE_BYTES_RATIO: f64 = 0.95;
 /// Default hard byte cap exposed to Lua when a client configuration explicitly declares "unlimited".
 /// 当客户端配置显式“不限”时，对 Lua 暴露的实际字节上限默认封顶 200KB。
 const DEFAULT_UNLIMITED_BYTES_CAP: u64 = 200 * 1024;
+/// Environment variable used to override the client name that budget matching sees across all transports.
+/// 用于覆盖预算匹配所见客户端名称的环境变量，适用于所有传输模式。
+pub const CLIENT_MATCH_NAME_OVERRIDE_ENV: &str = "VULCAN_CLIENT_MATCH_NAME";
+/// HTTP/SSE request header used to force the effective client name seen by host-side matching.
+/// HTTP/SSE 请求头，宿主侧匹配会用它强制覆盖当前实际客户端名称。
+pub const CLIENT_MATCH_NAME_OVERRIDE_HEADER: &str = "Vulcan-Client-Match-Name";
 
 /// Global cached client-budget configuration with support for startup preload and explicit hot reload.
 /// 全局缓存客户端预算配置，支持启动预载与显式热重载。
@@ -219,10 +225,7 @@ pub fn resolve_client_budget_snapshot(
     skill_name: Option<&str>,
 ) -> ClientBudgetSnapshot {
     let config = load_client_budget_config();
-    let client_name = request_context
-        .and_then(|context| context.client_info.as_ref())
-        .map(|info| info.name.trim().to_string())
-        .filter(|name| !name.is_empty());
+    let client_name = resolve_effective_client_match_name(request_context);
     let normalized_client_name = client_name.as_ref().map(|name| name.to_lowercase());
     let normalized_tool_name = tool_name
         .map(str::trim)
@@ -284,6 +287,27 @@ pub fn resolve_client_budget_snapshot(
         file_read,
         tool_config,
     }
+}
+
+/// Resolve the effective client name used for budget matching, allowing one explicit environment override to force the name across transports.
+/// 解析预算匹配使用的最终客户端名称；若设置了环境变量覆盖，则跨传输统一强制使用该名称。
+fn resolve_effective_client_match_name(request_context: Option<&RequestContext>) -> Option<String> {
+    request_context
+        .and_then(|context| context.client_match_name_override.as_ref())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            request_context
+                .and_then(|context| context.client_info.as_ref())
+                .map(|info| info.name.trim().to_string())
+                .filter(|name| !name.is_empty())
+        })
 }
 
 /// Load the client-budget config, preferring the in-memory cache and otherwise parsing the runtime YAML file.
@@ -791,6 +815,7 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ClientInfo;
     use serde_yaml::from_str;
     use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
@@ -798,6 +823,13 @@ mod tests {
     /// Return one shared mutex used to serialize runtime-root override tests for client-budget loading.
     /// 返回一个共享互斥锁，用于串行化客户端预算加载中的运行根覆盖测试。
     fn runtime_root_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Return one shared mutex used to serialize environment-variable override tests for client-budget matching.
+    /// 返回一个共享互斥锁，用于串行化客户端预算匹配中的环境变量覆盖测试。
+    fn environment_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -1029,7 +1061,9 @@ mod tests {
     /// 显式 runtime_root 覆盖应把客户端预算预载重定向到选中的运行根，而不是默认输出树。
     #[test]
     fn preload_client_budget_config_prefers_explicit_runtime_root() {
-        let _guard = runtime_root_lock().lock().expect("lock should succeed");
+        let _guard = runtime_root_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!(
             "vulcan-mcp-client-budget-runtime-{}-{}",
             std::process::id(),
@@ -1057,5 +1091,158 @@ mod tests {
 
         initialize_client_budget_runtime_root(None).expect("runtime root clear should succeed");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Prepare one isolated runtime root backed by the checked-in client budget config so matching tests stay deterministic.
+    /// 基于仓库内客户端预算配置准备隔离 runtime root，确保匹配测试具备稳定且可重复的配置来源。
+    fn prepare_isolated_client_budget_runtime_root() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "vulcan-mcp-client-budget-match-runtime-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let config_path = root.join("configs").join("client_budgets.yaml");
+        std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
+            .expect("failed to create config directory");
+        std::fs::write(&config_path, include_str!("../runtime/configs/client_budgets.yaml"))
+            .expect("failed to write isolated client budget config");
+        initialize_client_budget_runtime_root(Some(&root))
+            .expect("runtime root init should succeed");
+        preload_client_budget_config().expect("client budget preload should succeed");
+        root
+    }
+
+    /// Clear the isolated runtime root created for one matching test and restore runtime-root discovery to defaults.
+    /// 清理单次匹配测试创建的隔离 runtime root，并将运行根发现恢复为默认行为。
+    fn cleanup_isolated_client_budget_runtime_root(root: &std::path::Path) {
+        initialize_client_budget_runtime_root(None).expect("runtime root clear should succeed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Environment overrides should force client-budget matching to use the supplied name instead of the MCP-reported client name.
+    /// 环境变量覆盖应强制客户端预算匹配使用指定名称，而不是 MCP 实际上报的客户端名称。
+    #[test]
+    fn resolve_client_budget_snapshot_prefers_env_override_name() {
+        let _environment_guard = environment_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _runtime_root_guard = runtime_root_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
+        let root = prepare_isolated_client_budget_runtime_root();
+        unsafe {
+            std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "qwen-forced");
+        }
+
+        let request_context = RequestContext {
+            client_info: Some(ClientInfo {
+                name: "mcphost".to_string(),
+                version: "1.0.0".to_string(),
+            }),
+            ..RequestContext::default()
+        };
+
+        let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+        assert_eq!(snapshot.client_name.as_deref(), Some("qwen-forced"));
+        assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
+        assert!(snapshot.tool_result.bytes > 0);
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(CLIENT_MATCH_NAME_OVERRIDE_ENV);
+            }
+        }
+        cleanup_isolated_client_budget_runtime_root(&root);
+    }
+
+    /// Blank environment overrides should be ignored so normal MCP client-name matching still applies.
+    /// 空白环境变量覆盖应被忽略，从而继续使用正常的 MCP 客户端名称匹配。
+    #[test]
+    fn resolve_client_budget_snapshot_ignores_blank_env_override() {
+        let _environment_guard = environment_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _runtime_root_guard = runtime_root_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
+        let root = prepare_isolated_client_budget_runtime_root();
+        unsafe {
+            std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "   ");
+        }
+
+        let request_context = RequestContext {
+            client_info: Some(ClientInfo {
+                name: "mcphost".to_string(),
+                version: "1.0.0".to_string(),
+            }),
+            ..RequestContext::default()
+        };
+
+        let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+        assert_eq!(snapshot.client_name.as_deref(), Some("mcphost"));
+        assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("mcphost"));
+        assert_eq!(snapshot.tool_result.bytes, 95_000);
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(CLIENT_MATCH_NAME_OVERRIDE_ENV);
+            }
+        }
+        cleanup_isolated_client_budget_runtime_root(&root);
+    }
+
+    /// Request-context overrides should win over both environment overrides and raw MCP clientInfo.name.
+    /// 请求上下文覆盖值应优先于环境变量覆盖和原始 MCP clientInfo.name。
+    #[test]
+    fn resolve_client_budget_snapshot_prefers_request_context_override_name() {
+        let _environment_guard = environment_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _runtime_root_guard = runtime_root_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
+        let root = prepare_isolated_client_budget_runtime_root();
+        unsafe {
+            std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "mcphost");
+        }
+
+        let request_context = RequestContext {
+            client_info: Some(ClientInfo {
+                name: "copilot".to_string(),
+                version: "1.0.0".to_string(),
+            }),
+            client_match_name_override: Some("qwen-inline".to_string()),
+            ..RequestContext::default()
+        };
+
+        let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+        assert_eq!(snapshot.client_name.as_deref(), Some("qwen-inline"));
+        assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
+        assert!(snapshot.tool_result.bytes > 0);
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(CLIENT_MATCH_NAME_OVERRIDE_ENV);
+            }
+        }
+        cleanup_isolated_client_budget_runtime_root(&root);
     }
 }

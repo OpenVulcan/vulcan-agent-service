@@ -101,6 +101,7 @@ impl McpServiceImpl {
                 &msg,
                 RequestContext {
                     transport: Some("grpc_unary".to_string()),
+                    client_match_name_override: None,
                     ..RequestContext::default()
                 },
             )

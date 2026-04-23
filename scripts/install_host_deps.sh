@@ -12,7 +12,7 @@ THIRD_PARTY="$PROJECT_DIR/third_party"
 VLDB_CONTROLLER_DIR="$THIRD_PARTY/vldb_controller"
 VLDB_CONTROLLER_BIN_DIR="$VLDB_CONTROLLER_DIR/bin"
 VLDB_CONTROLLER_REPO="OpenVulcan/vldb-controller"
-VLDB_CONTROLLER_TAG="v0.2.0"
+VLDB_CONTROLLER_TAG="v0.2.1"
 
 ensure_dir() { mkdir -p "$1"; }
 
