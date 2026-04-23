@@ -709,9 +709,7 @@ async fn handle_sse_post(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        client_match_name_override_header_value, merge_header_client_match_name_override,
-    };
+    use super::{client_match_name_override_header_value, merge_header_client_match_name_override};
     use crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_HEADER;
     use crate::protocol::RequestContext;
     use axum::http::{HeaderMap, HeaderValue};
@@ -731,7 +729,10 @@ mod tests {
         );
 
         let empty_headers = HeaderMap::new();
-        assert_eq!(client_match_name_override_header_value(&empty_headers), None);
+        assert_eq!(
+            client_match_name_override_header_value(&empty_headers),
+            None
+        );
     }
 
     /// Request-level header overrides should replace any stored session override for the current request.
@@ -743,10 +744,8 @@ mod tests {
             ..RequestContext::default()
         };
 
-        let merged = merge_header_client_match_name_override(
-            request_context,
-            Some("qoder".to_string()),
-        );
+        let merged =
+            merge_header_client_match_name_override(request_context, Some("qoder".to_string()));
         assert_eq!(merged.client_match_name_override.as_deref(), Some("qoder"));
     }
 }

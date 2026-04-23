@@ -93,6 +93,21 @@ pub struct NamedSkillRootConfig {
     pub path: String,
 }
 
+/// Optional config block that overrides the dedicated isolated `runlua` VM pool.
+/// 用于覆盖隔离 `runlua` 专用虚拟机池的可选配置段。
+#[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunLuaPoolConfigSection {
+    /// Minimum number of isolated runlua VMs kept warm. When omitted, the upstream default is used.
+    /// 隔离 runlua 虚拟机的最小常驻数量；缺失时使用上游默认值。
+    pub min_size: Option<usize>,
+    /// Maximum number of isolated runlua VMs allowed in the pool. When omitted, the upstream default is used.
+    /// 隔离 runlua 虚拟机池允许存在的最大数量；缺失时使用上游默认值。
+    pub max_size: Option<usize>,
+    /// Idle TTL in seconds before excess isolated runlua VMs may be reclaimed. When omitted, the upstream default is used.
+    /// 多余隔离 runlua 虚拟机允许被回收前的空闲秒数；缺失时使用上游默认值。
+    pub idle_ttl_secs: Option<u64>,
+}
+
 // ============================================================
 // Configuration (loaded from YAML)
 // ============================================================
@@ -156,6 +171,11 @@ pub struct Config {
     /// Idle lifetime in seconds before an excess Lua VM can be destroyed. Defaults to 300 seconds.
     /// Lua 虚拟机空闲多久后允许销毁（秒），默认 300 秒。
     pub lua_vm_pool_idle_ttl_secs: Option<u64>,
+
+    /// Optional dedicated isolated runlua VM pool settings mapped to `LuaRuntimeHostOptions.runlua_pool_config`.
+    /// 映射到 `LuaRuntimeHostOptions.runlua_pool_config` 的隔离 runlua 专用虚拟机池可选配置。
+    #[serde(default)]
+    pub runlua_pool_config: RunLuaPoolConfigSection,
 
     /// Protected skill identifiers that may only be maintained through system tools.
     /// 受保护技能标识符列表，这些名称只允许由 system tools 维护。
@@ -417,6 +437,30 @@ mod tests {
                 .to_string()
                 .contains("--runtime-root requires a value"),
             "unexpected error: {error}"
+        );
+    }
+
+    /// Config YAML should deserialize the dedicated runlua pool block so hosts can override isolated luaexec pool behavior.
+    /// 配置 YAML 应能反序列化专用 runlua 池配置段，以便宿主覆盖隔离 luaexec 池行为。
+    #[test]
+    fn config_deserializes_runlua_pool_config_block() {
+        let config: Config = serde_yaml::from_str(
+            r#"
+runlua_pool_config:
+  min_size: 2
+  max_size: 6
+  idle_ttl_secs: 90
+"#,
+        )
+        .expect("runlua pool config should deserialize");
+
+        assert_eq!(
+            config.runlua_pool_config,
+            RunLuaPoolConfigSection {
+                min_size: Some(2),
+                max_size: Some(6),
+                idle_ttl_secs: Some(90),
+            }
         );
     }
 }

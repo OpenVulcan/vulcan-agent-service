@@ -85,8 +85,8 @@ space_controller:
 
 # ============================================================
 # Lua VM Pool
-# 中文：Lua 虚拟机池配置。用于并发复用 Lua 运行时，降低频繁建虚拟机的开销。
-# English: Lua VM pool settings for concurrent reuse of Lua runtimes and lower VM creation overhead.
+# 中文：普通 Lua 虚拟机主池配置。用于并发复用常规 skill 调用与普通 run_lua 路径的 Lua 运行时，降低频繁建虚拟机的开销。
+# English: Primary Lua VM pool settings for regular skill calls and the ordinary run_lua path so Lua runtimes can be reused with lower creation overhead.
 # ============================================================
 
 # 中文：Lua 虚拟机池最小常驻实例数。启动后会预热到该数量。
@@ -103,6 +103,20 @@ lua_vm_pool_max_size: 8
 # English: Idle lifetime in seconds before excess Lua VMs above the minimum warm count may be destroyed.
 # 示例 / Example:
 lua_vm_pool_idle_ttl_secs: 600
+
+# ============================================================
+# RunLua Dedicated VM Pool
+# 中文：隔离 `vulcan.runtime.lua.exec` 专用 VM 池配置。只作用于 runlua 隔离执行链，不影响普通 skill VM 主池。
+# English: Dedicated VM pool settings for isolated `vulcan.runtime.lua.exec`. They affect only the isolated runlua execution path and do not change the primary skill VM pool.
+# 中文：该配置映射到 `LuaRuntimeHostOptions.runlua_pool_config`。如果整个配置段缺失，宿主会保留上游默认行为。
+# English: This block maps to `LuaRuntimeHostOptions.runlua_pool_config`. When the whole block is absent, the host preserves the upstream default behavior.
+# 中文：当前上游默认值为 `min_size=1 / max_size=4 / idle_ttl_secs=60`。
+# English: The current upstream defaults are `min_size=1 / max_size=4 / idle_ttl_secs=60`.
+# ============================================================
+runlua_pool_config:
+  min_size: 1
+  max_size: 4
+  idle_ttl_secs: 60
 
 # 中文：受保护技能名称列表。列表中的 skill 只能由宿主 system tools 维护，不能走普通 skills 管理面。
 # English: Protected skill names. Skills in this list may only be maintained through host-side system tools, not the ordinary skills plane.

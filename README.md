@@ -136,6 +136,12 @@ MCP 侧推荐通过 `vulcan-lua` skill 使用：
 
 - `vulcan-lua-run`
 
+当前隔离 `vulcan.runtime.lua.exec` 已对接 `vulcan-luaskills` 的独立 `runlua` VM 池：
+
+- 默认值为 `min_size=1 / max_size=4 / idle_ttl_secs=60`
+- 宿主配置通过 `config.yaml` 中的 `runlua_pool_config` 透传到 `LuaRuntimeHostOptions.runlua_pool_config`
+- 该池只影响隔离 `runlua` 执行链，不改变普通 skill VM 主池和普通 `run_lua` 主池行为
+
 ### 4. Client Match Override
 
 当前客户端预算匹配默认使用 MCP 请求里上报的 `clientInfo.name`。  
@@ -202,6 +208,31 @@ output/
 - `tool_configs.yaml`
 
 这些配置属于宿主层，**不会进入 `vulcan-luaskills` 库内部读取逻辑**。
+
+### Lua VM 池配置
+
+当前 `config.yaml` 中有两套互不干扰的 VM 池参数：
+
+- `lua_vm_pool_*`
+  - 普通 skill 调用与普通 `run_lua` 主池
+- `runlua_pool_config`
+  - 隔离 `vulcan.runtime.lua.exec` 专用池
+
+默认模板如下：
+
+```yaml
+lua_vm_pool_min_size: 2
+lua_vm_pool_max_size: 8
+lua_vm_pool_idle_ttl_secs: 600
+
+runlua_pool_config:
+  min_size: 1
+  max_size: 4
+  idle_ttl_secs: 60
+```
+
+其中 `runlua_pool_config` 会映射到 `LuaRuntimeHostOptions.runlua_pool_config`。  
+如果旧配置文件里暂时没有该配置段，宿主会保留 `vulcan-luaskills` 上游默认值。
 
 ### Skill 目录规则
 

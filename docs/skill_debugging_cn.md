@@ -33,6 +33,67 @@
 .\output\debug\vulcan-mcp.exe --call-tools current_time
 ```
 
+### 2.1 调试隐藏 `luaexec` 入口
+
+除了 `--call-tools` 之外，当前仓库还保留了一个隐藏的内部调试入口：
+
+- `--internal-luaexec-request`
+
+它的用途不是调试普通 MCP tool，而是直接执行一次隔离 `vulcan.runtime.lua.exec` 请求，并把结果直接打印到标准输出。
+
+推荐命令：
+
+```powershell
+.\target\debug\vulcan-mcp.exe --internal-luaexec-request .\temp\internal_luaexec_request.json --runtime-root output
+```
+
+其中请求文件内容是一个 JSON 对象，常用字段如下：
+
+- `task`
+  - 可选的人类可读任务说明，会展示在结果头部
+- `code`
+  - 可选的内联 Lua 代码
+- `file`
+  - 可选的 Lua 文件路径
+- `args`
+  - 可选的 JSON 对象，会以 `args` 变量注入到 Lua 里
+- `timeout_ms`
+  - 可选超时时间，单位毫秒
+
+约束规则：
+
+- `code` 与 `file` 必须且只能提供一个
+- 如果直接使用 `target\debug\vulcan-mcp.exe`，建议显式加上 `--runtime-root output`
+- 该入口是内部调试能力，不属于面向最终用户的公开 MCP 参数
+
+最小示例：
+
+请求文件：
+
+```json
+{"code":"return 1"}
+```
+
+执行命令：
+
+```powershell
+.\target\debug\vulcan-mcp.exe --internal-luaexec-request .\temp\internal_luaexec_request.json --runtime-root output
+```
+
+带打印输出的示例：
+
+请求文件：
+
+```json
+{"code":"print(\"hello from internal luaexec\")\nreturn { ok = true, value = 42 }"}
+```
+
+这个模式下：
+
+- `print(...)` 会被收集到结果里的 `Printed Output`
+- Lua 返回值会出现在 `Returned Values`
+- 最终 stdout 输出的是一段 Markdown 结果文本，而不是 MCP 协议响应包
+
 ## 3. 推荐调试流程
 
 ### 3.1 先构建 debug 产物

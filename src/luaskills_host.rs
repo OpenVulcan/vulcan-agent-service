@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use vulcan_luaskills::runtime_options::LuaRuntimeRunLuaPoolConfig;
 use vulcan_luaskills::{
     DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS, DEFAULT_TOOL_CACHE_MAX_ENTRIES,
     DEFAULT_TOOL_CACHE_MAX_TTL_SECS, LuaEngineOptions, LuaInvocationContext,
@@ -42,16 +43,16 @@ pub fn build_runtime_request_context(request_context: &RequestContext) -> Runtim
         .client_info
         .as_ref()
         .map(|client_info| client_info.version.clone());
-    let runtime_client_info = if effective_client_name.is_some() || effective_client_version.is_some()
-    {
-        Some(RuntimeClientInfo {
-            kind: Some("mcp".to_string()),
-            name: effective_client_name,
-            version: effective_client_version,
-        })
-    } else {
-        None
-    };
+    let runtime_client_info =
+        if effective_client_name.is_some() || effective_client_version.is_some() {
+            Some(RuntimeClientInfo {
+                kind: Some("mcp".to_string()),
+                name: effective_client_name,
+                version: effective_client_version,
+            })
+        } else {
+            None
+        };
 
     RuntimeRequestContext {
         transport_name: request_context.transport.clone(),
@@ -91,12 +92,13 @@ pub fn build_luaskills_engine_options(
     let download_cache_root = Some(runtime_temp_root.join("downloads"));
     let lua_packages_dir = resolve_lua_packages_dir(&runtime_root)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    // Keep the legacy `luaexec_program` unset because isolated runlua now uses the in-process dedicated VM pool.
+    // 保持历史 `luaexec_program` 为空，因为隔离 runlua 现已统一走进程内独立 VM 池。
     let host_options = LuaRuntimeHostOptions {
         temp_dir: Some(temp_root.clone()),
         resources_dir: resolve_runtime_resources_dir(&runtime_root)
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         lua_packages_dir: lua_packages_dir.clone(),
-        luaexec_program: std::env::current_exe().ok(),
         host_provided_tool_root: resolve_host_provided_tool_root(&runtime_root)
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         host_provided_lua_root: lua_packages_dir,
@@ -139,13 +141,33 @@ pub fn build_luaskills_engine_options(
         lancedb_callback_mode: LuaRuntimeDatabaseCallbackMode::Standard,
         space_controller: resolve_space_controller_options(config, &runtime_root)?,
         cache_config: Some(cache_config),
+        runlua_pool_config: resolve_runlua_pool_config(config),
         reserved_entry_names: host_reserved_tool_names(),
         ignored_skill_ids: resolve_ignored_skill_ids(config),
         capabilities: LuaRuntimeCapabilityOptions {
             enable_skill_management_bridge: false,
         },
+        ..LuaRuntimeHostOptions::default()
     };
     Ok(LuaEngineOptions::new(pool_config, host_options))
+}
+
+/// Resolve one optional dedicated isolated runlua pool override from host config while preserving upstream defaults when the block is absent.
+/// 从宿主配置解析可选的隔离 runlua 专用池覆盖配置，并在整个配置段缺失时保留上游默认值。
+fn resolve_runlua_pool_config(config: &Config) -> Option<LuaRuntimeRunLuaPoolConfig> {
+    let configured_pool = &config.runlua_pool_config;
+    if configured_pool.min_size.is_none()
+        && configured_pool.max_size.is_none()
+        && configured_pool.idle_ttl_secs.is_none()
+    {
+        return None;
+    }
+
+    Some(LuaRuntimeRunLuaPoolConfig {
+        min_size: configured_pool.min_size.unwrap_or(1),
+        max_size: configured_pool.max_size.unwrap_or(4),
+        idle_ttl_secs: configured_pool.idle_ttl_secs.unwrap_or(60),
+    })
 }
 
 /// Map one host config controller process mode into the LuaSkills controller process mode enum.
@@ -1254,6 +1276,103 @@ mod tests {
                 .executable_path
                 .as_ref(),
             Some(&copied_executable)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Engine options should no longer inject the legacy luaexec program path because isolated runlua is now in-process.
+    /// 引擎选项不应再注入历史 luaexec 程序路径，因为隔离 runlua 现已改为进程内执行。
+    #[test]
+    fn build_engine_options_does_not_inject_legacy_luaexec_program() {
+        let _guard = acquire_environment_lock();
+        let root = unique_test_dir("engine-options-no-luaexec-program");
+        create_runtime_root_for_test(&root);
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+
+        let options =
+            build_luaskills_engine_options(&config, pool_config, ToolCacheConfig::default())
+                .expect("failed to build luaskills engine options");
+
+        assert!(options.host_options.luaexec_program.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Missing runlua pool config should leave the dedicated isolated pool unset so LuaSkills can apply its own upstream defaults.
+    /// 缺失 runlua 池配置时应保持专用隔离池未显式设置，从而让 LuaSkills 采用其上游默认值。
+    #[test]
+    fn build_engine_options_leaves_runlua_pool_unset_when_config_is_absent() {
+        let _guard = acquire_environment_lock();
+        let root = unique_test_dir("runlua-pool-defaults");
+        create_runtime_root_for_test(&root);
+        let copied_executable = root
+            .join("bin")
+            .join(space_controller_executable_file_name());
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create copied controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+
+        let options =
+            build_luaskills_engine_options(&config, pool_config, ToolCacheConfig::default())
+                .expect("failed to build luaskills engine options");
+
+        assert!(options.host_options.runlua_pool_config.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Partial runlua pool config should be promoted into a full host override by filling missing fields with the upstream default values.
+    /// 局部 runlua 池配置应补齐为完整的宿主覆盖值，缺失字段使用上游默认值填充。
+    #[test]
+    fn build_engine_options_maps_runlua_pool_config_with_default_fill() {
+        let _guard = acquire_environment_lock();
+        let root = unique_test_dir("runlua-pool-configured");
+        create_runtime_root_for_test(&root);
+        let copied_executable = root
+            .join("bin")
+            .join(space_controller_executable_file_name());
+        std::fs::write(&copied_executable, b"test-controller")
+            .expect("failed to create copied controller executable");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            runlua_pool_config: crate::config::RunLuaPoolConfigSection {
+                min_size: Some(2),
+                max_size: Some(6),
+                idle_ttl_secs: None,
+            },
+            ..Config::default()
+        };
+        let pool_config = LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        };
+
+        let options =
+            build_luaskills_engine_options(&config, pool_config, ToolCacheConfig::default())
+                .expect("failed to build luaskills engine options");
+
+        assert_eq!(
+            options.host_options.runlua_pool_config,
+            Some(LuaRuntimeRunLuaPoolConfig {
+                min_size: 2,
+                max_size: 6,
+                idle_ttl_secs: 60,
+            })
         );
         let _ = std::fs::remove_dir_all(&root);
     }
