@@ -289,9 +289,11 @@ pub fn resolve_client_budget_snapshot(
     }
 }
 
-/// Resolve the effective client name used for budget matching, allowing one explicit environment override to force the name across transports.
-/// 解析预算匹配使用的最终客户端名称；若设置了环境变量覆盖，则跨传输统一强制使用该名称。
-fn resolve_effective_client_match_name(request_context: Option<&RequestContext>) -> Option<String> {
+/// Resolve the effective client name used by host-side matching and runtime request context exposure.
+/// 解析宿主侧匹配与运行时请求上下文统一使用的最终客户端名称。
+pub fn resolve_effective_client_match_name(
+    request_context: Option<&RequestContext>,
+) -> Option<String> {
     request_context
         .and_then(|context| context.client_match_name_override.as_ref())
         .map(|value| value.trim().to_string())
@@ -1093,9 +1095,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Prepare one isolated runtime root backed by the checked-in client budget config so matching tests stay deterministic.
-    /// 基于仓库内客户端预算配置准备隔离 runtime root，确保匹配测试具备稳定且可重复的配置来源。
-    fn prepare_isolated_client_budget_runtime_root() -> std::path::PathBuf {
+    /// Prepare one isolated runtime root backed by one test-local client budget config so matching tests stay deterministic.
+    /// 基于测试专用客户端预算配置准备隔离 runtime root，确保匹配测试具备稳定且可重复的配置来源。
+    fn prepare_isolated_client_budget_runtime_root_with_yaml(
+        client_budget_yaml: &str,
+    ) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
             "vulcan-mcp-client-budget-match-runtime-{}-{}",
             std::process::id(),
@@ -1107,7 +1111,7 @@ mod tests {
         let config_path = root.join("configs").join("client_budgets.yaml");
         std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
             .expect("failed to create config directory");
-        std::fs::write(&config_path, include_str!("../runtime/configs/client_budgets.yaml"))
+        std::fs::write(&config_path, client_budget_yaml)
             .expect("failed to write isolated client budget config");
         initialize_client_budget_runtime_root(Some(&root))
             .expect("runtime root init should succeed");
@@ -1133,7 +1137,32 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
-        let root = prepare_isolated_client_budget_runtime_root();
+        let root = prepare_isolated_client_budget_runtime_root_with_yaml(
+            r#"
+defaults:
+  budgets:
+    tool_result:
+      bytes:
+        default: 10000
+      lines:
+        default: -1
+clients:
+  - pattern: "mcphost"
+    budgets:
+      tool_result:
+        bytes:
+          default: 95000
+        lines:
+          default: -1
+  - pattern: "*qwen*"
+    budgets:
+      tool_result:
+        bytes:
+          default: 25000
+        lines:
+          default: -1
+"#,
+        );
         unsafe {
             std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "qwen-forced");
         }
@@ -1149,7 +1178,7 @@ mod tests {
         let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
         assert_eq!(snapshot.client_name.as_deref(), Some("qwen-forced"));
         assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
-        assert!(snapshot.tool_result.bytes > 0);
+        assert_eq!(snapshot.tool_result.bytes, 23_750);
 
         if let Some(value) = previous {
             unsafe {
@@ -1174,7 +1203,25 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
-        let root = prepare_isolated_client_budget_runtime_root();
+        let root = prepare_isolated_client_budget_runtime_root_with_yaml(
+            r#"
+defaults:
+  budgets:
+    tool_result:
+      bytes:
+        default: 10000
+      lines:
+        default: -1
+clients:
+  - pattern: "mcphost"
+    budgets:
+      tool_result:
+        bytes:
+          default: 100000
+        lines:
+          default: -1
+"#,
+        );
         unsafe {
             std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "   ");
         }
@@ -1215,7 +1262,32 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
-        let root = prepare_isolated_client_budget_runtime_root();
+        let root = prepare_isolated_client_budget_runtime_root_with_yaml(
+            r#"
+defaults:
+  budgets:
+    tool_result:
+      bytes:
+        default: 10000
+      lines:
+        default: -1
+clients:
+  - pattern: "mcphost"
+    budgets:
+      tool_result:
+        bytes:
+          default: 95000
+        lines:
+          default: -1
+  - pattern: "*qwen*"
+    budgets:
+      tool_result:
+        bytes:
+          default: 25000
+        lines:
+          default: -1
+"#,
+        );
         unsafe {
             std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "mcphost");
         }
@@ -1232,7 +1304,7 @@ mod tests {
         let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
         assert_eq!(snapshot.client_name.as_deref(), Some("qwen-inline"));
         assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
-        assert!(snapshot.tool_result.bytes > 0);
+        assert_eq!(snapshot.tool_result.bytes, 23_750);
 
         if let Some(value) = previous {
             unsafe {

@@ -53,19 +53,32 @@ clients:
         lines:
           default: -1
 
-  - pattern: "mcphost"
+  - pattern: "qoder"
     budgets:
       tool_result:
         bytes:
-          default: 100000
+          default: 50000
         lines:
           default: -1
       file_read:
         bytes:
-          default: 100000
+          default: 50000
         lines:
           default: -1
-
+          
+  - pattern: "workbuddy"
+    budgets:
+      tool_result:
+        bytes:
+          default: 50000
+        lines:
+          default: -1
+      file_read:
+        bytes:
+          default: 50000
+        lines:
+          default: -1
+          
   - pattern: "*qwen*"
     budgets:
       tool_result:

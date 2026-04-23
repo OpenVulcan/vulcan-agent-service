@@ -1,4 +1,6 @@
-use crate::client_budget::{ClientBudgetSnapshot, resolve_client_budget_snapshot};
+use crate::client_budget::{
+    ClientBudgetSnapshot, resolve_client_budget_snapshot, resolve_effective_client_match_name,
+};
 use crate::config::{Config, SkillRootConfigEntry, SpaceControllerProcessModeConfig};
 use crate::protocol::{RequestContext, Tool, ToolAnnotations};
 use crate::runtime_logging::{error as log_error, info as log_info, warn as log_warn};
@@ -31,17 +33,26 @@ pub fn install_luaskills_log_callback() {
 /// Convert one MCP request context into the generic runtime request context expected by the LuaSkills library.
 /// 把一份 MCP 请求上下文转换为 LuaSkills 库期望的通用运行时请求上下文。
 pub fn build_runtime_request_context(request_context: &RequestContext) -> RuntimeRequestContext {
+    let effective_client_name = resolve_effective_client_match_name(Some(request_context));
+    let effective_client_version = request_context
+        .client_info
+        .as_ref()
+        .map(|client_info| client_info.version.clone());
+    let runtime_client_info = if effective_client_name.is_some() || effective_client_version.is_some()
+    {
+        Some(RuntimeClientInfo {
+            kind: Some("mcp".to_string()),
+            name: effective_client_name,
+            version: effective_client_version,
+        })
+    } else {
+        None
+    };
+
     RuntimeRequestContext {
         transport_name: request_context.transport.clone(),
         session_id: request_context.session_id.clone(),
-        client_info: request_context
-            .client_info
-            .as_ref()
-            .map(|client_info| RuntimeClientInfo {
-                kind: Some("mcp".to_string()),
-                name: Some(client_info.name.clone()),
-                version: Some(client_info.version.clone()),
-            }),
+        client_info: runtime_client_info,
         client_capabilities: request_context.client_capabilities.clone(),
     }
 }
@@ -859,6 +870,103 @@ mod tests {
         assert!(options.executable_path.is_none());
         assert!(options.auto_spawn);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runtime request context should expose the forced environment override as the effective client name seen by Lua skills.
+    /// 运行时请求上下文应把强制环境变量覆盖值暴露为 Lua 技能看到的最终客户端名称。
+    #[test]
+    fn build_runtime_request_context_prefers_env_override_name() {
+        let _guard = acquire_environment_lock();
+        let previous = std::env::var(crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
+        unsafe {
+            std::env::set_var(
+                crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV,
+                "qoder",
+            );
+        }
+
+        let request_context = RequestContext {
+            client_info: Some(crate::protocol::ClientInfo {
+                name: "mcphost".to_string(),
+                version: "1.0.0".to_string(),
+            }),
+            ..RequestContext::default()
+        };
+
+        let runtime_context = build_runtime_request_context(&request_context);
+        assert_eq!(
+            runtime_context
+                .client_info
+                .as_ref()
+                .and_then(|client_info| client_info.name.as_deref()),
+            Some("qoder")
+        );
+        assert_eq!(
+            runtime_context
+                .client_info
+                .as_ref()
+                .and_then(|client_info| client_info.version.as_deref()),
+            Some("1.0.0")
+        );
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var(crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV);
+            }
+        }
+    }
+
+    /// Runtime request context should let request-scoped overrides win over both the original MCP client name and process-level env overrides.
+    /// 运行时请求上下文应让请求级覆盖值优先于原始 MCP 客户端名称和进程级环境变量覆盖。
+    #[test]
+    fn build_runtime_request_context_prefers_request_override_name() {
+        let _guard = acquire_environment_lock();
+        let previous = std::env::var(crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
+        unsafe {
+            std::env::set_var(
+                crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV,
+                "mcphost",
+            );
+        }
+
+        let request_context = RequestContext {
+            client_info: Some(crate::protocol::ClientInfo {
+                name: "copilot".to_string(),
+                version: "2.0.0".to_string(),
+            }),
+            client_match_name_override: Some("workbuddy".to_string()),
+            ..RequestContext::default()
+        };
+
+        let runtime_context = build_runtime_request_context(&request_context);
+        assert_eq!(
+            runtime_context
+                .client_info
+                .as_ref()
+                .and_then(|client_info| client_info.name.as_deref()),
+            Some("workbuddy")
+        );
+        assert_eq!(
+            runtime_context
+                .client_info
+                .as_ref()
+                .and_then(|client_info| client_info.version.as_deref()),
+            Some("2.0.0")
+        );
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var(crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(crate::client_budget::CLIENT_MATCH_NAME_OVERRIDE_ENV);
+            }
+        }
     }
 
     /// Controller config should map endpoint, spawn policy, process mode, and copied executable path correctly.
