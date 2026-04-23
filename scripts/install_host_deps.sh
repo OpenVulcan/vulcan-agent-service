@@ -12,27 +12,9 @@ THIRD_PARTY="$PROJECT_DIR/third_party"
 VLDB_CONTROLLER_DIR="$THIRD_PARTY/vldb_controller"
 VLDB_CONTROLLER_BIN_DIR="$VLDB_CONTROLLER_DIR/bin"
 VLDB_CONTROLLER_REPO="OpenVulcan/vldb-controller"
+VLDB_CONTROLLER_TAG="v0.2.0"
 
 ensure_dir() { mkdir -p "$1"; }
-
-get_latest_repo_tag() {
-    local repo="$1"
-    local display_name="$2"
-    local api_url="https://api.github.com/repos/${repo}/tags?per_page=1"
-    echo "==> Querying latest ${display_name} tag..." >&2
-    local tag_name
-    tag_name="$(curl -fSL -s "$api_url" | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-if isinstance(data, list) and data and data[0].get("name"):
-    print(data[0]["name"])
-')"
-    if [ -z "$tag_name" ]; then
-        echo "ERROR: latest ${display_name} tag lookup returned no usable tag" >&2
-        return 1
-    fi
-    printf '%s' "$tag_name"
-}
 
 get_release_by_tag_or_null() {
     local repo="$1"
@@ -125,7 +107,7 @@ print(match.group(1) if match else '')
         fi
         marker="$VLDB_CONTROLLER_DIR/.installed-${tag_name}-${target}"
     else
-        tag_name="$(get_latest_repo_tag "$VLDB_CONTROLLER_REPO" "vldb-controller")" || return 1
+        tag_name="$VLDB_CONTROLLER_TAG"
         asset_name="vldb-controller-${tag_name}-${target}${archive_ext}"
         marker="$VLDB_CONTROLLER_DIR/.installed-${tag_name}-${target}"
         local_archive="$(find "$THIRD_PARTY" -maxdepth 2 -type f -name "$asset_name" | head -1)"

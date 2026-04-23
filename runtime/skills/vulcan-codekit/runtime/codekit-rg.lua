@@ -101,6 +101,24 @@ local function get_entry_file()
 end
 
 --[[
+解析当前运行时可用的宿主进程执行函数，仅接受正式节点 `vulcan.process.exec`。
+Resolve the host-side process execution function and accept only the formal node `vulcan.process.exec`.
+
+返回 / Returns:
+- function|nil: 可调用的宿主执行函数；若宿主未注入则返回 nil。
+  Callable host execution function, or nil when the host did not inject one.
+]]
+local function get_host_exec_function()
+    if type(vulcan) ~= "table" then
+        return nil
+    end
+    if type(vulcan.process) == "table" and type(vulcan.process.exec) == "function" then
+        return vulcan.process.exec
+    end
+    return nil
+end
+
+--[[
 Return the normalized platform key used by LuaSkills dependency installation.
 返回 LuaSkills 依赖安装使用的标准平台键。
 ]]
@@ -398,14 +416,15 @@ local function append_path_segment(current, segment)
 end
 
 --[[
-在 LuaFileSystem 不可用时，回退到宿主 `vulcan.exec` 递归创建目录，保证大结果落盘与 Markdown 导出仍可执行。
-Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSystem is unavailable so large-result spilling and Markdown export still work.
+在 LuaFileSystem 不可用时，回退到宿主 `vulcan.process.exec` 递归创建目录，保证大结果落盘与 Markdown 导出仍可执行。
+Fall back to host-side `vulcan.process.exec` recursive directory creation when LuaFileSystem is unavailable so large-result spilling and Markdown export still work.
 ]]
 local function ensure_directory_via_exec(directory_path)
-    if type(vulcan.exec) ~= "function" then
+    local host_exec = get_host_exec_function()
+    if type(host_exec) ~= "function" then
         return false, {
             error = "directory_creation_failed",
-            message = "neither LuaFileSystem nor vulcan.exec is available for directory creation",
+            message = "neither LuaFileSystem nor host process exec is available for directory creation",
             path = directory_path,
         }
     end
@@ -430,7 +449,7 @@ local function ensure_directory_via_exec(directory_path)
         }
     end
 
-    local ok, result = pcall(vulcan.exec, request)
+    local ok, result = pcall(host_exec, request)
     if not ok or type(result) ~= "table" then
         return false, {
             error = "directory_creation_failed",
@@ -578,8 +597,8 @@ local function build_rg_command(rg_binary_path, arguments)
 end
 
 --[[
-调用 ripgrep，并优先使用宿主暴露的 `vulcan.exec`，缺失时回退到 `io.popen`。
-Execute ripgrep, preferring the host-provided `vulcan.exec` and falling back to `io.popen` when unavailable.
+调用 ripgrep，并优先使用宿主暴露的 `vulcan.process.exec`，缺失时回退到 `io.popen`。
+Execute ripgrep, preferring the host-provided `vulcan.process.exec` and falling back to `io.popen` when unavailable.
 
 参数 / Parameters:
 - rg_binary_path(string): `rg` 可执行文件完整路径 / Full path to the `rg` executable.
@@ -591,8 +610,9 @@ Execute ripgrep, preferring the host-provided `vulcan.exec` and falling back to 
 - table|nil: 执行失败时的结构化错误对象 / Structured error object on failure.
 ]]
 local function run_rg_command(rg_binary_path, arguments)
-    if type(vulcan.exec) == "function" then
-        local ok, result = pcall(vulcan.exec, {
+    local host_exec = get_host_exec_function()
+    if type(host_exec) == "function" then
+        local ok, result = pcall(host_exec, {
             program = rg_binary_path,
             args = arguments,
             timeout_ms = RG_TIMEOUT_MS,
@@ -1079,52 +1099,88 @@ local function finalize_rg_result(full_result)
     return tostring(markdown_text or ""), vulcan.runtime.overflow_type.page
 end
 
+--[[
+把结构化错误对象编码成稳定文本，确保工具入口最终始终返回 plain string。
+Encode one structured error object into stable text so the public tool entry always returns a plain string.
+]]
+local function encode_codekit_error_payload(error_payload)
+    if type(error_payload) == "string" then
+        return error_payload, "text"
+    end
+
+    local ok, encoded = pcall(vulcan.json.encode, error_payload)
+    if ok and type(encoded) == "string" and encoded ~= "" then
+        return encoded, "json"
+    end
+
+    return tostring(error_payload), "text"
+end
+
+--[[
+把当前入口的错误结果统一渲染成 Markdown 字符串，避免直接返回 table。
+Render one Markdown string for current entry errors so the tool never returns a raw table.
+]]
+local function render_codekit_error_markdown(tool_title, error_payload)
+    local payload_text, payload_language = encode_codekit_error_payload(error_payload)
+    return table.concat({
+        "# " .. tostring(tool_title or "CodeKit Error"),
+        "",
+        "## Status",
+        "FAILED",
+        "",
+        "## Error",
+        "```" .. tostring(payload_language or "text"),
+        payload_text,
+        "```",
+    }, "\n")
+end
+
 -- 工具入口 / Tool entry point invoked by the MCP runtime.
 return function(args)
     local _, client_limit_error = initialize_rg_client_budget()
     if client_limit_error then
-        return client_limit_error
+        return render_codekit_error_markdown("CodeKit RG Error", client_limit_error)
     end
 
     local helper_bundle, helper_error = load_ast_runtime_helpers()
     if helper_error then
-        return helper_error
+        return render_codekit_error_markdown("CodeKit RG Error", helper_error)
     end
 
     local target_directory, dir_error = validate_directory_argument(args and args.dir)
     if dir_error then
-        return dir_error
+        return render_codekit_error_markdown("CodeKit RG Error", dir_error)
     end
 
     local rg_pattern, pattern_error = validate_rg_pattern_argument(args and args.rg_pattern)
     if pattern_error then
-        return pattern_error
+        return render_codekit_error_markdown("CodeKit RG Error", pattern_error)
     end
 
     local extension_filter, extension_error = helper_bundle.validate_extension_argument(args and args.ext)
     if extension_error then
-        return extension_error
+        return render_codekit_error_markdown("CodeKit RG Error", extension_error)
     end
 
     local ignore_enabled, ignore_error = helper_bundle.validate_noignore_argument(args and args.noignore)
     if ignore_error then
-        return ignore_error
+        return render_codekit_error_markdown("CodeKit RG Error", ignore_error)
     end
 
     local export_md_error = validate_export_md_absence(args and args.export_md_path)
     if export_md_error then
-        return export_md_error
+        return render_codekit_error_markdown("CodeKit RG Error", export_md_error)
     end
 
     local rg_binary_path, rg_binary_error = find_rg_binary()
     if rg_binary_error then
-        return rg_binary_error
+        return render_codekit_error_markdown("CodeKit RG Error", rg_binary_error)
     end
 
     local rg_arguments = build_rg_arguments(target_directory, extension_filter, rg_pattern, ignore_enabled)
     local rg_stdout, rg_stderr, rg_error = run_rg_command(rg_binary_path, rg_arguments)
     if rg_error then
-        return rg_error
+        return render_codekit_error_markdown("CodeKit RG Error", rg_error)
     end
 
     local hits_by_file, total_rg_matches, diagnostics = parse_rg_json_output(rg_stdout, rg_stderr)
@@ -1148,15 +1204,15 @@ return function(args)
 
     local files, _, collection_errors, collection_error = helper_bundle.collect_files(matched_file_paths, false, nil, ignore_enabled)
     if collection_error then
-        return collection_error
+        return render_codekit_error_markdown("CodeKit RG Error", collection_error)
     end
 
     local ast_binary_path, ast_binary_directory, ast_executable_name = helper_bundle.find_binary()
     if not ast_binary_path then
-        return {
+        return render_codekit_error_markdown("CodeKit RG Error", {
             error = "ast_grep_binary_not_found",
             message = "ast-grep binary not found in the current skill dependency root",
-        }
+        })
     end
 
     local grouped_files = {}

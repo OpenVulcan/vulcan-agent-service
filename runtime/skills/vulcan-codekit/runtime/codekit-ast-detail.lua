@@ -112,6 +112,24 @@ local function starts_with(text, prefix)
 end
 
 --[[
+解析当前运行时可用的宿主进程执行函数，仅接受正式节点 `vulcan.process.exec`。
+Resolve the host-side process execution function and accept only the formal node `vulcan.process.exec`.
+
+返回 / Returns:
+- function|nil: 可调用的宿主执行函数；若宿主未注入则返回 nil。
+  Callable host execution function, or nil when the host did not inject one.
+]]
+local function get_host_exec_function()
+    if type(vulcan) ~= "table" then
+        return nil
+    end
+    if type(vulcan.process) == "table" and type(vulcan.process.exec) == "function" then
+        return vulcan.process.exec
+    end
+    return nil
+end
+
+--[[
 在单次工具调用开始时初始化当前客户端的 AST 预算。
 Initialize the current AST budget for this tool call.
 ]]
@@ -543,8 +561,9 @@ local function get_current_working_directory()
         return CURRENT_WORKING_DIRECTORY
     end
 
-    if type(vulcan.cwd) == "function" then
-        local ok, output = pcall(vulcan.cwd)
+    local runtime_cwd = vulcan and vulcan.runtime and vulcan.runtime.cwd
+    if type(runtime_cwd) == "function" then
+        local ok, output = pcall(runtime_cwd)
         if ok then
             local normalized = trim(output)
             if normalized ~= "" then
@@ -730,8 +749,9 @@ local function append_diagnostic_lines(diagnostics, text)
 end
 
 local function run_scan_batch(binary_directory, executable_name, rule_path, file_paths)
-    if type(vulcan.exec) == "function" then
-        local ok, result = pcall(vulcan.exec, {
+    local host_exec = get_host_exec_function()
+    if type(host_exec) == "function" then
+        local ok, result = pcall(host_exec, {
             program = vulcan.path.join(binary_directory, executable_name),
             args = build_scan_arguments(rule_path, file_paths),
             cwd = binary_directory,
@@ -1282,8 +1302,8 @@ local function append_path_segment(current, segment)
 end
 
 --[[
-在 LuaFileSystem 不可用时，回退到宿主 `vulcan.exec` 递归创建目录，避免大结果落盘依赖单一 Lua C 模块。
-Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSystem is unavailable, so large-result spilling does not depend on a single Lua C module.
+在 LuaFileSystem 不可用时，回退到宿主 `vulcan.process.exec` 递归创建目录，避免大结果落盘依赖单一 Lua C 模块。
+Fall back to host-side `vulcan.process.exec` recursive directory creation when LuaFileSystem is unavailable, so large-result spilling does not depend on a single Lua C module.
 
 参数 / Parameters:
 - directory_path(string): 需要创建的目录绝对路径 / Absolute directory path that should be created.
@@ -1293,10 +1313,11 @@ Fall back to host-side `vulcan.exec` recursive directory creation when LuaFileSy
 - table|nil: 创建失败时返回结构化错误对象 / Structured error object when creation fails.
 ]]
 local function ensure_directory_via_exec(directory_path)
-    if type(vulcan.exec) ~= "function" then
+    local host_exec = get_host_exec_function()
+    if type(host_exec) ~= "function" then
         return false, {
             error = "directory_creation_failed",
-            message = "neither LuaFileSystem nor vulcan.exec is available for directory creation",
+            message = "neither LuaFileSystem nor host process exec is available for directory creation",
             path = directory_path,
         }
     end
@@ -1321,7 +1342,7 @@ local function ensure_directory_via_exec(directory_path)
         }
     end
 
-    local ok, result = pcall(vulcan.exec, request)
+    local ok, result = pcall(host_exec, request)
     if not ok or type(result) ~= "table" then
         return false, {
             error = "directory_creation_failed",
@@ -1491,6 +1512,42 @@ Finalize the AST detail body; overflow strategy is no longer decided by Lua and 
 ]]
 local function finalize_ast_detail_content(markdown_text, summary_lines)
     return tostring(markdown_text or ""), vulcan.runtime.overflow_type.page
+end
+
+--[[
+把结构化错误对象编码成稳定文本，确保工具入口最终始终返回 plain string。
+Encode one structured error object into stable text so the public tool entry always returns a plain string.
+]]
+local function encode_codekit_error_payload(error_payload)
+    if type(error_payload) == "string" then
+        return error_payload, "text"
+    end
+
+    local ok, encoded = pcall(vulcan.json.encode, error_payload)
+    if ok and type(encoded) == "string" and encoded ~= "" then
+        return encoded, "json"
+    end
+
+    return tostring(error_payload), "text"
+end
+
+--[[
+把当前入口的错误结果统一渲染成 Markdown 字符串，避免直接返回 table。
+Render one Markdown string for current entry errors so the tool never returns a raw table.
+]]
+local function render_codekit_error_markdown(tool_title, error_payload)
+    local payload_text, payload_language = encode_codekit_error_payload(error_payload)
+    return table.concat({
+        "# " .. tostring(tool_title or "CodeKit Error"),
+        "",
+        "## Status",
+        "FAILED",
+        "",
+        "## Error",
+        "```" .. tostring(payload_language or "text"),
+        payload_text,
+        "```",
+    }, "\n")
 end
 
 -- 文件读取与 capture 提取 / Cache file content and decode ast-grep captures.
@@ -2390,7 +2447,7 @@ end
 return function(args)
     local _, client_limit_error = initialize_ast_client_budget()
     if client_limit_error then
-        return client_limit_error
+        return render_codekit_error_markdown("CodeKit AST Detail Error", client_limit_error)
     end
 
     -- 为 `codekit-rg`、`codekit-markdown-menu` 与 `codekit-ast-tree` 保留共享 helper 的闭包 upvalue。
@@ -2404,45 +2461,45 @@ return function(args)
 
     local target_paths, path_error = validate_detail_paths_argument(args and args.paths)
     if path_error then
-        return path_error
+        return render_codekit_error_markdown("CodeKit AST Detail Error", path_error)
     end
 
     local include_comments, comment_error = validate_comment_argument(args and args.comment)
     if comment_error then
-        return comment_error
+        return render_codekit_error_markdown("CodeKit AST Detail Error", comment_error)
     end
 
     local target_mode, target_mode_error = classify_target_path_modes(target_paths)
     if target_mode_error then
-        return target_mode_error
+        return render_codekit_error_markdown("CodeKit AST Detail Error", target_mode_error)
     end
     if target_mode ~= "file" then
-        return {
+        return render_codekit_error_markdown("CodeKit AST Detail Error", {
             error = "explicit_files_required",
             message = "codekit-ast-detail accepts only explicit file paths; directories and mixed path sets are not supported",
-        }
+        })
     end
 
     local binary_path, binary_directory, executable_name = find_binary()
     if not binary_path then
-        return {
+        return render_codekit_error_markdown("CodeKit AST Detail Error", {
             error = "ast_grep_binary_not_found",
             expected_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name),
-        }
+        })
     end
 
     local files, _, errors, collection_error = collect_files(target_paths, false, nil, true)
     if collection_error then
-        return collection_error
+        return render_codekit_error_markdown("CodeKit AST Detail Error", collection_error)
     end
     errors = errors or {}
     if #files == 0 then
-        return {
+        return render_codekit_error_markdown("CodeKit AST Detail Error", {
             error = "no_supported_files_found",
             message = "codekit-ast-detail could not analyze any supported source file from the provided paths",
             requested_paths = target_paths,
             errors = errors,
-        }
+        })
     end
 
     local grouped_files = {}

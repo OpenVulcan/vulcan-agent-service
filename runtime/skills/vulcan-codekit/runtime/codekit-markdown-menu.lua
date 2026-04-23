@@ -65,6 +65,24 @@ local function get_entry_dir()
 end
 
 --[[
+解析当前运行时可用的宿主进程执行函数，仅接受正式节点 `vulcan.process.exec`。
+Resolve the host-side process execution function and accept only the formal node `vulcan.process.exec`.
+
+返回 / Returns:
+- function|nil: 可调用的宿主执行函数；若宿主未注入则返回 nil。
+  Callable host execution function, or nil when the host did not inject one.
+]]
+local function get_host_exec_function()
+    if type(vulcan) ~= "table" then
+        return nil
+    end
+    if type(vulcan.process) == "table" and type(vulcan.process.exec) == "function" then
+        return vulcan.process.exec
+    end
+    return nil
+end
+
+--[[
 Return the normalized platform key used by LuaSkills dependency installation.
 返回 LuaSkills 依赖安装使用的标准平台键。
 ]]
@@ -361,7 +379,16 @@ local function list_markdown_files_with_rg(directory_path, recursive, ignore_ena
         table.insert(arguments, "--hidden")
     end
 
-    local ok, result = pcall(vulcan.exec, {
+    local host_exec = get_host_exec_function()
+    if type(host_exec) ~= "function" then
+        return nil, {
+            error = "rg_exec_failed",
+            message = "host process exec is not available",
+            dir = directory_path,
+        }
+    end
+
+    local ok, result = pcall(host_exec, {
         program = rg_binary_path,
         args = arguments,
         timeout_ms = 30000,
@@ -666,36 +693,72 @@ local function finalize_markdown_menu_content(markdown_text)
     return tostring(markdown_text or "")
 end
 
+--[[
+把结构化错误对象编码成稳定文本，确保工具入口最终始终返回 plain string。
+Encode one structured error object into stable text so the public tool entry always returns a plain string.
+]]
+local function encode_codekit_error_payload(error_payload)
+    if type(error_payload) == "string" then
+        return error_payload, "text"
+    end
+
+    local ok, encoded = pcall(vulcan.json.encode, error_payload)
+    if ok and type(encoded) == "string" and encoded ~= "" then
+        return encoded, "json"
+    end
+
+    return tostring(error_payload), "text"
+end
+
+--[[
+把当前入口的错误结果统一渲染成 Markdown 字符串，避免直接返回 table。
+Render one Markdown string for current entry errors so the tool never returns a raw table.
+]]
+local function render_codekit_error_markdown(tool_title, error_payload)
+    local payload_text, payload_language = encode_codekit_error_payload(error_payload)
+    return table.concat({
+        "# " .. tostring(tool_title or "CodeKit Error"),
+        "",
+        "## Status",
+        "FAILED",
+        "",
+        "## Error",
+        "```" .. tostring(payload_language or "text"),
+        payload_text,
+        "```",
+    }, "\n")
+end
+
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
     local _, budget_error = initialize_markdown_menu_budget()
     if budget_error then
-        return budget_error
+        return render_codekit_error_markdown("CodeKit Markdown Menu Error", budget_error)
     end
 
     local helpers, helpers_error = load_ast_runtime_helpers()
     if helpers_error then
-        return helpers_error
+        return render_codekit_error_markdown("CodeKit Markdown Menu Error", helpers_error)
     end
 
     local target_paths, path_error = helpers.validate_path_argument(args and args.path)
     if path_error then
-        return path_error
+        return render_codekit_error_markdown("CodeKit Markdown Menu Error", path_error)
     end
 
     local recursive, recursive_error = helpers.validate_recursive_argument(args and args.recursive)
     if recursive_error then
-        return recursive_error
+        return render_codekit_error_markdown("CodeKit Markdown Menu Error", recursive_error)
     end
 
     local ignore_enabled, ignore_error = helpers.validate_noignore_argument(args and args.noignore)
     if ignore_error then
-        return ignore_error
+        return render_codekit_error_markdown("CodeKit Markdown Menu Error", ignore_error)
     end
 
     local markdown_files, collection_errors, collection_error = collect_markdown_files(target_paths, recursive, ignore_enabled, helpers)
     if collection_error then
-        return collection_error
+        return render_codekit_error_markdown("CodeKit Markdown Menu Error", collection_error)
     end
 
     local documents = {}

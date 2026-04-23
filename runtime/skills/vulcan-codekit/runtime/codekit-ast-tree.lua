@@ -269,6 +269,42 @@ local function validate_comment_absence(value)
 end
 
 --[[
+把结构化错误对象编码成稳定文本，确保工具入口最终始终返回 plain string。
+Encode one structured error object into stable text so the public tool entry always returns a plain string.
+]]
+local function encode_codekit_error_payload(error_payload)
+    if type(error_payload) == "string" then
+        return error_payload, "text"
+    end
+
+    local ok, encoded = pcall(vulcan.json.encode, error_payload)
+    if ok and type(encoded) == "string" and encoded ~= "" then
+        return encoded, "json"
+    end
+
+    return tostring(error_payload), "text"
+end
+
+--[[
+把当前入口的错误结果统一渲染成 Markdown 字符串，避免直接返回 table。
+Render one Markdown string for current entry errors so the tool never returns a raw table.
+]]
+local function render_codekit_error_markdown(tool_title, error_payload)
+    local payload_text, payload_language = encode_codekit_error_payload(error_payload)
+    return table.concat({
+        "# " .. tostring(tool_title or "CodeKit Error"),
+        "",
+        "## Status",
+        "FAILED",
+        "",
+        "## Error",
+        "```" .. tostring(payload_language or "text"),
+        payload_text,
+        "```",
+    }, "\n")
+end
+
+--[[
 在单次工具调用开始时初始化当前客户端的 AST tree 预算。
 Initialize the current AST-tree budget at the start of each tool call.
 ]]
@@ -661,56 +697,56 @@ end
 return function(args)
     local _, client_limit_error = initialize_ast_client_budget()
     if client_limit_error then
-        return client_limit_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", client_limit_error)
     end
 
     local helpers, helpers_error = load_ast_runtime_helpers()
     if helpers_error then
-        return helpers_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", helpers_error)
     end
 
     local target_paths, paths_error = validate_paths_argument(args and args.paths)
     if paths_error then
-        return paths_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", paths_error)
     end
 
     local comment_error = validate_comment_absence(args and args.comment)
     if comment_error then
-        return comment_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", comment_error)
     end
 
     local extension_filter, extension_error = helpers.validate_extension_argument(args and args.ext)
     if extension_error then
-        return extension_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", extension_error)
     end
 
     local ignore_enabled, ignore_error = helpers.validate_noignore_argument(args and args.noignore)
     if ignore_error then
-        return ignore_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", ignore_error)
     end
 
     local target_mode, target_mode_error = helpers.classify_target_path_modes(target_paths)
     if target_mode_error then
-        return target_mode_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", target_mode_error)
     end
     if target_mode ~= "directory" then
-        return {
+        return render_codekit_error_markdown("CodeKit AST Tree Error", {
             error = "single_directory_required",
             message = "codekit-ast-tree accepts exactly one directory path; file paths and multiple directories are not supported",
-        }
+        })
     end
 
     local binary_path, binary_directory, executable_name = helpers.find_binary()
     if not binary_path then
-        return {
+        return render_codekit_error_markdown("CodeKit AST Tree Error", {
             error = "ast_grep_binary_not_found",
             expected_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name),
-        }
+        })
     end
 
     local files, _, errors, collection_error = helpers.collect_files(target_paths, true, extension_filter, ignore_enabled)
     if collection_error then
-        return collection_error
+        return render_codekit_error_markdown("CodeKit AST Tree Error", collection_error)
     end
 
     log_diagnostics(errors)

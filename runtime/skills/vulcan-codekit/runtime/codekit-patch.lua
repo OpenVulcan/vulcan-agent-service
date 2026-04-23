@@ -85,6 +85,24 @@ local function get_entry_dir()
 end
 
 --[[
+解析当前运行时可用的宿主进程执行函数，仅接受正式节点 `vulcan.process.exec`。
+Resolve the host-side process execution function and accept only the formal node `vulcan.process.exec`.
+
+返回 / Returns:
+- function|nil: 可调用的宿主执行函数；若宿主未注入则返回 nil。
+  Callable host execution function, or nil when the host did not inject one.
+]]
+local function get_host_exec_function()
+    if type(vulcan) ~= "table" then
+        return nil
+    end
+    if type(vulcan.process) == "table" and type(vulcan.process.exec) == "function" then
+        return vulcan.process.exec
+    end
+    return nil
+end
+
+--[[
 懒加载 `codekit-ast-detail` 内部 helper，确保 `codekit-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
 Lazily load internal `codekit-ast-detail` helpers so `codekit-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
 
@@ -783,7 +801,8 @@ end
 Run an ERROR-node scan and return a structured error when the patched file contains parser error nodes.
 ]]
 local function scan_ast_error_nodes(file_path, file_info, helper_bundle)
-    if type(vulcan.exec) ~= "function" then
+    local host_exec = get_host_exec_function()
+    if type(host_exec) ~= "function" then
         return {}, nil
     end
 
@@ -795,7 +814,7 @@ local function scan_ast_error_nodes(file_path, file_info, helper_bundle)
         }
     end
 
-    local ok, result = pcall(vulcan.exec, {
+    local ok, result = pcall(host_exec, {
         program = ast_binary_path,
         args = {
             "scan",

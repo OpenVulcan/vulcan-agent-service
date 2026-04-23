@@ -59,23 +59,26 @@ grpc: "127.0.0.1:19202"
 # English: The current MCP product uses a controller-only database access model and does not expose database mode switches.
 # 中文：space_controller 配置用于指定共享端点、自动拉起策略和本地复制后的可执行文件路径。
 # English: space_controller settings define the shared endpoint, auto-spawn policy, and copied local executable path.
+# 中文：如果需要修改 controller 默认端口，直接改 endpoint 里的端口号即可，例如改成 20333。
+# English: To change the controller default port, edit the port number in endpoint directly, for example 20333.
 # 中文：若 auto_spawn=true，则 endpoint 必须是本地可拉起地址；远端 controller 只能与 auto_spawn=false 搭配使用。
 # English: When auto_spawn=true, endpoint must be a locally spawnable address. Remote controllers must be used with auto_spawn=false.
 # 中文：建议优先通过 make deps host + make build 同步 controller 二进制，避免 output/bin/vldb-controller.exe 与当前锁定的 vldb-controller-client release tag 漂移。
 # English: Prefer make deps host + make build to sync the controller binary so output/bin/vldb-controller.exe does not drift from the currently pinned vldb-controller-client release tag.
-# space_controller:
-#   endpoint: "http://127.0.0.1:19801"
-#   auto_spawn: true
-#   executable_path: "D:/projects/vulcan-mcp-client/output/bin/vldb-controller.exe"
-#   # 默认可省略；执行 make deps host + build 后会自动从 output/bin/vldb-controller.exe 发现
-#   process_mode: "managed"
-#   minimum_uptime_secs: 300
-#   idle_timeout_secs: 900
-#   default_lease_ttl_secs: 120
-#   connect_timeout_secs: 5
-#   startup_timeout_secs: 15
-#   startup_retry_interval_ms: 250
-#   lease_renew_interval_secs: 30
+space_controller:
+  endpoint: "http://127.0.0.1:19801"
+  auto_spawn: true
+  # 中文：默认可省略；执行 make deps host + make build 后会自动从 output/bin/vldb-controller.exe 发现。
+  # English: Optional by default; after make deps host + make build the host auto-discovers output/bin/vldb-controller.exe.
+  # executable_path: "D:/projects/vulcan-mcp-client/output/bin/vldb-controller.exe"
+  process_mode: "managed"
+  minimum_uptime_secs: 300
+  idle_timeout_secs: 900
+  default_lease_ttl_secs: 120
+  connect_timeout_secs: 5
+  startup_timeout_secs: 15
+  startup_retry_interval_ms: 250
+  lease_renew_interval_secs: 30
 
 # ============================================================
 # Lua VM Pool

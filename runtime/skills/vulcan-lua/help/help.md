@@ -68,9 +68,18 @@
 - 返回 table 会被转换成格式化 JSON 文本。
 - 多返回值会按顺序逐项展示。
 - 工具最终总是返回一个 Markdown 字符串。
+- 返回结果末尾会固定追加一个 `Current Client Context` 区块。
+- 这个区块展示的是外层真实调用方上下文，不是 `luaexec_call` 这样的内部模拟请求身份。
+- 该区块会展示：
+  - `client_kind`
+  - `client_name`
+  - `tool_result_bytes_limit`
+  - `tool_result_line_limit`
+  - `file_read_bytes_limit`
+  - `file_read_line_limit`
 - 使用 `file` 模式时，会同时注入：
-  - `vulcan.entry_file`
-  - `vulcan.entry_dir`
+  - `vulcan.context.entry_file`
+  - `vulcan.context.entry_dir`
 
 当前边界：
 

@@ -10,6 +10,79 @@ local function render_input_error(message)
     return "# Runtime Input Error\n\n## Status\nFAILED\n\n## Error\n```text\n" .. message .. "\n```"
 end
 
+-- Return one stable printable text for optional runtime metadata values.
+-- 返回一个稳定可打印文本，用于展示可选的运行时元数据值。
+local function render_optional_text(value)
+    if value == nil then
+        return "(not provided)"
+    end
+    if type(value) == "string" and value == "" then
+        return "(empty string)"
+    end
+    return tostring(value)
+end
+
+-- Return one nested table field without throwing when intermediate values are missing.
+-- 在中间节点缺失时安全返回嵌套表字段，避免直接抛错。
+local function get_nested_value(root, ...)
+    local current = root
+    local keys = { ... }
+    for _, key in ipairs(keys) do
+        if type(current) ~= "table" then
+            return nil
+        end
+        current = current[key]
+    end
+    return current
+end
+
+-- Return one stable text for limit values so callers can see unlimited scopes clearly.
+-- 返回一个稳定的限制文本，便于调用方直接识别不限额场景。
+local function render_limit_text(value)
+    if value == nil then
+        return "(not provided)"
+    end
+    if value == -1 then
+        return "unlimited (-1)"
+    end
+    return tostring(value)
+end
+
+-- Build one outer caller context section so the result shows the real connected client instead of the internal luaexec caller.
+-- 构建一个外层调用方上下文区块，让结果显示真实连接客户端而不是内部 luaexec 调用方。
+local function render_outer_client_context()
+    local context = vulcan and vulcan.context or {}
+    local request = get_nested_value(context, "request") or {}
+    local client_info = get_nested_value(context, "client_info") or get_nested_value(request, "client_info") or {}
+    local client_budget = get_nested_value(context, "client_budget") or {}
+
+    local lines = {
+        "## Current Client Context",
+        "",
+        "This section shows the outer caller context captured before `vulcan.runtime.lua.exec` runs.",
+        "这个区块展示的是调用 `vulcan.runtime.lua.exec` 之前捕获到的外层真实调用方上下文。",
+        "",
+        "- client_kind: " .. render_optional_text(get_nested_value(client_info, "kind")),
+        "- client_name: " .. render_optional_text(get_nested_value(client_info, "name")),
+        "- tool_result_bytes_limit: " .. render_limit_text(get_nested_value(client_budget, "tool_result", "bytes")),
+        "- tool_result_line_limit: " .. render_limit_text(get_nested_value(client_budget, "tool_result", "lines")),
+        "- file_read_bytes_limit: " .. render_limit_text(get_nested_value(client_budget, "file_read", "bytes")),
+        "- file_read_line_limit: " .. render_limit_text(get_nested_value(client_budget, "file_read", "lines")),
+    }
+
+    return table.concat(lines, "\n")
+end
+
+-- Append one outer caller context block to the tool result so the caller can inspect the actual connected client metadata.
+-- 在工具结果末尾附加外层调用方上下文区块，方便调用方检查真实连接客户端元数据。
+local function append_outer_client_context(result)
+    local normalized_result = result
+    if not normalized_result:match("\n$") then
+        normalized_result = normalized_result .. "\n"
+    end
+    return normalized_result .. "\n" .. render_outer_client_context()
+end
+
 -- Decide whether one value is a blank string after trimming whitespace-only content.
 -- 判断一个值在去除纯空白内容后是否仍然属于空字符串。
 local function is_blank_string(value)
@@ -89,5 +162,5 @@ return function(args)
             .. "\n```"
     end
 
-    return result
+    return append_outer_client_context(result)
 end

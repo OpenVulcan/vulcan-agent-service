@@ -14,6 +14,7 @@ $ThirdParty = Join-Path $ProjectDir "third_party"
 $VldbControllerDir = Join-Path $ThirdParty "vldb_controller"
 $VldbControllerBinDir = Join-Path $VldbControllerDir "bin"
 $VldbControllerRepo = "OpenVulcan/vldb-controller"
+$VldbControllerTag = "v0.2.0"
 
 function Ensure-Dir {
     param([string]$Path)
@@ -55,27 +56,6 @@ function Get-CurrentArchitectureKey {
         "arm64" { return "aarch64" }
         default { throw "Unsupported architecture for dependency bootstrap: $arch" }
     }
-}
-
-function Get-LatestRepoTag {
-    param(
-        [string]$Repo,
-        [string]$DisplayName
-    )
-
-    $apiUrl = "https://api.github.com/repos/$Repo/tags?per_page=1"
-    Write-Host "==> Querying latest $DisplayName tag..."
-    $tags = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
-    if (-not $tags) {
-        throw "Latest $DisplayName tag lookup returned no results"
-    }
-
-    $firstTag = @($tags)[0]
-    if (-not $firstTag.name) {
-        throw "Latest $DisplayName tag is missing name"
-    }
-
-    return $firstTag.name
 }
 
 function Get-ReleaseByTagOrNull {
@@ -173,7 +153,7 @@ function Install-VldbControllerBinary {
         $markerFile = Join-Path $VldbControllerDir ".installed-$tagName-$($assetInfo.target)"
         $localArchivePath = $localArchive.FullName
     } else {
-        $tagName = Get-LatestRepoTag -Repo $VldbControllerRepo -DisplayName "vldb-controller"
+        $tagName = $VldbControllerTag
         $assetName = "vldb-controller-$tagName-$($assetInfo.target)$($assetInfo.archive_ext)"
         $markerFile = Join-Path $VldbControllerDir ".installed-$tagName-$($assetInfo.target)"
         $localArchivePath = Find-LocalArchive -AssetName $assetName

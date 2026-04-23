@@ -48,6 +48,19 @@ clients:
         lines:
           default: -1
 
+  - pattern: "mcphost"
+    budgets:
+      tool_result:
+        bytes:
+          default: 100000
+        lines:
+          default: -1
+      file_read:
+        bytes:
+          default: 100000
+        lines:
+          default: -1
+
   - pattern: "*qwen*"
     budgets:
       tool_result:

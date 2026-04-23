@@ -16,6 +16,23 @@ local function trim(text)
 end
 
 --[[
+从传入对象中解析真正的运行时上下文表。
+Resolve the actual runtime context table from the incoming object.
+]]
+local function resolve_runtime_context(vulcan_context)
+    local root = type(vulcan_context) == "table" and vulcan_context or nil
+    if not root then
+        return nil
+    end
+
+    if type(root.context) == "table" then
+        return root.context
+    end
+
+    return root
+end
+
+--[[
 从 `vulcan` 上下文中读取宿主已经解析完成的客户端预算对象。
 当前统一语法下，预算对象直接暴露 `tool_result` 与 `file_read` 两个 scope。
 当前统一语法下，预算对象直接暴露 `tool_result` 与 `file_read` 两个 scope。
@@ -23,7 +40,7 @@ Read the client-budget object already resolved by the host from the `vulcan` con
 Under the unified syntax, the budget object directly exposes the `tool_result` and `file_read` scopes.
 ]]
 local function resolve_client_budget(vulcan_context)
-    local context = type(vulcan_context) == "table" and vulcan_context or nil
+    local context = resolve_runtime_context(vulcan_context)
     if not context then
         return nil
     end
@@ -35,7 +52,7 @@ end
 Read the current tool config injected by the host from `vulcan`; return nil when no tool-specific config matched.
 ]]
 local function resolve_tool_config(vulcan_context)
-    local context = type(vulcan_context) == "table" and vulcan_context or nil
+    local context = resolve_runtime_context(vulcan_context)
     if not context then
         return nil
     end

@@ -234,10 +234,10 @@ MCP 层更适合负责：
 
 例如：
 
-- `vulcan.fs_*`
-- `vulcan.exec`
-- `vulcan.json_encode`
-- `vulcan.json_decode`
+- `vulcan.fs.*`
+- `vulcan.process.exec`
+- `vulcan.json.encode`
+- `vulcan.json.decode`
 - `vulcan.call`
 
 ### 8.2 Host 负责注入扩展能力

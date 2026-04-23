@@ -50,7 +50,7 @@
 当前 `vulcan.` 已经提供了很多能力，但存在以下问题：
 
 - 顶层函数平铺较多
-- `vulcan.exec` 与 `vulcan.luaexec` 的语义容易混淆
+- `vulcan.process.exec` 与 `vulcan.runtime.lua.exec` 的语义需要持续保持清晰
 - `context` / `client_*` / `tool_config` 等字段尚未结构化
 - system tools 与普通运行时能力尚未分层
 
@@ -591,17 +591,10 @@ help 不建议作为 `vulcan.` Core API。
 
 当前代码已经体现出两条能力链：
 
-- `vulcan.exec`
-  - 真实语义是系统进程执行
-- `vulcan.luaexec`
-  - 真实语义是隔离 Lua 执行
-
-推荐重构为：
-
 - `vulcan.process.exec`
+  - 真实语义是系统进程执行
 - `vulcan.runtime.lua.exec`
-
-兼容期可保留旧别名。
+  - 真实语义是隔离 Lua 执行
 
 ### 8.4 Context 应结构化
 

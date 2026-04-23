@@ -23,7 +23,7 @@
 - 命中行统一显示为 `Lx: text`，并对具体代码文本做首尾空白清理
 - 默认不要展开命中函数的完整源码，只显示命中行与结构上下文
 - 命中类型/结构声明时，应只显示相关结构链与命中行，不额外展开无关子树
-- 不再支持 `export_md_path`；若结果过大，应自动写入 `vulcan.temp_dir/mcp/cache/`，并返回 raw file 指针与安全分块读取计划，不再返回残缺正文
+- 不再支持 `export_md_path`；若结果过大，应自动写入 `vulcan.runtime.temp_dir/mcp/cache/`，并返回 raw file 指针与安全分块读取计划，不再返回残缺正文
 
 `codekit-markdown-menu` 这类“文档目录筛选”工具，建议遵循以下规则：
 
@@ -49,14 +49,14 @@
 - 默认仍启用忽略规则；仅当显式传入 `noignore=true` 时，才关闭 `.gitignore`、`.ignore` 与内建黑名单过滤
 - 不支持 `comment` 与 `export_md_path`
 - 适合作为仓库级或子系统级的首轮文件筛选入口；真正需要细节时，再转向 `codekit-ast-detail` 或 `codekit-rg`
-- 当输出文本超过与 `codekit-ast-detail` 相同的客户端安全预算时，应将完整结果写入 `vulcan.temp_dir/mcp/cache/`，并返回 raw file 指针与安全分块读取计划，不再拼接残缺正文
+- 当输出文本超过与 `codekit-ast-detail` 相同的客户端安全预算时，应将完整结果写入 `vulcan.runtime.temp_dir/mcp/cache/`，并返回 raw file 指针与安全分块读取计划，不再拼接残缺正文
 
 `codekit-ast-detail`、`codekit-ast-tree` 与 `codekit-rg` 当前推荐统一采用以下“大结果处理规则”：
 
 - 不再暴露 `cache_id`、`page`、`truncate_chars`、`cache_ttl_sec` 这类工具级缓存/分页参数
 - 统一按客户端预算的安全阈值决定是否内联返回，而不是分别维护固定字节阈值
 - 字符预算规则建议收敛到独立公共 Lua 文件中，避免不同工具各自维护一套客户端长度映射
-- 完整 Markdown 统一写入 `vulcan.temp_dir/mcp/cache/`，不再写入工作目录，避免缓存文件干扰模型对仓库状态的判断
+- 完整 Markdown 统一写入 `vulcan.runtime.temp_dir/mcp/cache/`，不再写入工作目录，避免缓存文件干扰模型对仓库状态的判断
 - 当结果发生落盘时，返回值应改为 raw file 指针块，至少包含原始文件路径、总行数，以及可直接用于宿主 `Read(offset, limit)` 的 chunk 参数（`offset` 为 0-based 起始行，`limit` 为读取行数），同时保留 `start_line/end_line` 作为可读锚点
 - `codekit-ast-detail` 不再暴露 `export_md_path`，仅保留内联返回与超限 pointer 两种行为
 - `codekit-rg` 也不再暴露 `export_md_path`，仅保留内联返回与超限 pointer 两种行为
@@ -226,14 +226,14 @@ python scripts/verify_vmcp_ast_comment_notes.py
 
 Rust 侧注册到 Lua 全局的扩展模块。
 
-### `vulcan.log(level, msg)`
+### `vulcan.runtime.log(level, msg)`
 
 打印带级别的日志到 stderr。
 
 ```lua
-vulcan.log("info", "scanning directory: " .. dir)
-vulcan.log("warn", "file not found")
-vulcan.log("error", "parse failed")
+vulcan.runtime.log("info", "scanning directory: " .. dir)
+vulcan.runtime.log("warn", "file not found")
+vulcan.runtime.log("error", "parse failed")
 ```
 
 ### `print(...)`
@@ -245,88 +245,88 @@ print("found:", #files, "files")
 print(fn_name, line_num, kind)
 ```
 
-### `vulcan.fs_list(dir) -> table`
+### `vulcan.fs.list(dir) -> table`
 
 列出目录下所有文件/子目录名。
 
 ```lua
-local entries = vulcan.fs_list("src/")
+local entries = vulcan.fs.list("src/")
 for _, name in ipairs(entries) do
     print(name)
 end
 ```
 
-### `vulcan.fs_read(path) -> string`
+### `vulcan.fs.read(path) -> string`
 
 读取文件全部内容（文本模式）。
 
 ```lua
-local content = vulcan.fs_read("config.yaml")
+local content = vulcan.fs.read("config.yaml")
 ```
 
-### `vulcan.fs_write(path, content)`
+### `vulcan.fs.write(path, content)`
 
 写入文件（覆盖模式）。
 
 ```lua
-vulcan.fs_write("output.json", vulcan.json_encode(data))
+vulcan.fs.write("output.json", vulcan.json.encode(data))
 ```
 
-### `vulcan.fs_exists(path) -> boolean`
+### `vulcan.fs.exists(path) -> boolean`
 
 判断文件或目录是否存在。
 
 ```lua
-if vulcan.fs_exists("cache.json") then
-    local cache = vulcan.json_decode(vulcan.fs_read("cache.json"))
+if vulcan.fs.exists("cache.json") then
+    local cache = vulcan.json.decode(vulcan.fs.read("cache.json"))
 end
 ```
 
-### `vulcan.fs_is_dir(path) -> boolean`
+### `vulcan.fs.is_dir(path) -> boolean`
 
 判断是否为目录。
 
 ```lua
-if vulcan.fs_is_dir(path) then
-    vulcan.log("info", "skipping directory: " .. path)
+if vulcan.fs.is_dir(path) then
+    vulcan.runtime.log("info", "skipping directory: " .. path)
 end
 ```
 
-### `vulcan.osinfo() -> table`
+### `vulcan.os.info() -> table`
 
 返回当前平台信息。
 
 ```lua
-local info = vulcan.osinfo()
+local info = vulcan.os.info()
 print(info.os, info.arch)
 -- windows  x86_64
 ```
 
-### `vulcan.path_join(...) -> string`
+### `vulcan.path.join(...) -> string`
 
 拼接路径，自动使用平台分隔符。
 
 ```lua
-local full = vulcan.path_join("src", "utils", "helper.lua")
+local full = vulcan.path.join("src", "utils", "helper.lua")
 -- Windows: src\utils\helper.lua
 -- Unix:    src/utils/helper.lua
 ```
 
-### `vulcan.json_encode(table) -> string`
+### `vulcan.json.encode(table) -> string`
 
 Lua table 转 JSON 字符串。
 
 ```lua
-local json = vulcan.json_encode({ name = "test", count = 42 })
+local json = vulcan.json.encode({ name = "test", count = 42 })
 -- => '{"name":"test","count":42}'
 ```
 
-### `vulcan.json_decode(string) -> table`
+### `vulcan.json.decode(string) -> table`
 
 JSON 字符串转 Lua table。
 
 ```lua
-local t = vulcan.json_decode('{"name":"test","count":42}')
+local t = vulcan.json.decode('{"name":"test","count":42}')
 print(t.name)  -- test
 ```
 
@@ -364,12 +364,12 @@ print(result)
 - `info()` 在未启用 LanceDB 时也会返回相同结构，方便 Lua 侧先做状态判断
 - 若当前 skill 未启用 LanceDB，真正的写操作接口会返回“当前 skill 未启用 lancedb”错误
 
-### `vulcan.temp_dir -> string`
+### `vulcan.runtime.temp_dir -> string`
 
 返回宿主提供的 MCP 临时目录绝对路径。当前规则为“程序目录的上级目录下的 `temp` 目录”，例如调试构建常见为 `output/temp`。
 
 ```lua
-local spill_root = vulcan.path_join(vulcan.temp_dir, "mcp", "cache")
+local spill_root = vulcan.path.join(vulcan.runtime.temp_dir, "mcp", "cache")
 print("temp spill root:", spill_root)
 ```
 
@@ -473,7 +473,7 @@ package.cpath -- C 模块搜索路径
 
 ### `cjson` — JSON 处理
 
-比 `vulcan.json_encode/decode` 更快的 JSON 库。
+比 `vulcan.json.encode/decode` 更快的 JSON 库。
 
 ```lua
 local json = require "cjson"
@@ -644,13 +644,13 @@ end
 如需让宿主接管超限处理，可改为：
 
 ```lua
-return content, vulcan.overflow_type.truncate
+return content, vulcan.runtime.overflow_type.truncate
 ```
 
 或：
 
 ```lua
-return content, vulcan.overflow_type.page, "overflow_page.md"
+return content, vulcan.runtime.overflow_type.page, "overflow_page.md"
 ```
 
 ```json
@@ -821,8 +821,17 @@ dependencies: []
 
 - 使用 `file` 模式时，执行期间自动把 `cwd` 切换到目标文件目录
 - 同时注入：
-  - `vulcan.entry_file`
-  - `vulcan.entry_dir`
+  - `vulcan.context.entry_file`
+  - `vulcan.context.entry_dir`
+- 返回结果末尾会固定追加一个 `Current Client Context` 区块
+- 该区块展示的是发起当前 `vulcan-lua-run` 调用的外层真实客户端上下文
+- 该区块会包含：
+  - `client_kind`
+  - `client_name`
+  - `tool_result_bytes_limit`
+  - `tool_result_line_limit`
+  - `file_read_bytes_limit`
+  - `file_read_line_limit`
 
 ### `vulcan-lua` 的额外边界
 
@@ -832,6 +841,8 @@ dependencies: []
 - 内部工具调用会以受限模拟客户端 `luaexec_call` 执行，目前默认预算是：
   - `tool_result.bytes = 10000`
   - `tool_result.lines = -1`
+- 因此脚本内部如果主动读取 `vulcan.context.request`，看到的可能是内部 `luaexec_call`
+- 需要判断真实调用方时，应以 `vulcan-lua-run` 返回里的 `Current Client Context` 区块为准
 - 宿主对字节预算会再应用安全比例，因此 Lua 实际拿到的最终 `bytes` 可能小于配置原值
 - 同时仍禁止：
   - 调用当前发起 `luaexec` 的工具自身

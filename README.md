@@ -67,6 +67,17 @@
 - `executable_path`
 - `process_mode`
 
+其中如果需要修改 controller 默认端口，直接修改：
+
+- `space_controller.endpoint`
+
+例如把默认 `19801` 改成 `20333`：
+
+```yaml
+space_controller:
+  endpoint: "http://127.0.0.1:20333"
+```
+
 其中有三个约束需要特别注意：
 
 - `auto_spawn=true` 只能和**本地可拉起**的 controller endpoint 搭配使用
