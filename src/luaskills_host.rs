@@ -92,8 +92,8 @@ pub fn build_luaskills_engine_options(
     let download_cache_root = Some(runtime_temp_root.join("downloads"));
     let lua_packages_dir = resolve_lua_packages_dir(&runtime_root)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-    // Keep the legacy `luaexec_program` unset because isolated runlua now uses the in-process dedicated VM pool.
-    // 保持历史 `luaexec_program` 为空，因为隔离 runlua 现已统一走进程内独立 VM 池。
+    // The upstream runtime has removed the legacy `luaexec_program`; isolated runlua now only uses the in-process dedicated VM pool.
+    // 上游运行时已移除历史 `luaexec_program`；隔离 runlua 现仅使用进程内独立 VM 池。
     let host_options = LuaRuntimeHostOptions {
         temp_dir: Some(temp_root.clone()),
         resources_dir: resolve_runtime_resources_dir(&runtime_root)
@@ -1277,31 +1277,6 @@ mod tests {
                 .as_ref(),
             Some(&copied_executable)
         );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// Engine options should no longer inject the legacy luaexec program path because isolated runlua is now in-process.
-    /// 引擎选项不应再注入历史 luaexec 程序路径，因为隔离 runlua 现已改为进程内执行。
-    #[test]
-    fn build_engine_options_does_not_inject_legacy_luaexec_program() {
-        let _guard = acquire_environment_lock();
-        let root = unique_test_dir("engine-options-no-luaexec-program");
-        create_runtime_root_for_test(&root);
-        let config = Config {
-            runtime_root: Some(root.to_string_lossy().to_string()),
-            ..Config::default()
-        };
-        let pool_config = LuaVmPoolConfig {
-            min_size: 1,
-            max_size: 2,
-            idle_ttl_secs: 60,
-        };
-
-        let options =
-            build_luaskills_engine_options(&config, pool_config, ToolCacheConfig::default())
-                .expect("failed to build luaskills engine options");
-
-        assert!(options.host_options.luaexec_program.is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 

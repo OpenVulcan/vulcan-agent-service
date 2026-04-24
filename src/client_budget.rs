@@ -1019,6 +1019,89 @@ mod tests {
                 .iter()
                 .any(|rule| rule.pattern == "*opencode*")
         );
+
+        let opencode_rule = parsed
+            .clients
+            .iter()
+            .find(|rule| rule.pattern == "*opencode*")
+            .expect("opencode rule should exist");
+        let tool_result = opencode_rule
+            .budgets
+            .get("tool_result")
+            .expect("opencode tool_result budget should exist");
+        let line_config = tool_result
+            .get("lines")
+            .expect("opencode tool_result.lines should exist");
+        let byte_config = tool_result
+            .get("bytes")
+            .expect("opencode tool_result.bytes should exist");
+
+        assert_eq!(line_config.config_sources.len(), 1);
+        assert_eq!(line_config.config_sources[0].source_type, "json");
+        assert_eq!(
+            line_config.config_sources[0].path.as_deref(),
+            Some("~/.config/opencode/opencode.json")
+        );
+        assert_eq!(
+            line_config.config_sources[0].field.as_deref(),
+            Some("tool_output.max_lines")
+        );
+        assert_eq!(byte_config.config_sources.len(), 1);
+        assert_eq!(byte_config.config_sources[0].source_type, "json");
+        assert_eq!(
+            byte_config.config_sources[0].path.as_deref(),
+            Some("~/.config/opencode/opencode.json")
+        );
+        assert_eq!(
+            byte_config.config_sources[0].field.as_deref(),
+            Some("tool_output.max_bytes")
+        );
+    }
+
+    /// JSON config sources should resolve nested dotted fields so OpenCode budget values can be loaded from `tool_output.*`.
+    /// JSON 配置源应支持解析嵌套点路径字段，从而读取 OpenCode 的 `tool_output.*` 预算值。
+    #[test]
+    fn read_metric_from_source_reads_nested_json_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "vulcan-mcp-client-budget-json-source-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let config_path = root.join("opencode.json");
+        std::fs::create_dir_all(&root).expect("failed to create json source directory");
+        std::fs::write(
+            &config_path,
+            r#"{"tool_output":{"max_lines":10000,"max_bytes":204800}}"#,
+        )
+        .expect("failed to write json budget source");
+
+        let line_source = BudgetConfigSource {
+            source_type: "json".to_string(),
+            key: None,
+            path: Some(config_path.to_string_lossy().to_string()),
+            field: Some("tool_output.max_lines".to_string()),
+        };
+        let byte_source = BudgetConfigSource {
+            source_type: "json".to_string(),
+            key: None,
+            path: Some(config_path.to_string_lossy().to_string()),
+            field: Some("tool_output.max_bytes".to_string()),
+        };
+
+        let resolved_lines =
+            read_metric_from_source(&line_source).expect("expected line metric from json source");
+        let resolved_bytes =
+            read_metric_from_source(&byte_source).expect("expected byte metric from json source");
+
+        assert_eq!(resolved_lines.value, Some(10_000));
+        assert_eq!(resolved_lines.source, "client_config");
+        assert_eq!(resolved_bytes.value, Some(204_800));
+        assert_eq!(resolved_bytes.source, "client_config");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Verify that when a client does not explicitly define file_read, it falls back to the same client's tool_result budget.

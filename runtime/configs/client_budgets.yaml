@@ -125,5 +125,13 @@ clients:
       tool_result:
         lines:
           default: 2000
+          config_sources:
+            - type: json
+              path: "~/.config/opencode/opencode.json"
+              field: "tool_output.max_lines"
         bytes:
           default: 51200
+          config_sources:
+            - type: json
+              path: "~/.config/opencode/opencode.json"
+              field: "tool_output.max_bytes"
