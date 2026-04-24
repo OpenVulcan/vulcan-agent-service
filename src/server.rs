@@ -39,6 +39,21 @@ pub struct McpServer {
     lua_skill_roots: Option<Vec<RuntimeSkillRoot>>,
 }
 
+/// Return whether one tool name belongs to the host-owned MCP tool surface.
+/// 返回某个工具名是否属于宿主自有的 MCP 工具面。
+pub fn is_host_tool_name(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "vulcan-help-list" | "vulcan-help-detail" | "reload_vulcan_mcp_configs"
+    )
+}
+
+/// Return whether one host-owned MCP tool requires a ready Lua engine to succeed.
+/// 返回某个宿主自有 MCP 工具在执行时是否依赖已就绪的 Lua 引擎。
+pub fn host_tool_requires_lua_engine(tool_name: &str) -> bool {
+    matches!(tool_name, "vulcan-help-list" | "vulcan-help-detail")
+}
+
 struct ServerInner {
     /// Host-owned MCP tools registered by the current host adapter and never mutated by LuaSkills runtime deltas.
     /// 当前宿主适配层拥有的 MCP 工具注册表，不会被 LuaSkills 运行时差异事件修改。
@@ -127,6 +142,7 @@ impl McpServer {
             },
         );
         set_skill_lifecycle_callback(Some(lifecycle_callback));
+        self.register_lua_help_tools();
 
         // Register Lua skills strictly as MCP tools.
         // 严格仅将 Lua skills 注册为 MCP tools。
@@ -142,6 +158,29 @@ impl McpServer {
     }
 
     fn register_defaults(&mut self) {
+        let mut inner = self.inner.try_lock().unwrap();
+
+        // --- reload_vulcan_mcp_configs: hot reload runtime client budget / tool config files ---
+        inner.host_tools.insert(
+            "reload_vulcan_mcp_configs".to_string(),
+            Tool::with_annotations(
+                "reload_vulcan_mcp_configs",
+                "Reload hot-reloadable Vulcan MCP runtime config files. This refreshes client_budgets.yaml and tool_configs.yaml, but does not reload config.yaml or restart-bound transport settings. Use this only when the user explicitly asks to reload runtime configs; do not call it proactively during normal tool execution.",
+                json!({}),
+                vec![],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(true),
+                },
+            ),
+        );
+    }
+
+    /// Register the host-wrapped Lua help tools only after the Lua engine has been configured successfully.
+    /// 仅在 Lua 引擎成功完成配置后再注册宿主包装的 Lua help 工具。
+    fn register_lua_help_tools(&mut self) {
         let mut inner = self.inner.try_lock().unwrap();
 
         // --- vulcan-help-list: list strict LuaSkills help trees for host-side help wrappers ---
@@ -174,23 +213,6 @@ impl McpServer {
                 vec!["skill".to_string(), "flow".to_string()],
                 ToolAnnotations {
                     read_only_hint: Some(true),
-                    destructive_hint: Some(false),
-                    user_confirmation_required: Some(false),
-                    idempotent_hint: Some(true),
-                },
-            ),
-        );
-
-        // --- reload_vulcan_mcp_configs: hot reload runtime client budget / tool config files ---
-        inner.host_tools.insert(
-            "reload_vulcan_mcp_configs".to_string(),
-            Tool::with_annotations(
-                "reload_vulcan_mcp_configs",
-                "Reload hot-reloadable Vulcan MCP runtime config files. This refreshes client_budgets.yaml and tool_configs.yaml, but does not reload config.yaml or restart-bound transport settings. Use this only when the user explicitly asks to reload runtime configs; do not call it proactively during normal tool execution.",
-                json!({}),
-                vec![],
-                ToolAnnotations {
-                    read_only_hint: Some(false),
                     destructive_hint: Some(false),
                     user_confirmation_required: Some(false),
                     idempotent_hint: Some(true),
@@ -440,8 +462,8 @@ impl McpServer {
             },
             instructions: Some(
                 "Vulcan MCP server supporting 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05. \
-                 By default this server exposes Lua skill provided MCP tools, prompt \
-                 completions, and host-wrapped strict help tools. LuaSkills Core resources, \
+                 When Lua skills are loaded, this server exposes Lua skill provided MCP tools, \
+                 prompt completions, and host-wrapped strict help tools. LuaSkills Core resources, \
                  resource templates, and prompts are disabled in strict mode."
                     .to_string(),
             ),
@@ -827,6 +849,7 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use vulcan_luaskills::RuntimeHelpNodeDescriptor;
 
     fn make_help_descriptor() -> RuntimeSkillHelpDescriptor {
@@ -870,6 +893,48 @@ mod tests {
             "- `main`: skill package description. Summarize the package-level capability surface."
         ));
         assert!(markdown.contains("- `search`: Search indexed project files."));
+    }
+
+    /// Minimal servers without a Lua engine should expose only engine-independent host tools in `tools/list`.
+    /// 未加载 Lua 引擎的最小服务在 `tools/list` 中应只暴露与引擎无关的宿主工具。
+    #[test]
+    fn tools_list_hides_help_tools_when_lua_engine_is_unavailable() {
+        let server = McpServer::new();
+        let response = server
+            .handle_tools_list()
+            .expect("tools/list should succeed on minimal server");
+        let tool_names: HashSet<String> = response
+            .get("tools")
+            .and_then(Value::as_array)
+            .expect("tools array should exist")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect();
+
+        assert!(tool_names.contains("reload_vulcan_mcp_configs"));
+        assert!(!tool_names.contains("vulcan-help-list"));
+        assert!(!tool_names.contains("vulcan-help-detail"));
+    }
+
+    /// Lua help tools should become visible only after the Lua runtime capability has been registered explicitly.
+    /// Lua help 工具只应在显式注册了 Lua 运行时能力后才对外可见。
+    #[test]
+    fn register_lua_help_tools_exposes_help_tools_after_runtime_ready() {
+        let mut server = McpServer::new();
+        server.register_lua_help_tools();
+        let response = server
+            .handle_tools_list()
+            .expect("tools/list should succeed after help registration");
+        let tool_names: HashSet<String> = response
+            .get("tools")
+            .and_then(Value::as_array)
+            .expect("tools array should exist")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect();
+
+        assert!(tool_names.contains("vulcan-help-list"));
+        assert!(tool_names.contains("vulcan-help-detail"));
     }
 }
 

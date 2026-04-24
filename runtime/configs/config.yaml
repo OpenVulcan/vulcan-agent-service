@@ -43,6 +43,10 @@ grpc: "127.0.0.1:19202"
 # runtime_root: "D:/projects/vulcan-mcp-client/output"
 # Linux/macOS 示例 / Linux/macOS example:
 # runtime_root: "/opt/vulcan/output"
+# 中文：当前产品默认把 `skill_config.json`、`client_budgets.yaml`、`tool_configs.yaml` 等运行期文件统一收敛在这个运行根下。
+# English: This product centralizes runtime files such as `skill_config.json`, `client_budgets.yaml`, and `tool_configs.yaml` under this runtime root.
+# 中文：统一 Skill 配置文件路径固定为 `<runtime_root>/configs/skill_config.json`，不再单独提供覆盖参数。
+# English: The unified skill config file path is fixed at `<runtime_root>/configs/skill_config.json`; no separate override is exposed.
 
 # 中文：依赖目录名称。它会被固定创建在 skills 根目录的同级目录下，位置不可变，仅名称可配。
 # English: Dependency directory name. It is always created as a sibling of the skills root; only the directory name is configurable.

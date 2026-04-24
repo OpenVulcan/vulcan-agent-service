@@ -35,7 +35,7 @@
 - 把 skill entry 映射成 MCP tools
 - 提供宿主封装的 strict help 工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
-- 支持宿主级 `client_budgets.yaml` 与 `tool_configs.yaml`
+- 支持宿主级 `client_budgets.yaml`、`tool_configs.yaml` 与统一 `skill_config.json`
 
 ## 数据库访问模型
 
@@ -115,7 +115,7 @@ runtime/skills/<skill>/
 
 ### 2. Help 工具
 
-help 由宿主包装为：
+当 Lua engine 成功加载了运行期 skill 后，help 会由宿主包装为：
 
 - `vulcan-help-list`
 - `vulcan-help-detail`
@@ -203,11 +203,22 @@ output/
 
 `vulcan-mcp` 仍然使用宿主配置文件，例如：
 
+- CLI 入口已收敛为 `--runtime-root` 或标准运行目录自动发现，不再支持 `--config`
+
 - `config.yaml`
 - `client_budgets.yaml`
 - `tool_configs.yaml`
+- `skill_config.json`
 
-这些配置属于宿主层，**不会进入 `vulcan-luaskills` 库内部读取逻辑**。
+其中：
+
+- `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml`
+  - 属于宿主层配置，由 `vulcan-mcp` 自己读取
+- `skill_config.json`
+  - 由宿主按 `runtime_root` 固定推导为 `<runtime_root>/configs/skill_config.json` 后传给 `vulcan-luaskills`
+  - 当前产品不再提供单独文件路径覆盖，避免与运行根参数产生冲突
+  - 当前文件不会作为独立 MCP 工具对外暴露，而是作为 `vulcan-luaskills` 的统一运行期配置文件
+  - 仓库内提供默认空模板，初始内容为 `{}`，便于运行目录直接复制使用
 
 ### Lua VM 池配置
 
@@ -271,13 +282,13 @@ cargo test
 
 ### stdio 启动
 
-当宿主需要以标准输入输出方式被外部 MCP 客户端直接拉起时，可使用：
+当直接从仓库源码目录启动时，需要显式指定运行根，例如：
 
 ```bash
-cargo run -- --stdio
+cargo run -- --stdio --runtime-root output
 ```
 
-构建产物则可直接执行：
+如果直接执行构建产物，则继续使用运行目录自动发现：
 
 ```bash
 ./output/bin/vulcan-mcp --stdio

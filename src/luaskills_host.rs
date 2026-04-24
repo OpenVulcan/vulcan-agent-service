@@ -86,7 +86,7 @@ pub fn build_luaskills_engine_options(
     cache_config: ToolCacheConfig,
 ) -> Result<LuaEngineOptions, Box<dyn std::error::Error>> {
     let runtime_root =
-        resolve_runtime_root_from_config(config).ok_or("Failed to resolve runtime root")?;
+        resolve_runtime_root_from_config(config)?.ok_or("Failed to resolve runtime root")?;
     let runtime_temp_root = ensure_runtime_temp_dir()?;
     let temp_root = runtime_temp_root.join("mcp");
     let download_cache_root = Some(runtime_temp_root.join("downloads"));
@@ -142,6 +142,10 @@ pub fn build_luaskills_engine_options(
         space_controller: resolve_space_controller_options(config, &runtime_root)?,
         cache_config: Some(cache_config),
         runlua_pool_config: resolve_runlua_pool_config(config),
+        skill_config_file_path: Some(
+            resolve_skill_config_file_path(&runtime_root)
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+        ),
         reserved_entry_names: host_reserved_tool_names(),
         ignored_skill_ids: resolve_ignored_skill_ids(config),
         capabilities: LuaRuntimeCapabilityOptions {
@@ -168,6 +172,21 @@ fn resolve_runlua_pool_config(config: &Config) -> Option<LuaRuntimeRunLuaPoolCon
         max_size: configured_pool.max_size.unwrap_or(4),
         idle_ttl_secs: configured_pool.idle_ttl_secs.unwrap_or(60),
     })
+}
+
+/// Resolve the unified skill-config file path strictly from the runtime root using the fixed product layout.
+/// 严格基于运行根与固定产品目录结构解析统一 Skill 配置文件路径。
+pub fn resolve_skill_config_file_path(runtime_root: &std::path::Path) -> Result<PathBuf, String> {
+    let resolved_path = runtime_root.join("configs").join("skill_config.json");
+
+    if resolved_path.exists() && !resolved_path.is_file() {
+        return Err(format!(
+            "runtime skill config path is not a file: {}",
+            resolved_path.display()
+        ));
+    }
+
+    Ok(resolved_path)
 }
 
 /// Map one host config controller process mode into the LuaSkills controller process mode enum.
@@ -381,7 +400,7 @@ fn resolve_config_base_dir(config: &Config) -> Option<PathBuf> {
 
 /// Resolve the runtime root directory according to host configuration first and fallback layouts second.
 /// 优先按宿主配置、其次按回退布局解析运行根目录。
-pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
+pub fn resolve_runtime_root_from_config(config: &Config) -> Result<Option<PathBuf>, String> {
     if let Some(configured_root) = config
         .runtime_root
         .as_ref()
@@ -394,17 +413,40 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Option<PathBuf> {
         } else if let Some(config_base_dir) = resolve_config_base_dir(config) {
             config_base_dir.join(candidate_root)
         } else {
-            std::env::current_dir().ok()?.join(candidate_root)
+            std::env::current_dir()
+                .map_err(|error| {
+                    format!(
+                        "failed to resolve current directory while normalizing runtime_root '{}': {}",
+                        configured_root, error
+                    )
+                })?
+                .join(candidate_root)
         };
-        if !normalized_root.exists() || !normalized_root.is_dir() {
-            return None;
+        if !normalized_root.exists() {
+            return Err(format!(
+                "configured runtime_root does not exist: {}",
+                normalized_root.display()
+            ));
         }
-        return Some(normalized_root);
+        if !normalized_root.is_dir() {
+            return Err(format!(
+                "configured runtime_root is not a directory: {}",
+                normalized_root.display()
+            ));
+        }
+        return Ok(Some(normalized_root));
     }
 
-    let exe_path = std::env::current_exe().ok()?;
-    let current_dir = std::env::current_dir().ok()?;
-    resolve_implicit_runtime_root_from_paths(&current_dir, &exe_path)
+    let Some(exe_path) = std::env::current_exe().ok() else {
+        return Ok(None);
+    };
+    let Some(current_dir) = std::env::current_dir().ok() else {
+        return Ok(None);
+    };
+    Ok(resolve_implicit_runtime_root_from_paths(
+        &current_dir,
+        &exe_path,
+    ))
 }
 
 /// Resolve one implicit runtime root from the current directory and executable path fallback chain.
@@ -520,7 +562,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
         )?;
     }
 
-    if let Some(runtime_root) = resolve_runtime_root_from_config(config) {
+    if let Some(runtime_root) = resolve_runtime_root_from_config(config)? {
         if config.skill_roots.is_none() {
             push_unique_root("ROOT".to_string(), runtime_root.join("skills"))?;
         }
@@ -1352,6 +1394,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Missing skill config path should default to the runtime `configs/skill_config.json` file so MCP and LuaSkills share one stable location.
+    /// 缺失 Skill 配置路径时应默认回退到运行根下的 `configs/skill_config.json`，让 MCP 与 LuaSkills 共享同一稳定位置。
+    #[test]
+    fn build_engine_options_defaults_skill_config_path_under_runtime_configs() {
+        let _guard = acquire_environment_lock();
+        let root = unique_test_dir("skill-config-default-path");
+        create_runtime_root_for_test(&root);
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+
+        let options = build_luaskills_engine_options(
+            &config,
+            LuaVmPoolConfig {
+                min_size: 1,
+                max_size: 2,
+                idle_ttl_secs: 60,
+            },
+            ToolCacheConfig::default(),
+        )
+        .expect("failed to build luaskills engine options");
+
+        assert_eq!(
+            options.host_options.skill_config_file_path.as_ref(),
+            Some(&root.join("configs").join("skill_config.json"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runtime skill config path resolution should always stay under the runtime-root `configs/` directory.
+    /// 运行时 Skill 配置路径解析应始终固定在运行根的 `configs/` 目录下。
+    #[test]
+    fn resolve_skill_config_file_path_uses_runtime_root_configs_directory() {
+        let root = unique_test_dir("skill-config-fixed-path");
+        create_runtime_root_for_test(&root);
+
+        let resolved = resolve_skill_config_file_path(&root)
+            .expect("runtime skill config path should resolve");
+        assert_eq!(resolved, root.join("configs").join("skill_config.json"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Relative controller executable paths should be resolved against the runtime root instead of the current working directory.
     /// 相对控制器可执行文件路径应基于 runtime_root 解析，而不是依赖当前工作目录。
     #[test]
@@ -1488,8 +1574,9 @@ mod tests {
             loaded_config_path: Some(config_dir.join("config.yaml").to_string_lossy().to_string()),
             ..Config::default()
         };
-        let resolved =
-            resolve_runtime_root_from_config(&config).expect("runtime root should resolve");
+        let resolved = resolve_runtime_root_from_config(&config)
+            .expect("runtime root lookup should succeed")
+            .expect("runtime root should resolve");
         assert_eq!(resolved, runtime_root);
         let _ = std::fs::remove_dir_all(&base_dir);
     }
@@ -1523,8 +1610,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base_dir);
     }
 
-    /// Invalid explicit runtime_root values should be rejected during resolution instead of flowing deeper into runtime assembly.
-    /// 无效的显式 runtime_root 应在解析阶段被拒绝，而不是继续流入更深的运行时装配链路。
+    /// Invalid explicit runtime_root values should return explicit resolution errors instead of silently collapsing into implicit fallback discovery.
+    /// 无效的显式 runtime_root 应返回明确的解析错误，而不是静默塌缩成隐式回退发现。
     #[test]
     fn resolve_runtime_root_rejects_missing_or_non_directory_paths() {
         let base_dir = unique_test_dir("runtime-root-invalid");
@@ -1541,18 +1628,22 @@ mod tests {
             ),
             ..Config::default()
         };
+        let missing_error = resolve_runtime_root_from_config(&missing_config)
+            .expect_err("missing runtime root should fail");
         assert!(
-            resolve_runtime_root_from_config(&missing_config).is_none(),
-            "missing runtime root should be rejected"
+            missing_error.contains("configured runtime_root does not exist"),
+            "unexpected error: {missing_error}"
         );
 
         let file_config = Config {
             runtime_root: Some(file_path.to_string_lossy().to_string()),
             ..Config::default()
         };
+        let file_error = resolve_runtime_root_from_config(&file_config)
+            .expect_err("file runtime root should fail");
         assert!(
-            resolve_runtime_root_from_config(&file_config).is_none(),
-            "file-shaped runtime root should be rejected"
+            file_error.contains("configured runtime_root is not a directory"),
+            "unexpected error: {file_error}"
         );
         let _ = std::fs::remove_dir_all(&base_dir);
     }

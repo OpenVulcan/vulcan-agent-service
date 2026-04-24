@@ -232,28 +232,20 @@ impl Config {
         Ok(config)
     }
 
-    /// 1. `-config`
-    /// 按优先级加载配置：
-    /// 2. `<exe_parent>
-    /// `--config` 命令行参数；
-    /// configs
-    /// config.yaml` 运行时输出目录配置。
-    /// Load configuration with the following priority:
-    /// 仓库内默认模板文件位于 `runtime/configs/config.yaml`，构建时会同步到输出目录。
-    /// 1. `-config` / `--config` CLI argument;
-    /// 如果未找到配置，则直接退出。
-    /// 2. `<exe_parent>/configs/config.yaml` in the runtime output directory.
+    /// Load configuration strictly from the runtime-root layout or the built-in executable-side runtime layout.
+    /// 严格从 runtime_root 目录布局或内置的可执行文件同级运行目录布局加载配置。
     /// The repository template lives at `runtime/configs/config.yaml` and is synced during build.
-    /// Exit immediately if no config file is found.
+    /// 仓库内默认模板文件位于 `runtime/configs/config.yaml`，构建时会同步到输出目录。
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime_root_arg = find_runtime_root_arg()?;
-        let config_path = find_config_arg()?
-            .or_else(|| {
-                runtime_root_arg
-                    .as_deref()
-                    .and_then(find_runtime_root_config)
-            })
-            .or_else(find_exe_parent_config);
+        let args: Vec<String> = std::env::args().collect();
+        reject_legacy_config_flag(&args)?;
+        let runtime_root_arg =
+            parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])?;
+        let config_path = if let Some(runtime_root) = runtime_root_arg.as_deref() {
+            find_runtime_root_config(runtime_root)
+        } else {
+            find_exe_parent_config()
+        };
 
         match config_path {
             Some(path) => {
@@ -270,14 +262,16 @@ impl Config {
             None => {
                 eprintln!("[Config] Error: No config file found.");
                 eprintln!("[Config] Searched:");
-                eprintln!("[Config]   - -config flag");
-                eprintln!(
-                    "[Config]   - -runtime-root/--runtime-root + <runtime_root>/configs/config.yaml"
-                );
-                eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
+                if runtime_root_arg.is_some() {
+                    eprintln!(
+                        "[Config]   - -runtime-root/--runtime-root + <runtime_root>/configs/config.yaml"
+                    );
+                } else {
+                    eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
+                }
                 eprintln!("[Config] Template source in repository: runtime/configs/config.yaml");
                 eprintln!(
-                    "[Config] Provide config via -config flag or place the built config file at <exe_parent>/configs/config.yaml."
+                    "[Config] Provide config via --runtime-root and place config at <runtime_root>/configs/config.yaml, or place the built config file at <exe_parent>/configs/config.yaml."
                 );
                 std::process::exit(1);
             }
@@ -285,18 +279,24 @@ impl Config {
     }
 }
 
-/// Look for -config or --config in argv.
-/// 在命令行参数中查找 -config 或 --config。
-fn find_config_arg() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    parse_cli_path_flag_from_args(&args, &["-config", "--config"])
+/// Reject the removed legacy `--config` entry so runtime configuration stays anchored to one runtime root.
+/// 拒绝已移除的历史 `--config` 入口，从而让运行时配置始终锚定到唯一运行根。
+fn reject_legacy_config_flag(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.iter().any(|arg| is_removed_config_flag_arg(arg)) {
+        return Err(
+            "Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into(),
+        );
+    }
+    Ok(())
 }
 
-/// Look for -runtime-root or --runtime-root in argv.
-/// 在命令行参数中查找 -runtime-root 或 --runtime-root。
-fn find_runtime_root_arg() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
+/// Return whether one raw argv token still uses the removed `--config` / `-config` CLI entry, including `--config=...` inline forms.
+/// 返回某个原始 argv 片段是否仍在使用已移除的 `--config` / `-config` CLI 入口，包含 `--config=...` 内联写法。
+fn is_removed_config_flag_arg(arg: &str) -> bool {
+    arg == "-config"
+        || arg == "--config"
+        || arg.starts_with("-config=")
+        || arg.starts_with("--config=")
 }
 
 /// Parse one CLI path flag from argv and fail early when the flag is missing a concrete value.
@@ -306,6 +306,12 @@ fn parse_cli_path_flag_from_args(
     flags: &[&str],
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     for i in 0..args.len() {
+        if let Some((flag, value)) = parse_inline_cli_path_flag_value(args[i].as_str(), flags) {
+            if value.is_empty() {
+                return Err(format!("{flag} requires a value").into());
+            }
+            return Ok(Some(value.to_string()));
+        }
         if flags.iter().any(|flag| args[i] == *flag) {
             let flag = args[i].as_str();
             let Some(value) = args.get(i + 1) else {
@@ -318,6 +324,19 @@ fn parse_cli_path_flag_from_args(
         }
     }
     Ok(None)
+}
+
+/// Parse one inline `--flag=value` style CLI path token and return the matched canonical flag with its value.
+/// 解析一条 `--flag=value` 风格的内联 CLI 路径参数，并返回匹配到的规范标志及其取值。
+fn parse_inline_cli_path_flag_value<'a>(
+    arg: &'a str,
+    flags: &[&'a str],
+) -> Option<(&'a str, &'a str)> {
+    flags.iter().find_map(|flag| {
+        arg.strip_prefix(flag)
+            .and_then(|remainder| remainder.strip_prefix('='))
+            .map(|value| (*flag, value))
+    })
 }
 
 /// Resolve the config path under one explicit runtime root.
@@ -402,20 +421,35 @@ mod tests {
         );
     }
 
-    /// CLI config flags should fail early when the next argv token is another flag instead of a path.
-    /// 当 CLI config 标志后面直接跟着另一个标志时，应尽早失败。
+    /// Legacy config flags should be rejected so runtime config discovery stays anchored to one runtime root.
+    /// 历史 config 标志应被拒绝，从而让运行时配置发现始终锚定到唯一运行根。
     #[test]
-    fn parse_cli_path_flag_rejects_missing_config_value() {
+    fn reject_legacy_config_flag_reports_runtime_root_only_model() {
         let args = vec![
             "vulcan-mcp.exe".to_string(),
             "--config".to_string(),
-            "--runtime-root".to_string(),
-            "runtime".to_string(),
+            "runtime/configs/config.yaml".to_string(),
         ];
-        let error = parse_cli_path_flag_from_args(&args, &["-config", "--config"])
-            .expect_err("missing config value should fail");
+        let error =
+            reject_legacy_config_flag(&args).expect_err("legacy config flag should be rejected");
         assert!(
-            error.to_string().contains("--config requires a value"),
+            error.to_string().contains("Unsupported CLI flag"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Inline `--config=...` forms should be rejected too so removed config entrypoints cannot slip through argv parsing.
+    /// 内联 `--config=...` 形式也应被拒绝，避免已移除的配置入口从 argv 解析中漏过去。
+    #[test]
+    fn reject_legacy_config_flag_rejects_inline_equals_form() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--config=runtime/configs/config.yaml".to_string(),
+        ];
+        let error =
+            reject_legacy_config_flag(&args).expect_err("inline legacy config flag should fail");
+        assert!(
+            error.to_string().contains("Unsupported CLI flag"),
             "unexpected error: {error}"
         );
     }
@@ -427,11 +461,39 @@ mod tests {
         let args = vec![
             "vulcan-mcp.exe".to_string(),
             "--runtime-root".to_string(),
-            "--config".to_string(),
-            "runtime/configs/config.yaml".to_string(),
+            "--stdio".to_string(),
         ];
         let error = parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
             .expect_err("missing runtime-root value should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("--runtime-root requires a value"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Inline `--runtime-root=...` forms should be accepted so runtime-root parsing stays consistent with common CLI conventions.
+    /// 内联 `--runtime-root=...` 形式应被接受，从而让运行根解析与常见 CLI 约定保持一致。
+    #[test]
+    fn parse_cli_path_flag_accepts_inline_runtime_root_value() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--runtime-root=output".to_string(),
+        ];
+        let runtime_root =
+            parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
+                .expect("inline runtime-root should parse");
+        assert_eq!(runtime_root, Some("output".to_string()));
+    }
+
+    /// Inline `--runtime-root=` forms should still fail early when the value is empty.
+    /// 内联 `--runtime-root=` 在取值为空时也应尽早失败。
+    #[test]
+    fn parse_cli_path_flag_rejects_empty_inline_runtime_root_value() {
+        let args = vec!["vulcan-mcp.exe".to_string(), "--runtime-root=".to_string()];
+        let error = parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
+            .expect_err("empty inline runtime-root should fail");
         assert!(
             error
                 .to_string()

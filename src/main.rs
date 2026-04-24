@@ -31,10 +31,10 @@ use luaskills_host::{
     client_budget_snapshot_for_render, install_luaskills_log_callback,
     resolve_runtime_root_from_config, resolve_skill_roots_from_config,
 };
-use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext};
+use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext, ToolCallResult};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
 use serde_json::{Value, json};
-use server::McpServer;
+use server::{McpServer, host_tool_requires_lua_engine, is_host_tool_name};
 use temp_maintenance::{
     CleanupTrigger, ensure_runtime_temp_dir, initialize_runtime_temp_root,
     maintain_runtime_temp_dir, spawn_cross_day_cleanup_task,
@@ -189,11 +189,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Resolve the effective runtime root for one host execution path and surface explicit runtime-root misconfiguration as an immediate error.
+/// 为单条宿主执行链解析生效运行根，并把显式 runtime_root 配置错误立即上抛。
+fn resolve_runtime_root_for_host(
+    config: &Config,
+) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    resolve_runtime_root_from_config(config)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+}
+
+/// Initialize the shared runtime temp root from config after runtime-root validation has completed.
+/// 在完成运行根校验后，基于配置初始化共享运行时临时目录根。
+fn initialize_runtime_temp_root_from_config(
+    config: &Config,
+) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    let runtime_root = resolve_runtime_root_for_host(config)?;
+    initialize_runtime_temp_root(runtime_root.as_deref());
+    Ok(runtime_root)
+}
+
 /// Async main flow that decides between starting network services and entering direct tool-debug mode.
 /// 异步主流程，根据运行模式决定是启动网络服务还是直接进入 tools 调试。
 async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     install_luaskills_log_callback();
-    initialize_runtime_temp_root(resolve_runtime_root_from_config(&cfg).as_deref());
+    initialize_runtime_temp_root_from_config(&cfg)?;
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs(&cfg)?;
@@ -211,7 +230,7 @@ async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 /// 为 stdio 模式准备一份已初始化服务且不启动网络传输的异步引导流程。
 async fn async_build_stdio_server(cfg: Config) -> Result<McpServer, Box<dyn std::error::Error>> {
     install_luaskills_log_callback();
-    initialize_runtime_temp_root(resolve_runtime_root_from_config(&cfg).as_deref());
+    initialize_runtime_temp_root_from_config(&cfg)?;
 
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs(&cfg)?;
@@ -252,6 +271,21 @@ enum RuntimeMode {
 /// Default simulated client name used by the `--call-tools` debug mode.
 /// `--call-tools` 调试模式使用的默认模拟客户端名称。
 const DEFAULT_CALL_TOOL_CLIENT_NAME: &str = "VulcanMcpTest";
+
+/// Return whether one raw CLI token still uses the removed `--config` / `-config` entrypoint, including inline `--config=...` forms.
+/// 返回某个原始 CLI 片段是否仍在使用已移除的 `--config` / `-config` 入口，包含内联 `--config=...` 形式。
+fn is_removed_config_flag_arg(arg: &str) -> bool {
+    arg == "-config"
+        || arg == "--config"
+        || arg.starts_with("-config=")
+        || arg.starts_with("--config=")
+}
+
+/// Return whether one raw CLI token carries an inline `--runtime-root=value` or `-runtime-root=value` assignment.
+/// 返回某个原始 CLI 片段是否携带内联 `--runtime-root=value` 或 `-runtime-root=value` 赋值。
+fn is_inline_runtime_root_flag_arg(arg: &str) -> bool {
+    arg.starts_with("-runtime-root=") || arg.starts_with("--runtime-root=")
+}
 
 /// Parse the runtime mode from CLI arguments.
 /// 根据命令行参数解析运行模式。
@@ -307,7 +341,16 @@ fn parse_runtime_mode_from_args(
                     "--call-tools" => {
                         break;
                     }
-                    "-config" | "--config" | "-runtime-root" | "--runtime-root" => {
+                    value if is_removed_config_flag_arg(value) => {
+                        return Err("Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into());
+                    }
+                    value if is_inline_runtime_root_flag_arg(value) => {
+                        if value.ends_with('=') {
+                            return Err("--runtime-root requires a value".into());
+                        }
+                        cursor += 1;
+                    }
+                    "-runtime-root" | "--runtime-root" => {
                         require_cli_flag_value(args, cursor, args[cursor].as_str())?;
                         cursor += 2;
                     }
@@ -342,7 +385,7 @@ fn require_cli_flag_value(
     let Some(next_value) = args.get(index + 1) else {
         return Err(format!("{flag} requires a value").into());
     };
-    if next_value.starts_with("--") {
+    if next_value.starts_with("--") || next_value.starts_with('-') {
         return Err(format!("{flag} requires a value").into());
     }
     Ok(())
@@ -367,7 +410,7 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
 
     // Load Lua skills from system directory, with optional user override
     let skill_roots = find_skill_roots(&cfg)?;
-    let runtime_root = resolve_runtime_root_from_config(cfg);
+    let runtime_root = resolve_runtime_root_for_host(cfg)?;
     let resources_root = runtime_root.as_ref().map(|root| root.join("resources"));
     initialize_tool_result_template_roots(
         &skill_roots
@@ -448,14 +491,17 @@ fn run_call_tool_mode(
     set_non_error_logging_enabled(false);
     install_luaskills_log_callback();
     let config = Config::load()?;
-    initialize_runtime_temp_root(resolve_runtime_root_from_config(&config).as_deref());
+    initialize_runtime_temp_root_from_config(&config)?;
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs(&config)?;
     add_libs_to_path(&config)?;
+    if is_host_tool_name(tool_name) {
+        return run_call_host_tool_mode(config, tool_name, arguments, simulated_client_name);
+    }
     let engine = build_single_vm_lua_engine_for_local_mode(&config)?;
 
     if !engine.is_skill(tool_name) {
-        return Err(format!("Unknown Lua skill tool for --call-tools: {}", tool_name).into());
+        return run_call_host_tool_mode(config, tool_name, arguments, simulated_client_name);
     }
 
     let skill_name = engine.skill_name_for_tool(tool_name);
@@ -477,6 +523,74 @@ fn run_call_tool_mode(
     )
 }
 
+/// Invoke one host-owned MCP tool through the full server path during `--call-tools` local debug mode.
+/// 在 `--call-tools` 本地调试模式下，经由完整服务路径调用单个宿主自有 MCP 工具。
+fn run_call_host_tool_mode(
+    config: Config,
+    tool_name: &str,
+    arguments: Value,
+    simulated_client_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let server = if is_host_tool_name(tool_name) && !host_tool_requires_lua_engine(tool_name) {
+        McpServer::new()
+    } else {
+        runtime.block_on(async_build_stdio_server(config))?
+    };
+    let request_context = build_call_tool_request_context(simulated_client_name);
+    let response = runtime
+        .block_on(server.handle_message_with_context(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments,
+                }
+            }),
+            request_context,
+        ))
+        .ok_or_else(|| format!("call-tools returned no response for {}", tool_name))?;
+    print_host_call_tool_response(tool_name, &response)
+}
+
+/// Print one host-tool `tools/call` JSON-RPC response in the same local-debug workflow used by `--call-tools`.
+/// 按 `--call-tools` 使用的同一本地调试工作流打印一份宿主工具 `tools/call` JSON-RPC 响应。
+fn print_host_call_tool_response(
+    tool_name: &str,
+    response: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown host tool error");
+        return Err(format!("call-tools failed for {}: {}", tool_name, message).into());
+    }
+
+    let result_value = response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| format!("call-tools returned no result payload for {}", tool_name))?;
+    let tool_result: ToolCallResult = serde_json::from_value(result_value)?;
+    let rendered_text = tool_result
+        .content
+        .iter()
+        .map(|item| item.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if tool_result.is_error == Some(true) {
+        return Err(format!("call-tools failed for {}: {}", tool_name, rendered_text).into());
+    }
+
+    println!("{}", rendered_text);
+    Ok(())
+}
+
 /// Build a single-VM LuaEngine with fully loaded skills from the unified runtime root for local debug modes.
 /// 在本地调试模式下基于统一运行根构建一个完整加载 skills 的单虚拟机 LuaEngine。
 fn build_single_vm_lua_engine_for_local_mode(
@@ -486,7 +600,7 @@ fn build_single_vm_lua_engine_for_local_mode(
     if skill_roots.is_empty() {
         return Err("Lua skill directory not found for local debug mode".into());
     }
-    let runtime_root = resolve_runtime_root_from_config(config);
+    let runtime_root = resolve_runtime_root_for_host(config)?;
     let resources_root = runtime_root.as_ref().map(|root| root.join("resources"));
     initialize_tool_result_template_roots(
         &skill_roots
@@ -516,7 +630,7 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
     set_non_error_logging_enabled(false);
     install_luaskills_log_callback();
     let config = Config::load()?;
-    initialize_runtime_temp_root(resolve_runtime_root_from_config(&config).as_deref());
+    initialize_runtime_temp_root_from_config(&config)?;
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs(&config)?;
     add_libs_to_path(&config)?;
@@ -558,7 +672,7 @@ fn build_call_tool_request_context(client_name: &str) -> RequestContext {
 /// Preload hot-reloadable runtime config files before the host starts so configuration issues surface before the first request.
 /// 在宿主启动前预载可热重载的运行时配置文件，避免首次请求时才暴露配置问题。
 fn preload_runtime_mcp_configs(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let runtime_root = resolve_runtime_root_from_config(cfg);
+    let runtime_root = resolve_runtime_root_for_host(cfg)?;
     initialize_client_budget_runtime_root(runtime_root.as_deref())
         .map_err(|error| format!("Failed to initialize client budget runtime root: {}", error))?;
     initialize_tool_config_runtime_root(runtime_root.as_deref())
@@ -576,7 +690,7 @@ fn preload_runtime_mcp_configs(cfg: &Config) -> Result<(), Box<dyn std::error::E
 /// Prepend runtime-root libs/ to PATH so C dependency DLLs (zlib1.dll, etc.) are discoverable when Lua C modules load via FFI.
 /// 将运行根下的 libs/ 前置到 PATH，保证 Lua C 模块通过 FFI 加载时能找到依赖 DLL。
 fn add_libs_to_path(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(runtime_root) = resolve_runtime_root_from_config(config) else {
+    let Some(runtime_root) = resolve_runtime_root_for_host(config)? else {
         return Ok(());
     };
     let libs_dir = runtime_root.join("libs");
@@ -689,6 +803,7 @@ mod tests {
             "--call-tools".to_string(),
             "demo-tool".to_string(),
             "--runtime-root".to_string(),
+            "-config".to_string(),
         ];
         let error = match parse_runtime_mode_from_args(&args) {
             Ok(_) => panic!("missing value should fail"),
@@ -702,26 +817,140 @@ mod tests {
         );
     }
 
-    /// Call-tools mode should reject config flags that are immediately followed by another flag.
-    /// call-tools 模式应拒绝后面直接跟着其他标志的 config 标志。
+    /// Call-tools mode should reject the removed legacy config flag and redirect callers to runtime-root based config discovery.
+    /// call-tools 模式应拒绝已移除的历史 config 标志，并引导调用方改用基于 runtime-root 的配置发现。
     #[test]
-    fn parse_runtime_mode_rejects_missing_config_value_in_call_tools_mode() {
+    fn parse_runtime_mode_rejects_legacy_config_flag_in_call_tools_mode() {
         let args = vec![
             "vulcan-mcp.exe".to_string(),
             "--call-tools".to_string(),
             "demo-tool".to_string(),
             "--config".to_string(),
-            "--call-client-name".to_string(),
-            "tester".to_string(),
+            "runtime/configs/config.yaml".to_string(),
         ];
         let error = match parse_runtime_mode_from_args(&args) {
-            Ok(_) => panic!("missing value should fail"),
+            Ok(_) => panic!("legacy config flag should fail"),
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("--config requires a value"),
+            error.to_string().contains("Unsupported CLI flag"),
             "unexpected error: {error}"
         );
+    }
+
+    /// Call-tools mode should reject inline `--config=...` forms too so the removed config entrypoint is blocked consistently.
+    /// call-tools 模式也应拒绝内联 `--config=...` 形式，保证已移除的配置入口被一致封死。
+    #[test]
+    fn parse_runtime_mode_rejects_inline_legacy_config_flag_in_call_tools_mode() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--call-tools".to_string(),
+            "demo-tool".to_string(),
+            "--config=runtime/configs/config.yaml".to_string(),
+        ];
+        let error = match parse_runtime_mode_from_args(&args) {
+            Ok(_) => panic!("inline legacy config flag should fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("Unsupported CLI flag"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Call-tools mode should accept inline `--runtime-root=...` forms so local debug CLI behavior matches the main config loader.
+    /// call-tools 模式应接受内联 `--runtime-root=...` 形式，从而让本地调试 CLI 行为与主配置加载器保持一致。
+    #[test]
+    fn parse_runtime_mode_allows_inline_runtime_root_in_call_tools_mode() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--call-tools".to_string(),
+            "demo-tool".to_string(),
+            "--runtime-root=output".to_string(),
+        ];
+        let mode = parse_runtime_mode_from_args(&args).expect("inline runtime-root should parse");
+        match mode {
+            RuntimeMode::CallTool { tool_name, .. } => {
+                assert_eq!(tool_name, "demo-tool");
+            }
+            RuntimeMode::Serve
+            | RuntimeMode::Stdio
+            | RuntimeMode::InternalLuaexecRequest { .. } => {
+                panic!("expected call-tools runtime mode");
+            }
+        }
+    }
+
+    /// Call-tools mode should reject inline `--runtime-root=` forms when the value is empty.
+    /// call-tools 模式在内联 `--runtime-root=` 取值为空时应拒绝调用。
+    #[test]
+    fn parse_runtime_mode_rejects_empty_inline_runtime_root_value() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--call-tools".to_string(),
+            "demo-tool".to_string(),
+            "--runtime-root=".to_string(),
+        ];
+        let error = match parse_runtime_mode_from_args(&args) {
+            Ok(_) => panic!("empty inline runtime-root should fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("--runtime-root requires a value"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Host-only reload tools should still run even when configured skill roots are invalid, because they no longer require preloading the Lua engine.
+    /// 仅宿主侧的 reload 工具即使在技能根配置无效时也应能运行，因为它们不再要求预先加载 Lua 引擎。
+    #[test]
+    fn run_call_host_tool_mode_supports_reload_without_loading_invalid_skill_roots() {
+        let root = unique_test_dir("reload-host-tool");
+        std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+        let missing_skill_root = root.join("missing-skills");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            skill_roots: Some(vec![crate::config::SkillRootConfigEntry::Path(
+                missing_skill_root.to_string_lossy().to_string(),
+            )]),
+            ..Config::default()
+        };
+
+        preload_runtime_mcp_configs(&config).expect("host runtime config preload should succeed");
+        run_call_host_tool_mode(
+            config,
+            "reload_vulcan_mcp_configs",
+            json!({}),
+            DEFAULT_CALL_TOOL_CLIENT_NAME,
+        )
+        .expect("reload host tool should succeed without loading invalid skill roots");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Explicit invalid runtime_root values should fail before host-side reload logic falls back to implicit runtime discovery.
+    /// 显式无效的 runtime_root 应在宿主 reload 逻辑回退到隐式运行根发现之前直接失败。
+    #[test]
+    fn preload_runtime_mcp_configs_rejects_invalid_explicit_runtime_root() {
+        let root = unique_test_dir("invalid-runtime-root");
+        std::fs::create_dir_all(&root).expect("failed to create temp root");
+        let config = Config {
+            runtime_root: Some(root.join("missing-runtime").to_string_lossy().to_string()),
+            ..Config::default()
+        };
+
+        let error = preload_runtime_mcp_configs(&config)
+            .expect_err("invalid explicit runtime_root should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("configured runtime_root does not exist"),
+            "unexpected error: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// File-shaped runtime libs paths should be rejected before PATH mutation begins.

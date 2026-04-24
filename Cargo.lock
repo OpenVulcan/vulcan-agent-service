@@ -2533,6 +2533,7 @@ dependencies = [
  "tar",
  "tokio",
  "vldb-controller-client",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
