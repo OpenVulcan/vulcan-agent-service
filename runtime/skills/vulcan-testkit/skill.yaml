@@ -1,0 +1,62 @@
+name: vulcan-testkit
+version: 0.1.0
+debug: true
+help:
+  main:
+    description: Vulcan TestKit main help for AI validation routing and Markdown diagnostic reports.
+    file: help/help.md
+  topics:
+    - name: run
+      description: Prefer TestKit over shell for noisy validation commands and return a compact Markdown diagnostic report.
+      file: help/run.md
+entries:
+  - name: run
+    description: "[AI VALIDATION ROUTER] Prefer this over shell for bounded build/test/check/lint/typecheck validation when output may be long. It runs only explicit allowlisted validation profiles or analyzes a provided log in the same call, then returns a compact Markdown report with root diagnostics, failed tests, source refs, collapsed noise, and next actions instead of full stdout/stderr. Use after code edits, before claiming verification, or when an existing validation log needs root-cause compression. It rejects app/runtime, install/publish/create, interactive debug, fix/write, browser-opening, benchmark, fuzz, watcher, dev-server, and shell-like profiles even when hidden behind global options, package-manager scripts, exec targets, or passthrough args. Do not use for general shell automation, git, file operations, deployments, or destructive commands."
+    lua_entry: runtime/vulcan-testkit-run.lua
+    lua_module: vulcan_testkit_run
+    help: run
+    parameters:
+      - name: program
+        type: string
+        description: "Allowlisted validation executable for run mode, for example cargo, npm, pnpm, python, node, go, or tsc. Use direct bounded validation tools only; shell-like and app-runtime programs are blocked."
+        required: false
+      - name: args
+        type: array
+        description: "Arguments for an allowlisted validation profile, for example cargo check, cargo test, go test -json ./..., python -m pytest, node --check file.js, or tsc --noEmit. Values are converted to strings; hidden run/dev/watch/fix/write/install/debug modes are rejected before execution."
+        required: false
+      - name: cwd
+        type: string
+        description: "Optional working directory for run mode. Defaults to the current runtime cwd."
+        required: false
+      - name: stdin
+        type: string
+        description: "Optional stdin text for run mode."
+        required: false
+      - name: log
+        type: string
+        description: "Existing validation log for analyze-only mode. Use this to compress a prior log without rerunning the command."
+        required: false
+      - name: phase
+        type: string
+        description: "Validation phase hint for root-cause ranking: build, test, check, lint, typecheck, install, or auto. Defaults to auto."
+        required: false
+      - name: tool_hint
+        type: string
+        description: "Known profile or adapter hint such as cargo, pytest, python, node, go-test, tsc, npm, pnpm, vitest, jest, or generic. Path-like or unknown names are rejected. Use when output is mixed or auto-detection may be ambiguous."
+        required: false
+      - name: timeout_ms
+        type: number
+        description: "Optional run timeout in milliseconds. Defaults to 120000 and is capped at 600000."
+        required: false
+      - name: max_diagnostics
+        type: number
+        description: "Optional maximum root diagnostics to return. Defaults to 8 and is capped at 20."
+        required: false
+      - name: max_evidence_chars
+        type: number
+        description: "Optional maximum raw evidence characters per diagnostic. Defaults to 240 and is capped at 1000."
+        required: false
+      - name: include_warnings
+        type: boolean
+        description: "Whether warning diagnostics may be included when no errors are found. Defaults to true."
+        required: false
