@@ -901,6 +901,7 @@ pub fn host_reserved_tool_names() -> Vec<String> {
         "vulcan-help-list".to_string(),
         "vulcan-help-detail".to_string(),
         "reload_vulcan_mcp_configs".to_string(),
+        "luaskill-config".to_string(),
     ]
 }
 
@@ -1690,6 +1691,7 @@ mod tests {
     fn host_reserved_tool_names_omit_environment_management_tools() {
         let names = host_reserved_tool_names();
 
+        assert!(names.iter().any(|name| name == "luaskill-config"));
         assert!(
             !names
                 .iter()

@@ -33,9 +33,9 @@
 - 数据库访问固定走 `space_controller` 控制器模式
 - 自动加载运行根下符合规则的 LuaSkills
 - 把 skill entry 映射成 MCP tools
-- 提供宿主封装的 strict help 工具
+- 提供宿主封装的 strict help 工具与统一 `luaskill-config` 配置工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
-- 支持宿主级 `client_budgets.yaml`、`tool_configs.yaml` 与统一 `skill_config.json`
+- 支持宿主级 `client_budgets.yaml`、`tool_configs.yaml` 与统一 Skill 运行时配置
 
 ## 数据库访问模型
 
@@ -127,7 +127,32 @@ runtime/skills/<skill>/
 - `vulcan-help-detail`
   - 按 `skill + flow` 读取具体帮助节点
 
-### 3. RunLua 暴露策略
+### 3. Luaskill Config 工具
+
+统一 Skill 配置文件会由宿主额外包装为：
+
+- `luaskill-config`
+
+其中：
+
+- 调用约束
+  - 只有用户明确要求查看或修改 LuaSkill 配置时，才应调用该工具
+  - 执行 `set` / `delete` 后，调用方必须向用户明确回报受影响的 `skill_id` / `key` 与最终工具结果
+- `action`
+  - 支持 `list` / `get` / `set` / `delete`
+- `skill_id`
+  - `list` 时可选，用于只查看单个 skill 命名空间
+  - `get` / `set` / `delete` 时必填
+- `key`
+  - `get` / `set` / `delete` 时必填
+- `value`
+  - `set` 时必填
+- 返回结果
+  - 返回面向 AI 的纯文本结果，不再附带 JSON 代码块
+  - `list` 为空时会明确提示无配置；非空时按 `skill_id -> key/value` 分组展示
+  - 与 Lua skill 内部的 `vulcan.config.*` 共用同一份宿主统一运行期配置
+
+### 4. RunLua 暴露策略
 
 `runlua` 的 system 能力保留在 `vulcan-luaskills` 内部与 `vulcan.runtime.lua.exec` 链路中，  
 `vulcan-mcp` 通过 `vulcan-lua` skill 对外提供对应执行能力。
@@ -142,7 +167,7 @@ MCP 侧推荐通过 `vulcan-lua` skill 使用：
 - 宿主配置通过 `config.yaml` 中的 `runlua_pool_config` 透传到 `LuaRuntimeHostOptions.runlua_pool_config`
 - 该池只影响隔离 `runlua` 执行链，不改变普通 skill VM 主池和普通 `run_lua` 主池行为
 
-### 4. Client Match Override
+### 5. Client Match Override
 
 当前客户端预算匹配默认使用 MCP 请求里上报的 `clientInfo.name`。  
 若某些宿主集成上报的是通用壳名称，例如 `mcphost`、`Copilot` 等，而不是实际产品名，可通过环境变量强制覆盖：
@@ -215,9 +240,11 @@ output/
 - `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml`
   - 属于宿主层配置，由 `vulcan-mcp` 自己读取
 - `skill_config.json`
-  - 由宿主按 `runtime_root` 固定推导为 `<runtime_root>/configs/skill_config.json` 后传给 `vulcan-luaskills`
+  - 由宿主随 `runtime_root` 统一推导并传给 `vulcan-luaskills`
   - 当前产品不再提供单独文件路径覆盖，避免与运行根参数产生冲突
-  - 当前文件不会作为独立 MCP 工具对外暴露，而是作为 `vulcan-luaskills` 的统一运行期配置文件
+  - 当前能力会通过宿主 `luaskill-config` MCP 工具对外提供 `list/get/set/delete` 入口
+  - 工具返回纯文本结果，不暴露底层配置文件物理地址
+  - Lua skill 内部的 `vulcan.config.*` 与宿主 `luaskill-config` 共用这一份统一运行期配置文件
   - 仓库内提供默认空模板，初始内容为 `{}`，便于运行目录直接复制使用
 
 ### Lua VM 池配置

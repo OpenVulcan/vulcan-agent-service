@@ -1,5 +1,7 @@
+use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
 use tokio::sync::Mutex;
@@ -19,7 +21,8 @@ use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
 use vulcan_luaskills::{
     LuaEngine, LuaEngineOptions, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
     RuntimeSkillHelpDescriptor, RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent,
-    RuntimeSkillRoot, ToolCacheConfig, set_entry_registry_callback, set_skill_lifecycle_callback,
+    RuntimeSkillRoot, SkillConfigEntry, ToolCacheConfig, runtime_config_store::SkillConfigStore,
+    set_entry_registry_callback, set_skill_lifecycle_callback,
 };
 
 // ============================================================
@@ -37,6 +40,7 @@ pub struct McpServer {
     lua_engine: Option<Arc<StdRwLock<LuaEngine>>>,
     lua_engine_options: Option<LuaEngineOptions>,
     lua_skill_roots: Option<Vec<RuntimeSkillRoot>>,
+    runtime_skill_config_file_path: Option<PathBuf>,
 }
 
 /// Return whether one tool name belongs to the host-owned MCP tool surface.
@@ -44,7 +48,7 @@ pub struct McpServer {
 pub fn is_host_tool_name(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "vulcan-help-list" | "vulcan-help-detail" | "reload_vulcan_mcp_configs"
+        "vulcan-help-list" | "vulcan-help-detail" | "reload_vulcan_mcp_configs" | "luaskill-config"
     )
 }
 
@@ -69,6 +73,56 @@ struct ServerInner {
     client_capabilities: ClientCapabilities,
 }
 
+/// Supported actions for the host-owned unified luaskill-config tool.
+/// 宿主自有统一 luaskill-config 工具支持的动作集合。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeConfigAction {
+    /// List config entries, optionally scoped to one skill namespace.
+    /// 列出配置项，可选地限制到单个技能命名空间。
+    List,
+    /// Read one concrete config value by `(skill_id, key)`.
+    /// 通过 `(skill_id, key)` 读取单个配置值。
+    Get,
+    /// Insert or replace one concrete config value by `(skill_id, key)`.
+    /// 通过 `(skill_id, key)` 写入或替换单个配置值。
+    Set,
+    /// Delete one concrete config key by `(skill_id, key)`.
+    /// 通过 `(skill_id, key)` 删除单个配置键。
+    Delete,
+}
+
+impl RuntimeConfigAction {
+    /// Render one stable action name used by logs and user-facing tool output.
+    /// 渲染供日志与面向用户的工具输出使用的稳定动作名称。
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Get => "get",
+            Self::Set => "set",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+/// Parsed arguments for one host-owned unified luaskill-config tool call.
+/// 一次宿主统一 luaskill-config 工具调用解析后的参数载荷。
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeConfigToolArguments {
+    /// Action selector that chooses one of `list/get/set/delete`.
+    /// 动作选择器，用于决定 `list/get/set/delete` 中的哪一种。
+    action: RuntimeConfigAction,
+    /// Optional target skill namespace used by `list`, and required by `get/set/delete`.
+    /// `list` 可选使用、`get/set/delete` 必填的目标技能命名空间。
+    skill_id: Option<String>,
+    /// Optional config key used by `get/set/delete`.
+    /// `get/set/delete` 使用的可选配置键。
+    key: Option<String>,
+    /// Optional string config value used by `set`.
+    /// `set` 使用的可选字符串配置值。
+    value: Option<String>,
+}
+
 impl McpServer {
     pub fn new() -> Self {
         let inner = ServerInner {
@@ -87,9 +141,18 @@ impl McpServer {
             lua_engine: None,
             lua_engine_options: None,
             lua_skill_roots: None,
+            runtime_skill_config_file_path: None,
         };
         server.register_defaults();
         server
+    }
+
+    /// Configure the explicit unified skill-config file path used by the host-owned luaskill-config tool.
+    /// 配置宿主自有 luaskill-config 工具使用的显式统一 Skill 配置文件路径。
+    pub fn with_runtime_skill_config_file_path(mut self, file_path: PathBuf) -> Self {
+        self.runtime_skill_config_file_path = Some(file_path);
+        self.register_runtime_config_tool();
+        self
     }
 
     /// Configure the VMM (VulcanMemoryMesh) gRPC client endpoint.
@@ -178,6 +241,47 @@ impl McpServer {
         );
     }
 
+    /// Register the host-owned luaskill-config tool after one effective unified config file path becomes available.
+    /// 在生效的统一配置文件路径可用后注册宿主自有的 luaskill-config 工具。
+    fn register_runtime_config_tool(&mut self) {
+        let mut inner = self.inner.try_lock().unwrap();
+
+        // --- luaskill-config: inspect or mutate the host-managed unified runtime skill config ---
+        inner.host_tools.insert(
+            "luaskill-config".to_string(),
+            Tool::with_annotations(
+                "luaskill-config",
+                "Inspect or mutate the host-managed unified Lua skill configuration. Supports `list`, `get`, `set`, and `delete` across skill namespaces, and returns AI-friendly text instead of raw JSON. Only call this tool when the user explicitly asks to inspect or modify LuaSkill configuration. For `set` and `delete`, report the affected `skill_id`/`key` and the final tool result back to the user.",
+                json!({
+                    "action": {
+                        "type": "string",
+                        "description": "Operation to perform. Supported values: `list`, `get`, `set`, `delete`.",
+                        "enum": ["list", "get", "set", "delete"]
+                    },
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Target skill id. Optional for `list` to filter one namespace, required for `get`, `set`, and `delete`."
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Config key. Required for `get`, `set`, and `delete`."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "String config value. Required for `set`."
+                    }
+                }),
+                vec!["action".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    user_confirmation_required: Some(false),
+                    idempotent_hint: Some(false),
+                },
+            ),
+        );
+    }
+
     /// Register the host-wrapped Lua help tools only after the Lua engine has been configured successfully.
     /// 仅在 Lua 引擎成功完成配置后再注册宿主包装的 Lua help 工具。
     fn register_lua_help_tools(&mut self) {
@@ -250,6 +354,29 @@ impl McpServer {
             .as_ref()
             .ok_or_else(|| (-32603, "Lua skill roots are not configured.".to_string()))?;
         Ok((engine.clone(), skill_roots.clone()))
+    }
+
+    /// Build one standalone skill-config store for the host-owned luaskill-config tool.
+    /// 为宿主自有 luaskill-config 工具构造一份独立 Skill 配置存储。
+    fn resolve_runtime_skill_config_store(&self) -> Result<SkillConfigStore, (i64, String)> {
+        let file_path = self
+            .runtime_skill_config_file_path
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                (
+                    -32603,
+                    "luaskill-config is unavailable because no runtime_root could be resolved."
+                        .to_string(),
+                )
+            })?;
+        let store = SkillConfigStore::new(Some(file_path.clone())).map_err(|error| {
+            (
+                -32603,
+                format!("failed to initialize luaskill-config store: {}", error),
+            )
+        })?;
+        Ok(store)
     }
 
     /// Handle a single JSON-RPC message and return the JSON response (if any).
@@ -595,6 +722,17 @@ impl McpServer {
                 }
             }
 
+            "luaskill-config" => {
+                let store = self.resolve_runtime_skill_config_store()?;
+                let request = parse_runtime_config_tool_arguments(&args)?;
+                let rendered = execute_runtime_config_tool(&store, &request)?;
+
+                ToolCallResult {
+                    content: vec![TextContent::text(&rendered)],
+                    is_error: None,
+                }
+            }
+
             _ => {
                 // Check if this is a Lua skill
                 if self.lua_engine.is_some() {
@@ -846,11 +984,247 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     lines.join("\n")
 }
 
+/// Parse one luaskill-config argument payload into the strongly typed host-tool request model.
+/// 把一份 luaskill-config 参数载荷解析为强类型宿主工具请求模型。
+fn parse_runtime_config_tool_arguments(
+    args: &Value,
+) -> Result<RuntimeConfigToolArguments, (i64, String)> {
+    serde_json::from_value(args.clone()).map_err(|error| {
+        (
+            -32602,
+            format!("Invalid luaskill-config arguments: {}", error),
+        )
+    })
+}
+
+/// Normalize one optional luaskill-config string field by trimming whitespace and dropping blanks.
+/// 规范化一项可选 luaskill-config 字符串字段：去除首尾空白并丢弃空串。
+fn normalize_optional_runtime_config_field(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Require one non-empty luaskill-config identifier field such as `skill_id` or `key`.
+/// 要求一项非空的 luaskill-config 标识字段，例如 `skill_id` 或 `key`。
+fn require_runtime_config_identifier_field(
+    value: Option<&str>,
+    field_name: &str,
+    action: &RuntimeConfigAction,
+) -> Result<String, (i64, String)> {
+    normalize_optional_runtime_config_field(value).ok_or_else(|| {
+        (
+            -32602,
+            format!(
+                "luaskill-config action '{}' requires a non-empty parameter: {}",
+                action.as_str(),
+                field_name
+            ),
+        )
+    })
+}
+
+/// Require one raw luaskill-config value field and preserve empty-string payloads for explicit writes.
+/// 要求提供一项原始 luaskill-config 值字段，并保留空字符串这种显式写入载荷。
+fn require_runtime_config_value_field(
+    value: Option<&str>,
+    action: &RuntimeConfigAction,
+) -> Result<String, (i64, String)> {
+    value.map(str::to_string).ok_or_else(|| {
+        (
+            -32602,
+            format!(
+                "luaskill-config action '{}' requires parameter: value",
+                action.as_str()
+            ),
+        )
+    })
+}
+
+/// Group flattened skill-config entries into one stable nested skill-to-key-value mapping.
+/// 把扁平化 Skill 配置记录分组为稳定的“技能 -> 键值”嵌套映射。
+fn group_runtime_config_entries(
+    entries: &[SkillConfigEntry],
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut grouped = BTreeMap::new();
+    for entry in entries {
+        grouped
+            .entry(entry.skill_id.clone())
+            .or_insert_with(BTreeMap::new)
+            .insert(entry.key.clone(), entry.value.clone());
+    }
+    grouped
+}
+
+/// Render one config string value into a readable single-line literal for AI-oriented text output.
+/// 把一个配置字符串渲染成适合面向 AI 文本输出的单行字面量。
+fn render_runtime_config_value(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{}\"", escaped)
+}
+
+/// Render one grouped skill-config map as stable plain text without exposing the backing file path.
+/// 把分组后的 Skill 配置映射渲染为稳定纯文本，且不暴露底层文件路径。
+fn render_grouped_runtime_config_entries(
+    grouped_entries: &BTreeMap<String, BTreeMap<String, String>>,
+) -> String {
+    let mut lines = Vec::new();
+    for (index, (skill_id, values)) in grouped_entries.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.push(format!("skill_id: {}", skill_id));
+        for (key, value) in values {
+            lines.push(format!(
+                "- {} = {}",
+                key,
+                render_runtime_config_value(value)
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Execute one host-owned luaskill-config action against the standalone unified skill-config store.
+/// 对独立统一 Skill 配置存储执行一次宿主自有 luaskill-config 动作。
+fn execute_runtime_config_tool(
+    store: &SkillConfigStore,
+    request: &RuntimeConfigToolArguments,
+) -> Result<String, (i64, String)> {
+    match &request.action {
+        RuntimeConfigAction::List => {
+            let requested_skill_id =
+                normalize_optional_runtime_config_field(request.skill_id.as_deref());
+            let entries = store
+                .list_entries(requested_skill_id.as_deref())
+                .map_err(|error| (-32603, format!("luaskill-config list failed: {}", error)))?;
+            let grouped_entries = group_runtime_config_entries(&entries);
+            if grouped_entries.is_empty() {
+                return Ok(requested_skill_id
+                    .map(|skill_id| format!("No configuration is set for skill `{}`.", skill_id))
+                    .unwrap_or_else(|| "No luaskill configuration is currently set.".to_string()));
+            }
+
+            let header = requested_skill_id
+                .as_deref()
+                .map(|skill_id| format!("Configuration for skill `{}`:", skill_id))
+                .unwrap_or_else(|| {
+                    format!(
+                        "Found {} luaskill configuration namespaces:",
+                        grouped_entries.len()
+                    )
+                });
+            Ok(format!(
+                "{}\n\n{}",
+                header,
+                render_grouped_runtime_config_entries(&grouped_entries)
+            ))
+        }
+        RuntimeConfigAction::Get => {
+            let skill_id = require_runtime_config_identifier_field(
+                request.skill_id.as_deref(),
+                "skill_id",
+                &request.action,
+            )?;
+            let key = require_runtime_config_identifier_field(
+                request.key.as_deref(),
+                "key",
+                &request.action,
+            )?;
+            let value = store
+                .get_value(&skill_id, &key)
+                .map_err(|error| (-32603, format!("luaskill-config get failed: {}", error)))?;
+            Ok(match value {
+                Some(value) => format!(
+                    "Configuration found.\n\nskill_id: {}\n- {} = {}",
+                    skill_id,
+                    key,
+                    render_runtime_config_value(&value)
+                ),
+                None => format!(
+                    "Configuration key `{}` does not exist under skill `{}`.",
+                    key, skill_id
+                ),
+            })
+        }
+        RuntimeConfigAction::Set => {
+            let skill_id = require_runtime_config_identifier_field(
+                request.skill_id.as_deref(),
+                "skill_id",
+                &request.action,
+            )?;
+            let key = require_runtime_config_identifier_field(
+                request.key.as_deref(),
+                "key",
+                &request.action,
+            )?;
+            let value =
+                require_runtime_config_value_field(request.value.as_deref(), &request.action)?;
+            store
+                .set_value(&skill_id, &key, &value)
+                .map_err(|error| (-32603, format!("luaskill-config set failed: {}", error)))?;
+            Ok(format!(
+                "Configuration updated.\n\nskill_id: {}\n- {} = {}",
+                skill_id,
+                key,
+                render_runtime_config_value(&value)
+            ))
+        }
+        RuntimeConfigAction::Delete => {
+            let skill_id = require_runtime_config_identifier_field(
+                request.skill_id.as_deref(),
+                "skill_id",
+                &request.action,
+            )?;
+            let key = require_runtime_config_identifier_field(
+                request.key.as_deref(),
+                "key",
+                &request.action,
+            )?;
+            let deleted = store
+                .delete_value(&skill_id, &key)
+                .map_err(|error| (-32603, format!("luaskill-config delete failed: {}", error)))?;
+            Ok(if deleted {
+                format!(
+                    "Configuration key `{}` was deleted from skill `{}`.",
+                    key, skill_id
+                )
+            } else {
+                format!(
+                    "Configuration key `{}` does not exist under skill `{}`, so nothing was deleted.",
+                    key, skill_id
+                )
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
     use vulcan_luaskills::RuntimeHelpNodeDescriptor;
+
+    /// Build one unique temporary directory path for one server-module test case.
+    /// 为 server 模块单个测试用例构建唯一的临时目录路径。
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "vulcan-mcp-server-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        std::env::temp_dir().join(unique)
+    }
 
     fn make_help_descriptor() -> RuntimeSkillHelpDescriptor {
         RuntimeSkillHelpDescriptor {
@@ -912,8 +1286,30 @@ mod tests {
             .collect();
 
         assert!(tool_names.contains("reload_vulcan_mcp_configs"));
+        assert!(!tool_names.contains("luaskill-config"));
         assert!(!tool_names.contains("vulcan-help-list"));
         assert!(!tool_names.contains("vulcan-help-detail"));
+    }
+
+    /// Servers with one resolved runtime skill-config file path should expose luaskill-config even before Lua engine initialization.
+    /// 具备已解析统一 Skill 配置文件路径的服务，即使尚未初始化 Lua 引擎，也应暴露 luaskill-config。
+    #[test]
+    fn tools_list_exposes_luaskill_config_when_host_path_is_available() {
+        let root = unique_test_dir("luaskill-config-tools-list");
+        let config_file_path = root.join("configs").join("skill_config.json");
+        let server = McpServer::new().with_runtime_skill_config_file_path(config_file_path);
+        let response = server
+            .handle_tools_list()
+            .expect("tools/list should succeed after luaskill-config registration");
+        let tool_names: HashSet<String> = response
+            .get("tools")
+            .and_then(Value::as_array)
+            .expect("tools array should exist")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect();
+
+        assert!(tool_names.contains("luaskill-config"));
     }
 
     /// Lua help tools should become visible only after the Lua runtime capability has been registered explicitly.
@@ -935,6 +1331,211 @@ mod tests {
 
         assert!(tool_names.contains("vulcan-help-list"));
         assert!(tool_names.contains("vulcan-help-detail"));
+    }
+
+    /// Luaskill-config should remain callable without any Lua engine because it now uses the standalone skill-config store directly.
+    /// luaskill-config 现在直接使用独立 Skill 配置存储，因此在没有 Lua 引擎时也应可调用。
+    #[test]
+    fn luaskill_config_tool_works_without_lua_engine() {
+        let root = unique_test_dir("luaskill-config-without-engine");
+        let config_file_path = root.join("configs").join("skill_config.json");
+        let server = McpServer::new().with_runtime_skill_config_file_path(config_file_path.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let set_response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "set",
+                            "skill_id": "demo-skill",
+                            "key": "api_token",
+                            "value": "sk-runtime"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("luaskill-config set should produce one response");
+        assert!(
+            set_response.get("error").is_none(),
+            "unexpected luaskill-config error: {set_response}"
+        );
+
+        let persisted: Value = serde_json::from_str(
+            &std::fs::read_to_string(&config_file_path)
+                .expect("luaskill-config file should be created"),
+        )
+        .expect("persisted luaskill-config JSON should parse");
+        assert_eq!(persisted["skills"]["demo-skill"]["api_token"], "sk-runtime");
+
+        let get_response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "get",
+                            "skill_id": "demo-skill",
+                            "key": "api_token"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("luaskill-config get should produce one response");
+        let tool_result: ToolCallResult = serde_json::from_value(
+            get_response
+                .get("result")
+                .cloned()
+                .expect("luaskill-config get should return a result"),
+        )
+        .expect("luaskill-config get result should deserialize");
+        let rendered = tool_result
+            .content
+            .first()
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+
+        assert!(rendered.contains("skill_id: demo-skill"));
+        assert!(rendered.contains("- api_token = \"sk-runtime\""));
+        assert!(!rendered.contains("```json"));
+        assert!(!rendered.contains("skill_config.json"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Empty luaskill-config listings should explicitly report that no configuration exists yet.
+    /// 空的 luaskill-config 列表结果应明确提示当前还没有任何配置。
+    #[test]
+    fn luaskill_config_list_reports_empty_state() {
+        let root = unique_test_dir("luaskill-config-empty-list");
+        let config_file_path = root.join("configs").join("skill_config.json");
+        let server = McpServer::new().with_runtime_skill_config_file_path(config_file_path);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "list"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("luaskill-config list should produce one response");
+        let tool_result: ToolCallResult = serde_json::from_value(
+            response
+                .get("result")
+                .cloned()
+                .expect("luaskill-config list should return a result"),
+        )
+        .expect("luaskill-config list result should deserialize");
+        let rendered = tool_result
+            .content
+            .first()
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+
+        assert_eq!(rendered, "No luaskill configuration is currently set.");
+        assert!(!rendered.contains("skill_config.json"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Non-empty luaskill-config listings should group entries by skill id and show stable key-value lines.
+    /// 非空的 luaskill-config 列表结果应按 skill_id 分组并稳定展示键值行。
+    #[test]
+    fn luaskill_config_list_groups_entries_by_skill_id() {
+        let root = unique_test_dir("luaskill-config-grouped-list");
+        let config_file_path = root.join("configs").join("skill_config.json");
+        let server = McpServer::new().with_runtime_skill_config_file_path(config_file_path);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        for (skill_id, key, value) in [
+            ("alpha-skill", "endpoint", "https://api.example.com"),
+            ("alpha-skill", "token", "sk-alpha"),
+            ("beta-skill", "region", "cn-sh"),
+        ] {
+            runtime
+                .block_on(server.handle_message_with_context(
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "luaskill-config",
+                            "arguments": {
+                                "action": "set",
+                                "skill_id": skill_id,
+                                "key": key,
+                                "value": value
+                            }
+                        }
+                    }),
+                    RequestContext::default(),
+                ))
+                .expect("luaskill-config set should succeed for grouped list setup");
+        }
+
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "list"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("luaskill-config list should produce one response");
+        let tool_result: ToolCallResult = serde_json::from_value(
+            response
+                .get("result")
+                .cloned()
+                .expect("luaskill-config grouped list should return a result"),
+        )
+        .expect("luaskill-config grouped list result should deserialize");
+        let rendered = tool_result
+            .content
+            .first()
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+
+        assert!(rendered.contains("Found 2 luaskill configuration namespaces:"));
+        assert!(rendered.contains("skill_id: alpha-skill"));
+        assert!(rendered.contains("- endpoint = \"https://api.example.com\""));
+        assert!(rendered.contains("- token = \"sk-alpha\""));
+        assert!(rendered.contains("skill_id: beta-skill"));
+        assert!(rendered.contains("- region = \"cn-sh\""));
+        assert!(!rendered.contains("```json"));
+        assert!(!rendered.contains("skill_config.json"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

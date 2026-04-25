@@ -29,7 +29,8 @@ use config::Config;
 use luaskills_host::{
     build_luaskills_cache_config, build_luaskills_engine_options, build_runtime_invocation_context,
     client_budget_snapshot_for_render, install_luaskills_log_callback,
-    resolve_runtime_root_from_config, resolve_skill_roots_from_config,
+    resolve_runtime_root_from_config, resolve_skill_config_file_path,
+    resolve_skill_roots_from_config,
 };
 use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext, ToolCallResult};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
@@ -196,6 +197,31 @@ fn resolve_runtime_root_for_host(
 ) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
     resolve_runtime_root_from_config(config)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+}
+
+/// Resolve the explicit unified runtime skill-config file path used by host-owned luaskill-config operations.
+/// 解析宿主自有 luaskill-config 操作使用的显式统一运行时 Skill 配置文件路径。
+fn resolve_runtime_skill_config_file_path_for_host(
+    config: &Config,
+) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    let Some(runtime_root) = resolve_runtime_root_for_host(config)? else {
+        return Ok(None);
+    };
+    let file_path = resolve_skill_config_file_path(&runtime_root)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    Ok(Some(file_path))
+}
+
+/// Build one host-only MCP server surface and inject luaskill-config when the runtime root is available.
+/// 构建一份仅含宿主工具面的 MCP 服务，并在运行根可用时注入 luaskill-config。
+fn build_host_tool_surface_server(
+    config: &Config,
+) -> Result<McpServer, Box<dyn std::error::Error>> {
+    let mut server = McpServer::new();
+    if let Some(skill_config_file_path) = resolve_runtime_skill_config_file_path_for_host(config)? {
+        server = server.with_runtime_skill_config_file_path(skill_config_file_path);
+    }
+    Ok(server)
 }
 
 /// Initialize the shared runtime temp root from config after runtime-root validation has completed.
@@ -394,7 +420,7 @@ fn require_cli_flag_value(
 /// Build and initialize the MCP server, including external clients, Lua skills, and shared cache.
 /// 构建并初始化 MCP Server，包括外部客户端、Lua Skills 与共享缓存。
 async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Error>> {
-    let mut server = McpServer::new();
+    let mut server = build_host_tool_surface_server(cfg)?;
 
     // Connect the VMM gRPC client only when explicitly enabled.
     // 仅在显式启用时连接 VMM gRPC 客户端。
@@ -535,7 +561,7 @@ fn run_call_host_tool_mode(
         .enable_all()
         .build()?;
     let server = if is_host_tool_name(tool_name) && !host_tool_requires_lua_engine(tool_name) {
-        McpServer::new()
+        build_host_tool_surface_server(&config)?
     } else {
         runtime.block_on(async_build_stdio_server(config))?
     };
@@ -927,6 +953,86 @@ mod tests {
         )
         .expect("reload host tool should succeed without loading invalid skill roots");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Host-only luaskill-config should still be exposed through the built server even when no Lua skill roots are available.
+    /// 即使没有任何 Lua 技能根，构建出的服务也应继续对外暴露宿主侧 luaskill-config。
+    #[test]
+    fn build_server_exposes_luaskill_config_without_skill_roots() {
+        let root = unique_test_dir("luaskill-config-build-server");
+        std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            skill_roots: Some(vec![]),
+            ..Config::default()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let server = runtime
+            .block_on(build_server(&config))
+            .expect("build_server should succeed without skills");
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list"
+                }),
+                RequestContext::default(),
+            ))
+            .expect("tools/list should return one response");
+        let tool_names = response
+            .get("result")
+            .and_then(|value| value.get("tools"))
+            .and_then(Value::as_array)
+            .expect("tools array should exist in result payload")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&"luaskill-config"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Host-only luaskill-config should still run even when configured skill roots are invalid, because it should bypass Lua engine loading.
+    /// 宿主侧 luaskill-config 即使在技能根配置无效时也应能运行，因为它应跳过 Lua 引擎加载。
+    #[test]
+    fn run_call_host_tool_mode_supports_luaskill_config_without_loading_invalid_skill_roots() {
+        let root = unique_test_dir("luaskill-config-host-tool");
+        std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+        let missing_skill_root = root.join("missing-skills");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            skill_roots: Some(vec![crate::config::SkillRootConfigEntry::Path(
+                missing_skill_root.to_string_lossy().to_string(),
+            )]),
+            ..Config::default()
+        };
+
+        preload_runtime_mcp_configs(&config).expect("host runtime config preload should succeed");
+        run_call_host_tool_mode(
+            config,
+            "luaskill-config",
+            json!({
+                "action": "set",
+                "skill_id": "demo-skill",
+                "key": "api_token",
+                "value": "sk-local"
+            }),
+            DEFAULT_CALL_TOOL_CLIENT_NAME,
+        )
+        .expect("luaskill-config host tool should succeed without loading invalid skill roots");
+
+        let persisted: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("configs").join("skill_config.json"))
+                .expect("luaskill-config file should be created"),
+        )
+        .expect("persisted luaskill-config JSON should parse");
+        assert_eq!(persisted["skills"]["demo-skill"]["api_token"], "sk-local");
         let _ = std::fs::remove_dir_all(&root);
     }
 
