@@ -1,0 +1,65 @@
+name: vulcan-workmem
+version: 0.1.0
+debug: true
+sqlite:
+  enable: true
+  log_level: info
+  slow_log_enabled: true
+  slow_log_threshold_ms: 500
+help:
+  main:
+    description: Vulcan WorkMem main help for project-scoped AI working memory.
+    file: help/main.md
+  topics:
+    - name: actions
+      description: Action reference for task and node operations.
+      file: help/actions.md
+    - name: rule-file
+      description: Persistent VULCAN_WORKMEM_ID rule-file workflow.
+      file: help/rule-file.md
+    - name: examples
+      description: Compact work memory usage examples.
+      file: help/examples.md
+entries:
+  - name: run
+    description: "Project-scoped AI working memory for long or resumed coding tasks. Use this when the user enables WorkMem, when project instructions contain a VULCAN_WORKMEM_ID, after reading several important files, after key decisions, before context compression, before or after core edits, and after validation. Minimal loop: `task-create` once, `set` short nodes after important findings or progress changes, `list` then `get` for selective recall, `get-all` only for full recovery or handoff, and `task-close` when the task is finished. Use `workmem_id` as the stable VULCAN_WORKMEM_ID; caller-provided IDs may use host, plugin, or session-derived formats when they are single-line and 20-128 characters. Store short, accurate, structured task facts only; do not store full logs, full source, or long narration. When `task-create` has no `workmem_id`, it generates one and returns a visible reminder to ask the user whether to persist it in AGENTS.md or CLAUDE.md."
+    lua_entry: runtime/vulcan-workmem.lua
+    lua_module: vulcan_workmem
+    help: actions
+    parameters:
+      - name: action
+        type: string
+        description: "Work memory operation. Use `task-create` at task start, `set` after important findings/progress, `list` to inspect tags, `get` for selected recall, `get-all` for full recovery/handoff only, `del` for stale tags, `task-list` to inspect tasks, and `task-close` when finished."
+        required: true
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Prefer the value saved in AGENTS.md or CLAUDE.md. Optional only for `task-create`, which generates a new ID when omitted. Caller-provided IDs may use host, plugin, or session-derived formats, but must be single-line and 20-128 characters."
+        required: false
+      - name: task_name
+        type: string
+        description: "Stable task name for task-scoped memory, for example `implement-workmem`. Required for task and node actions except `task-list`."
+        required: false
+      - name: detail
+        type: string
+        description: "Short task detail used by `task-create`: goal, boundary, known focus, and current starting point. Keep it concise."
+        required: false
+      - name: list
+        type: array
+        description: "`set` node array. Each item must contain `tag`, `type`, `title`, and `content`. Save compact facts, paths, symbols, decisions, progress, risks, and next steps; never paste full logs or large source blocks."
+        required: false
+      - name: delete_tags
+        type: array
+        description: "Optional `set` delete-before-write tag list. Use it to replace old progress nodes and write new ones in one call."
+        required: false
+      - name: tags
+        type: array
+        description: "`get` or `del` tag list. `get` may omit it for a compact task summary; `del` requires it."
+        required: false
+      - name: type
+        type: string
+        description: "Optional `list` node type filter: `note`, `file_summary`, `decision`, `todo`, `progress`, `risk`, `checkpoint`, or `tool_result`."
+        required: false
+      - name: tag_prefix
+        type: string
+        description: "Optional `list` tag prefix filter, for example `progress-`."
+        required: false
