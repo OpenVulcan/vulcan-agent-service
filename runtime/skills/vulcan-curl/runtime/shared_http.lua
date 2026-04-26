@@ -208,6 +208,61 @@ local function has_header(headers, header_name)
     return false
 end
 
+-- Normalize optional render flags into one lookup table for response shaping.
+-- 将可选渲染标记规范化为查找表，用于控制响应展示形态。
+local function normalize_render_flags(flags)
+    local normalized = {}
+    if flags == nil then
+        return normalized
+    end
+
+    local values = {}
+    if type(flags) == "string" then
+        for token in flags:gmatch("([^,]+)") do
+            local trimmed = token:match("^%s*(.-)%s*$")
+            if trimmed and trimmed ~= "" then
+                values[#values + 1] = trimmed
+            end
+        end
+    elseif type(flags) == "table" then
+        for _, value in ipairs(flags) do
+            if type(value) == "string" then
+                values[#values + 1] = value
+            end
+        end
+    else
+        return normalized
+    end
+
+    for _, value in ipairs(values) do
+        local flag = tostring(value or ""):lower():gsub("_", "-")
+        if flag == "request-header" or flag == "get-header" then
+            normalized.request_header = true
+        elseif flag == "response-header" or flag == "responst-header" then
+            normalized.response_header = true
+        end
+    end
+
+    return normalized
+end
+
+-- Return whether a normalized render flag is enabled on the current request spec.
+-- 判断当前请求规格中某个规范化渲染标记是否已启用。
+local function has_render_flag(spec, flag_name)
+    local flags = spec and spec.render_flags
+    return type(flags) == "table" and flags[flag_name] == true
+end
+
+-- Build render flags from structured inputs and legacy header switches.
+-- 根据结构化输入与旧版头信息开关构建渲染标记。
+local function build_render_flags(args)
+    local flags = normalize_render_flags(args and args.flags)
+    if args and args.include_headers == true then
+        flags.response_header = true
+    end
+    return flags
+end
+
 -- Normalize one incoming argv list into a plain Lua string array.
 -- 将传入的参数数组归一化为普通 Lua 字符串数组。
 local function normalize_argv(args)
@@ -336,6 +391,7 @@ local function parse_curl_argv(argv, base_dir)
         http_version = nil,
         silent = false,
         include = false,
+        render_flags = {},
     }
 
     local value_options = {
@@ -783,21 +839,14 @@ end
 
 -- Render one request result into a stable Markdown success response.
 -- 将请求结果渲染为稳定的 Markdown 成功响应。
-local function render_success_markdown(result)
+local function render_success_markdown(result, spec)
     local lines = {
         "# Curl Result",
         "",
-        "## Request",
-        "- method: `" .. tostring(result.method) .. "`",
-        "- url: `" .. tostring(result.request_url) .. "`",
+        "## Summary",
+        "- status_code: `" .. tostring(result.status_code or "unknown") .. "`",
+        "- attempt: `" .. tostring(result.attempt or 1) .. "`",
     }
-
-    if result.effective_url and result.effective_url ~= "" then
-        lines[#lines + 1] = "- effective_url: `" .. tostring(result.effective_url) .. "`"
-    end
-
-    lines[#lines + 1] = "- status_code: `" .. tostring(result.status_code or "unknown") .. "`"
-    lines[#lines + 1] = "- attempt: `" .. tostring(result.attempt or 1) .. "`"
 
     if result.output_path then
         lines[#lines + 1] = "- output_file: `" .. tostring(result.output_path) .. "`"
@@ -806,20 +855,27 @@ local function render_success_markdown(result)
         lines[#lines + 1] = "- header_file: `" .. tostring(result.dump_header_path) .. "`"
     end
 
-    if result.headers_text and result.headers_text ~= "" then
+    if has_render_flag(spec, "request_header") then
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "## Request"
+        lines[#lines + 1] = "- method: `" .. tostring(result.method) .. "`"
+        lines[#lines + 1] = "- url: `" .. tostring(result.request_url) .. "`"
+
+        if result.effective_url and result.effective_url ~= "" then
+            lines[#lines + 1] = "- effective_url: `" .. tostring(result.effective_url) .. "`"
+        end
+    end
+
+    if has_render_flag(spec, "response_header") and result.headers_text and result.headers_text ~= "" then
         lines[#lines + 1] = ""
         lines[#lines + 1] = "## Response Headers"
-        lines[#lines + 1] = "```text"
         lines[#lines + 1] = result.headers_text
-        lines[#lines + 1] = "```"
     end
 
     if result.body_text and result.body_text ~= "" then
         lines[#lines + 1] = ""
         lines[#lines + 1] = "## Response Body"
-        lines[#lines + 1] = "```text"
         lines[#lines + 1] = result.body_text
-        lines[#lines + 1] = "```"
     end
 
     return table.concat(lines, "\n")
@@ -827,38 +883,48 @@ end
 
 -- Render one request result into a stable Markdown error response.
 -- 将请求结果渲染为稳定的 Markdown 错误响应。
-local function render_error_markdown(message, result)
+local function render_error_markdown(message, result, spec)
     local lines = {
         "# Curl Error",
         "",
         "## Error",
-        "```text",
         tostring(message),
-        "```",
     }
 
     if result then
         lines[#lines + 1] = ""
-        lines[#lines + 1] = "## Request"
-        lines[#lines + 1] = "- method: `" .. tostring(result.method or "unknown") .. "`"
-        lines[#lines + 1] = "- url: `" .. tostring(result.request_url or "unknown") .. "`"
+        lines[#lines + 1] = "## Summary"
         lines[#lines + 1] = "- status_code: `" .. tostring(result.status_code or "unknown") .. "`"
         lines[#lines + 1] = "- attempt: `" .. tostring(result.attempt or 1) .. "`"
 
-        if result.headers_text and result.headers_text ~= "" then
+        if result.output_path then
+            lines[#lines + 1] = "- output_file: `" .. tostring(result.output_path) .. "`"
+        end
+        if result.dump_header_path then
+            lines[#lines + 1] = "- header_file: `" .. tostring(result.dump_header_path) .. "`"
+        end
+
+        if has_render_flag(spec, "request_header") then
+            lines[#lines + 1] = ""
+            lines[#lines + 1] = "## Request"
+            lines[#lines + 1] = "- method: `" .. tostring(result.method or "unknown") .. "`"
+            lines[#lines + 1] = "- url: `" .. tostring(result.request_url or "unknown") .. "`"
+
+            if result.effective_url and result.effective_url ~= "" then
+                lines[#lines + 1] = "- effective_url: `" .. tostring(result.effective_url) .. "`"
+            end
+        end
+
+        if has_render_flag(spec, "response_header") and result.headers_text and result.headers_text ~= "" then
             lines[#lines + 1] = ""
             lines[#lines + 1] = "## Response Headers"
-            lines[#lines + 1] = "```text"
             lines[#lines + 1] = result.headers_text
-            lines[#lines + 1] = "```"
         end
 
         if result.body_text and result.body_text ~= "" then
             lines[#lines + 1] = ""
             lines[#lines + 1] = "## Response Body"
-            lines[#lines + 1] = "```text"
             lines[#lines + 1] = result.body_text
-            lines[#lines + 1] = "```"
         end
     end
 
@@ -872,7 +938,7 @@ local function execute_parsed_request(spec, base_dir, timeout_ms)
     local should_fail_for_http = spec.fail_on_http_error and type(result.status_code) == "number" and result.status_code >= 400
 
     if not result.ok then
-        return render_error_markdown(result.error or "curl perform failed", result)
+        return render_error_markdown(result.error or "curl perform failed", result, spec)
     end
 
     if should_fail_for_http then
@@ -880,10 +946,10 @@ local function execute_parsed_request(spec, base_dir, timeout_ms)
         if not spec.fail_with_body then
             result.body_text = nil
         end
-        return render_error_markdown(error_text, result)
+        return render_error_markdown(error_text, result, spec)
     end
 
-    return render_success_markdown(result)
+    return render_success_markdown(result, spec)
 end
 
 -- Execute one curl-style argv request and return one Markdown string.
@@ -896,6 +962,10 @@ local function execute_curl_args_request(args)
     local base_dir = tostring(args.cwd or resolve_runtime_cwd())
     local argv = normalize_argv(args.args)
     local spec = parse_curl_argv(argv, base_dir)
+    spec.render_flags = normalize_render_flags(args.flags)
+    if spec.include then
+        spec.render_flags.response_header = true
+    end
     return execute_parsed_request(spec, base_dir, tonumber(args.timeout_ms) or default_timeout_ms())
 end
 
@@ -1220,6 +1290,7 @@ local function build_get_spec(args, base_dir)
         http_version = nil,
         silent = false,
         include = args.include_headers == true,
+        render_flags = build_render_flags(args),
     }
 
     append_query_params(spec.query_parts, args.params, args.params_list)
@@ -1296,6 +1367,7 @@ local function build_post_like_spec(args, base_dir, method_name)
         http_version = nil,
         silent = false,
         include = args.include_headers == true,
+        render_flags = build_render_flags(args),
     }
 
     append_query_params(spec.query_parts, args.params, args.params_list)

@@ -70,6 +70,10 @@ entries:
         type: string
         description: "Optional local file path used to save response headers."
         required: false
+      - name: flags
+        type: string
+        description: "Optional comma-separated render flags string. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
+        required: false
   - name: post
     description: "Execute one simple POST request with url, headers, and one body mode: json, form, or raw body. Use the base request entry for complex curl flags or advanced TLS, proxy, upload, and retry needs."
     lua_entry: runtime/vulcan-curl-post.lua
@@ -148,6 +152,10 @@ entries:
         type: string
         description: "Optional local file path used to save response headers."
         required: false
+      - name: flags
+        type: string
+        description: "Optional comma-separated render flags string. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
+        required: false
   - name: request
     description: "Execute one HTTP request through lua-curl using Linux curl-style argv semantics without depending on platform-specific shell syntax."
     lua_entry: runtime/vulcan-curl.lua
@@ -165,4 +173,8 @@ entries:
       - name: timeout_ms
         type: number
         description: "Optional default timeout in milliseconds when curl args do not provide --max-time. Defaults to 60000."
+        required: false
+      - name: flags
+        type: string
+        description: "Optional comma-separated render flags string outside args. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
         required: false

@@ -9,4 +9,13 @@ Best for:
 - simple raw body requests
 - authenticated API writes
 
+Output defaults:
+
+- pass `flags` as a comma-separated string, for example `{"flags":"response-header"}` or `{"flags":"request-header,response-header"}`
+- spaces around commas are allowed, for example `{"flags":"request-header , response-header"}`
+- request details are hidden unless `flags` contains `request-header`
+- response headers are hidden unless `flags` contains `response-header`
+- unknown flags are ignored
+- `include_headers=true` remains supported as a compatibility switch for response headers
+
 Switch to `vulcan-curl-request` when the request shape stops fitting the structured POST schema.

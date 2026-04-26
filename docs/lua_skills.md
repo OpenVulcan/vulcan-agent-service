@@ -895,6 +895,8 @@ dependencies: []
 - `follow_location` 可用于常见 30x 跳转跟随
 - `download_to` 可将响应体直接保存到文件
 - `save_headers_to` 可将响应头保存到文件
+- 默认不返回请求详情和响应头；需要时通过 `flags` 显式传入逗号分隔字符串，例如 `"flags":"response-header"` 或 `"flags":"request-header,response-header"`
+- 逗号两侧允许空格，例如 `"flags":"request-header , response-header"`；未知项会被忽略
 - 若需要复杂 curl 参数、代理、证书、输出文件、重试等，请回退使用基础 `vulcan-curl`
 
 ### `vulcan-curl-post`
@@ -933,6 +935,8 @@ dependencies: []
 - `follow_location` 可用于常见 30x 跳转跟随
 - `download_to` 可将响应体直接保存到文件
 - `save_headers_to` 可将响应头保存到文件
+- 默认不返回请求详情和响应头；需要时通过 `flags` 显式传入逗号分隔字符串，例如 `"flags":"response-header"` 或 `"flags":"request-header,response-header"`
+- 逗号两侧允许空格，例如 `"flags":"request-header , response-header"`；未知项会被忽略
 - 若需要文件上传、复杂 TLS、代理、重试、更多 curl 参数，请回退使用基础 `vulcan-curl`
 
 文件上传示例：
@@ -987,6 +991,14 @@ dependencies: []
   - 可选
   - 当未显式提供 `--max-time` 时，作为默认请求超时
   - 默认 `60000`
+- `flags`
+  - 可选
+  - 默认为空，不返回请求详情和响应头
+  - 传递格式为逗号分隔字符串，例如 `"flags":"response-header"` 或 `"flags":"request-header,response-header"`
+  - 逗号两侧允许空格，例如 `"flags":"request-header , response-header"`
+  - `request-header` 用于返回请求详情
+  - `response-header` 用于返回响应头
+  - 未知项会被忽略
 
 ### 当前第一版已支持的常见 curl 参数
 
