@@ -5,12 +5,8 @@ use crate::config::{Config, SkillRootConfigEntry, SpaceControllerProcessModeConf
 use crate::protocol::{RequestContext, Tool, ToolAnnotations};
 use crate::runtime_logging::{error as log_error, info as log_info, warn as log_warn};
 use crate::temp_maintenance::ensure_runtime_temp_dir;
-use serde_json::{Value, json};
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::Arc;
-use vulcan_luaskills::runtime_options::LuaRuntimeRunLuaPoolConfig;
-use vulcan_luaskills::{
+use luaskills::runtime_options::LuaRuntimeRunLuaPoolConfig;
+use luaskills::{
     DEFAULT_TOOL_CACHE_DEFAULT_TTL_SECS, DEFAULT_TOOL_CACHE_MAX_ENTRIES,
     DEFAULT_TOOL_CACHE_MAX_TTL_SECS, LuaEngineOptions, LuaInvocationContext,
     LuaRuntimeCapabilityOptions, LuaRuntimeDatabaseCallbackMode, LuaRuntimeDatabaseProviderMode,
@@ -19,6 +15,10 @@ use vulcan_luaskills::{
     RuntimeLogEvent, RuntimeLogLevel, RuntimeRequestContext, RuntimeSkillRoot,
     SkillProtectionConfig, ToolCacheConfig, set_log_callback,
 };
+use serde_json::{Value, json};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Built-in AI memory skill that is superseded when a VMM gRPC endpoint is configured.
 /// 配置 VMM gRPC 端点时会被替代的内置 AI 记忆技能。

@@ -18,7 +18,7 @@ use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
 use crate::tool_config::reload_tool_configs;
 use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
-use vulcan_luaskills::{
+use luaskills::{
     LuaEngine, LuaEngineOptions, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
     RuntimeSkillHelpDescriptor, RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent,
     RuntimeSkillRoot, SkillConfigEntry, ToolCacheConfig, runtime_config_store::SkillConfigStore,
@@ -1208,8 +1208,8 @@ fn execute_runtime_config_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luaskills::RuntimeHelpNodeDescriptor;
     use std::collections::HashSet;
-    use vulcan_luaskills::RuntimeHelpNodeDescriptor;
 
     /// Build one unique temporary directory path for one server-module test case.
     /// 为 server 模块单个测试用例构建唯一的临时目录路径。

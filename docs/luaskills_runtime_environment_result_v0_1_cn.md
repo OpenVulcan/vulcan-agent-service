@@ -281,7 +281,7 @@ runtime 结果中不应直接包含：
 
 ## 6. 与当前项目改造的关系
 
-当前项目要走向独立 `vulcan-luaskills-lib`，应先在主仓库内把以下几件事改成以 Environment/Result 为中心：
+当前项目要走向独立 `luaskills`，应先在主仓库内把以下几件事改成以 Environment/Result 为中心：
 
 - `lua_engine` 不再直接面向最终 `ToolCallOutput`
 - `client_budget` / `tool_config` 由宿主先解析，再注入 runtime environment

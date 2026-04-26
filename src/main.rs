@@ -26,6 +26,7 @@ pub mod pb_mcp {
 
 use client_budget::{initialize_client_budget_runtime_root, preload_client_budget_config};
 use config::Config;
+use luaskills::{LuaEngine, LuaVmPoolConfig};
 use luaskills_host::{
     build_luaskills_cache_config, build_luaskills_engine_options, build_runtime_invocation_context,
     client_budget_snapshot_for_render, install_luaskills_log_callback,
@@ -45,7 +46,6 @@ use tool_result_format::{
     HostRenderOptions, RuntimeInvocationResult, initialize_tool_result_template_roots,
     render_tool_result_text,
 };
-use vulcan_luaskills::{LuaEngine, LuaVmPoolConfig};
 
 /// Print the final `--call-tools` result.
 /// 输出 `--call-tools` 的最终结果。
@@ -674,7 +674,7 @@ fn run_internal_luaexec_request_mode(request_file: &str) -> Result<(), Box<dyn s
 /// 查找默认运行环境使用的有序技能根目录覆盖链。
 fn find_skill_roots(
     cfg: &config::Config,
-) -> Result<Vec<vulcan_luaskills::RuntimeSkillRoot>, Box<dyn std::error::Error>> {
+) -> Result<Vec<luaskills::RuntimeSkillRoot>, Box<dyn std::error::Error>> {
     resolve_skill_roots_from_config(cfg)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
 }

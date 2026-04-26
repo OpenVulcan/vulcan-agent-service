@@ -1,7 +1,7 @@
 # vulcan-mcp
 
 `vulcan-mcp` 是 Vulcan 生态中的 **MCP 宿主与协议适配层**。  
-它基于 [`vulcan-luaskills`](https://github.com/OpenVulcan/vulcan-luaskills) 提供：
+它基于 [`luaskills`](https://github.com/LuaSkills/luaskills) 提供：
 
 - MCP 协议接入
 - HTTP / gRPC / stdio 服务与本地调试模式
@@ -14,7 +14,7 @@
 
 当前架构已经拆成两层：
 
-- `vulcan-luaskills`
+- `luaskills`
   - LuaSkills 核运行时库
   - 负责 skill 加载、调用、help 树、`vulcan.*` / `vulcan.runtime.*` 注入
 - `vulcan-mcp`
@@ -23,13 +23,13 @@
 
 一句话说：
 
-**`vulcan-luaskills` 负责运行，`vulcan-mcp` 负责对外说话。**
+**`luaskills` 负责运行，`vulcan-mcp` 负责对外说话。**
 
 ## 主要能力
 
 - 支持 MCP 多版本协议协商
 - 支持 HTTP 服务模式、gRPC 服务模式、stdio 服务模式与本地调试模式
-- 通过本地依赖接入 `vulcan-luaskills`
+- 通过 Cargo 原生版本依赖接入 `luaskills`
 - 数据库访问固定走 `space_controller` 控制器模式
 - 自动加载运行根下符合规则的 LuaSkills
 - 把 skill entry 映射成 MCP tools
@@ -154,14 +154,14 @@ runtime/skills/<skill>/
 
 ### 4. RunLua 暴露策略
 
-`runlua` 的 system 能力保留在 `vulcan-luaskills` 内部与 `vulcan.runtime.lua.exec` 链路中，  
+`runlua` 的 system 能力保留在 `luaskills` 内部与 `vulcan.runtime.lua.exec` 链路中，  
 `vulcan-mcp` 通过 `vulcan-lua` skill 对外提供对应执行能力。
 
 MCP 侧推荐通过 `vulcan-lua` skill 使用：
 
 - `vulcan-lua-run`
 
-当前隔离 `vulcan.runtime.lua.exec` 已对接 `vulcan-luaskills` 的独立 `runlua` VM 池：
+当前隔离 `vulcan.runtime.lua.exec` 已对接 `luaskills` 的独立 `runlua` VM 池：
 
 - 默认值为 `min_size=1 / max_size=4 / idle_ttl_secs=60`
 - 宿主配置通过 `config.yaml` 中的 `runlua_pool_config` 透传到 `LuaRuntimeHostOptions.runlua_pool_config`
@@ -193,7 +193,7 @@ MCP 侧推荐通过 `vulcan-lua` skill 使用：
 src/
 ├─ main.rs                # 入口：配置、宿主构建、运行模式
 ├─ server.rs              # MCP server：协议处理、tool 注册、宿主包装
-├─ luaskills_host.rs      # 宿主到 vulcan-luaskills 的接线与上下文映射
+├─ luaskills_host.rs      # 宿主到 luaskills 的接线与上下文映射
 ├─ tool_result_format.rs  # 宿主层结果渲染、分页与截断
 ├─ client_budget.rs       # MCP 客户端预算配置与解析
 ├─ tool_config.rs         # MCP 工具配置解析
@@ -240,7 +240,7 @@ output/
 - `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml`
   - 属于宿主层配置，由 `vulcan-mcp` 自己读取
 - `skill_config.json`
-  - 由宿主随 `runtime_root` 统一推导并传给 `vulcan-luaskills`
+  - 由宿主随 `runtime_root` 统一推导并传给 `luaskills`
   - 当前产品不再提供单独文件路径覆盖，避免与运行根参数产生冲突
   - 当前能力会通过宿主 `luaskill-config` MCP 工具对外提供 `list/get/set/delete` 入口
   - 工具返回纯文本结果，不暴露底层配置文件物理地址
@@ -270,7 +270,7 @@ runlua_pool_config:
 ```
 
 其中 `runlua_pool_config` 会映射到 `LuaRuntimeHostOptions.runlua_pool_config`。  
-如果旧配置文件里暂时没有该配置段，宿主会保留 `vulcan-luaskills` 上游默认值。
+如果旧配置文件里暂时没有该配置段，宿主会保留 `luaskills` 上游默认值。
 
 ### Skill 目录规则
 
@@ -321,18 +321,22 @@ cargo run -- --stdio --runtime-root output
 ./output/bin/vulcan-mcp --stdio
 ```
 
-## 与 `vulcan-luaskills` 的关系
+## 与 `luaskills` 的关系
 
-当前仓库通过本地 path dependency 引用：
+当前仓库通过 Cargo 原生版本依赖引用：
 
 ```toml
-vulcan-luaskills = { path = "../vulcan-luaskills" }
+luaskills = "0.2.0"
 ```
 
-后续独立发布后，可以切换为远程仓库依赖或版本依赖。  
+相关地址：
+
+- 仓库：<https://github.com/LuaSkills/luaskills>
+- Cargo：<https://crates.io/crates/luaskills>
+
 但职责边界不变：
 
-- `vulcan-luaskills`：运行时库
+- `luaskills`：运行时库
 - `vulcan-mcp`：MCP 宿主
 
 ## 运行目录约定
@@ -355,7 +359,7 @@ vulcan-luaskills = { path = "../vulcan-luaskills" }
 
 - 继续完善 system tools 的宿主枚举与包装模型
 - 进一步收紧 `system` 与 `skill` 的公开边界
-- 推进 `vulcan-luaskills` 的 FFI 导出形态
+- 推进 `luaskills` 的 FFI 导出形态
 - 逐步把官方 skill 拆分为独立仓库
 
 ## License

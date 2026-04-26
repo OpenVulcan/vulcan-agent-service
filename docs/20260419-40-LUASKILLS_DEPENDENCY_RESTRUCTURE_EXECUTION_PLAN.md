@@ -2,7 +2,7 @@
 
 ## 一、目标
 
-本次改造的主体目标是把 `vulcan-luaskills` 从“单层源码堆叠”调整为“运行时、技能管理、依赖管理、下载管理分层明确”的结构，并为后续实现完整的 `install / reload / uninstall / enable / disable` 打下基础。
+本次改造的主体目标是把 `luaskills` 从“单层源码堆叠”调整为“运行时、技能管理、依赖管理、下载管理分层明确”的结构，并为后续实现完整的 `install / reload / uninstall / enable / disable` 打下基础。
 
 本次执行不是一次性做完完整依赖管理，而是先完成：
 
@@ -13,7 +13,7 @@
 
 ## 二、设计原则
 
-### 1. 对外仍然只有一个 `vulcan-luaskills`
+### 1. 对外仍然只有一个 `luaskills`
 
 对 Rust 宿主或未来 FFI 宿主来说，仍然只接一个库。  
 不会再额外拆出第二个“依赖管理 ffi”或第二个“包管理库”让宿主自己拼装。
@@ -185,7 +185,7 @@ src/
 
 本阶段完成时应满足：
 
-1. `vulcan-luaskills` 目录结构已完成分层
+1. `luaskills` 目录结构已完成分层
 2. 现有 `cargo check` / `cargo test --lib` 仍然通过
 3. `vulcan-mcp-client` 作为宿主仍然能成功依赖并编译
 4. `dependency` 与 `download` 已经有可继续扩展的骨架
@@ -196,7 +196,7 @@ src/
 
 已完成：
 
-1. `vulcan-luaskills` 的 `src/` 目录已按 `runtime / skill / dependency / download / providers / host` 分层完成重排
+1. `luaskills` 的 `src/` 目录已按 `runtime / skill / dependency / download / providers / host` 分层完成重排
 2. `dependencies.yaml` 新格式已正式落地，支持：
    - `tool_dependencies`
    - `lua_dependencies`

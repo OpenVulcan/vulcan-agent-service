@@ -7,7 +7,7 @@
 本文希望回答以下问题：
 
 - LuaSkills 的真实核心模型应该是什么
-- `vulcan-luaskills-lib`、`vulcan-mcp`、未来 `vulcan-grpc` 如何分层
+- `luaskills`、`vulcan-mcp`、未来 `vulcan-grpc` 如何分层
 - skill 包格式应该如何调整
 - `vulcan.` 运行时 API 应如何标准化
 - system tools、skill tools、help、provider、状态与生命周期应如何设计
@@ -33,14 +33,14 @@
 继续让 LuaSkills 直接承载这些对象，会带来两个后果：
 
 - skill 会被 MCP 协议污染
-- `vulcan-luaskills-lib` 很难成为独立 runtime
+- `luaskills` 很难成为独立 runtime
 
 ### 2.2 Runtime、依赖管理、宿主接入边界不清
 
 当前代码中：
 
-- `vulcan-luaskills` 仓库内的 `lua_engine.rs` 更像 runtime
-- `vulcan-luaskills` 仓库内历史上的 `skill_dependency.rs` 更像依赖管理
+- `luaskills` 仓库内的 `lua_engine.rs` 更像 runtime
+- `luaskills` 仓库内历史上的 `skill_dependency.rs` 更像依赖管理
 - 当前主仓库中的 `main.rs / server.rs / http_server.rs / grpc_server.rs` 更像 host / adapter
 
 但这三层目前仍在同一产品边界下混合存在。
@@ -98,7 +98,7 @@ LuaSkills Core 应只关心：
 
 ### 3.2 Runtime 只负责执行，不负责依赖安装
 
-`vulcan-luaskills-lib` 只负责：
+`luaskills` 只负责：
 
 - 加载
 - 调用
@@ -112,7 +112,7 @@ LuaSkills Core 应只关心：
 
 未来推荐关系应为：
 
-- `vulcan-luaskills-lib`：runtime
+- `luaskills`：runtime
 - `vulcan-mcp`：adapter / host
 - `vulcan-grpc`：adapter / host
 
@@ -122,7 +122,7 @@ LuaSkills Core 应只关心：
 
 1. 先改 skill 格式
 2. 在当前主仓库中验证
-3. 再拆分 `vulcan-luaskills-lib`
+3. 再拆分 `luaskills`
 
 原因很简单：
 
@@ -151,7 +151,7 @@ LuaSkills Core 应只关心：
 - capability / provider / degradation
 - status / lifecycle
 
-### 4.2 `vulcan-luaskills-lib`
+### 4.2 `luaskills`
 
 实现：
 
@@ -286,7 +286,7 @@ LuaSkills 需要同时支持两类技能管理平面：
 - `skills.*`：不能操作保护技能
 - `system.*`：可以操作保护技能
 
-宿主应通过配置对象向 `vulcan-luaskills` 注入：
+宿主应通过配置对象向 `luaskills` 注入：
 
 - `protected_skill_ids`
 
@@ -385,7 +385,7 @@ LuaSkills 只负责发出结构化变化，不负责决定宿主如何展示这�
 
 这些工具的职责是：
 
-- 调用 `vulcan-luaskills` 的技能管理入口
+- 调用 `luaskills` 的技能管理入口
 - 让 runtime 自身完成状态计算与 delta 生成
 - 宿主根据 runtime delta 自动调整自身已注册的 MCP tools
 
@@ -765,14 +765,14 @@ skill tools 是 skill 自己对外公开的 entry。
 
 ### 13.2 后续阶段
 
-在 `vulcan-luaskills-lib` 与 `vulcan-mcp` 接近正式发布的最后阶段，再独立出去更合适。
+在 `luaskills` 与 `vulcan-mcp` 接近正式发布的最后阶段，再独立出去更合适。
 
 ### 13.3 独立后的定位
 
 README 中应明确：
 
 - 最快、最佳体验方式是 `vulcan-mcp`
-- 同时支持所有实现 `vulcan-luaskills-lib` 的宿主
+- 同时支持所有实现 `luaskills` 的宿主
 
 ### 13.4 `vulcan-codekit` 在 `vulcan-mcp` 中的角色
 
@@ -826,11 +826,11 @@ README 中应明确：
 - `vulcan.runtime.lua.help`
 - context 结构化
 
-### 15.4 第四阶段：拆分 `vulcan-luaskills-lib`
+### 15.4 第四阶段：拆分 `luaskills`
 
 在新格式稳定、官方 skill 验证充分后，再拆出：
 
-- `vulcan-luaskills-lib`
+- `luaskills`
 - `vulcan-mcp`
 - 未来 `vulcan-grpc`
 
@@ -856,4 +856,4 @@ README 中应明确：
 
 ## 17. 一句话总结
 
-**本次改造的核心不是继续给 `vulcan-mcp` 加功能，而是把 LuaSkills 从 MCP 附属机制，提升为以 `vulcan-luaskills-lib` 为中心、以 skill 包格式为核心、以 `vulcan.` 标准 API 和 `vulcan.runtime.*` system tools 为骨架的独立运行时体系。**
+**本次改造的核心不是继续给 `vulcan-mcp` 加功能，而是把 LuaSkills 从 MCP 附属机制，提升为以 `luaskills` 为中心、以 skill 包格式为核心、以 `vulcan.` 标准 API 和 `vulcan.runtime.*` system tools 为骨架的独立运行时体系。**

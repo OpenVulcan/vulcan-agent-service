@@ -8,7 +8,7 @@
 - `package manager`
 - `host`
 
-本文的目标不是给出最终实现细节，而是先把边界钉住，避免后续在拆分 `vulcan-luaskills-lib` 时继续混淆：
+本文的目标不是给出最终实现细节，而是先把边界钉住，避免后续在拆分 `luaskills` 时继续混淆：
 
 - 执行职责
 - 依赖安装职责
@@ -17,8 +17,8 @@
 本文默认以下总体方向成立：
 
 - 先调整 LuaSkills / MCP Skill 格式
-- 再拆分 `vulcan-luaskills-lib`
-- `vulcan-mcp` 最终是 `vulcan-luaskills-lib` 的接入层之一
+- 再拆分 `luaskills`
+- `vulcan-mcp` 最终是 `luaskills` 的接入层之一
 
 ## 2. 设计目标
 
@@ -35,7 +35,7 @@
 
 ### 3.1 Runtime
 
-`runtime` 指 `vulcan-luaskills-lib` 或其核心执行引擎。
+`runtime` 指 `luaskills` 或其核心执行引擎。
 
 它负责：
 
@@ -83,7 +83,7 @@
 
 - `vulcan-mcp`
 - 未来 `vulcan-grpc`
-- 任何嵌入 `vulcan-luaskills-lib` 的 Agent 宿主
+- 任何嵌入 `luaskills` 的 Agent 宿主
 
 它负责：
 
@@ -202,7 +202,7 @@ Host 是接入层，不是 LuaSkills Core 真相来源。
 
 未来推荐关系应为：
 
-- `vulcan-luaskills-lib` 是 runtime
+- `luaskills` 是 runtime
 - `vulcan-mcp` 是 adapter / host
 
 MCP 中的：
@@ -294,12 +294,12 @@ host 最终面对用户时，可以把两者组合为：
 
 ### 10.1 更接近 Runtime 的模块
 
-- 已迁移到 `vulcan-luaskills` 仓库的 `lua_engine.rs`
-- 已迁移到 `vulcan-luaskills` 仓库的 `lua_skill.rs`
-- 已迁移到 `vulcan-luaskills` 仓库的 `sqlite_host.rs`
-- 已迁移到 `vulcan-luaskills` 仓库的 `lancedb_host.rs`
+- 已迁移到 `luaskills` 仓库的 `lua_engine.rs`
+- 已迁移到 `luaskills` 仓库的 `lua_skill.rs`
+- 已迁移到 `luaskills` 仓库的 `sqlite_host.rs`
+- 已迁移到 `luaskills` 仓库的 `lancedb_host.rs`
 
-这些模块更像未来 `vulcan-luaskills-lib` 的核心部分。
+这些模块更像未来 `luaskills` 的核心部分。
 
 ### 10.2 更接近 Package Manager 的模块
 
@@ -338,7 +338,7 @@ host 最终面对用户时，可以把两者组合为：
 
 1. 先调整 skill 格式
 2. 在现有 `vulcan-mcp` 中验证新格式
-3. 再拆分 `vulcan-luaskills-lib`
+3. 再拆分 `luaskills`
 
 ## 12. 推荐分阶段路线
 
@@ -363,7 +363,7 @@ host 最终面对用户时，可以把两者组合为：
 
 再正式拆分：
 
-- `vulcan-luaskills-lib`
+- `luaskills`
 - `vulcan-mcp`
 - 未来 `vulcan-grpc`
 

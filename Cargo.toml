@@ -24,7 +24,6 @@ tonic-prost = "0.14"
 prost = "0.14"
 arrow-ipc = "57"
 arrow-schema = "57"
-mlua = { git = "https://github.com/mlua-rs/mlua", features = ["luajit52", "vendored", "serialize", "send"] }
 bytes = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 indicatif = "0.18.4"
@@ -34,7 +33,7 @@ tar = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libloading = "0.8"
 base64 = "0.22"
-vulcan-luaskills = { path = "../vulcan-luaskills" }
+luaskills = "0.2.0"
 
 [build-dependencies]
 tonic-prost-build = "0.14"

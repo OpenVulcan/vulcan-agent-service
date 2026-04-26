@@ -13,7 +13,7 @@
 本文默认以下方向已经成立：
 
 - LuaSkills Core 不以 MCP 的 `tool/resource/prompt/resource_template` 为真相
-- 先在当前主仓库中完成 skill 结构改造，再拆分 `vulcan-luaskills-lib`
+- 先在当前主仓库中完成 skill 结构改造，再拆分 `luaskills`
 
 ## 2. 设计原则
 
@@ -22,7 +22,7 @@
 LuaSkills 应拥有稳定的包结构，以便：
 
 - `vulcan-mcp` 易于加载
-- 未来 `vulcan-luaskills-lib` 易于独立
+- 未来 `luaskills` 易于独立
 - IDE / gRPC / embed 宿主可复用相同格式
 
 但这个结构固定的是 **LuaSkills Core 真相**，而不是 MCP 协议对象。

@@ -4,7 +4,7 @@
 
 本文用于回答一个当前阶段最关键的问题：
 
-**为什么 `vulcan-mcp-client` 不应该立刻拆出 `vulcan-luaskills-lib`，而应该先在当前仓库中把运行时、skill 格式与宿主边界改造成目标形态，再进行拆分。**
+**为什么 `vulcan-mcp-client` 不应该立刻拆出 `luaskills`，而应该先在当前仓库中把运行时、skill 格式与宿主边界改造成目标形态，再进行拆分。**
 
 本文关注的是“先在当前项目内完成目标式改造，再拆分 runtime/lib”的完整流程，而不是最终协议的逐字段细节。
 
@@ -21,7 +21,7 @@
   - help/workflow 模型收敛
   - 运行时上下文与返回协议调整
 - **架构层改造**
-  - 抽出 `vulcan-luaskills-lib`
+  - 抽出 `luaskills`
   - 将 `vulcan-mcp` 明确降级为 host/adapter
   - 后续支持 `grpc/lib/ide` 等宿主
 
@@ -48,7 +48,7 @@
 - `src/server.rs`
   - 当前直接承接 runtime 输出并进行渲染，与 host/render 层仍未彻底解耦
 
-其中第一类问题已经随着 runtime 迁移到 `vulcan-luaskills` 新仓库而被拆出主仓；当前主仓仍需持续收口的，是宿主渲染与宿主配置真相。
+其中第一类问题已经随着 runtime 迁移到 `luaskills` 新仓库而被拆出主仓；当前主仓仍需持续收口的，是宿主渲染与宿主配置真相。
 
 ## 3. 推荐总策略
 
@@ -56,7 +56,7 @@
 
 1. **先在当前仓库内按目标架构完成就地改造**
 2. **在主仓库内验证新 skill 格式、新运行时上下文与新结果协议**
-3. **待边界稳定后，再拆出 `vulcan-luaskills-lib`**
+3. **待边界稳定后，再拆出 `luaskills`**
 
 一句话概括：
 
@@ -66,7 +66,7 @@
 
 ### 4.1 Skill 包格式先收敛到独立 runtime 可接受的结构
 
-推荐先在当前仓库内完成 skill 包结构改造，使其天然面向未来 `vulcan-luaskills-lib`。
+推荐先在当前仓库内完成 skill 包结构改造，使其天然面向未来 `luaskills`。
 
 建议收敛为：
 
@@ -210,7 +210,7 @@ bytes 限制不应只是 MCP 私有概念，而应成为 runtime 与 skill 都�
 
 ### 4.6 runtime 应独立出自己的环境对象
 
-当前运行时直接读取 `client_budgets.yaml`、`tool_configs.yaml` 这类配置的方式，未来不适合作为 `vulcan-luaskills-lib` 的核心模型。
+当前运行时直接读取 `client_budgets.yaml`、`tool_configs.yaml` 这类配置的方式，未来不适合作为 `luaskills` 的核心模型。
 
 推荐调整为：
 
@@ -535,11 +535,11 @@ skill 改造后建议统一暴露：
 - MCP、CLI、内嵌调用路径都验证通过
 - 输出模型、分页、budget、help/workflow 稳定
 
-### 阶段 6：最后再拆分 `vulcan-luaskills-lib`
+### 阶段 6：最后再拆分 `luaskills`
 
 只有在前述阶段稳定后，再进入真正拆分：
 
-- 抽出 `vulcan-luaskills-lib`
+- 抽出 `luaskills`
 - 将 `vulcan-mcp` 改为 host/adapter
 - 后续再扩展 `grpc/lib/ide`
 
@@ -547,13 +547,13 @@ skill 改造后建议统一暴露：
 
 在完成当前仓库内改造后，再推荐拆成：
 
-- `vulcan-luaskills-lib`
+- `luaskills`
   - runtime 核心
 - `vulcan-mcp`
   - host/adapter
 - `vulcan-grpc`
   - host/adapter
-- `vulcan-luaskills-pm`
+- `luaskills-pm`
   - package/dependency manager
 
 此时拆分会更安全，因为：
@@ -567,7 +567,7 @@ skill 改造后建议统一暴露：
 
 当前项目最合理的路线不是“现在马上拆 lib”，而是：
 
-**先在 `vulcan-mcp-client` 内部，把 skill 结构、运行时环境、返回中间层、模板/分页职责、bytes 限制与客户端上下文全部改造成独立 runtime 目标形态；待这些真相稳定后，再顺势拆出 `vulcan-luaskills-lib`。**
+**先在 `vulcan-mcp-client` 内部，把 skill 结构、运行时环境、返回中间层、模板/分页职责、bytes 限制与客户端上下文全部改造成独立 runtime 目标形态；待这些真相稳定后，再顺势拆出 `luaskills`。**
 
 这条路线的最大优势不是“保守”，而是：
 

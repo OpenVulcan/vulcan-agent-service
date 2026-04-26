@@ -486,7 +486,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1192,6 +1192,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "luaskills"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8df896f5f8f6a151badfce1b915cb97655b6191d54dd5f6c87f6dc58720bc160"
+dependencies = [
+ "base64",
+ "flate2",
+ "libloading",
+ "mlua",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tar",
+ "tokio",
+ "vldb-controller-client",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1232,8 +1255,9 @@ dependencies = [
 
 [[package]]
 name = "mlua"
-version = "0.12.0-dev.1"
-source = "git+https://github.com/mlua-rs/mlua#3ab3c997b3a9cf3fc0eab0cc9c5228e7b3796f02"
+version = "0.12.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab462a58a9c7c422e84f20908f70840a3478503d2d295b5c3ec1995abcad4119"
 dependencies = [
  "bstr",
  "either",
@@ -1249,8 +1273,9 @@ dependencies = [
 
 [[package]]
 name = "mlua-sys"
-version = "0.10.0"
-source = "git+https://github.com/mlua-rs/mlua#3ab3c997b3a9cf3fc0eab0cc9c5228e7b3796f02"
+version = "0.11.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e9871be51a244d4b9b75aa38d2859c09869d55074dcec5507c25c2cade7ad7"
 dependencies = [
  "cc",
  "cfg-if",
@@ -1808,7 +1833,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2031,7 +2056,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2095,10 +2120,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2504,7 +2529,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vldb-controller-client"
 version = "0.2.1"
-source = "git+https://github.com/OpenVulcan/vldb-controller.git?tag=v0.2.1#3f66926fa2eab036d13025f9139287de6cee38c3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8d6cb87b92b27403eda4eb9d254f811ba536520eced69146702b0e407975394"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -2514,27 +2540,6 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
-]
-
-[[package]]
-name = "vulcan-luaskills"
-version = "0.1.0"
-dependencies = [
- "base64",
- "flate2",
- "libloading",
- "mlua",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tar",
- "tokio",
- "vldb-controller-client",
- "windows-sys 0.61.2",
- "zip",
 ]
 
 [[package]]
@@ -2553,7 +2558,7 @@ dependencies = [
  "futures",
  "indicatif",
  "libloading",
- "mlua",
+ "luaskills",
  "prost",
  "protoc-bin-vendored",
  "reqwest",
@@ -2571,7 +2576,6 @@ dependencies = [
  "tower",
  "tower-http",
  "uuid",
- "vulcan-luaskills",
  "zip",
 ]
 

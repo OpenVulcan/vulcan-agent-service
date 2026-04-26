@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-本文是面向未来 `vulcan-luaskills-lib` 的能力提供器与降级规则草案。
+本文是面向未来 `luaskills` 的能力提供器与降级规则草案。
 
 本文只讨论以下问题：
 
@@ -24,7 +24,7 @@
 
 本草案的目标是解决以下问题：
 
-- `vulcan-luaskills-lib` 需要明确哪些底层能力是基础依赖，哪些是增强能力
+- `luaskills` 需要明确哪些底层能力是基础依赖，哪些是增强能力
 - skill 不能把某个私有 provider 当成唯一前提，除非它本身就是宿主私有 skill
 - 某些 provider 在部分平台上不可用时，skill 需要可预测地降级，而不是静默失效
 - `skills list` 与 `skills info` 必须能明确解释一个 skill 当前为何可用、为何降级、为何被关闭
@@ -136,7 +136,7 @@ skill 不负责决定：
 - provider 的物理存储路径
 - provider 的底层初始化参数
 
-这些由宿主与 `vulcan-luaskills-lib` 负责。
+这些由宿主与 `luaskills` 负责。
 
 ### 4.4 缺失必须可见，不允许静默隐藏
 
@@ -152,7 +152,7 @@ skill 不负责决定：
 
 ### 5.1 推荐基础依赖
 
-当前建议 `vulcan-luaskills-lib` 将以下能力视为基础依赖：
+当前建议 `luaskills` 将以下能力视为基础依赖：
 
 - `vldb-sqlite`
 
@@ -363,7 +363,7 @@ degradation:
 
 ## 11. 宿主职责
 
-宿主与 `vulcan-luaskills-lib` 应承担以下职责：
+宿主与 `luaskills` 应承担以下职责：
 
 - 探测当前平台上可用的 provider
 - 对 skill 声明的 capability 进行解析

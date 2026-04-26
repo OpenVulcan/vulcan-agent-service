@@ -1,11 +1,11 @@
 use crate::client_budget::{ClientBudgetSnapshot, EffectiveBudgetScope};
+pub use luaskills::RuntimeInvocationResult;
+use luaskills::ToolOverflowMode;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-pub use vulcan_luaskills::RuntimeInvocationResult;
-use vulcan_luaskills::ToolOverflowMode;
 
 /// Unified English error message returned when even a single line exceeds the current client budget.
 /// 当工具结果单行就超出当前客户端预算时，统一返回的英文错误提示。
