@@ -1,0 +1,96 @@
+name: vulcan-file
+version: 0.1.0
+debug: true
+help:
+  main:
+    description: 帮助 AI 判断何时使用 vulcan-file，而不是 codekit、rg 或 shell。
+    file: help/help.md
+  topics:
+    - name: read
+      description: 当已知道文件路径和大致行号时，读取一个或多个原文片段。
+      file: help/read.md
+    - name: list
+      description: 当还不知道目标文件位置时，先获取低 token 文件名地图。
+      file: help/list.md
+    - name: edit
+      description: 当需要做小范围文本编辑且希望先看预览时使用。
+      file: help/edit.md
+entries:
+  - name: read
+    description: "[AI FILE READ] Use when you already know the target file and line area and need exact source text. Pass lines_rule as start,count; use one line per segment for multiple ranges. Do not use this to search; use codekit-rg first."
+    lua_entry: runtime/vulcan-file-read.lua
+    lua_module: vulcan_file_read
+    help: read
+    parameters:
+      - name: file
+        type: string
+        description: "Use the file path you already selected. Passing a directory is only for a quick direct-child Name listing; use vulcan-file-list for recursive discovery."
+        required: true
+      - name: lines_rule
+        type: string
+        description: "Use when you need specific lines. Format: start,count. For multiple snippets, put one rule per line, for example: 5,10 newline 25,30. Omit only when the beginning of the file is enough."
+        required: false
+      - name: numbered
+        type: boolean
+        description: "Keep true when you will cite or edit by line number. Set false only when raw text without line prefixes is more useful."
+        required: false
+  - name: list
+    description: "[AI FILE LIST] Use before reading when you need to find candidate files cheaply. Prefer this over shell directory loops for a compact ignored-aware file map. Use codekit tools instead when you need AST structure."
+    lua_entry: runtime/vulcan-file-list.lua
+    lua_module: vulcan_file_list
+    help: list
+    parameters:
+      - name: path
+        type: string
+        description: "Use the narrowest directory that may contain the target files. Omit only for a project-level map."
+        required: false
+      - name: pattern
+        type: string
+        description: "Use a file-name glob when the extension or file name shape is known, such as *.rs, *.lua, or Cargo.*. Defaults to all file names."
+        required: false
+      - name: recursive
+        type: boolean
+        description: "Keep true when searching a project tree. Set false only when the target must be a direct child of path."
+        required: false
+      - name: noignore
+        type: boolean
+        description: "Use only when ignored/generated directories are intentionally needed. Defaults to respecting .gitignore, .ignore, and high-noise built-ins."
+        required: false
+      - name: limit
+        type: number
+        description: "Use to cap broad scans. Raise it only when the result is truncated and more candidate file names are still needed."
+        required: false
+  - name: edit
+    description: "[AI FILE EDIT] Use for small text edits after you have read the target lines. It previews by default; pass apply=true only after the preview matches the intended change."
+    lua_entry: runtime/vulcan-file-edit.lua
+    lua_module: vulcan_file_edit
+    help: edit
+    parameters:
+      - name: file
+        type: string
+        description: "Use the exact file path to edit."
+        required: true
+      - name: mode
+        type: string
+        description: "Choose overwrite for full file replacement, append for file-end additions, replace_range for known line ranges, or insert_before/insert_after for anchored inserts."
+        required: true
+      - name: content
+        type: string
+        description: "Use the complete replacement or insertion text for the selected mode."
+        required: true
+      - name: start_line
+        type: number
+        description: "Use only with replace_range; this is the first 1-based line to replace."
+        required: false
+      - name: end_line
+        type: number
+        description: "Use only with replace_range; this is the last 1-based line to replace."
+        required: false
+      - name: line
+        type: number
+        description: "Use only with insert_before or insert_after; this is the existing 1-based anchor line."
+        required: false
+      - name: apply
+        type: boolean
+        description: "Leave false for preview. Set true only when the previewed edit is ready to write."
+        required: false
