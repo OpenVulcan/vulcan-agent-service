@@ -15,6 +15,9 @@ help:
     - name: markdown-menu
       description: Markdown 标题导航工作流。
       file: help/markdown-menu.md
+    - name: node-source
+      description: 按结构 selector 提取函数或方法源码工作流。
+      file: help/node-source.md
     - name: tree
       description: 项目结构建图与候选文件筛选工作流。
       file: help/tree.md
@@ -76,6 +79,20 @@ entries:
         type: boolean
         description: "Disable ignore rules only when set to true. Leave it unset for the normal ignored-by-default documentation scan behavior."
         required: false
+  - name: node-source
+    description: "[NODE SOURCE] Extract the full source text for one or more function or method nodes selected by structural selectors. Uses a required nodes[] payload where each node item carries its own file and selector, including same-file and cross-file batches."
+    lua_entry: runtime/codekit-node-source.lua
+    lua_module: codekit_node_source
+    help: node-source
+    parameters:
+      - name: nodes
+        type: array
+        description: "Required node input. Each item must be an object with file and selector fields, for example [{\"file\":\"src/main.rs\",\"selector\":\"main\"}]. Put the file path inside every node item; for same-file batches repeat the same file or place newline-separated selectors in that item's selector field."
+        required: true
+      - name: max_nodes
+        type: number
+        description: "Maximum node requests to process before marking the rest as skipped. Defaults to 20."
+        required: false
   - name: ast-tree
     description: "[DIRECTORY AST TREE] Pick candidate source files from exactly one directory before deep inspection. Returns a compact recursive Markdown tree grouped by subdirectory."
     lua_entry: runtime/codekit-ast-tree.lua
@@ -95,20 +112,32 @@ entries:
         description: "Disable ignore rules only when set to true. Leave it unset for the normal ignored-by-default tree scan behavior."
         required: false
   - name: patch
-    description: "[FUNCTION AST PATCH] Replace one function or method by structural selector. Use this only for full-function replacement when raw line edits are unsafe or stale."
+    description: "[FUNCTION AST PATCH] Replace one or more functions or methods by structural selector. Supports legacy file+selector+replacement and batch patches[] payloads. Batch mode defaults to atomic=true, so any validation failure rejects the whole batch before writing."
     lua_entry: runtime/codekit-patch.lua
     lua_module: codekit_patch
     help: patch
     parameters:
       - name: file
         type: string
-        description: "Target file that contains the function to patch. This parameter is required and must point to a regular file."
-        required: true
+        description: "Legacy target file that contains the function to patch. Required only when patches[] is not provided."
+        required: false
       - name: selector
         type: string
-        description: "Flexible structural selector for a function or method, for example with_vmm, McpServer/with_vmm, or impl McpServer/with_vmm. If multiple nodes match, the tool returns more specific candidates instead of patching blindly."
-        required: true
+        description: "Legacy flexible structural selector for a function or method. Required only when patches[] is not provided."
+        required: false
       - name: replacement
         type: string
-        description: "Replacement source text. It must be the complete function source, starting from the declaration line. Body-only fragments are rejected."
-        required: true
+        description: "Legacy replacement source text. It must be the complete function source, starting from the declaration line. Required only when patches[] is not provided."
+        required: false
+      - name: patches
+        type: array
+        description: "Optional batch input. Each item must include file, selector, and replacement. Optional item fields include expected_node_hash, expected_source_hash, expected_file_hash, and expected_range."
+        required: false
+      - name: atomic
+        type: boolean
+        description: "Whether the batch should be all-or-nothing. Defaults to true. Set false only when partial application is explicitly desired."
+        required: false
+      - name: max_patches
+        type: number
+        description: "Maximum patch requests to process in one call. Defaults to 20."
+        required: false

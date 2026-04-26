@@ -7,6 +7,9 @@ Re-locate function or method nodes by AST structural selectors and replace the f
 -- 工具常量 / Tool constants for selector matching and replacement behavior.
 local AST_RUNTIME_HELPERS = nil
 local find_matching_patch_targets
+-- Default maximum patch requests processed by one batch call.
+-- 单次批量调用默认处理的最大 patch 请求数。
+local DEFAULT_MAX_PATCHES = 20
 
 -- 基础字符串工具 / Basic string helpers shared by selector matching and patch rendering.
 local function trim(text)
@@ -1097,69 +1100,951 @@ local function apply_patch_to_symbol(file_path, symbol, replacement_text)
     }, nil
 end
 
--- 工具入口 / Tool entry point invoked by the MCP runtime.
-return function(args)
-    local helper_bundle, helper_error = load_ast_runtime_helpers()
-    if helper_error then
-        return render_patch_error(helper_error)
+-- Compute a stable lightweight source hash for stale-check comparisons.
+-- 计算稳定的轻量源码哈希，用于 stale check 比对。
+local function compute_source_hash(text)
+    local hash = 5381
+    local source = tostring(text or "")
+    for index = 1, #source do
+        hash = ((hash * 131) + source:byte(index)) % 4294967296
+    end
+    return string.format("%08x", hash)
+end
+
+-- Extract the original source text for a matched symbol.
+-- 提取匹配符号的原始源码文本。
+local function extract_symbol_source(file_content, symbol)
+    local start_line = tonumber(symbol and symbol.start_line) or 0
+    local end_line = tonumber(symbol and symbol.end_line) or start_line
+    if start_line <= 0 or end_line < start_line then
+        return nil, {
+            error = "invalid_symbol_range",
+            message = "matched symbol does not expose a valid source line range",
+            start_line = start_line,
+            end_line = end_line,
+        }
     end
 
-    local file_path, file_error = validate_file_argument(args and args.file)
-    if file_error then
-        return render_patch_error(file_error)
+    local lines = {}
+    for line_number = start_line, end_line do
+        table.insert(lines, file_content.lines[line_number] or "")
+    end
+    return table.concat(lines, "\n"), nil
+end
+
+-- Normalize the optional atomic argument; batch patching defaults to atomic.
+-- 规范化可选 atomic 参数；批量 patch 默认使用原子语义。
+local function normalize_atomic_argument(value)
+    if value == false or value == "false" then
+        return false
+    end
+    return true
+end
+
+-- Normalize the optional max_patches argument.
+-- 规范化可选 max_patches 参数。
+local function normalize_max_patches_argument(value)
+    local normalized = tonumber(value)
+    if not normalized or normalized < 1 then
+        return DEFAULT_MAX_PATCHES
+    end
+    return math.floor(normalized)
+end
+
+-- Normalize an expected hash string for comparison.
+-- 规范化预期哈希字符串以便比较。
+local function normalize_expected_hash(value)
+    if value == nil then
+        return nil
+    end
+    local normalized = trim(value):lower():gsub("^sha256:", ""):gsub("^hash:", "")
+    if normalized == "" then
+        return nil
+    end
+    return normalized
+end
+
+-- Parse an expected source range from table or string forms.
+-- 从 table 或字符串形式解析预期源码范围。
+local function parse_expected_range(value)
+    if value == nil then
+        return nil, nil
+    end
+    if type(value) == "table" then
+        local start_line = tonumber(value.start_line or value.start or value[1])
+        local end_line = tonumber(value.end_line or value["end"] or value[2] or start_line)
+        if start_line and end_line then
+            return {
+                start_line = math.floor(start_line),
+                end_line = math.floor(end_line),
+            }, nil
+        end
+        return nil, {
+            error = "invalid_expected_range",
+            message = "expected_range table must include start_line and end_line",
+        }
+    end
+    if type(value) == "string" then
+        local start_text, end_text = tostring(value):match("L?(%d+)%s*[%-%:]%s*L?(%d+)")
+        if not start_text then
+            start_text = tostring(value):match("L?(%d+)")
+            end_text = start_text
+        end
+        if start_text and end_text then
+            return {
+                start_line = tonumber(start_text),
+                end_line = tonumber(end_text),
+            }, nil
+        end
+        return nil, {
+            error = "invalid_expected_range",
+            message = "expected_range string must look like L10-L42 or 10-42",
+        }
+    end
+    return nil, {
+        error = "invalid_expected_range",
+        message = "expected_range must be a table or string",
+        actual_type = type(value),
+    }
+end
+
+-- Build one normalized patch request from raw arguments.
+-- 从原始参数构造一个规范化 patch 请求。
+local function build_patch_request(index, raw_patch)
+    local source = type(raw_patch) == "table" and raw_patch or {}
+    local file_path, file_error = validate_file_argument(source.file)
+    local selector, selector_error = validate_selector_argument(source.selector)
+    local replacement_text, replacement_error = validate_replacement_argument(source.replacement)
+    local expected_range, expected_range_error = parse_expected_range(source.expected_range)
+
+    local initial_error = file_error or selector_error or replacement_error or expected_range_error
+    if initial_error then
+        initial_error.patch_index = index
     end
 
-    local selector, selector_error = validate_selector_argument(args and args.selector)
-    if selector_error then
-        return render_patch_error(selector_error)
+    return {
+        patch_index = index,
+        file = file_path or trim(source.file or ""),
+        selector = selector or trim(source.selector or ""),
+        replacement = replacement_text,
+        expected_node_hash = normalize_expected_hash(source.expected_node_hash or source.expected_source_hash),
+        expected_file_hash = normalize_expected_hash(source.expected_file_hash),
+        expected_range = expected_range,
+        initial_error = initial_error,
+    }
+end
+
+-- Normalize legacy single-patch arguments and new patches[] payloads.
+-- 统一规范化旧版单 patch 参数与新版 patches[] 载荷。
+local function normalize_patch_requests(args)
+    local request = type(args) == "table" and args or {}
+    local raw_patches = request.patches
+    local patches = {}
+    if type(raw_patches) == "table" and #raw_patches > 0 then
+        for index, raw_patch in ipairs(raw_patches) do
+            table.insert(patches, build_patch_request(index, raw_patch))
+        end
+    else
+        table.insert(patches, build_patch_request(1, request))
+    end
+    return patches
+end
+
+-- Return one result row for a rejected patch request.
+-- 返回一个被拒绝的 patch 请求结果行。
+local function build_rejected_result(patch_request, error_payload)
+    return {
+        patch_index = patch_request.patch_index,
+        status = "rejected",
+        file = patch_request.file,
+        selector = patch_request.selector,
+        error = tostring((error_payload and error_payload.error) or "patch_rejected"),
+        message = tostring((error_payload and error_payload.message) or "patch request was rejected"),
+        candidates = error_payload and error_payload.candidates or nil,
+        expected_node_hash = error_payload and error_payload.expected_node_hash or nil,
+        actual_node_hash = error_payload and error_payload.actual_node_hash or nil,
+        expected_file_hash = error_payload and error_payload.expected_file_hash or nil,
+        actual_file_hash = error_payload and error_payload.actual_file_hash or nil,
+        expected_range = error_payload and error_payload.expected_range or nil,
+        actual_range = error_payload and error_payload.actual_range or nil,
+    }
+end
+
+-- Return one result row for a validated patch request.
+-- 返回一个已通过预检的 patch 请求结果行。
+local function build_validated_result(plan)
+    return {
+        patch_index = plan.patch_index,
+        status = "validated",
+        file = plan.file,
+        selector = plan.selector,
+        path = plan.candidate.path,
+        signature = plan.candidate.signature,
+        start_line = plan.candidate.start_line,
+        end_line = plan.candidate.end_line,
+        previous_node_hash = plan.node_hash,
+    }
+end
+
+-- Sort candidate descriptors in stable file/path/range order.
+-- 按稳定的文件、路径和范围顺序排序候选描述。
+local function sort_candidate_descriptors(candidates)
+    table.sort(candidates, function(left, right)
+        if left.file ~= right.file then
+            return left.file < right.file
+        end
+        if left.path ~= right.path then
+            return left.path < right.path
+        end
+        return (left.start_line or 0) < (right.start_line or 0)
+    end)
+end
+
+-- Load and cache file content and AST context for one file.
+-- 加载并缓存单个文件的文本与 AST 上下文。
+local function get_batch_file_context(file_path, helper_bundle, cache)
+    if cache[file_path] then
+        return cache[file_path]
     end
 
-    local replacement_text, replacement_error = validate_replacement_argument(args and args.replacement)
-    if replacement_error then
-        return render_patch_error(replacement_error)
+    local file_content, file_error = read_file_content(file_path)
+    local symbol_roots, file_info, ast_error = nil, nil, nil
+    if not file_error then
+        symbol_roots, file_info, ast_error = collect_ast_for_file(file_path, helper_bundle)
     end
 
-    local symbol_roots, _, ast_error = collect_ast_for_file(file_path, helper_bundle)
-    if ast_error then
-        return render_patch_error(ast_error)
+    local context = {
+        file = file_path,
+        content = file_content,
+        file_info = file_info,
+        symbol_roots = symbol_roots,
+        error = file_error or ast_error,
+    }
+    cache[file_path] = context
+    return context
+end
+
+-- Prepare one patch request by resolving its selector and validating its replacement.
+-- 通过解析 selector 与校验 replacement 准备一个 patch 请求。
+local function prepare_patch_request(patch_request, helper_bundle, file_context_cache)
+    if patch_request.initial_error then
+        return nil, patch_request.initial_error
     end
 
-    local matches = find_matching_patch_targets(symbol_roots, selector)
+    local context = get_batch_file_context(patch_request.file, helper_bundle, file_context_cache)
+    if context.error then
+        return nil, context.error
+    end
+
+    if patch_request.expected_file_hash then
+        local file_hash = compute_source_hash(context.content.raw)
+        if patch_request.expected_file_hash ~= file_hash then
+            return nil, {
+                error = "stale_file_hash",
+                message = "expected_file_hash does not match the current file source",
+                file = patch_request.file,
+                selector = patch_request.selector,
+                expected_file_hash = patch_request.expected_file_hash,
+                actual_file_hash = file_hash,
+            }
+        end
+    end
+
+    local matches = find_matching_patch_targets(context.symbol_roots, patch_request.selector)
     if #matches == 0 then
-        return render_patch_error({
+        return nil, {
             error = "selector_not_found",
             message = "no patchable function matched the selector",
-            file = file_path,
-            selector = selector,
-        })
+            file = patch_request.file,
+            selector = patch_request.selector,
+        }
     end
-
     if #matches > 1 then
         local candidates = {}
         for _, symbol in ipairs(matches) do
             table.insert(candidates, build_candidate_descriptor(symbol))
         end
-        table.sort(candidates, function(left, right)
-            if left.file ~= right.file then
-                return left.file < right.file
-            end
-            if left.path ~= right.path then
-                return left.path < right.path
-            end
-            return (left.start_line or 0) < (right.start_line or 0)
-        end)
-        return render_patch_error({
+        sort_candidate_descriptors(candidates)
+        return nil, {
             error = "ambiguous_selector",
             message = "multiple patchable functions matched the selector; retry with a more specific structural path",
-            file = file_path,
-            selector = selector,
+            file = patch_request.file,
+            selector = patch_request.selector,
             candidates = candidates,
-        })
+        }
     end
 
-    local result, patch_error = apply_patch_to_symbol(file_path, matches[1], replacement_text)
-    if patch_error then
-        return render_patch_error(patch_error)
+    local symbol = matches[1]
+    local source_text, source_error = extract_symbol_source(context.content, symbol)
+    if source_error then
+        return nil, source_error
     end
-    return render_patch_success(result)
+
+    local node_hash = compute_source_hash(source_text)
+    if patch_request.expected_node_hash and patch_request.expected_node_hash ~= node_hash then
+        return nil, {
+            error = "stale_node_hash",
+            message = "expected_node_hash does not match the current node source",
+            file = patch_request.file,
+            selector = patch_request.selector,
+            expected_node_hash = patch_request.expected_node_hash,
+            actual_node_hash = node_hash,
+        }
+    end
+
+    if patch_request.expected_range then
+        local expected_start = tonumber(patch_request.expected_range.start_line)
+        local expected_end = tonumber(patch_request.expected_range.end_line)
+        if expected_start ~= tonumber(symbol.start_line) or expected_end ~= tonumber(symbol.end_line) then
+            return nil, {
+                error = "stale_node_range",
+                message = "expected_range does not match the current node range",
+                file = patch_request.file,
+                selector = patch_request.selector,
+                expected_range = patch_request.expected_range,
+                actual_range = {
+                    start_line = symbol.start_line,
+                    end_line = symbol.end_line,
+                },
+            }
+        end
+    end
+
+    local replacement_shape_error = validate_full_replacement_shape(symbol, patch_request.replacement)
+    if replacement_shape_error then
+        return nil, replacement_shape_error
+    end
+
+    local replacement_lines = build_full_replacement_lines(symbol, context.content.lines, patch_request.replacement)
+    local candidate = build_candidate_descriptor(symbol)
+    return {
+        patch_index = patch_request.patch_index,
+        file = patch_request.file,
+        selector = patch_request.selector,
+        symbol = symbol,
+        candidate = candidate,
+        node_hash = node_hash,
+        source_text = source_text,
+        replacement_lines = replacement_lines,
+        file_context = context,
+    }, nil
+end
+
+-- Add a problem to one prepared plan and update its result row.
+-- 向一个已准备计划追加问题并更新其结果行。
+local function reject_plan(plan, results_by_index, error_payload)
+    plan.rejected = true
+    results_by_index[plan.patch_index] = build_rejected_result({
+        patch_index = plan.patch_index,
+        file = plan.file,
+        selector = plan.selector,
+    }, error_payload)
+end
+
+-- Detect overlapping source ranges within the same target file.
+-- 检测同一目标文件内互相重叠的源码范围。
+local function reject_overlapping_plans(plans_by_file, results_by_index)
+    for _, plans in pairs(plans_by_file) do
+        table.sort(plans, function(left, right)
+            return (left.symbol.start_line or 0) < (right.symbol.start_line or 0)
+        end)
+        local previous = nil
+        for _, plan in ipairs(plans) do
+            if previous and (tonumber(plan.symbol.start_line) or 0) <= (tonumber(previous.symbol.end_line) or 0) then
+                local overlap_error = {
+                    error = "overlapping_patch_nodes",
+                    message = "multiple patches target overlapping source ranges in the same file",
+                    file = plan.file,
+                    selector = plan.selector,
+                }
+                reject_plan(previous, results_by_index, overlap_error)
+                reject_plan(plan, results_by_index, overlap_error)
+            end
+            previous = plan
+        end
+    end
+end
+
+-- Apply all replacements for one file to an in-memory line array.
+-- 将一个文件的全部 replacement 应用到内存行数组。
+local function build_batch_file_lines(file_content, plans)
+    local rebuilt = clone_array(file_content.lines)
+    table.sort(plans, function(left, right)
+        return (left.symbol.start_line or 0) > (right.symbol.start_line or 0)
+    end)
+    for _, plan in ipairs(plans) do
+        rebuilt = build_replaced_file_lines(rebuilt, plan.symbol, plan.replacement_lines)
+    end
+    return rebuilt
+end
+
+-- Validate a patched file against parser errors and every original target identity.
+-- 校验 patch 后文件的解析错误与每个原始目标身份。
+local function validate_ast_after_write_for_plans(file_path, helper_bundle, plans)
+    local symbol_roots, file_info, validation_error = collect_ast_for_file(file_path, helper_bundle)
+    if validation_error then
+        return nil, {
+            error = "post_write_ast_validation_failed",
+            message = "patched file failed AST validation and was rejected",
+            file = file_path,
+            details = validation_error,
+        }
+    end
+
+    local error_matches, error_scan_error = scan_ast_error_nodes(file_path, file_info, helper_bundle)
+    if error_scan_error then
+        return nil, error_scan_error
+    end
+    if error_matches and #error_matches > 0 then
+        return nil, {
+            error = "syntax_error_nodes_detected",
+            message = "patched file introduced parser error nodes and was rejected",
+            file = file_path,
+            details = {
+                count = #error_matches,
+                diagnostics = summarize_error_node_matches(error_matches),
+            },
+        }
+    end
+
+    local relocated_by_index = {}
+    for _, plan in ipairs(plans or {}) do
+        local identity_selector = build_symbol_identity_path(plan.symbol)
+        local matches = find_matching_patch_targets(symbol_roots, identity_selector)
+        if #matches == 0 then
+            return nil, {
+                error = "patched_target_not_found",
+                message = "patched file no longer contains the target function under the original structural path",
+                file = file_path,
+                selector = identity_selector,
+                patch_index = plan.patch_index,
+            }
+        end
+        if #matches > 1 then
+            local candidates = {}
+            for _, symbol in ipairs(matches) do
+                table.insert(candidates, build_candidate_descriptor(symbol))
+            end
+            return nil, {
+                error = "patched_target_ambiguous",
+                message = "patched file produced multiple candidate functions for the original structural path",
+                file = file_path,
+                selector = identity_selector,
+                patch_index = plan.patch_index,
+                candidates = candidates,
+            }
+        end
+
+        local relocated_symbol = matches[1]
+        if relocated_symbol.kind ~= plan.symbol.kind or trim(relocated_symbol.name or "") ~= trim(plan.symbol.name or "") then
+            return nil, {
+                error = "patched_target_identity_changed",
+                message = "patched file changed the target function identity and was rejected",
+                file = file_path,
+                patch_index = plan.patch_index,
+                details = {
+                    expected = {
+                        kind = plan.symbol.kind,
+                        name = trim(plan.symbol.name or ""),
+                    },
+                    actual = {
+                        kind = relocated_symbol.kind,
+                        name = trim(relocated_symbol.name or ""),
+                    },
+                },
+            }
+        end
+        relocated_by_index[plan.patch_index] = relocated_symbol
+    end
+
+    return relocated_by_index, nil
+end
+
+-- Create and validate a temporary patched file for one target file.
+-- 为一个目标文件创建并校验临时 patch 文件。
+local function create_validated_patch_record(file_path, plans, helper_bundle)
+    local file_context = plans[1].file_context
+    local new_lines = build_batch_file_lines(file_context.content, plans)
+    local new_text = join_file_lines(new_lines, file_context.content.newline, file_context.content.has_trailing_newline)
+    local temp_path = build_sidecar_file_path(file_path, "vmcp_patch_batch_tmp")
+    local backup_path = build_sidecar_file_path(file_path, "vmcp_patch_batch_backup")
+    safe_remove_file(temp_path)
+    safe_remove_file(backup_path)
+
+    local temp_written, temp_write_error = pcall(vulcan.fs.write, temp_path, new_text)
+    if not temp_written then
+        safe_remove_file(temp_path)
+        return nil, {
+            error = "temp_file_write_failed",
+            message = tostring(temp_write_error),
+            file = file_path,
+            temp_file = temp_path,
+        }
+    end
+
+    local relocated_by_index, validation_error = validate_ast_after_write_for_plans(temp_path, helper_bundle, plans)
+    if validation_error then
+        safe_remove_file(temp_path)
+        return nil, validation_error
+    end
+
+    -- Compute post-patch node hashes from the validated temporary source so success metadata can drive later stale checks.
+    -- 从已校验的临时源码计算 patch 后节点哈希，确保成功元数据可继续用于后续 stale check。
+    local new_file_content = {
+        raw = new_text,
+        lines = new_lines,
+        newline = file_context.content.newline,
+        has_trailing_newline = file_context.content.has_trailing_newline,
+    }
+    local new_node_hash_by_index = {}
+    for _, plan in ipairs(plans or {}) do
+        local relocated_symbol = relocated_by_index and relocated_by_index[plan.patch_index]
+        local new_source_text, new_source_error = extract_symbol_source(new_file_content, relocated_symbol)
+        if new_source_error then
+            safe_remove_file(temp_path)
+            return nil, {
+                error = "patched_node_source_extract_failed",
+                message = "patched node source could not be extracted after AST validation",
+                file = file_path,
+                patch_index = plan.patch_index,
+                details = new_source_error,
+            }
+        end
+        new_node_hash_by_index[plan.patch_index] = compute_source_hash(new_source_text)
+    end
+
+    return {
+        file = file_path,
+        temp_path = temp_path,
+        backup_path = backup_path,
+        plans = plans,
+        original_raw = file_context.content.raw,
+        relocated_by_index = relocated_by_index,
+        new_node_hash_by_index = new_node_hash_by_index,
+    }, nil
+end
+
+-- Restore all committed records from their backup files.
+-- 从备份文件恢复所有已提交记录。
+local function rollback_patch_records(records)
+    local rollback_errors = {}
+    for _, record in ipairs(records or {}) do
+        safe_remove_file(record.file)
+        local restored, restore_error = rename_file(record.backup_path, record.file)
+        if not restored then
+            local fallback_ok, fallback_error = pcall(vulcan.fs.write, record.file, record.original_raw or "")
+            if not fallback_ok then
+                table.insert(rollback_errors, {
+                    file = record.file,
+                    restore_error = tostring(restore_error),
+                    fallback_error = tostring(fallback_error),
+                })
+            end
+        end
+    end
+    return rollback_errors
+end
+
+-- Commit a set of pre-validated patch records, rolling back on any failure.
+-- 提交一组已预校验的 patch 记录，并在失败时回滚。
+local function commit_patch_records(records, helper_bundle)
+    local committed = {}
+    for _, record in ipairs(records or {}) do
+        local moved_to_backup, backup_error = rename_file(record.file, record.backup_path)
+        if not moved_to_backup then
+            rollback_patch_records(committed)
+            safe_remove_file(record.temp_path)
+            return {
+                error = "backup_creation_failed",
+                message = tostring(backup_error),
+                file = record.file,
+                backup_file = record.backup_path,
+            }
+        end
+
+        local moved_temp_into_place, swap_error = rename_file(record.temp_path, record.file)
+        if not moved_temp_into_place then
+            table.insert(committed, record)
+            rollback_patch_records(committed)
+            safe_remove_file(record.temp_path)
+            return {
+                error = "temp_swap_failed",
+                message = tostring(swap_error),
+                file = record.file,
+                backup_file = record.backup_path,
+            }
+        end
+        table.insert(committed, record)
+    end
+
+    for _, record in ipairs(records or {}) do
+        local relocated_by_index, validation_error = validate_ast_after_write_for_plans(record.file, helper_bundle, record.plans)
+        if validation_error then
+            local rollback_errors = rollback_patch_records(committed)
+            return {
+                error = "patch_reverted_after_validation_failure",
+                message = "patched files failed AST validation and original files were restored",
+                file = record.file,
+                validation = validation_error,
+                rollback_errors = rollback_errors,
+            }
+        end
+        record.relocated_by_index = relocated_by_index
+    end
+
+    for _, record in ipairs(records or {}) do
+        safe_remove_file(record.backup_path)
+    end
+    return nil
+end
+
+-- Build patch plans grouped by target file after validation.
+-- 在校验后按目标文件构建 patch 计划分组。
+local function build_valid_plan_groups(plans)
+    local groups = {}
+    for _, plan in ipairs(plans or {}) do
+        if not plan.rejected then
+            if not groups[plan.file] then
+                groups[plan.file] = {}
+            end
+            table.insert(groups[plan.file], plan)
+        end
+    end
+    return groups
+end
+
+-- Render a stale-check range diagnostic as a compact line value.
+-- 将 stale check 的范围诊断渲染为紧凑的行内值。
+local function format_range_diagnostic(range_value)
+    if type(range_value) ~= "table" then
+        return tostring(range_value or "")
+    end
+    local start_line = tonumber(range_value.start_line or range_value.start or range_value[1])
+    local end_line = tonumber(range_value.end_line or range_value["end"] or range_value[2] or start_line)
+    if start_line and end_line then
+        return string.format("L%d-%d", start_line, end_line)
+    end
+    local ok, encoded = pcall(vulcan.json.encode, range_value)
+    if ok and encoded then
+        return tostring(encoded)
+    end
+    return tostring(range_value)
+end
+
+-- Render the batch patch result as Markdown.
+-- 将批量 patch 结果渲染为 Markdown。
+local function render_patch_batch_result(summary, results)
+    local lines = {
+        "# PATCH BATCH RESULT",
+        string.format("- requested: `%d`", tonumber(summary.requested) or 0),
+        string.format("- applied: `%d`", tonumber(summary.applied) or 0),
+        string.format("- status: `%s`", tostring(summary.status or "unknown")),
+        string.format("- atomic: `%s`", tostring(summary.atomic == true)),
+        string.format("- reason: `%s`", tostring(summary.reason or "")),
+    }
+
+    table.insert(lines, "")
+    table.insert(lines, "## Patches")
+    for _, result in ipairs(results or {}) do
+        table.insert(lines, "")
+        table.insert(lines, string.format("### Patch %d", tonumber(result.patch_index) or 0))
+        table.insert(lines, string.format("- status: `%s`", tostring(result.status or "unknown")))
+        table.insert(lines, string.format("- file: `%s`", tostring(result.file or "")))
+        table.insert(lines, string.format("- selector: `%s`", tostring(result.selector or "")))
+        if result.path then
+            table.insert(lines, string.format("- path: `%s`", tostring(result.path)))
+        end
+        if result.signature then
+            table.insert(lines, string.format("- signature: `%s`", tostring(result.signature)))
+        end
+        if result.start_line and result.end_line then
+            table.insert(lines, string.format("- lines: `L%d-%d`", tonumber(result.start_line) or 0, tonumber(result.end_line) or 0))
+        end
+        if result.previous_node_hash then
+            table.insert(lines, string.format("- previous_node_hash: `%s`", tostring(result.previous_node_hash)))
+        end
+        if result.new_node_hash then
+            table.insert(lines, string.format("- new_node_hash: `%s`", tostring(result.new_node_hash)))
+        elseif result.node_hash then
+            table.insert(lines, string.format("- node_hash: `%s`", tostring(result.node_hash)))
+        end
+        if result.error then
+            table.insert(lines, string.format("- error: `%s`", tostring(result.error)))
+        end
+        if result.message then
+            table.insert(lines, string.format("- message: %s", tostring(result.message)))
+        end
+        if result.expected_node_hash then
+            table.insert(lines, string.format("- expected_node_hash: `%s`", tostring(result.expected_node_hash)))
+        end
+        if result.actual_node_hash then
+            table.insert(lines, string.format("- actual_node_hash: `%s`", tostring(result.actual_node_hash)))
+        end
+        if result.expected_file_hash then
+            table.insert(lines, string.format("- expected_file_hash: `%s`", tostring(result.expected_file_hash)))
+        end
+        if result.actual_file_hash then
+            table.insert(lines, string.format("- actual_file_hash: `%s`", tostring(result.actual_file_hash)))
+        end
+        if result.expected_range then
+            table.insert(lines, string.format("- expected_range: `%s`", format_range_diagnostic(result.expected_range)))
+        end
+        if result.actual_range then
+            table.insert(lines, string.format("- actual_range: `%s`", format_range_diagnostic(result.actual_range)))
+        end
+        if type(result.candidates) == "table" and #result.candidates > 0 then
+            table.insert(lines, "- candidates:")
+            for _, candidate in ipairs(result.candidates) do
+                table.insert(
+                    lines,
+                    string.format(
+                        "  - `%s` L%d-%d",
+                        tostring(candidate.path or ""),
+                        tonumber(candidate.start_line) or 0,
+                        tonumber(candidate.end_line) or 0
+                    )
+                )
+            end
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+-- Mark validated plans as not applied because atomic validation failed.
+-- 因 atomic 校验失败而将已通过预检的计划标记为未应用。
+local function mark_validated_results_not_applied(results_by_index)
+    for _, result in pairs(results_by_index or {}) do
+        if result.status == "validated" then
+            result.status = "not_applied"
+            result.message = "atomic batch was rejected before writing any file"
+        end
+    end
+end
+
+-- Convert indexed result map into a stable array.
+-- 将索引结果映射转换为稳定数组。
+local function collect_ordered_results(results_by_index, requested_count)
+    local results = {}
+    for index = 1, requested_count do
+        if results_by_index[index] then
+            table.insert(results, results_by_index[index])
+        end
+    end
+    return results
+end
+
+-- Execute a batch patch request with atomic or partial application semantics.
+-- 按 atomic 或部分应用语义执行批量 patch 请求。
+local function execute_patch_batch(args, helper_bundle)
+    local atomic = normalize_atomic_argument(args and args.atomic)
+    local max_patches = normalize_max_patches_argument(args and args.max_patches)
+    local patch_requests = normalize_patch_requests(args)
+    local results_by_index = {}
+    local plans = {}
+    local file_context_cache = {}
+
+    for _, patch_request in ipairs(patch_requests) do
+        if patch_request.patch_index > max_patches then
+            results_by_index[patch_request.patch_index] = {
+                patch_index = patch_request.patch_index,
+                status = "skipped",
+                file = patch_request.file,
+                selector = patch_request.selector,
+                message = "patch request skipped because max_patches was reached",
+            }
+        else
+            local plan, prepare_error = prepare_patch_request(patch_request, helper_bundle, file_context_cache)
+            if prepare_error then
+                results_by_index[patch_request.patch_index] = build_rejected_result(patch_request, prepare_error)
+            else
+                table.insert(plans, plan)
+                results_by_index[patch_request.patch_index] = build_validated_result(plan)
+            end
+        end
+    end
+
+    local plans_by_file = build_valid_plan_groups(plans)
+    reject_overlapping_plans(plans_by_file, results_by_index)
+    plans_by_file = build_valid_plan_groups(plans)
+
+    local has_rejections = false
+    for _, result in pairs(results_by_index) do
+        if result.status == "rejected" or result.status == "skipped" then
+            has_rejections = true
+            break
+        end
+    end
+
+    local summary = {
+        requested = #patch_requests,
+        applied = 0,
+        status = "validated",
+        atomic = atomic,
+        reason = "",
+    }
+
+    if atomic and has_rejections then
+        mark_validated_results_not_applied(results_by_index)
+        summary.status = "rejected"
+        summary.reason = "validation_failed"
+        return render_patch_batch_result(summary, collect_ordered_results(results_by_index, #patch_requests))
+    end
+
+    local records = {}
+    local record_errors = {}
+    for file_path, file_plans in pairs(plans_by_file) do
+        if #file_plans > 0 then
+            local record, record_error = create_validated_patch_record(file_path, file_plans, helper_bundle)
+            if record_error then
+                table.insert(record_errors, {
+                    file = file_path,
+                    error = record_error,
+                    plans = file_plans,
+                })
+            else
+                table.insert(records, record)
+            end
+        end
+    end
+
+    if #record_errors > 0 then
+        if atomic then
+            for _, record in ipairs(records) do
+                safe_remove_file(record.temp_path)
+            end
+            for _, record_error in ipairs(record_errors) do
+                for _, plan in ipairs(record_error.plans or {}) do
+                    results_by_index[plan.patch_index] = build_rejected_result({
+                        patch_index = plan.patch_index,
+                        file = plan.file,
+                        selector = plan.selector,
+                    }, record_error.error)
+                end
+            end
+            mark_validated_results_not_applied(results_by_index)
+            summary.status = "rejected"
+            summary.reason = "temp_validation_failed"
+            return render_patch_batch_result(summary, collect_ordered_results(results_by_index, #patch_requests))
+        end
+        for _, record_error in ipairs(record_errors) do
+            for _, plan in ipairs(record_error.plans or {}) do
+                results_by_index[plan.patch_index] = build_rejected_result({
+                    patch_index = plan.patch_index,
+                    file = plan.file,
+                    selector = plan.selector,
+                }, record_error.error)
+            end
+        end
+    end
+
+    if atomic then
+        table.sort(records, function(left, right)
+            return left.file < right.file
+        end)
+        local commit_error = commit_patch_records(records, helper_bundle)
+        if commit_error then
+            for _, record in ipairs(records) do
+                safe_remove_file(record.temp_path)
+            end
+            for _, result in pairs(results_by_index) do
+                if result.status == "validated" then
+                    result.status = "not_applied"
+                    result.error = commit_error.error
+                    result.message = commit_error.message
+                end
+            end
+            summary.status = "rejected"
+            summary.reason = tostring(commit_error.error or "commit_failed")
+            return render_patch_batch_result(summary, collect_ordered_results(results_by_index, #patch_requests))
+        end
+        for _, record in ipairs(records) do
+            for _, plan in ipairs(record.plans or {}) do
+                local relocated = record.relocated_by_index and record.relocated_by_index[plan.patch_index] or plan.symbol
+                local new_node_hash = record.new_node_hash_by_index and record.new_node_hash_by_index[plan.patch_index] or nil
+                results_by_index[plan.patch_index] = {
+                    patch_index = plan.patch_index,
+                    status = "applied",
+                    file = plan.file,
+                    selector = plan.selector,
+                    path = build_canonical_symbol_path(relocated),
+                    signature = trim(relocated.signature or ""),
+                    start_line = relocated.start_line,
+                    end_line = relocated.end_line,
+                    previous_node_hash = plan.node_hash,
+                    new_node_hash = new_node_hash,
+                    node_hash = new_node_hash,
+                }
+                summary.applied = summary.applied + 1
+            end
+        end
+        summary.status = "applied"
+        summary.reason = "ok"
+        return render_patch_batch_result(summary, collect_ordered_results(results_by_index, #patch_requests))
+    end
+
+    for _, record in ipairs(records) do
+        local commit_error = commit_patch_records({ record }, helper_bundle)
+        if commit_error then
+            safe_remove_file(record.temp_path)
+            for _, plan in ipairs(record.plans or {}) do
+                results_by_index[plan.patch_index] = build_rejected_result({
+                    patch_index = plan.patch_index,
+                    file = plan.file,
+                    selector = plan.selector,
+                }, commit_error)
+            end
+        else
+            for _, plan in ipairs(record.plans or {}) do
+                local relocated = record.relocated_by_index and record.relocated_by_index[plan.patch_index] or plan.symbol
+                local new_node_hash = record.new_node_hash_by_index and record.new_node_hash_by_index[plan.patch_index] or nil
+                results_by_index[plan.patch_index] = {
+                    patch_index = plan.patch_index,
+                    status = "applied",
+                    file = plan.file,
+                    selector = plan.selector,
+                    path = build_canonical_symbol_path(relocated),
+                    signature = trim(relocated.signature or ""),
+                    start_line = relocated.start_line,
+                    end_line = relocated.end_line,
+                    previous_node_hash = plan.node_hash,
+                    new_node_hash = new_node_hash,
+                    node_hash = new_node_hash,
+                }
+                summary.applied = summary.applied + 1
+            end
+        end
+    end
+
+    local has_failure = false
+    for _, result in pairs(results_by_index) do
+        if result.status ~= "applied" then
+            has_failure = true
+            break
+        end
+    end
+    summary.status = has_failure and "partial" or "applied"
+    summary.reason = has_failure and "partial_application" or "ok"
+    return render_patch_batch_result(summary, collect_ordered_results(results_by_index, #patch_requests))
+end
+
+-- 工具入口 / Tool entry point invoked by the MCP runtime.
+return function(args)
+    -- Keep helper functions as direct closure upvalues for sibling CodeKit entries.
+    -- 为同级 CodeKit 入口保留 helper 函数作为直接闭包 upvalue。
+    if args and args.__codekit_helper_probe == "__never__" then
+        return {
+            validate_file_argument = validate_file_argument,
+            validate_selector_argument = validate_selector_argument,
+            collect_ast_for_file = collect_ast_for_file,
+            find_matching_patch_targets = find_matching_patch_targets,
+            build_candidate_descriptor = build_candidate_descriptor,
+        }
+    end
+
+    local helper_bundle, helper_error = load_ast_runtime_helpers()
+    if helper_error then
+        return render_patch_error(helper_error)
+    end
+    return execute_patch_batch(args, helper_bundle)
 end

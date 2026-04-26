@@ -12,6 +12,7 @@
 - `vulcan-codekit-ast-detail`
 - `vulcan-codekit-rg`
 - `vulcan-codekit-markdown-menu`
+- `vulcan-codekit-node-source`
 - `vulcan-codekit-patch`
 
 在部分 MCP 客户端或宿主绑定里，工具名可能会被转写成下划线形式，例如 `vulcan_codekit_ast_tree`。这只是暴露层命名差异，语义上仍对应同一组 CodeKit 入口。
@@ -161,15 +162,48 @@
 - 给大文档树做导航
 - 防止一开始把整堆 Markdown 正文塞进上下文
 
-### `vulcan-codekit-patch`
+### `vulcan-codekit-node-source`
 
-当目标已经明确到函数级别后，用结构化方式替换整个函数或方法。
+当 `ast-detail` 或 `rg` 已经确认目标函数/方法后，按结构 selector 直接取回一个或多个节点的完整源码，支持跨文件批量读取。
 
-它不是“随便文本替换”，而是围绕 AST 目标做完整函数/方法替换：先用 selector 定位目标，再写入替换内容，最后重新扫描 AST 并拒绝引入解析错误节点的结果。
+它会返回：
+
+- 命中的文件
+- selector 数量
+- 每个 selector
+- 函数/方法签名
+- 行号范围
+- 完整节点源码
+- 每个节点的 `ok` / `missing` / `ambiguous` / `duplicate` / `skipped` / `error` 状态
+- `node_hash` 与 `file_hash`
+- `overflow_mode: truncate`
 
 适合：
 
-- 明确 owner 后的整函数替换
+- patch 前精读当前实现
+- review 一个或多个 owner 函数而不是整文件
+- 避免为了拿函数正文退回全文读取
+
+节点读取统一使用 `nodes[]`：
+
+- 每个节点项都携带自己的 `file` 与 `selector`
+- 同文件多节点时重复同一个 `file`
+- 如果更紧凑，也可以在单个节点项的 `selector` 中按行写多个 selector
+- 跨文件多节点直接在不同节点项中写不同 `file`
+
+它会部分成功返回，不会因为某个 selector 未命中、歧义、文件不存在或 selector 格式错误就丢掉所有已成功提取的节点；单节点问题会以 `status: error` 和 `node_index` 标出。
+默认最多处理 20 个节点，重复命中同一节点会标记为 `duplicate`，超过上限的请求会标记为 `skipped`。
+
+### `vulcan-codekit-patch`
+
+当目标已经明确到函数级别后，用结构化方式替换一个或多个函数/方法。
+
+它不是“随便文本替换”，而是围绕 AST 目标做完整函数/方法替换：先用 selector 定位目标，再写入替换内容，最后重新扫描 AST 并拒绝引入解析错误节点的结果。批量模式下默认 `atomic=true`，任一 patch 未命中、歧义、stale、replacement 不是完整函数或同文件范围重叠，整批都会在写入前被拒绝。
+
+适合：
+
+- 明确 owner 后的单个或多个整函数替换
+- handler/helper/test 一次性修复
 - 避免大文件中手工行号漂移
 - 让函数级改动更可控
 
@@ -177,6 +211,10 @@
 
 - 不用于零散局部文本替换
 - `replacement` 必须是完整函数或方法源码
+- 批量输入使用 `patches = [{ file, selector, replacement }, ...]`
+- 可传入 `expected_node_hash`、`expected_source_hash`、`expected_file_hash`、`expected_range` 做 stale check
+- 成功结果会区分 `previous_node_hash` 与 `new_node_hash`，后续 stale check 应使用 `new_node_hash`
+- stale 拒绝会返回对应的 expected/actual 诊断字段，便于调用方判断当前源码状态
 - selector 如果命中多个候选，会返回候选而不是盲目修改
 
 ## 一套更适合 Agent 的代码工作流
@@ -192,7 +230,8 @@
 1. `ast-tree` 建图
 2. `ast-detail` 看骨架
 3. `rg` 用锚点反查 owner
-4. 明确边界后再修改
+4. `node-source` 获取精确节点源码
+5. `patch` 批量结构化替换
 
 也就是：
 
@@ -285,6 +324,7 @@
 - `vulcan-codekit-ast-detail`
 - `vulcan-codekit-rg`
 - `vulcan-codekit-markdown-menu`
+- `vulcan-codekit-node-source`
 - `vulcan-codekit-patch`
 
 ## 一句话总结
