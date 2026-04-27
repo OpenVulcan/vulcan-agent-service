@@ -26,12 +26,12 @@ pub mod pb_mcp {
 
 use client_budget::{initialize_client_budget_runtime_root, preload_client_budget_config};
 use config::Config;
-use luaskills::{LuaEngine, LuaVmPoolConfig};
+use luaskills::{LuaEngine, LuaVmPoolConfig, RuntimeSkillRoot};
 use luaskills_host::{
     build_luaskills_cache_config, build_luaskills_engine_options, build_runtime_invocation_context,
-    client_budget_snapshot_for_render, install_luaskills_log_callback,
-    resolve_runtime_root_from_config, resolve_skill_config_file_path,
-    resolve_skill_roots_from_config,
+    client_budget_snapshot_for_render, default_user_skill_root, install_luaskills_log_callback,
+    normalize_skill_root_key, resolve_runtime_root_from_config, resolve_skill_config_file_path,
+    resolve_skill_roots_from_config, validate_unique_skill_root_spaces,
 };
 use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext, ToolCallResult};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
@@ -435,8 +435,9 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
     }
 
     // Load Lua skills from system directory, with optional user override
-    let skill_roots = find_skill_roots(&cfg)?;
     let runtime_root = resolve_runtime_root_for_host(cfg)?;
+    let mut skill_roots = find_skill_roots(&cfg)?;
+    ensure_skill_manager_runtime_roots(runtime_root.as_deref(), &mut skill_roots)?;
     let resources_root = runtime_root.as_ref().map(|root| root.join("resources"));
     initialize_tool_result_template_roots(
         &skill_roots
@@ -464,6 +465,158 @@ async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Err
     }
 
     Ok(server)
+}
+
+/// Ensure the formal runtime root chain contains the MCP-managed ROOT and USER layers when possible.
+/// 在可行时确保正式运行根链包含 MCP 托管的 ROOT 与 USER 层。
+fn ensure_skill_manager_runtime_roots(
+    runtime_root: Option<&std::path::Path>,
+    skill_roots: &mut Vec<RuntimeSkillRoot>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ensure_root_skill_manager_root(runtime_root, skill_roots)?;
+    if !skill_roots.is_empty()
+        && !skill_roots
+            .iter()
+            .any(|root| normalize_skill_manager_layer_name(&root.name) == "ROOT")
+    {
+        return Err("ROOT skill root is required before loading LuaSkills".into());
+    }
+    if skill_roots
+        .iter()
+        .any(|root| normalize_skill_manager_layer_name(&root.name) == "ROOT")
+    {
+        ensure_user_skill_manager_root(skill_roots)?;
+        sort_skill_manager_formal_roots(skill_roots)
+            .map_err(|error| format!("Failed to order skill-manager runtime roots: {}", error))?;
+        validate_unique_skill_root_spaces(skill_roots).map_err(|error| {
+            format!("Failed to validate skill-manager runtime roots: {}", error)
+        })?;
+    }
+    Ok(())
+}
+
+/// Ensure the default USER skills directory is present as the ordinary mutable layer.
+/// 确保默认 USER skills 目录作为普通可变层存在。
+fn ensure_user_skill_manager_root(
+    skill_roots: &mut Vec<RuntimeSkillRoot>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if skill_roots
+        .iter()
+        .any(|root| normalize_skill_manager_layer_name(&root.name) == "USER")
+    {
+        return Ok(());
+    }
+    let Some(user_skills_dir) = default_user_skill_root() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(&user_skills_dir).map_err(|error| {
+        format!(
+            "Failed to create USER skills directory {}: {}",
+            user_skills_dir.display(),
+            error
+        )
+    })?;
+    let user_root_key = normalize_skill_root_key(&user_skills_dir);
+    let mut candidate_roots = skill_roots.clone();
+    candidate_roots.retain(|root| normalize_skill_root_key(&root.skills_dir) != user_root_key);
+    candidate_roots.push(RuntimeSkillRoot {
+        name: "USER".to_string(),
+        skills_dir: user_skills_dir,
+    });
+    sort_skill_manager_formal_roots(&mut candidate_roots).map_err(|error| {
+        format!(
+            "Failed to append skill-manager USER skills directory: {}",
+            error
+        )
+    })?;
+    validate_unique_skill_root_spaces(&candidate_roots).map_err(|error| {
+        format!(
+            "Failed to append skill-manager USER skills directory: {}",
+            error
+        )
+    })?;
+    *skill_roots = candidate_roots;
+    Ok(())
+}
+
+/// Ensure the host-managed ROOT skills directory is present when no explicit ROOT layer exists.
+/// 当不存在显式 ROOT 层时，确保宿主管理的 ROOT skills 目录存在。
+fn ensure_root_skill_manager_root(
+    runtime_root: Option<&std::path::Path>,
+    skill_roots: &mut Vec<RuntimeSkillRoot>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if skill_roots
+        .iter()
+        .any(|root| normalize_skill_manager_layer_name(&root.name) == "ROOT")
+    {
+        sort_skill_manager_formal_roots(skill_roots).map_err(|error| {
+            format!("Failed to order configured skill-manager roots: {}", error)
+        })?;
+        return Ok(());
+    }
+    let Some(runtime_root) = runtime_root else {
+        return Ok(());
+    };
+    let root_skills_dir = runtime_root.join("skills");
+    std::fs::create_dir_all(&root_skills_dir).map_err(|error| {
+        format!(
+            "Failed to create ROOT skills directory {}: {}",
+            root_skills_dir.display(),
+            error
+        )
+    })?;
+    let managed_root_key = normalize_skill_root_key(&root_skills_dir);
+    let mut candidate_roots = skill_roots.clone();
+    candidate_roots.retain(|root| normalize_skill_root_key(&root.skills_dir) != managed_root_key);
+    candidate_roots.push(RuntimeSkillRoot {
+        name: "ROOT".to_string(),
+        skills_dir: root_skills_dir,
+    });
+    sort_skill_manager_formal_roots(&mut candidate_roots).map_err(|error| {
+        format!(
+            "Failed to append skill-manager ROOT skills directory: {}",
+            error
+        )
+    })?;
+    validate_unique_skill_root_spaces(&candidate_roots).map_err(|error| {
+        format!(
+            "Failed to append skill-manager ROOT skills directory: {}",
+            error
+        )
+    })?;
+    *skill_roots = candidate_roots;
+    Ok(())
+}
+
+/// Normalize one skill-manager layer label for local chain construction.
+/// 为本地根链构造规范化单个 skill-manager 层级标签。
+fn normalize_skill_manager_layer_name(name: &str) -> String {
+    name.trim().to_ascii_uppercase()
+}
+
+/// Return the fixed runtime priority rank for one skill-manager formal layer.
+/// 返回单个 skill-manager 正式层级的固定运行时优先级。
+fn skill_manager_layer_rank(name: &str) -> Result<usize, String> {
+    match normalize_skill_manager_layer_name(name).as_str() {
+        "ROOT" => Ok(0),
+        "PROJECT" => Ok(1),
+        "USER" => Ok(2),
+        _ => Err(format!(
+            "unsupported skill root label '{}'; expected ROOT, PROJECT, or USER",
+            name.trim()
+        )),
+    }
+}
+
+/// Sort one root chain into ROOT -> PROJECT -> USER and normalize labels to uppercase.
+/// 将根链排序为 ROOT -> PROJECT -> USER，并把标签规范化为大写。
+fn sort_skill_manager_formal_roots(skill_roots: &mut [RuntimeSkillRoot]) -> Result<(), String> {
+    for root in skill_roots.iter_mut() {
+        root.name = normalize_skill_manager_layer_name(&root.name);
+        skill_manager_layer_rank(&root.name)?;
+    }
+    skill_roots.sort_by_key(|root| skill_manager_layer_rank(&root.name).unwrap_or(usize::MAX));
+    Ok(())
 }
 
 /// Run the default HTTP/gRPC service mode.
@@ -622,11 +775,15 @@ fn print_host_call_tool_response(
 fn build_single_vm_lua_engine_for_local_mode(
     config: &Config,
 ) -> Result<LuaEngine, Box<dyn std::error::Error>> {
-    let skill_roots = find_skill_roots(config)?;
-    if skill_roots.is_empty() {
+    let runtime_root = resolve_runtime_root_for_host(config)?;
+    let mut skill_roots = find_skill_roots(config)?;
+    ensure_skill_manager_runtime_roots(runtime_root.as_deref(), &mut skill_roots)?;
+    if !skill_roots
+        .iter()
+        .any(|root| normalize_skill_manager_layer_name(&root.name) == "ROOT")
+    {
         return Err("Lua skill directory not found for local debug mode".into());
     }
-    let runtime_root = resolve_runtime_root_for_host(config)?;
     let resources_root = runtime_root.as_ref().map(|root| root.join("resources"));
     initialize_tool_result_template_roots(
         &skill_roots
@@ -995,6 +1152,257 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(tool_names.contains(&"luaskill-config"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Empty runtime roots should still expose skill-manager and create the ROOT skills directory for first-run installs.
+    /// 空运行根仍应暴露 skill-manager，并为首次运行安装创建 ROOT skills 目录。
+    #[test]
+    fn build_server_exposes_skill_manager_without_existing_skills() {
+        let root = unique_test_dir("skill-manager-empty-runtime");
+        std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            skill_roots: Some(vec![]),
+            ..Config::default()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let server = runtime
+            .block_on(build_server(&config))
+            .expect("build_server should succeed without preinstalled skills");
+        assert!(
+            root.join("skills").is_dir(),
+            "ROOT skills directory should be created for skill-manager"
+        );
+
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list"
+                }),
+                RequestContext::default(),
+            ))
+            .expect("tools/list should return one response");
+        let tool_names = response
+            .get("result")
+            .and_then(|value| value.get("tools"))
+            .and_then(Value::as_array)
+            .expect("tools array should exist in result payload")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(tool_names.contains(&"skill-manager"));
+
+        let list_response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "list"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("skill-manager list should return one response");
+        let tool_result: ToolCallResult = serde_json::from_value(
+            list_response
+                .get("result")
+                .cloned()
+                .expect("skill-manager list should return result"),
+        )
+        .expect("skill-manager list result should deserialize");
+        let rendered = tool_result
+            .content
+            .first()
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+        assert_eq!(rendered, "No LuaSkills are installed in the USER layer.");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Skill-manager update should report a tool error when USER does not contain the skill.
+    /// 当 USER 不包含该技能时，skill-manager update 应报告工具错误。
+    #[test]
+    fn skill_manager_update_missing_skill_returns_tool_error() {
+        let root = unique_test_dir("skill-manager-update-missing");
+        std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            skill_roots: Some(vec![]),
+            ..Config::default()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let server = runtime
+            .block_on(build_server(&config))
+            .expect("build_server should succeed without preinstalled skills");
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "update",
+                            "skill_id": "vulcan-codekit"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("skill-manager update should return one response");
+        let tool_result: ToolCallResult = serde_json::from_value(
+            response
+                .get("result")
+                .cloned()
+                .expect("skill-manager update should return result"),
+        )
+        .expect("skill-manager update result should deserialize");
+        let rendered = tool_result
+            .content
+            .first()
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+
+        assert_eq!(tool_result.is_error, Some(true));
+        assert!(rendered.contains("skill-manager update failed"));
+        assert!(rendered.contains("not installed"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The configured ROOT layer should remain the single system root when it is already present.
+    /// 当已存在显式 ROOT 层时，应保留它作为唯一系统根。
+    #[test]
+    fn skill_manager_root_uses_configured_root_layer_without_duplicate() {
+        let root = unique_test_dir("skill-manager-root-name-collision");
+        let configured_skills_dir = root.join("configured-skills");
+        let runtime_root = root.join("runtime");
+        std::fs::create_dir_all(&configured_skills_dir)
+            .expect("failed to create configured skills dir");
+        let mut skill_roots = vec![RuntimeSkillRoot {
+            name: "ROOT".to_string(),
+            skills_dir: configured_skills_dir.clone(),
+        }];
+
+        ensure_root_skill_manager_root(Some(&runtime_root), &mut skill_roots)
+            .expect("configured ROOT should be preserved");
+
+        assert_eq!(skill_roots.len(), 1);
+        assert_eq!(skill_roots[0].name, "ROOT");
+        assert_eq!(skill_roots[0].skills_dir, configured_skills_dir);
+        assert!(!runtime_root.join("skills").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runtime root construction should keep formal ROOT before USER regardless of insertion order.
+    /// 运行根构造应保持正式 ROOT 位于 USER 之前，不受插入顺序影响。
+    #[test]
+    fn skill_manager_roots_are_ordered_by_formal_layers() {
+        let root = unique_test_dir("skill-manager-formal-order");
+        let runtime_root = root.join("runtime");
+        std::fs::create_dir_all(runtime_root.join("configs"))
+            .expect("failed to create runtime config dir");
+        let mut skill_roots = Vec::new();
+
+        ensure_skill_manager_runtime_roots(Some(&runtime_root), &mut skill_roots)
+            .expect("formal roots should be created");
+
+        assert!(skill_roots.len() >= 2);
+        assert_eq!(skill_roots[0].name, "ROOT");
+        assert_eq!(skill_roots[1].name, "USER");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The host-managed root must not bypass sibling runtime-space uniqueness after it is appended.
+    /// 宿主管理根追加后不得绕过同级运行空间唯一性约束。
+    #[test]
+    fn skill_manager_root_rejects_sibling_runtime_space_collision() {
+        let root = unique_test_dir("skill-manager-root-space-collision");
+        let runtime_root = root.join("runtime");
+        let configured_skills_dir = runtime_root.join("custom-skills");
+        std::fs::create_dir_all(&configured_skills_dir)
+            .expect("failed to create configured skills dir");
+        let mut skill_roots = vec![RuntimeSkillRoot {
+            name: "USER".to_string(),
+            skills_dir: configured_skills_dir.clone(),
+        }];
+
+        let error = ensure_root_skill_manager_root(Some(&runtime_root), &mut skill_roots)
+            .expect_err("managed root should reject sibling runtime-space collisions");
+
+        assert!(
+            error
+                .to_string()
+                .contains("shares the same sibling runtime space"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            skill_roots,
+            vec![RuntimeSkillRoot {
+                name: "USER".to_string(),
+                skills_dir: configured_skills_dir,
+            }]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Skill-manager target mutations should reject missing skill ids before touching the runtime.
+    /// skill-manager 目标变更应在触碰运行时前拒绝缺失的技能标识。
+    #[test]
+    fn skill_manager_update_requires_skill_id() {
+        let root = unique_test_dir("skill-manager-update-skill-id");
+        std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+        let config = Config {
+            runtime_root: Some(root.to_string_lossy().to_string()),
+            skill_roots: Some(vec![]),
+            ..Config::default()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+        let server = runtime
+            .block_on(build_server(&config))
+            .expect("build_server should succeed without preinstalled skills");
+
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "update"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("skill-manager update should return one response");
+        let message = response
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("requires parameter: skill_id"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

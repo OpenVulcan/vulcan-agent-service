@@ -141,6 +141,7 @@ local function load_ast_runtime_helpers()
         collect_files = extract_upvalue_by_name(ast_entry, "collect_files"),
         find_binary = extract_upvalue_by_name(ast_entry, "find_binary"),
         run_language_scan = extract_upvalue_by_name(ast_entry, "run_language_scan"),
+        run_inline_rule_scan = extract_upvalue_by_name(ast_entry, "run_inline_rule_scan"),
         normalize_symbol = extract_upvalue_by_name(ast_entry, "normalize_symbol"),
         deduplicate_symbols = extract_upvalue_by_name(ast_entry, "deduplicate_symbols"),
         build_symbol_tree = extract_upvalue_by_name(ast_entry, "build_symbol_tree"),
@@ -754,15 +755,16 @@ local function collect_ast_for_file(file_path, helper_bundle)
     end
 
     local file_info = files[1]
-    local ast_binary_path, ast_binary_directory, ast_executable_name = helper_bundle.find_binary()
-    if not ast_binary_path then
+    local scanner_client, _, _, scanner_error = helper_bundle.find_binary()
+    if not scanner_client then
         return nil, nil, {
-            error = "ast_grep_binary_not_found",
-            message = "ast-grep binary not found in the current skill dependency root",
+            error = "ast_grep_ffi_not_found",
+            message = "ast-grep FFI library not found in the current skill dependency root",
+            details = scanner_error,
         }
     end
 
-    local matches, diagnostics = helper_bundle.run_language_scan(ast_binary_directory, ast_executable_name, file_info.language, { file_info.path })
+    local matches, diagnostics = helper_bundle.run_language_scan(scanner_client, nil, file_info.language, { file_info.path })
     if diagnostics and #diagnostics > 0 then
         return nil, nil, {
             error = "ast_scan_failed",
@@ -804,80 +806,30 @@ end
 Run an ERROR-node scan and return a structured error when the patched file contains parser error nodes.
 ]]
 local function scan_ast_error_nodes(file_path, file_info, helper_bundle)
-    local host_exec = get_host_exec_function()
-    if type(host_exec) ~= "function" then
-        return {}, nil
-    end
-
-    local ast_binary_path, ast_binary_directory = helper_bundle.find_binary()
-    if not ast_binary_path then
+    local scanner_client, _, _, scanner_error = helper_bundle.find_binary()
+    if not scanner_client then
         return nil, {
-            error = "ast_grep_binary_not_found",
-            message = "ast-grep binary not found in the current skill dependency root",
+            error = "ast_grep_ffi_not_found",
+            message = "ast-grep FFI library not found in the current skill dependency root",
+            details = scanner_error,
         }
     end
 
-    local ok, result = pcall(host_exec, {
-        program = ast_binary_path,
-        args = {
-            "scan",
-            "--inline-rules",
-            build_error_node_rule(file_info.language),
-            "--json=compact",
-            "--color=never",
-            file_path,
-        },
-        cwd = ast_binary_directory,
-        timeout_ms = 30000,
-    })
-    if not ok then
+    local matches, diagnostics = helper_bundle.run_inline_rule_scan(
+        scanner_client,
+        file_info.language,
+        build_error_node_rule(file_info.language),
+        { file_path }
+    )
+    if matches == nil then
         return nil, {
             error = "error_node_scan_failed",
-            message = tostring(result),
+            message = "ast-grep FFI could not complete error-node validation for the patched file",
             file = file_path,
+            details = diagnostics,
         }
     end
-    if type(result) ~= "table" then
-        return nil, {
-            error = "error_node_scan_failed",
-            message = "unexpected ast-grep execution result while validating the patched file",
-            file = file_path,
-        }
-    end
-    if result.timed_out then
-        return nil, {
-            error = "error_node_scan_timed_out",
-            message = "ast-grep error-node validation timed out for the patched file",
-            file = file_path,
-        }
-    end
-    if result.error then
-        return nil, {
-            error = "error_node_scan_failed",
-            message = "ast-grep could not complete error-node validation for the patched file",
-            file = file_path,
-            details = {
-                error = tostring(result.error or ""),
-                stderr = trim(result.stderr or ""),
-            },
-        }
-    end
-
-    local raw_output = trim(result.stdout or "")
-    if raw_output == "" then
-        return {}, nil
-    end
-
-    local decoded, decode_error = vulcan.json.decode(raw_output)
-    if not decoded then
-        return nil, {
-            error = "error_node_scan_decode_failed",
-            message = "failed to decode ast-grep error-node validation output",
-            file = file_path,
-            details = tostring(decode_error),
-        }
-    end
-    return decoded, nil
+    return matches, nil
 end
 
 --[[

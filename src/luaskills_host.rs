@@ -12,8 +12,8 @@ use luaskills::{
     LuaRuntimeCapabilityOptions, LuaRuntimeDatabaseCallbackMode, LuaRuntimeDatabaseProviderMode,
     LuaRuntimeHostOptions, LuaRuntimeSpaceControllerOptions, LuaRuntimeSpaceControllerProcessMode,
     LuaVmPoolConfig, RuntimeClientInfo, RuntimeEntryDescriptor, RuntimeLogCallback,
-    RuntimeLogEvent, RuntimeLogLevel, RuntimeRequestContext, RuntimeSkillRoot,
-    SkillProtectionConfig, ToolCacheConfig, set_log_callback,
+    RuntimeLogEvent, RuntimeLogLevel, RuntimeRequestContext, RuntimeSkillRoot, ToolCacheConfig,
+    set_log_callback,
 };
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -123,7 +123,6 @@ pub fn build_luaskills_engine_options(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "databases".to_string()),
-        protection: resolve_skill_protection_config(config),
         allow_network_download: true,
         github_base_url: std::env::var("VULCAN_GITHUB_BASE_URL")
             .ok()
@@ -474,14 +473,15 @@ fn resolve_implicit_runtime_root_from_paths(
     None
 }
 
-/// Resolve the ordered default skill roots from host configuration and runtime layout.
-/// 从宿主配置与运行时布局解析默认环境使用的有序技能根目录列表。
+/// Resolve the ordered formal skill roots from host configuration and runtime layout.
+/// 从宿主配置与运行时布局解析默认环境使用的有序正式技能根目录列表。
 pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSkillRoot>, String> {
     let mut ordered_roots = Vec::new();
     let mut seen_roots = HashSet::new();
     let mut seen_root_names = HashSet::new();
     let mut synthesized_index = 1usize;
     let config_base_dir = resolve_config_base_dir(config);
+    let runtime_root = resolve_runtime_root_from_config(config)?;
 
     let resolve_configured_path = |raw_path: &str| -> PathBuf {
         let candidate_path = PathBuf::from(raw_path);
@@ -495,7 +495,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     };
 
     let mut push_unique_root = |name: String, path: PathBuf| -> Result<(), String> {
-        let normalized_name = name.trim().to_string();
+        let normalized_name = normalize_formal_skill_root_name(&name)?;
         if !seen_root_names.insert(normalized_name.clone()) {
             return Err(format!(
                 "duplicate skill root name '{}' is not allowed",
@@ -537,34 +537,22 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
                     if trimmed.is_empty() {
                         return Err(format!("skill_roots[{}] path must not be empty", index));
                     }
-                    let generated = if synthesized_index == 1 {
-                        "ROOT".to_string()
-                    } else {
-                        format!("ROOT-{}", synthesized_index)
-                    };
+                    let generated = synthesized_skill_root_name(synthesized_index).ok_or_else(|| {
+                        format!(
+                            "skill_roots[{}] cannot be mapped to a formal layer; use named ROOT, PROJECT, or USER entries",
+                            index
+                        )
+                    })?;
                     synthesized_index += 1;
                     push_unique_root(generated, resolve_configured_path(trimmed))?;
                 }
             }
         }
-    } else if let Some(override_root) = config
-        .skills_override
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(resolve_configured_path)
-    {
-        push_unique_root("USER".to_string(), override_root)?;
-    } else if let Some(home) = home_dir() {
-        push_unique_root(
-            "USER".to_string(),
-            home.join(".vulcan").join("vulcan-mcp").join("skills"),
-        )?;
-    }
-
-    if let Some(runtime_root) = resolve_runtime_root_from_config(config)? {
-        if config.skill_roots.is_none() {
-            push_unique_root("ROOT".to_string(), runtime_root.join("skills"))?;
+        sort_formal_skill_roots(&mut ordered_roots)?;
+    } else if let Some(runtime_root) = runtime_root.as_ref() {
+        push_unique_root("ROOT".to_string(), runtime_root.join("skills"))?;
+        if let Some(default_user_root) = default_user_skill_root() {
+            push_unique_root("USER".to_string(), default_user_root)?;
         }
     }
 
@@ -584,6 +572,54 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
         implicit_roots.push(root);
     }
     Ok(implicit_roots)
+}
+
+/// Normalize one configured skill-root label into the formal ROOT, PROJECT, or USER namespace.
+/// 将单个配置技能根标签规范化到正式的 ROOT、PROJECT 或 USER 命名空间。
+fn normalize_formal_skill_root_name(name: &str) -> Result<String, String> {
+    let normalized_name = name.trim().to_ascii_uppercase();
+    match normalized_name.as_str() {
+        "ROOT" | "PROJECT" | "USER" => Ok(normalized_name),
+        _ => Err(format!(
+            "unsupported skill root name '{}'; expected ROOT, PROJECT, or USER",
+            name.trim()
+        )),
+    }
+}
+
+/// Return the formal layer name represented by one legacy path-only skill-root slot.
+/// 返回旧式纯路径技能根槽位对应的正式层级名称。
+fn synthesized_skill_root_name(index: usize) -> Option<String> {
+    match index {
+        1 => Some("ROOT".to_string()),
+        2 => Some("PROJECT".to_string()),
+        3 => Some("USER".to_string()),
+        _ => None,
+    }
+}
+
+/// Return the fixed priority rank for one formal skill-root label.
+/// 返回单个正式技能根标签的固定优先级序号。
+fn formal_skill_root_rank(name: &str) -> Result<usize, String> {
+    match name.trim().to_ascii_uppercase().as_str() {
+        "ROOT" => Ok(0),
+        "PROJECT" => Ok(1),
+        "USER" => Ok(2),
+        _ => Err(format!(
+            "unsupported skill root name '{}'; expected ROOT, PROJECT, or USER",
+            name.trim()
+        )),
+    }
+}
+
+/// Sort formal skill roots into the runtime-required ROOT -> PROJECT -> USER order.
+/// 将正式技能根排序为运行时要求的 ROOT -> PROJECT -> USER 顺序。
+fn sort_formal_skill_roots(skill_roots: &mut [RuntimeSkillRoot]) -> Result<(), String> {
+    skill_roots.sort_by_key(|root| formal_skill_root_rank(&root.name).unwrap_or(usize::MAX));
+    for root in skill_roots {
+        formal_skill_root_rank(&root.name)?;
+    }
+    Ok(())
 }
 
 /// Validate one skill root path according to strict or implicit runtime-root rules.
@@ -678,43 +714,6 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
         }
     }
     Ok(())
-}
-
-/// Resolve the host-provided protected skill policy from environment and built-in defaults.
-/// 从环境变量与内建默认值解析宿主提供的受保护技能策略。
-fn resolve_skill_protection_config(config: &Config) -> SkillProtectionConfig {
-    let mut protected_skill_ids = vec!["vulcan-lua".to_string()];
-    if let Some(configured) = &config.protected_skills {
-        for item in configured {
-            let normalized = item.trim();
-            if normalized.is_empty() {
-                continue;
-            }
-            if !protected_skill_ids
-                .iter()
-                .any(|existing| existing == normalized)
-            {
-                protected_skill_ids.push(normalized.to_string());
-            }
-        }
-    }
-    if let Ok(extra) = std::env::var("VULCAN_PROTECTED_SKILLS") {
-        for item in extra.split(',') {
-            let normalized = item.trim();
-            if normalized.is_empty() {
-                continue;
-            }
-            if !protected_skill_ids
-                .iter()
-                .any(|existing| existing == normalized)
-            {
-                protected_skill_ids.push(normalized.to_string());
-            }
-        }
-    }
-    SkillProtectionConfig {
-        protected_skill_ids,
-    }
 }
 
 /// Resolve the host-level skill ignore list and add the AI memory skill when VMM is configured.
@@ -894,6 +893,12 @@ fn home_dir() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Return the default USER layer skill root derived from the current home directory.
+/// 返回基于当前用户主目录推导出的默认 USER 层技能根目录。
+pub fn default_user_skill_root() -> Option<std::path::PathBuf> {
+    home_dir().map(|home| home.join(".vulcan").join("vulcan-mcp").join("skills"))
+}
+
 /// Return the host-owned MCP tool names that must stay reserved from LuaSkills canonical entry generation.
 /// 返回必须从 LuaSkills canonical 入口生成中保留的宿主 MCP 工具名称集合。
 pub fn host_reserved_tool_names() -> Vec<String> {
@@ -902,6 +907,7 @@ pub fn host_reserved_tool_names() -> Vec<String> {
         "vulcan-help-detail".to_string(),
         "reload_vulcan_mcp_configs".to_string(),
         "luaskill-config".to_string(),
+        "skill-manager".to_string(),
     ]
 }
 
@@ -1594,7 +1600,7 @@ mod tests {
         let config = Config {
             skill_roots: Some(vec![SkillRootConfigEntry::Named(
                 crate::config::NamedSkillRootConfig {
-                    name: "PROJECT_A".to_string(),
+                    name: "PROJECT".to_string(),
                     path: "project-skills".to_string(),
                 },
             )]),
@@ -1692,6 +1698,7 @@ mod tests {
         let names = host_reserved_tool_names();
 
         assert!(names.iter().any(|name| name == "luaskill-config"));
+        assert!(names.iter().any(|name| name == "skill-manager"));
         assert!(
             !names
                 .iter()

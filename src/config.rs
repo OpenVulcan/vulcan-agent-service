@@ -133,15 +133,8 @@ pub struct Config {
     #[serde(default)]
     pub vmm_enable: bool,
 
-    /// Custom skill override directory, for example "~/.vulcan/vulcan-mcp/skills/".
-    /// 自定义技能覆盖目录，例如 "~/.vulcan/vulcan-mcp/skills/"；
-    /// When set, skills in this directory override or disable system skills.
-    /// 设置后，该目录中的技能可覆盖或禁用系统内置技能。
-    #[serde(alias = "lua_skills_override")]
-    pub skills_override: Option<String>,
-
-    /// Ordered skill roots from highest priority to lowest priority for the default runtime environment.
-    /// 默认运行环境使用的有序技能根目录列表，按从高优先级到低优先级排列。
+    /// Formal skill roots for the default runtime environment, limited to ROOT, PROJECT, and USER.
+    /// 默认运行环境使用的正式技能根目录，仅限 ROOT、PROJECT 与 USER。
     pub skill_roots: Option<Vec<SkillRootConfigEntry>>,
 
     /// Optional runtime root directory that owns configs, skills, dependencies, databases, temp, libs, and lua_packages.
@@ -176,10 +169,6 @@ pub struct Config {
     /// 映射到 `LuaRuntimeHostOptions.runlua_pool_config` 的隔离 runlua 专用虚拟机池可选配置。
     #[serde(default)]
     pub runlua_pool_config: RunLuaPoolConfigSection,
-
-    /// Protected skill identifiers that may only be maintained through system tools.
-    /// 受保护技能标识符列表，这些名称只允许由 system tools 维护。
-    pub protected_skills: Option<Vec<String>>,
 
     /// Skill identifiers that the host must skip before dependency and database setup.
     /// 宿主需要在依赖与数据库初始化前跳过的技能标识符列表。

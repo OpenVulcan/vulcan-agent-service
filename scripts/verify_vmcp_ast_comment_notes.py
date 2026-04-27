@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -100,21 +101,60 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_runtime_override_config(base_config_path: Path, runtime_skill_dir: Path) -> Path:
-    """中文：基于现有配置生成临时配置，并强制 Lua skill 覆盖目录指向 runtime 源码。
-    English: Build a temporary config that forces the Lua skill override directory to the runtime source tree.
+def remove_top_level_yaml_block(yaml_text: str, key: str) -> str:
+    """Return YAML text with one active top-level key block removed.
+    返回删除一个已启用顶级键块后的 YAML 文本。
     """
 
-    base_content = base_config_path.read_text(encoding="utf-8")
+    output_lines: list[str] = []
+    skipping_block = False
+    key_pattern = re.compile(rf"^{re.escape(key)}\s*:")
+    for line in yaml_text.splitlines():
+        stripped = line.strip()
+        top_level_line = bool(stripped) and line[:1] not in (" ", "\t")
+        comment_line = line.lstrip().startswith("#")
+        if not skipping_block and key_pattern.match(line):
+            skipping_block = True
+            continue
+        if skipping_block:
+            if top_level_line and not comment_line:
+                skipping_block = False
+            else:
+                continue
+        output_lines.append(line)
+    return "\n".join(output_lines)
+
+
+def build_runtime_override_root(base_config_path: Path, runtime_skill_dir: Path) -> Path:
+    """Build a temporary runtime root that forces ROOT skills to the runtime source tree.
+    构建临时运行根，并强制 ROOT 技能根指向 runtime 源码。
+    """
+
+    base_content = remove_top_level_yaml_block(
+        base_config_path.read_text(encoding="utf-8"),
+        "skill_roots",
+    )
+    temp_runtime_root = Path(tempfile.mkdtemp(prefix="vmcp-ast-comment-runtime-"))
+    config_dir = temp_runtime_root / "configs"
+    user_skill_dir = temp_runtime_root / "user-skills"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    user_skill_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.yaml"
     override_path = runtime_skill_dir.as_posix()
-    temp_file = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
-    with temp_file:
+    user_override_path = user_skill_dir.as_posix()
+    with config_path.open("w", encoding="utf-8") as temp_file:
         temp_file.write(base_content.rstrip() + "\n")
-        temp_file.write(f'skills_override: "{override_path}"\n')
-    return Path(temp_file.name)
+        temp_file.write("\n# Codekit verification should load runtime source skills as ROOT and isolate USER.\n")
+        temp_file.write("# codekit 验证应将 runtime 源码技能作为 ROOT 加载，并隔离 USER。\n")
+        temp_file.write("skill_roots:\n")
+        temp_file.write("  - name: \"ROOT\"\n")
+        temp_file.write(f"    path: {json.dumps(override_path, ensure_ascii=False)}\n")
+        temp_file.write("  - name: \"USER\"\n")
+        temp_file.write(f"    path: {json.dumps(user_override_path, ensure_ascii=False)}\n")
+    return temp_runtime_root
 
 
-def run_vmcp_ast(binary_path: Path, config_path: Path, fixture_path: Path, repo_root: Path) -> dict:
+def run_vmcp_ast(binary_path: Path, runtime_root: Path, fixture_path: Path, repo_root: Path) -> dict:
     """中文：调用真实的 codekit-ast 工具并返回 JSON 结果。
     English: Call the real codekit-ast tool and return the parsed JSON result.
     """
@@ -127,7 +167,7 @@ def run_vmcp_ast(binary_path: Path, config_path: Path, fixture_path: Path, repo_
         },
         ensure_ascii=False,
     )
-    command = [str(binary_path), "-config", str(config_path), "--call-tools", "codekit-ast", arguments]
+    command = [str(binary_path), "--runtime-root", str(runtime_root), "--call-tools", "codekit-ast", arguments]
     completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if completed.returncode != 0:
         raise RuntimeError(
@@ -215,13 +255,13 @@ def main() -> int:
         raise FileNotFoundError(f"未找到 runtime skill 目录 / Runtime skill directory not found: {runtime_skill_dir}")
 
     print("开始验证 codekit-ast 备注摘要回归 / Start verifying codekit-ast comment summary regression")
-    temp_config_path = build_runtime_override_config(config_path, runtime_skill_dir)
+    temp_runtime_root = build_runtime_override_root(config_path, runtime_skill_dir)
     try:
         for fixture in FIXTURE_MATRIX:
             fixture_path = (repo_root / fixture.relative_path).resolve()
             if not fixture_path.exists():
                 raise FileNotFoundError(f"未找到测试夹具 / Fixture not found: {fixture_path}")
-            result = run_vmcp_ast(binary_path, temp_config_path, fixture_path, repo_root)
+            result = run_vmcp_ast(binary_path, temp_runtime_root, fixture_path, repo_root)
             files = result.get("files") or []
             if not files:
                 raise AssertionError(f"夹具未返回结构结果 / Fixture returned no file outline: {fixture_path}")
@@ -231,7 +271,7 @@ def main() -> int:
             for message in messages:
                 print(f"  - {message}")
     finally:
-        temp_config_path.unlink(missing_ok=True)
+        shutil.rmtree(temp_runtime_root, ignore_errors=True)
 
     print("全部备注格式回归验证通过 / All comment summary regression checks passed")
     return 0

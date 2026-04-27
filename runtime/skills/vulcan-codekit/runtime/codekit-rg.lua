@@ -1207,11 +1207,12 @@ return function(args)
         return render_codekit_error_markdown("CodeKit RG Error", collection_error)
     end
 
-    local ast_binary_path, ast_binary_directory, ast_executable_name = helper_bundle.find_binary()
-    if not ast_binary_path then
+    local scanner_client, _, _, scanner_error = helper_bundle.find_binary()
+    if not scanner_client then
         return render_codekit_error_markdown("CodeKit RG Error", {
-            error = "ast_grep_binary_not_found",
-            message = "ast-grep binary not found in the current skill dependency root",
+            error = "ast_grep_ffi_not_found",
+            message = "ast-grep FFI library not found in the current skill dependency root",
+            details = scanner_error,
         })
     end
 
@@ -1224,7 +1225,7 @@ return function(args)
 
     local normalized_by_file = {}
     for language_key, file_paths in pairs(grouped_files) do
-        local matches, match_diagnostics = helper_bundle.run_language_scan(ast_binary_directory, ast_executable_name, language_key, file_paths)
+        local matches, match_diagnostics = helper_bundle.run_language_scan(scanner_client, nil, language_key, file_paths)
         if match_diagnostics and #match_diagnostics > 0 then
             table.insert(aggregated_errors, { group = language_key, diagnostics = match_diagnostics })
         end

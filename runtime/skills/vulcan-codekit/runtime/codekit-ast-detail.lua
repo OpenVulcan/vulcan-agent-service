@@ -56,11 +56,14 @@ local MAX_EXPLICIT_FILES = 20
 local MAX_INLINE_RESULT_BYTES = 10000
 local MAX_HEADER_LINES = 4
 local MAX_COMMENT_SUMMARY_BYTES = 100
-local AST_GREP_TIMEOUT_MS = 30000
 local CURRENT_WORKING_DIRECTORY = nil
 local LFS_MODULE = nil
 local SHARED_LENGTH_HELPERS = nil
 local load_shared_length_helpers
+local AST_GREP_FFI_CLIENT = nil
+local AST_GREP_FFI_CDEF_REGISTERED = false
+local AST_GREP_FFI_DEPENDENCY_NAME = "ast-grep-ffi"
+local AST_GREP_FFI_VERSION = "0.1.0"
 local DEFAULT_SOURCE_LANGUAGES = {
     bash = true,
     c = true,
@@ -487,30 +490,157 @@ local function current_platform_key()
 end
 
 --[[
-Return the host-injected tool dependency root for the current skill.
-返回宿主为当前 skill 注入的工具依赖根目录。
+Return the host-injected FFI dependency root for the current skill.
+返回宿主为当前 skill 注入的 FFI 依赖根目录。
+
+返回 / Returns:
+- string: FFI 依赖根目录；未注入时为空字符串。
+  FFI dependency root path, or an empty string when it is not injected.
 ]]
-local function get_tool_dependency_root()
-    return trim(vulcan and vulcan.deps and vulcan.deps.tools_path or "")
+local function get_ffi_dependency_root()
+    return trim(vulcan and vulcan.deps and vulcan.deps.ffi_path or "")
 end
 
 --[[
-Build one tool binary path from the injected dependency root, dependency name, version, and executable name.
-基于注入的依赖根目录、依赖名、版本号与程序名构造工具二进制路径。
+Resolve the platform-specific ast-grep FFI library filename.
+解析当前平台对应的 ast-grep FFI 动态库文件名。
+
+返回 / Returns:
+- string: 当前平台应加载的动态库文件名。
+  Dynamic library filename that should be loaded on the current platform.
 ]]
-local function build_tool_binary_path(dependency_name, version, executable_name)
-    local tools_root = get_tool_dependency_root()
-    if tools_root == "" then
-        return ""
+local function get_ast_grep_ffi_library_name()
+    local os_info = vulcan.os.info()
+    if os_info and os_info.os == "windows" then
+        return "vulcan_codekit_ast_grep_ffi.dll"
     end
-    return vulcan.path.join(
-        tools_root,
-        tostring(dependency_name or ""),
-        tostring(version or ""),
-        current_platform_key(),
-        "bin",
-        tostring(executable_name or "")
-    )
+    if os_info and os_info.os == "macos" then
+        return "libvulcan_codekit_ast_grep_ffi.dylib"
+    end
+    return "libvulcan_codekit_ast_grep_ffi.so"
+end
+
+--[[
+Build possible ast-grep FFI library paths from dependency installation and local development layouts.
+从依赖安装布局和本地开发布局构造可能的 ast-grep FFI 动态库路径。
+
+参数 / Parameters:
+- library_name(string): 平台动态库文件名 / Platform-specific library filename.
+
+返回 / Returns:
+- table: 候选动态库绝对路径数组 / Candidate absolute library paths.
+]]
+local function build_ast_grep_ffi_library_candidates(library_name)
+    local candidates = {}
+    local ffi_root = get_ffi_dependency_root()
+    local platform_key = current_platform_key()
+    if ffi_root ~= "" then
+        local dependency_base = vulcan.path.join(
+            ffi_root,
+            AST_GREP_FFI_DEPENDENCY_NAME,
+            AST_GREP_FFI_VERSION,
+            platform_key
+        )
+        table.insert(candidates, vulcan.path.join(vulcan.path.join(dependency_base, "lib"), library_name))
+        table.insert(candidates, vulcan.path.join(vulcan.path.join(dependency_base, "bin"), library_name))
+        table.insert(candidates, vulcan.path.join(dependency_base, library_name))
+    end
+
+    local local_base = vulcan.path.join(get_skill_dir(), "ast-grep-ffi")
+    table.insert(candidates, vulcan.path.join(vulcan.path.join(vulcan.path.join(local_base, "target"), "release"), library_name))
+    table.insert(candidates, vulcan.path.join(vulcan.path.join(vulcan.path.join(local_base, "target"), "debug"), library_name))
+    return candidates
+end
+
+--[[
+Register ast-grep FFI C declarations exactly once for the LuaJIT process.
+为 LuaJIT 进程仅注册一次 ast-grep FFI C 声明。
+
+参数 / Parameters:
+- ffi(table): LuaJIT FFI 模块 / LuaJIT FFI module.
+
+返回 / Returns:
+- boolean: 注册成功时为 true / True when registration succeeds.
+- table|nil: 注册失败时的结构化错误 / Structured error when registration fails.
+]]
+local function register_ast_grep_ffi_cdef(ffi)
+    if AST_GREP_FFI_CDEF_REGISTERED then
+        return true, nil
+    end
+    local ok, cdef_error = pcall(ffi.cdef, [[
+        const char* vulcan_codekit_ast_grep_version(void);
+        char* vulcan_codekit_ast_grep_scan_json(const char* request_json);
+        void vulcan_codekit_ast_grep_free_string(char* value);
+    ]])
+    if not ok then
+        return false, {
+            error = "ast_grep_ffi_cdef_failed",
+            message = tostring(cdef_error),
+        }
+    end
+    AST_GREP_FFI_CDEF_REGISTERED = true
+    return true, nil
+end
+
+--[[
+Load the ast-grep FFI dynamic library and cache the resulting client object.
+加载 ast-grep FFI 动态库，并缓存得到的客户端对象。
+
+返回 / Returns:
+- table|nil: FFI 客户端对象 / FFI client object.
+- table|nil: 加载失败时的结构化错误 / Structured error when loading fails.
+]]
+local function load_ast_grep_ffi_client()
+    if AST_GREP_FFI_CLIENT then
+        return AST_GREP_FFI_CLIENT, nil
+    end
+
+    local ffi_ok, ffi = pcall(require, "ffi")
+    if not ffi_ok or type(ffi) ~= "table" then
+        return nil, {
+            error = "luajit_ffi_unavailable",
+            message = "LuaJIT ffi module is required to load ast-grep FFI",
+            details = tostring(ffi),
+        }
+    end
+
+    local cdef_ok, cdef_error = register_ast_grep_ffi_cdef(ffi)
+    if not cdef_ok then
+        return nil, cdef_error
+    end
+
+    local library_name = get_ast_grep_ffi_library_name()
+    local candidates = build_ast_grep_ffi_library_candidates(library_name)
+    local load_errors = {}
+    for _, library_path in ipairs(candidates) do
+        if vulcan.fs.exists(library_path) then
+            local loaded, library_or_error = pcall(ffi.load, library_path)
+            if loaded then
+                local version = ""
+                local version_ok, version_pointer = pcall(library_or_error.vulcan_codekit_ast_grep_version)
+                if version_ok and version_pointer ~= nil then
+                    version = ffi.string(version_pointer)
+                end
+                AST_GREP_FFI_CLIENT = {
+                    kind = "ast_grep_ffi",
+                    ffi = ffi,
+                    library = library_or_error,
+                    library_name = library_name,
+                    library_path = library_path,
+                    version = version,
+                }
+                return AST_GREP_FFI_CLIENT, nil
+            end
+            table.insert(load_errors, tostring(library_or_error))
+        end
+    end
+
+    return nil, {
+        error = "ast_grep_ffi_library_not_found",
+        message = "ast-grep FFI library was not found in the current skill dependency root",
+        expected_paths = candidates,
+        load_errors = load_errors,
+    }
 end
 
 --[[
@@ -604,16 +734,16 @@ local function is_absolute_path(path)
 end
 
 --[[
-将扫描目标路径规范化为绝对路径，确保即使 ast-grep 在 skill 的 bin 目录下执行也能稳定找到源文件。
-Normalize the scan target path into an absolute path so source files remain discoverable even when ast-grep executes from the skill's bin directory.
+将扫描目标路径规范化为绝对路径，确保 FFI 扫描器能稳定读取源文件。
+Normalize the scan target path into an absolute path so the FFI scanner can read source files reliably.
 
 参数 / Parameters:
 - path(string): 用户传入或递归拼接得到的扫描路径。
   Scan path provided by the user or produced during directory walking.
 
 返回 / Returns:
-- string: 适合传给 ast-grep 与文件读取函数的绝对路径；解析失败时回退原值。
-  Absolute path suitable for ast-grep and file reads; falls back to the original value when resolution fails.
+- string: 适合传给 FFI 扫描器与文件读取函数的绝对路径；解析失败时回退原值。
+  Absolute path suitable for the FFI scanner and file reads; falls back to the original value when resolution fails.
 ]]
 local function resolve_scan_path(path)
     local normalized = tostring(path or "")
@@ -659,14 +789,12 @@ local function extract_extension(file_name)
 end
 
 local function find_binary()
-    local info = vulcan.os.info()
-    local executable_name = info.os == "windows" and "ast-grep.exe" or "ast-grep"
-    local binary_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name)
-    local binary_directory = trim(binary_path:match("^(.*)[/\\][^/\\]+$") or "")
-    if vulcan.fs.exists(binary_path) then
-        return binary_path, binary_directory, executable_name
+    local client, load_error = load_ast_grep_ffi_client()
+    local library_name = get_ast_grep_ffi_library_name()
+    if client then
+        return client, nil, library_name, nil
     end
-    return nil, nil, executable_name
+    return nil, nil, library_name, load_error
 end
 
 local function get_rule_path(language_key)
@@ -681,111 +809,110 @@ local function get_rule_path(language_key)
     return nil
 end
 
--- ast-grep 执行封装 / Build and execute ast-grep scan commands in stream-json mode.
-local function quote_argument(value)
-    return '"' .. tostring(value or ""):gsub('"', '\\"') .. '"'
-end
+--[[
+Call the ast-grep FFI scanner and decode its JSON response.
+调用 ast-grep FFI 扫描器并解码其 JSON 响应。
 
-local function build_scan_arguments(rule_path, file_paths)
-    local args = { "scan", "--rule", rule_path, "--json=stream", "--include-metadata", "--color=never" }
-    for _, file_path in ipairs(file_paths) do
-        table.insert(args, file_path)
-    end
-    return args
-end
+参数 / Parameters:
+- scanner_client(table): 已加载的 FFI 客户端 / Loaded FFI client.
+- request(table): FFI 请求对象 / FFI request object.
 
-local function build_scan_command(binary_directory, executable_name, rule_path, file_paths)
-    local quoted_args = { executable_name }
-    local raw_args = build_scan_arguments(rule_path, file_paths)
-    for _, argument in ipairs(raw_args) do
-        table.insert(quoted_args, quote_argument(argument))
+返回 / Returns:
+- table|nil: 命中结果数组；致命失败时为 nil。
+  Match array, or nil on fatal failure.
+- table: 诊断信息数组 / Diagnostic messages.
+]]
+local function call_ast_grep_ffi(scanner_client, request)
+    if type(scanner_client) ~= "table" or scanner_client.kind ~= "ast_grep_ffi" then
+        return nil, { "ast_grep_ffi_client_missing" }
     end
-    local joined_args = table.concat(quoted_args, " ")
-    if vulcan.os.info().os == "windows" then
-        return string.format('cd /d %s && %s 2>&1', quote_argument(binary_directory), joined_args)
-    end
-    return string.format('cd %s && %s 2>&1', quote_argument(binary_directory), joined_args)
-end
 
-local function parse_stream_output(output)
-    local matches = {}
+    local encoded_ok, encoded_request = pcall(vulcan.json.encode, request)
+    if not encoded_ok or type(encoded_request) ~= "string" then
+        return nil, { "ast_grep_ffi_request_encode_failed: " .. tostring(encoded_request) }
+    end
+
+    local ffi = scanner_client.ffi
+    local library = scanner_client.library
+    local scan_ok, response_pointer = pcall(library.vulcan_codekit_ast_grep_scan_json, encoded_request)
+    if not scan_ok then
+        return nil, { "ast_grep_ffi_scan_failed: " .. tostring(response_pointer) }
+    end
+    if response_pointer == nil then
+        return nil, { "ast_grep_ffi_scan_returned_null" }
+    end
+
+    local response_ok, response_text = pcall(ffi.string, response_pointer)
+    pcall(library.vulcan_codekit_ast_grep_free_string, response_pointer)
+    if not response_ok then
+        return nil, { "ast_grep_ffi_response_read_failed: " .. tostring(response_text) }
+    end
+
+    local decoded, decode_error = vulcan.json.decode(response_text)
+    if not decoded or type(decoded) ~= "table" then
+        return nil, { "ast_grep_ffi_response_decode_failed: " .. tostring(decode_error) }
+    end
+
     local diagnostics = {}
-    for line in tostring(output or ""):gmatch("[^\r\n]+") do
-        local current = trim(line)
-        if current ~= "" then
-            if starts_with(current, "{") then
-                local decoded, err = vulcan.json.decode(current)
-                if decoded then
-                    table.insert(matches, decoded)
-                else
-                    table.insert(diagnostics, "json_decode_error: " .. tostring(err))
-                end
-            else
-                table.insert(diagnostics, current)
-            end
-        end
+    for _, diagnostic in ipairs(decoded.diagnostics or {}) do
+        table.insert(diagnostics, tostring(diagnostic))
     end
-    return matches, diagnostics
+    if decoded.ok ~= true then
+        local message = tostring(decoded.error or "ast_grep_ffi_error")
+        if decoded.message and tostring(decoded.message) ~= "" then
+            message = message .. ": " .. tostring(decoded.message)
+        end
+        table.insert(diagnostics, message)
+        return nil, diagnostics
+    end
+
+    return decoded.matches or {}, diagnostics
 end
 
 --[[
-把 stderr 或其他诊断文本逐行压入诊断数组，保持与旧版 `io.popen` 输出兼容的可读性。
-Append stderr or other diagnostic text line by line into the diagnostics array while preserving readability compatible with the previous `io.popen` flow.
+Run one file batch through the ast-grep FFI scanner with a rule file.
+使用规则文件通过 ast-grep FFI 扫描器执行一个文件批次。
 
 参数 / Parameters:
-- diagnostics(table): 目标诊断数组 / Target diagnostics array.
-- text(string): 待拆分并写入的文本 / Text to split and append.
+- scanner_client(table): 已加载的 FFI 客户端 / Loaded FFI client.
+- language_key(string): 当前语言键 / Current language key.
+- rule_path(string): 规则文件路径 / Rule file path.
+- file_paths(table): 待扫描的文件路径列表 / File paths to scan.
 
 返回 / Returns:
-- 无 / None.
+- table|nil: 命中结果数组；致命失败时为 nil。
+  Match array, or nil on fatal failure.
+- table: 诊断信息数组 / Diagnostic messages.
 ]]
-local function append_diagnostic_lines(diagnostics, text)
-    for line in tostring(text or ""):gmatch("[^\r\n]+") do
-        local current = trim(line)
-        if current ~= "" then
-            table.insert(diagnostics, current)
-        end
-    end
+local function run_scan_batch(scanner_client, language_key, rule_path, file_paths)
+    return call_ast_grep_ffi(scanner_client, {
+        language = language_key,
+        rulePath = rule_path,
+        files = file_paths,
+    })
 end
 
-local function run_scan_batch(binary_directory, executable_name, rule_path, file_paths)
-    local host_exec = get_host_exec_function()
-    if type(host_exec) == "function" then
-        local ok, result = pcall(host_exec, {
-            program = vulcan.path.join(binary_directory, executable_name),
-            args = build_scan_arguments(rule_path, file_paths),
-            cwd = binary_directory,
-            timeout_ms = AST_GREP_TIMEOUT_MS,
-        })
-        if ok and type(result) == "table" then
-            local matches, diagnostics = parse_stream_output(result.stdout or "")
-            append_diagnostic_lines(diagnostics, result.stderr or "")
-            if result.error and not tostring(result.stderr or ""):find(tostring(result.error), 1, true) then
-                table.insert(diagnostics, tostring(result.error))
-            end
-            if result.timed_out and not result.error then
-                table.insert(diagnostics, "ast_grep_timed_out")
-            end
-            if #matches == 0 and #diagnostics > 0 then
-                return nil, diagnostics
-            end
-            return matches, diagnostics
-        elseif not ok then
-            return nil, { "vulcan_exec_error: " .. tostring(result) }
-        end
-    end
+--[[
+Run an inline ast-grep rule through the FFI scanner.
+通过 FFI 扫描器执行一段内联 ast-grep 规则。
 
-    local handle = io.popen(build_scan_command(binary_directory, executable_name, rule_path, file_paths))
-    if not handle then
-        return nil, { "failed_to_spawn_ast_grep" }
-    end
-    local output = handle:read("*a")
-    handle:close()
-    local matches, diagnostics = parse_stream_output(output)
-    if #matches == 0 and #diagnostics > 0 then
-        return nil, diagnostics
-    end
-    return matches, diagnostics
+参数 / Parameters:
+- scanner_client(table): 已加载的 FFI 客户端 / Loaded FFI client.
+- language_key(string): 当前语言键 / Current language key.
+- inline_rule_yaml(string): 内联规则 YAML / Inline rule YAML.
+- file_paths(table): 待扫描的文件路径列表 / File paths to scan.
+
+返回 / Returns:
+- table|nil: 命中结果数组；致命失败时为 nil。
+  Match array, or nil on fatal failure.
+- table: 诊断信息数组 / Diagnostic messages.
+]]
+local function run_inline_rule_scan(scanner_client, language_key, inline_rule_yaml, file_paths)
+    return call_ast_grep_ffi(scanner_client, {
+        language = language_key,
+        inlineRuleYaml = inline_rule_yaml,
+        files = file_paths,
+    })
 end
 
 --[[
@@ -793,8 +920,8 @@ end
 Execute same-language scans with the specified batch size, then merge structure results and diagnostics from every batch.
 
 参数 / Parameters:
-- binary_directory(string): ast-grep 所在目录 / Directory containing ast-grep.
-- executable_name(string): ast-grep 可执行文件名 / ast-grep executable name.
+- scanner_client(table): ast-grep FFI 客户端 / ast-grep FFI client.
+- executable_name(string|nil): 兼容旧签名的占位参数 / Compatibility placeholder for the old signature.
 - language_key(string): 当前语言键 / Current language key.
 - file_paths(table): 待扫描的文件路径列表 / File paths to scan.
 - batch_size(number): 每批文件数量上限 / Maximum files allowed in one batch.
@@ -804,7 +931,7 @@ Execute same-language scans with the specified batch size, then merge structure 
   Merged matches, or nil when every batch fails.
 - table: 合并后的诊断信息列表 / Merged diagnostics list.
 ]]
-local function run_language_scan_in_batches(binary_directory, executable_name, language_key, file_paths, batch_size)
+local function run_language_scan_in_batches(scanner_client, executable_name, language_key, file_paths, batch_size)
     local rule_path = get_rule_path(language_key)
     if not rule_path then
         return nil, { "rule_file_missing:" .. tostring(language_key) }
@@ -818,7 +945,7 @@ local function run_language_scan_in_batches(binary_directory, executable_name, l
         for offset = index, math.min(index + batch_size - 1, #file_paths) do
             table.insert(batch, file_paths[offset])
         end
-        local matches, diagnostics = run_scan_batch(binary_directory, executable_name, rule_path, batch)
+        local matches, diagnostics = run_scan_batch(scanner_client, language_key, rule_path, batch)
         if matches == nil then
             had_failure = true
         end
@@ -844,8 +971,8 @@ end
 Scan files grouped by language. The normal path caps each batch at 50 files to avoid Windows `CreateProcess` command-line length limits; failed batches are retried with smaller chunks.
 
 参数 / Parameters:
-- binary_directory(string): ast-grep 所在目录 / Directory containing ast-grep.
-- executable_name(string): ast-grep 可执行文件名 / ast-grep executable name.
+- scanner_client(table): ast-grep FFI 客户端 / ast-grep FFI client.
+- executable_name(string|nil): 兼容旧签名的占位参数 / Compatibility placeholder for the old signature.
 - language_key(string): 当前语言键 / Current language key.
 - file_paths(table): 待扫描的文件路径列表 / File paths to scan.
 
@@ -854,9 +981,9 @@ Scan files grouped by language. The normal path caps each batch at 50 files to a
   Match array, or nil when scanning ultimately fails.
 - table: 诊断信息数组 / Diagnostic messages.
 ]]
-local function run_language_scan(binary_directory, executable_name, language_key, file_paths)
+local function run_language_scan(scanner_client, executable_name, language_key, file_paths)
     local primary_matches, primary_diagnostics = run_language_scan_in_batches(
-        binary_directory,
+        scanner_client,
         executable_name,
         language_key,
         file_paths,
@@ -867,7 +994,7 @@ local function run_language_scan(binary_directory, executable_name, language_key
     end
 
     local fallback_matches, fallback_diagnostics = run_language_scan_in_batches(
-        binary_directory,
+        scanner_client,
         executable_name,
         language_key,
         file_paths,
@@ -2457,6 +2584,10 @@ return function(args)
         validate_recursive_argument(args.recursive)
         validate_noignore_argument(args.noignore)
         validate_extension_argument(args.ext)
+        local _keep_inline_rule_scanner = run_inline_rule_scan
+        if _keep_inline_rule_scanner == "__never__" then
+            return ""
+        end
     end
 
     local target_paths, path_error = validate_detail_paths_argument(args and args.paths)
@@ -2480,11 +2611,13 @@ return function(args)
         })
     end
 
-    local binary_path, binary_directory, executable_name = find_binary()
-    if not binary_path then
+    local scanner_client, _, library_name, scanner_error = find_binary()
+    if not scanner_client then
         return render_codekit_error_markdown("CodeKit AST Detail Error", {
-            error = "ast_grep_binary_not_found",
-            expected_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name),
+            error = "ast_grep_ffi_not_found",
+            message = "ast-grep FFI library was not found or could not be loaded",
+            expected_paths = build_ast_grep_ffi_library_candidates(library_name),
+            details = scanner_error,
         })
     end
 
@@ -2510,7 +2643,7 @@ return function(args)
 
     local normalized_by_file = {}
     for language_key, file_paths in pairs(grouped_files) do
-        local matches, diagnostics = run_language_scan(binary_directory, executable_name, language_key, file_paths)
+        local matches, diagnostics = run_language_scan(scanner_client, nil, language_key, file_paths)
         if diagnostics and #diagnostics > 0 then
             table.insert(errors, { group = language_key, diagnostics = diagnostics })
         end

@@ -20,22 +20,17 @@ grpc: "127.0.0.1:19202"
 # vmm_enable: false
 # vmm: "http://127.0.0.1:50053"
 
-# 中文：技能覆盖目录。用于覆盖 runtime/skills 中的系统技能。
-# English: Skill override directory used to override built-in skills from runtime/skills.
-# Windows 示例 / Windows example:
-# skills_override: "C:/Users/yourname/.vulcan/vulcan-mcp/skills"
-# Linux/macOS 示例 / Linux/macOS example:
-# skills_override: "/home/yourname/.vulcan/vulcan-mcp/skills"
-
-# 中文：默认环境使用的有序技能根目录列表，按从高优先级到低优先级排列。
-# English: Ordered skill roots for the default environment, from highest priority to lowest priority.
-# 可同时使用具名项与纯路径项；推荐显式具名，便于 IDE/宿主识别当前生效技能来源。
-# Named entries are recommended so IDE/host integrations can identify the active skill source precisely.
+# 中文：默认环境使用的正式技能层级，仅支持 ROOT、PROJECT、USER，运行时固定按 ROOT -> PROJECT -> USER 解析。
+# English: Formal skill layers for the default environment; only ROOT, PROJECT, and USER are supported, and runtime resolution is fixed as ROOT -> PROJECT -> USER.
+# 中文：ROOT 是系统控制层，通常承载官方核心技能；PROJECT/USER 是普通技能层，用户动态安装默认落在 USER。
+# English: ROOT is the system-controlled layer for official core skills; PROJECT/USER are ordinary skill layers, and dynamic user installs default to USER.
+# 中文：推荐显式具名；纯路径项会按 ROOT、PROJECT、USER 顺序映射，最多三项。
+# English: Named entries are recommended; path-only entries are mapped as ROOT, PROJECT, USER in order, with at most three entries.
 # skill_roots:
-#   - name: "USER"
-#     path: "C:/Users/yourname/.vulcan/luaskills"
 #   - name: "ROOT"
 #     path: "D:/projects/vulcan-mcp-client/output/skills"
+#   - name: "USER"
+#     path: "C:/Users/yourname/.vulcan/vulcan-mcp/skills"
 
 # 中文：可选的统一运行根目录。设置后，configs、skills、dependencies、databases、temp、libs、lua_packages 等目录都会从该根目录派生。
 # English: Optional unified runtime root. When set, configs, skills, dependencies, databases, temp, libs, and lua_packages are all derived from this root.
@@ -121,12 +116,6 @@ runlua_pool_config:
   min_size: 1
   max_size: 4
   idle_ttl_secs: 60
-
-# 中文：受保护技能名称列表。列表中的 skill 只能由宿主 system tools 维护，不能走普通 skills 管理面。
-# English: Protected skill names. Skills in this list may only be maintained through host-side system tools, not the ordinary skills plane.
-# 示例 / Example:
-# protected_skills:
-#   - "vulcan-lua"
 
 # 中文：强制跳过的技能 ID 列表。默认不配置；配置后会在依赖准备、数据库绑定和 entry 注册前跳过对应 skill。
 # English: Skill IDs that must be skipped. Leave unset by default; matched skills are skipped before dependency setup, database binding, and entry registration.

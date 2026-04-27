@@ -327,6 +327,74 @@
 - `vulcan-codekit-node-source`
 - `vulcan-codekit-patch`
 
+## 独立仓库说明
+
+当前仓库是 `vulcan-codekit` LuaSkill 的独立源码仓库，内容对应 LuaSkills 运行时中的正式 skill 包：
+
+- `runtime/`：LuaSkill 工具入口与共享运行时代码
+- `rules/`：按语言拆分的 ast-grep 结构匹配规则
+- `help/`：严格帮助流与各工具说明
+- `skills/`：Codex 技能说明与 Agent 使用指引
+- `ast-grep-ffi/`：基于 Rust 的 ast-grep FFI 动态库项目
+- `scripts/`：skill 包与 FFI release 产物的校验、打包脚本
+
+仓库不再作为 demo skill 维护，而是作为 `vulcan-codekit` 的发布源。发布时会生成两类产物：
+
+- LuaSkill 包：包含 `runtime/`、`rules/`、`help/`、`skills/`、`dependencies.yaml` 等运行所需文件
+- FFI 组件包：包含平台对应的 `vulcan_codekit_ast_grep_ffi` 动态库
+
+## 依赖与发布产物
+
+`dependencies.yaml` 负责声明运行时依赖。当前依赖分为两类：
+
+- `rg`：仍作为工具依赖提供文本搜索与 Markdown 文件枚举能力
+- `ast-grep-ffi`：作为 FFI 依赖提供 AST 结构扫描、结构匹配和 patch 校验能力
+
+当前 `ast-grep` 不再通过原始 CLI 调用，而是由 `ast-grep-ffi/` 构建出的动态库承载。Lua 运行时代码会从 LuaSkills 注入的 FFI 依赖目录加载对应平台的动态库；本地开发时也会回退查找 `ast-grep-ffi/target/release` 与 `ast-grep-ffi/target/debug`。
+
+当前 release workflow 只构建并发布以下平台的 FFI 组件：
+
+- `macos-arm64`
+- `macos-x64`
+- `linux-arm64`
+- `linux-x64`
+- `windows-x64`
+
+暂不发布 `windows-arm64` 组件；对应平台也未在 `dependencies.yaml` 中声明。新增平台时需要同时更新 release matrix、`dependencies.yaml`、校验脚本和 README。
+
+## 发布流程
+
+本仓库遵循 LuaSkills 的 GitHub Release 安装规则。技能包就是标准 LuaSkill 包，发布资产名称为：
+
+- `vulcan-codekit-v{version}-skill.zip`
+- `vulcan-codekit-v{version}-checksums.txt`
+
+压缩包内部的顶层目录必须是运行时技能名：
+
+- `vulcan-codekit/`
+
+`ast-grep-ffi` 不打进技能包本体，而是由 `dependencies.yaml` 通过 GitHub Release 依赖安装。当前准确的 Release 仓库地址是：
+
+```yaml
+repo: LuaSkills/vulcan-codekit
+```
+
+GitHub Actions 中的 `Release Vulcan CodeKit LuaSkill` 支持手动运行。运行时填写 `version`，例如 `v0.1.0`，然后按需选择：
+
+- `build_luaskill=on/off`：是否构建并上传 LuaSkill 技能包
+- `luaskill_runner`：技能包构建 runner
+- 各平台 `*_runner`：对应 FFI 平台 runner，设为 `off` 即跳过该平台
+
+LuaSkill 技能包构建和 FFI 原生组件构建可以分离执行；只要 `version` 相同，所有启用的产物都会上传到同一个 GitHub Release。运行时安装 FFI 组件时，LuaSkills 依赖管理器会根据 `dependencies.yaml` 中的 `version`、`repo` 与平台 `asset_name` 解析同一个 Release 下的对应资产。
+
+Rust FFI 依赖许可证报告由 `cargo-deny` 自动生成：
+
+```powershell
+python .\scripts\generate_cargo_deny_notices.py
+```
+
+生成结果写入 `THIRD_PARTY_LICENSES.md`，CI 会在 `ast-grep-ffi/` 下通过 `cargo deny check -c deny.toml --exclude-dev licenses` 检查许可证策略，并校验报告是否仍然匹配当前依赖图。
+
 ## 一句话总结
 
 **如果说传统代码工具是在回答“文本在哪里”，那么 `Vulcan CodeKit` 更关心“结构在哪里、owner 是谁、下一步应该读哪里、改哪里”。**

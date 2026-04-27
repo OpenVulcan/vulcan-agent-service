@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
@@ -18,11 +19,15 @@ use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
 use crate::tool_config::reload_tool_configs;
 use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
+use luaskills::skill::manager::collect_effective_skill_instances_from_roots;
 use luaskills::{
-    LuaEngine, LuaEngineOptions, LuaVmPoolConfig, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
-    RuntimeSkillHelpDescriptor, RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent,
-    RuntimeSkillRoot, SkillConfigEntry, ToolCacheConfig, runtime_config_store::SkillConfigStore,
-    set_entry_registry_callback, set_skill_lifecycle_callback,
+    InstalledSkillRecord, LuaEngine, LuaEngineOptions, LuaRuntimeHostOptions, LuaVmPoolConfig,
+    RuntimeEntryRegistryDelta, RuntimeHelpDetail, RuntimeSkillHelpDescriptor,
+    RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent, RuntimeSkillRoot, SkillApplyResult,
+    SkillConfigEntry, SkillInstallRequest, SkillInstallSourceType, SkillManager,
+    SkillManagerConfig, SkillUninstallOptions, SkillUninstallResult, ToolCacheConfig,
+    runtime_config_store::SkillConfigStore, set_entry_registry_callback,
+    set_skill_lifecycle_callback,
 };
 
 // ============================================================
@@ -48,14 +53,21 @@ pub struct McpServer {
 pub fn is_host_tool_name(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "vulcan-help-list" | "vulcan-help-detail" | "reload_vulcan_mcp_configs" | "luaskill-config"
+        "vulcan-help-list"
+            | "vulcan-help-detail"
+            | "reload_vulcan_mcp_configs"
+            | "luaskill-config"
+            | "skill-manager"
     )
 }
 
 /// Return whether one host-owned MCP tool requires a ready Lua engine to succeed.
 /// 返回某个宿主自有 MCP 工具在执行时是否依赖已就绪的 Lua 引擎。
 pub fn host_tool_requires_lua_engine(tool_name: &str) -> bool {
-    matches!(tool_name, "vulcan-help-list" | "vulcan-help-detail")
+    matches!(
+        tool_name,
+        "vulcan-help-list" | "vulcan-help-detail" | "skill-manager"
+    )
 }
 
 struct ServerInner {
@@ -121,6 +133,43 @@ struct RuntimeConfigToolArguments {
     /// Optional string config value used by `set`.
     /// `set` 使用的可选字符串配置值。
     value: Option<String>,
+}
+
+/// Supported actions for the host-owned skill-manager tool.
+/// 宿主自有 skill-manager 工具支持的动作集合。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SkillManagerAction {
+    /// List locally effective skills with paths and managed install records.
+    /// 列出本地生效技能及其路径和受管安装记录。
+    List,
+    /// Install one managed skill from a source locator.
+    /// 从来源定位值安装一个受管技能。
+    Install,
+    /// Update one installed managed skill by skill id.
+    /// 通过技能标识更新一个已安装的受管技能。
+    Update,
+    /// Uninstall one installed skill by skill id while retaining databases.
+    /// 通过技能标识卸载一个已安装技能并保留数据库。
+    Uninstall,
+}
+
+/// Parsed arguments for one host-owned skill-manager tool call.
+/// 一次宿主自有 skill-manager 工具调用解析后的参数载荷。
+#[derive(Debug, Clone, Deserialize)]
+struct SkillManagerToolArguments {
+    /// Action selector that chooses one of `list/install/update/uninstall`.
+    /// 动作选择器，用于决定 `list/install/update/uninstall` 中的哪一种。
+    action: SkillManagerAction,
+    /// Optional install source locator such as `LuaSkills/vulcan-codekit` or a source YAML URL.
+    /// 可选安装来源定位值，例如 `LuaSkills/vulcan-codekit` 或 source YAML 地址。
+    source: Option<String>,
+    /// Optional source type override; omitted values are inferred from `source`.
+    /// 可选来源类型覆盖；未提供时从 `source` 自动推导。
+    source_type: Option<SkillInstallSourceType>,
+    /// Optional target skill id required by update and uninstall actions.
+    /// update 与 uninstall 动作必填的可选目标技能标识。
+    skill_id: Option<String>,
 }
 
 impl McpServer {
@@ -239,6 +288,42 @@ impl McpServer {
                 },
             ),
         );
+
+        // --- skill-manager: host-owned LuaSkills install/update/uninstall/list management ---
+        inner.host_tools.insert(
+            "skill-manager".to_string(),
+            Tool::with_annotations(
+                "skill-manager",
+                "Manage locally installed USER-layer LuaSkills packages through the host runtime. Supports `list`, `install`, `update`, and `uninstall`. Only call `install`, `update`, or `uninstall` when the user explicitly authorizes that exact operation; never perform skill lifecycle changes proactively. The target layer is fixed to USER and cannot be changed. Install derives the skill id from `source`; update and uninstall require `skill_id`. Uninstall retains SQLite and LanceDB data.",
+                json!({
+                    "action": {
+                        "type": "string",
+                        "description": "Operation to perform. Supported values: `list`, `install`, `update`, `uninstall`.",
+                        "enum": ["list", "install", "update", "uninstall"]
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Install source locator. Required for `install`; examples: `LuaSkills/vulcan-codekit` or `https://github.com/LuaSkills/vulcan-codekit`."
+                    },
+                    "source_type": {
+                        "type": "string",
+                        "description": "Optional install source type override. When omitted, GitHub repository locators are treated as `github`, and non-GitHub HTTP(S) URLs are treated as `url`.",
+                        "enum": ["github", "url"]
+                    },
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Target skill id. Required for `update` and `uninstall`; not used for `install` because it is derived from the source."
+                    }
+                }),
+                vec!["action".to_string()],
+                ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(true),
+                    user_confirmation_required: Some(true),
+                    idempotent_hint: Some(false),
+                },
+            ),
+        );
     }
 
     /// Register the host-owned luaskill-config tool after one effective unified config file path becomes available.
@@ -354,6 +439,23 @@ impl McpServer {
             .as_ref()
             .ok_or_else(|| (-32603, "Lua skill roots are not configured.".to_string()))?;
         Ok((engine.clone(), skill_roots.clone()))
+    }
+
+    /// Resolve the Lua runtime engine, full root chain, and host-forced USER target root.
+    /// 解析 Lua 运行时引擎、完整根链以及宿主强制指定的 USER 目标根。
+    fn resolve_lua_runtime_user_target(
+        &self,
+    ) -> Result<
+        (
+            Arc<StdRwLock<LuaEngine>>,
+            Vec<RuntimeSkillRoot>,
+            RuntimeSkillRoot,
+        ),
+        (i64, String),
+    > {
+        let (engine, roots) = self.resolve_lua_runtime_target()?;
+        let target_root = select_skill_manager_user_root(&roots)?;
+        Ok((engine, roots, target_root))
     }
 
     /// Build one standalone skill-config store for the host-owned luaskill-config tool.
@@ -733,6 +835,11 @@ impl McpServer {
                 }
             }
 
+            "skill-manager" => {
+                let request = parse_skill_manager_tool_arguments(&args)?;
+                self.execute_skill_manager_tool(request).await?
+            }
+
             _ => {
                 // Check if this is a Lua skill
                 if self.lua_engine.is_some() {
@@ -817,6 +924,214 @@ impl McpServer {
         };
 
         serde_json::to_value(result).map_err(|e| (-32603, format!("Serialization error: {}", e)))
+    }
+
+    /// Execute one parsed host-owned skill-manager request against the configured LuaSkills runtime.
+    /// 针对已配置的 LuaSkills 运行时执行一次解析后的宿主自有 skill-manager 请求。
+    async fn execute_skill_manager_tool(
+        &self,
+        request: SkillManagerToolArguments,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        match request.action {
+            SkillManagerAction::List => {
+                let rendered = self.render_skill_manager_list()?;
+                Ok(ToolCallResult {
+                    content: vec![TextContent::text(&rendered)],
+                    is_error: None,
+                })
+            }
+            SkillManagerAction::Install => {
+                let source = require_skill_manager_source(request.source.as_deref(), "install")?;
+                let source_type = infer_skill_install_source_type(&source, request.source_type);
+                if matches!(source_type, SkillInstallSourceType::Url) {
+                    return Ok(render_skill_url_install_not_implemented_result());
+                }
+                let install_request = SkillInstallRequest {
+                    skill_id: None,
+                    source: Some(source),
+                    source_type,
+                };
+                self.execute_skill_install(install_request).await
+            }
+            SkillManagerAction::Update => {
+                let skill_id =
+                    require_skill_manager_skill_id(request.skill_id.as_deref(), "update")?;
+                let update_request = SkillInstallRequest {
+                    skill_id: Some(skill_id),
+                    source: None,
+                    source_type: SkillInstallSourceType::Github,
+                };
+                self.execute_skill_update(update_request).await
+            }
+            SkillManagerAction::Uninstall => {
+                let skill_id =
+                    require_skill_manager_skill_id(request.skill_id.as_deref(), "uninstall")?;
+                self.execute_skill_uninstall(skill_id).await
+            }
+        }
+    }
+
+    /// Render the local LuaSkills inventory with paths, enabled state, and managed install records.
+    /// 渲染本地 LuaSkills 清单，包括路径、启用状态与受管安装记录。
+    fn render_skill_manager_list(&self) -> Result<String, (i64, String)> {
+        let roots = self
+            .lua_skill_roots
+            .as_ref()
+            .ok_or_else(|| (-32603, "Lua skill roots are not configured.".to_string()))?;
+        let target_root = select_skill_manager_user_root(roots)?;
+        let engine_options = self
+            .lua_engine_options
+            .as_ref()
+            .ok_or_else(|| (-32603, "Lua engine options are not configured.".to_string()))?;
+        let layer_roots = vec![target_root];
+        let instances = collect_effective_skill_instances_from_roots(&layer_roots)
+            .map_err(|error| (-32603, format!("skill-manager list failed: {}", error)))?;
+
+        if instances.is_empty() {
+            return Ok("No LuaSkills are installed in the USER layer.".to_string());
+        }
+
+        let mut rendered = String::new();
+        writeln!(&mut rendered, "# LuaSkills (USER)").expect("writing to String should not fail");
+        for instance in instances {
+            let root = RuntimeSkillRoot {
+                name: instance.root_name.clone(),
+                skills_dir: instance.skills_root.clone(),
+            };
+            let manager = build_skill_manager_for_root(&root, &engine_options.host_options)?;
+            let install_record = manager
+                .install_record(&instance.skill_id)
+                .map_err(|error| {
+                    (
+                        -32603,
+                        format!(
+                            "skill-manager list failed to read install record for '{}': {}",
+                            instance.skill_id, error
+                        ),
+                    )
+                })?;
+            let disabled_record = manager
+                .disabled_record(&instance.skill_id)
+                .map_err(|error| {
+                    (
+                        -32603,
+                        format!(
+                            "skill-manager list failed to read disabled record for '{}': {}",
+                            instance.skill_id, error
+                        ),
+                    )
+                })?;
+            writeln!(&mut rendered).expect("writing to String should not fail");
+            writeln!(&mut rendered, "## {}", instance.skill_id)
+                .expect("writing to String should not fail");
+            writeln!(&mut rendered, "- root: {}", instance.root_name)
+                .expect("writing to String should not fail");
+            writeln!(&mut rendered, "- path: {}", instance.actual_dir.display())
+                .expect("writing to String should not fail");
+            writeln!(&mut rendered, "- enabled: {}", disabled_record.is_none())
+                .expect("writing to String should not fail");
+            if let Some(record) = install_record {
+                render_skill_install_record(&mut rendered, &record);
+            } else {
+                writeln!(&mut rendered, "- managed: false")
+                    .expect("writing to String should not fail");
+            }
+            if let Some(record) = disabled_record {
+                writeln!(
+                    &mut rendered,
+                    "- disabled_reason: {}",
+                    record.reason.as_deref().unwrap_or("")
+                )
+                .expect("writing to String should not fail");
+                writeln!(
+                    &mut rendered,
+                    "- disabled_at_unix_ms: {}",
+                    record.disabled_at_unix_ms
+                )
+                .expect("writing to String should not fail");
+            }
+        }
+        Ok(rendered)
+    }
+
+    /// Execute one managed skill install against the host-forced USER target root.
+    /// 针对宿主强制指定的 USER 目标根执行一次受管技能安装。
+    async fn execute_skill_install(
+        &self,
+        request: SkillInstallRequest,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        let (engine, roots, target_root) = self.resolve_lua_runtime_user_target()?;
+        let operation = tokio::task::spawn_blocking(move || {
+            let mut engine = engine
+                .write()
+                .map_err(|_| "Lua engine lock poisoned.".to_string())?;
+            engine
+                .install_skill_in_root(&roots, &target_root, &request)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| {
+            (
+                -32603,
+                format!("skill-manager install spawn error: {}", error),
+            )
+        })?;
+        Ok(render_skill_apply_tool_result("install", operation))
+    }
+
+    /// Execute one managed skill update against the host-forced USER target root.
+    /// 针对宿主强制指定的 USER 目标根执行一次受管技能更新。
+    async fn execute_skill_update(
+        &self,
+        request: SkillInstallRequest,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        let (engine, roots, target_root) = self.resolve_lua_runtime_user_target()?;
+        let operation = tokio::task::spawn_blocking(move || {
+            let mut engine = engine
+                .write()
+                .map_err(|_| "Lua engine lock poisoned.".to_string())?;
+            engine
+                .update_skill_in_root(&roots, &target_root, &request)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| {
+            (
+                -32603,
+                format!("skill-manager update spawn error: {}", error),
+            )
+        })?;
+        Ok(render_skill_apply_tool_result("update", operation))
+    }
+
+    /// Execute one USER-targeted skill uninstall while retaining all skill-owned databases.
+    /// 执行一次以 USER 为目标的技能卸载，并保留该技能拥有的全部数据库。
+    async fn execute_skill_uninstall(
+        &self,
+        skill_id: String,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        let (engine, roots, target_root) = self.resolve_lua_runtime_user_target()?;
+        let operation = tokio::task::spawn_blocking(move || {
+            let mut engine = engine
+                .write()
+                .map_err(|_| "Lua engine lock poisoned.".to_string())?;
+            engine
+                .uninstall_skill_in_root(
+                    &roots,
+                    &target_root,
+                    &skill_id,
+                    &SkillUninstallOptions::default(),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| {
+            (
+                -32603,
+                format!("skill-manager uninstall spawn error: {}", error),
+            )
+        })?;
+        Ok(render_skill_uninstall_tool_result(operation))
     }
 
     fn handle_resources_list(&self) -> Result<Value, (i64, String)> {
@@ -982,6 +1297,286 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     }
 
     lines.join("\n")
+}
+
+/// Parse one skill-manager argument payload into the strongly typed host-tool request model.
+/// 把一份 skill-manager 参数载荷解析为强类型宿主工具请求模型。
+fn parse_skill_manager_tool_arguments(
+    args: &Value,
+) -> Result<SkillManagerToolArguments, (i64, String)> {
+    if args.get("layer").is_some() {
+        return Err((
+            -32602,
+            "skill-manager is locked to the USER layer and does not accept a layer parameter."
+                .to_string(),
+        ));
+    }
+    serde_json::from_value(args.clone()).map_err(|error| {
+        (
+            -32602,
+            format!("Invalid skill-manager arguments: {}", error),
+        )
+    })
+}
+
+/// Select the concrete USER runtime root used by the user-facing skill-manager tool.
+/// 选择面向用户的 skill-manager 工具固定使用的 USER 运行时根。
+fn select_skill_manager_user_root(
+    roots: &[RuntimeSkillRoot],
+) -> Result<RuntimeSkillRoot, (i64, String)> {
+    let selected = roots
+        .iter()
+        .find(|root| root.name.trim().eq_ignore_ascii_case("USER"));
+    selected.cloned().ok_or_else(|| {
+        (
+            -32603,
+            "skill-manager USER layer is not configured.".to_string(),
+        )
+    })
+}
+
+/// Require one non-empty install source for a skill-manager install action.
+/// 要求 skill-manager 安装动作提供一个非空安装来源。
+fn require_skill_manager_source(
+    value: Option<&str>,
+    action: &str,
+) -> Result<String, (i64, String)> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            (
+                -32602,
+                format!(
+                    "skill-manager action '{}' requires parameter: source",
+                    action
+                ),
+            )
+        })
+}
+
+/// Require one non-empty skill id for a skill-manager target action.
+/// 要求 skill-manager 目标动作提供一个非空技能标识。
+fn require_skill_manager_skill_id(
+    value: Option<&str>,
+    action: &str,
+) -> Result<String, (i64, String)> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            (
+                -32602,
+                format!(
+                    "skill-manager action '{}' requires parameter: skill_id",
+                    action
+                ),
+            )
+        })
+}
+
+/// Infer the install source type from one source locator unless the caller supplied an override.
+/// 除非调用方提供覆盖值，否则从单个来源定位值推导安装来源类型。
+fn infer_skill_install_source_type(
+    source: &str,
+    explicit: Option<SkillInstallSourceType>,
+) -> SkillInstallSourceType {
+    if let Some(source_type) = explicit {
+        return source_type;
+    }
+    let source = source.trim().to_ascii_lowercase();
+    if (source.starts_with("http://") || source.starts_with("https://"))
+        && !source.contains("github.com/")
+    {
+        SkillInstallSourceType::Url
+    } else {
+        SkillInstallSourceType::Github
+    }
+}
+
+/// Build one SkillManager that mirrors LuaEngine's root-relative lifecycle layout.
+/// 构造一个与 LuaEngine 根目录相对生命周期布局保持一致的 SkillManager。
+fn build_skill_manager_for_root(
+    root: &RuntimeSkillRoot,
+    host_options: &LuaRuntimeHostOptions,
+) -> Result<SkillManager, (i64, String)> {
+    let runtime_root = root
+        .skills_dir
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| root.skills_dir.clone());
+    let lifecycle_root = runtime_root.join(host_options.state_dir_name.as_str());
+    let download_cache_root = host_options.download_cache_root.clone().unwrap_or_else(|| {
+        host_options
+            .temp_dir
+            .clone()
+            .unwrap_or_else(|| runtime_root.join("temp"))
+            .join("downloads")
+    });
+    Ok(SkillManager::new(SkillManagerConfig {
+        skill_root: root.clone(),
+        lifecycle_root,
+        download_cache_root,
+        allow_network_download: host_options.allow_network_download,
+        github_base_url: host_options.github_base_url.clone(),
+        github_api_base_url: host_options.github_api_base_url.clone(),
+    }))
+}
+
+/// Render one managed install record into the skill-manager list output.
+/// 将单条受管安装记录渲染到 skill-manager 列表输出中。
+fn render_skill_install_record(rendered: &mut String, record: &InstalledSkillRecord) {
+    writeln!(rendered, "- managed: {}", record.managed).expect("writing to String should not fail");
+    writeln!(rendered, "- version: {}", record.version).expect("writing to String should not fail");
+    writeln!(
+        rendered,
+        "- source: {} {}",
+        render_skill_install_source_type(record.source.source_type),
+        record.source.locator
+    )
+    .expect("writing to String should not fail");
+    if let Some(tag) = record.source.tag.as_deref() {
+        writeln!(rendered, "- source_tag: {}", tag).expect("writing to String should not fail");
+    }
+    writeln!(
+        rendered,
+        "- installed_at_unix_ms: {}",
+        record.installed_at_unix_ms
+    )
+    .expect("writing to String should not fail");
+}
+
+/// Render one skill install source type as a stable snake-case string.
+/// 将单个技能安装来源类型渲染为稳定的蛇形命名字符串。
+fn render_skill_install_source_type(source_type: SkillInstallSourceType) -> &'static str {
+    match source_type {
+        SkillInstallSourceType::Github => "github",
+        SkillInstallSourceType::Url => "url",
+    }
+}
+
+/// Render the current explicit URL-install unsupported result before LuaSkills sees the request.
+/// 在 LuaSkills 接收请求前渲染当前 URL 安装不支持的明确结果。
+fn render_skill_url_install_not_implemented_result() -> ToolCallResult {
+    ToolCallResult {
+        content: vec![TextContent::text(
+            "skill-manager install failed: managed URL install is not implemented yet; GitHub install is currently the only supported install source.",
+        )],
+        is_error: Some(true),
+    }
+}
+
+/// Render one install or update operation result into an MCP tool result.
+/// 将单个安装或更新操作结果渲染为 MCP 工具结果。
+fn render_skill_apply_tool_result(
+    action: &str,
+    result: Result<SkillApplyResult, String>,
+) -> ToolCallResult {
+    match result {
+        Ok(result) => ToolCallResult {
+            content: vec![TextContent::text(&render_skill_apply_result(
+                action, &result,
+            ))],
+            is_error: None,
+        },
+        Err(error) => ToolCallResult {
+            content: vec![TextContent::text(&format!(
+                "skill-manager {} failed: {}",
+                action, error
+            ))],
+            is_error: Some(true),
+        },
+    }
+}
+
+/// Render one successful install or update operation result as compact Markdown.
+/// 将单个成功安装或更新操作结果渲染为紧凑 Markdown。
+fn render_skill_apply_result(action: &str, result: &SkillApplyResult) -> String {
+    let mut rendered = String::new();
+    writeln!(&mut rendered, "# skill-manager {}", action)
+        .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- layer: USER").expect("writing to String should not fail");
+    writeln!(&mut rendered, "- skill_id: {}", result.skill_id)
+        .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- status: {}", result.status)
+        .expect("writing to String should not fail");
+    if let Some(version) = result.version.as_deref() {
+        writeln!(&mut rendered, "- version: {}", version)
+            .expect("writing to String should not fail");
+    }
+    if let Some(source_type) = result.source_type {
+        writeln!(
+            &mut rendered,
+            "- source_type: {}",
+            render_skill_install_source_type(source_type)
+        )
+        .expect("writing to String should not fail");
+    }
+    if let Some(source_locator) = result.source_locator.as_deref() {
+        writeln!(&mut rendered, "- source: {}", source_locator)
+            .expect("writing to String should not fail");
+    }
+    writeln!(&mut rendered, "- message: {}", result.message)
+        .expect("writing to String should not fail");
+    rendered
+}
+
+/// Render one uninstall operation result into an MCP tool result.
+/// 将单个卸载操作结果渲染为 MCP 工具结果。
+fn render_skill_uninstall_tool_result(
+    result: Result<SkillUninstallResult, String>,
+) -> ToolCallResult {
+    match result {
+        Ok(result) => ToolCallResult {
+            content: vec![TextContent::text(&render_skill_uninstall_result(&result))],
+            is_error: None,
+        },
+        Err(error) => ToolCallResult {
+            content: vec![TextContent::text(&format!(
+                "skill-manager uninstall failed: {}",
+                error
+            ))],
+            is_error: Some(true),
+        },
+    }
+}
+
+/// Render one successful uninstall operation result as compact Markdown.
+/// 将单个成功卸载操作结果渲染为紧凑 Markdown。
+fn render_skill_uninstall_result(result: &SkillUninstallResult) -> String {
+    let mut rendered = String::new();
+    writeln!(&mut rendered, "# skill-manager uninstall")
+        .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- layer: USER").expect("writing to String should not fail");
+    writeln!(&mut rendered, "- skill_id: {}", result.skill_id)
+        .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- skill_removed: {}", result.skill_removed)
+        .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- sqlite_removed: {}", result.sqlite_removed)
+        .expect("writing to String should not fail");
+    writeln!(
+        &mut rendered,
+        "- lancedb_removed: {}",
+        result.lancedb_removed
+    )
+    .expect("writing to String should not fail");
+    writeln!(
+        &mut rendered,
+        "- sqlite_retained: {}",
+        result.sqlite_retained
+    )
+    .expect("writing to String should not fail");
+    writeln!(
+        &mut rendered,
+        "- lancedb_retained: {}",
+        result.lancedb_retained
+    )
+    .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- message: {}", result.message)
+        .expect("writing to String should not fail");
+    rendered
 }
 
 /// Parse one luaskill-config argument payload into the strongly typed host-tool request model.
@@ -1226,6 +1821,27 @@ mod tests {
         std::env::temp_dir().join(unique)
     }
 
+    /// Write one minimal enabled LuaSkill fixture into a specific skills root.
+    /// 将一个最小可启用 LuaSkill 夹具写入指定 skills 根目录。
+    fn write_minimal_skill_to_root(skill_root: &std::path::Path, skill_id: &str) -> PathBuf {
+        let skill_dir = skill_root.join(skill_id);
+        std::fs::create_dir_all(skill_dir.join("runtime"))
+            .expect("minimal skill runtime directory should be created");
+        std::fs::write(
+            skill_dir.join("skill.yaml"),
+            format!(
+                "name: {skill_id}\nversion: 0.1.0\nenable: true\ndebug: false\nentries:\n  - name: ping\n    description: Minimal ping entry.\n    lua_entry: runtime/ping.lua\n    lua_module: {skill_id}.ping\n"
+            ),
+        )
+        .expect("minimal skill manifest should be written");
+        std::fs::write(
+            skill_dir.join("runtime").join("ping.lua"),
+            "return function(args)\n  return 'ok'\nend\n",
+        )
+        .expect("minimal skill runtime entry should be written");
+        skill_dir
+    }
+
     fn make_help_descriptor() -> RuntimeSkillHelpDescriptor {
         RuntimeSkillHelpDescriptor {
             skill_id: "demo-skill".to_string(),
@@ -1246,6 +1862,199 @@ mod tests {
                 is_main: false,
             }],
         }
+    }
+
+    /// Skill-manager arguments should parse without any layer selector.
+    /// 不携带任何层级选择器的 skill-manager 参数应能正常解析。
+    #[test]
+    fn skill_manager_arguments_parse_without_layer() {
+        let request = parse_skill_manager_tool_arguments(&json!({
+            "action": "list"
+        }))
+        .expect("skill-manager arguments should parse");
+
+        assert!(request.source.is_none());
+    }
+
+    /// Explicit layer arguments should be rejected because skill-manager is locked to USER.
+    /// 显式层级参数应被拒绝，因为 skill-manager 已固定到 USER。
+    #[test]
+    fn skill_manager_arguments_reject_layer() {
+        let error = parse_skill_manager_tool_arguments(&json!({
+            "action": "list",
+            "layer": "ROOT"
+        }))
+        .expect_err("skill-manager should reject layer arguments");
+
+        assert_eq!(error.0, -32602);
+        assert!(error.1.contains("does not accept a layer parameter"));
+    }
+
+    /// USER selection should ignore other formal layers and return only the user root.
+    /// USER 选择应忽略其他正式层级，只返回用户根。
+    #[test]
+    fn skill_manager_user_selection_uses_only_user_layer() {
+        let roots = vec![
+            RuntimeSkillRoot {
+                name: "ROOT".to_string(),
+                skills_dir: PathBuf::from("D:/runtime/skills"),
+            },
+            RuntimeSkillRoot {
+                name: "PROJECT".to_string(),
+                skills_dir: PathBuf::from("D:/project/skills"),
+            },
+            RuntimeSkillRoot {
+                name: "USER".to_string(),
+                skills_dir: PathBuf::from("D:/user/skills"),
+            },
+        ];
+
+        let user_root = select_skill_manager_user_root(&roots).expect("USER layer should resolve");
+
+        assert_eq!(user_root.name, "USER");
+    }
+
+    /// Skill-manager uninstall should inject USER as the lifecycle target when ROOT shadows the same skill id.
+    /// 当 ROOT 遮蔽同名技能时，skill-manager 卸载应将 USER 注入为生命周期目标。
+    #[test]
+    fn skill_manager_uninstall_forces_user_target_when_root_shadows_skill() {
+        let runtime_root = unique_test_dir("skill-manager-user-target");
+        std::fs::create_dir_all(&runtime_root).expect("runtime root should be created");
+        let root_layer = RuntimeSkillRoot {
+            name: "ROOT".to_string(),
+            skills_dir: runtime_root.join("root-space").join("skills"),
+        };
+        let user_layer = RuntimeSkillRoot {
+            name: "USER".to_string(),
+            skills_dir: runtime_root.join("user-space").join("skills"),
+        };
+        let skill_id = "user-shadow-skill";
+        let root_skill_dir = write_minimal_skill_to_root(&root_layer.skills_dir, skill_id);
+        let user_skill_dir = write_minimal_skill_to_root(&user_layer.skills_dir, skill_id);
+        let config = Config {
+            runtime_root: Some(runtime_root.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let server = McpServer::new()
+            .with_lua_skills(
+                &config,
+                &[root_layer.clone(), user_layer.clone()],
+                LuaVmPoolConfig {
+                    min_size: 1,
+                    max_size: 1,
+                    idle_ttl_secs: 60,
+                },
+                ToolCacheConfig::default(),
+            )
+            .expect("server should load shadowed skill roots");
+        let lifecycle_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
+            RuntimeSkillLifecycleEvent,
+        >::new()));
+        let lifecycle_events_callback = lifecycle_events.clone();
+        set_skill_lifecycle_callback(Some(std::sync::Arc::new(
+            move |event: &RuntimeSkillLifecycleEvent| {
+                lifecycle_events_callback
+                    .lock()
+                    .expect("lifecycle events should not be poisoned")
+                    .push(event.clone());
+            },
+        )));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "uninstall",
+                            "skill_id": skill_id
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("skill-manager uninstall should return one response");
+        let tool_result: ToolCallResult = serde_json::from_value(
+            response
+                .get("result")
+                .cloned()
+                .expect("skill-manager uninstall should return result"),
+        )
+        .expect("skill-manager uninstall result should deserialize");
+        let rendered = tool_result
+            .content
+            .first()
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+
+        assert_eq!(tool_result.is_error, None);
+        assert!(rendered.contains("- layer: USER"));
+        assert!(
+            root_skill_dir.exists(),
+            "ROOT skill should remain untouched by USER-locked uninstall"
+        );
+        assert!(
+            !user_skill_dir.exists(),
+            "USER skill should be removed even when ROOT owns the effective skill id"
+        );
+        let observed_events = lifecycle_events
+            .lock()
+            .expect("lifecycle events should not be poisoned");
+        assert!(
+            observed_events.iter().any(|event| {
+                event.plane == luaskills::SkillOperationPlane::Skills
+                    && event.root_name.as_deref() == Some("USER")
+                    && event.skill_id == skill_id
+            }),
+            "skill-manager USER target should execute through the ordinary Skills plane"
+        );
+        drop(observed_events);
+        set_skill_lifecycle_callback(None);
+        let _ = std::fs::remove_dir_all(&runtime_root);
+    }
+
+    /// Layer arguments should be rejected before lifecycle dispatch.
+    /// 层级参数应在生命周期分发前被拒绝。
+    #[test]
+    fn skill_manager_layer_parameter_returns_json_rpc_error() {
+        let server = McpServer::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "install",
+                            "layer": "ROOT",
+                            "source": "LuaSkills/vulcan-codekit"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("skill-manager layer install should return one response");
+
+        let message = response
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("does not accept a layer parameter"));
     }
 
     #[test]
@@ -1269,8 +2078,8 @@ mod tests {
         assert!(markdown.contains("- `search`: Search indexed project files."));
     }
 
-    /// Minimal servers without a Lua engine should expose only engine-independent host tools in `tools/list`.
-    /// 未加载 Lua 引擎的最小服务在 `tools/list` 中应只暴露与引擎无关的宿主工具。
+    /// Minimal servers without a Lua engine should expose default host tools but hide Lua help wrappers.
+    /// 未加载 Lua 引擎的最小服务应暴露默认宿主工具，但隐藏 Lua help 包装工具。
     #[test]
     fn tools_list_hides_help_tools_when_lua_engine_is_unavailable() {
         let server = McpServer::new();
@@ -1286,6 +2095,7 @@ mod tests {
             .collect();
 
         assert!(tool_names.contains("reload_vulcan_mcp_configs"));
+        assert!(tool_names.contains("skill-manager"));
         assert!(!tool_names.contains("luaskill-config"));
         assert!(!tool_names.contains("vulcan-help-list"));
         assert!(!tool_names.contains("vulcan-help-detail"));
@@ -1331,6 +2141,57 @@ mod tests {
 
         assert!(tool_names.contains("vulcan-help-list"));
         assert!(tool_names.contains("vulcan-help-detail"));
+    }
+
+    /// URL installs should fail with the wrapper's explicit unsupported-source message.
+    /// URL 安装应使用包装层明确的不支持来源提示失败。
+    #[test]
+    fn skill_manager_url_install_reports_not_implemented() {
+        let server = McpServer::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+
+        let response = runtime
+            .block_on(server.handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "install",
+                            "source_type": "url",
+                            "source": "https://example.test/vulcan-codekit.source.yaml"
+                        }
+                    }
+                }),
+                RequestContext::default(),
+            ))
+            .expect("skill-manager URL install should return one response");
+
+        assert!(
+            response.get("error").is_none(),
+            "URL install should return a tool-level error, not JSON-RPC error: {response}"
+        );
+        let tool_result: ToolCallResult = serde_json::from_value(
+            response
+                .get("result")
+                .cloned()
+                .expect("skill-manager URL install should return result"),
+        )
+        .expect("skill-manager URL install result should deserialize");
+        let rendered = tool_result
+            .content
+            .first()
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+
+        assert_eq!(tool_result.is_error, Some(true));
+        assert!(rendered.contains("managed URL install is not implemented yet"));
+        assert!(!rendered.contains("requires skill_id"));
     }
 
     /// Luaskill-config should remain callable without any Lua engine because it now uses the standalone skill-config store directly.

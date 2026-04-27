@@ -53,62 +53,6 @@ local function get_entry_dir()
 end
 
 --[[
-Return the normalized platform key used by LuaSkills dependency installation.
-返回 LuaSkills 依赖安装使用的标准平台键。
-]]
-local function current_platform_key()
-    local os_info = vulcan.os.info() or {}
-    local architecture = trim((os_info.arch or os_info.architecture or "")):lower()
-    local os_name = trim((os_info.os or "")):lower()
-
-    if os_name == "windows" then
-        if architecture == "arm64" or architecture == "aarch64" then
-            return "windows-arm64"
-        end
-        return "windows-x64"
-    end
-
-    if os_name == "macos" or os_name == "darwin" or os_name == "osx" then
-        if architecture == "arm64" or architecture == "aarch64" then
-            return "macos-arm64"
-        end
-        return "macos-x64"
-    end
-
-    if architecture == "arm64" or architecture == "aarch64" then
-        return "linux-arm64"
-    end
-    return "linux-x64"
-end
-
---[[
-Return the host-injected tool dependency root for the current skill.
-返回宿主为当前 skill 注入的工具依赖根目录。
-]]
-local function get_tool_dependency_root()
-    return trim(vulcan and vulcan.deps and vulcan.deps.tools_path or "")
-end
-
---[[
-Build one tool binary path from the injected dependency root, dependency name, version, and executable name.
-基于注入的依赖根目录、依赖名、版本号与程序名构造工具二进制路径。
-]]
-local function build_tool_binary_path(dependency_name, version, executable_name)
-    local tools_root = get_tool_dependency_root()
-    if tools_root == "" then
-        return ""
-    end
-    return vulcan.path.join(
-        tools_root,
-        tostring(dependency_name or ""),
-        tostring(version or ""),
-        current_platform_key(),
-        "bin",
-        tostring(executable_name or "")
-    )
-end
-
---[[
 懒加载共享预算模块，让 tree/detail/rg 复用同一套 MCP 输出/读取预算映射。
 Lazily load the shared budget module so tree/detail/rg reuse the same MCP output/read budget mapping.
 ]]
@@ -159,8 +103,8 @@ local function extract_upvalue_by_name(fn, name)
 end
 
 --[[
-懒加载主 `codekit-ast-detail` 的运行时助手，让本工具复用二进制定位、文件收集、建树与行数统计逻辑。
-Lazily load runtime helpers from the main `codekit-ast-detail` tool so this tool can reuse binary lookup, file collection, tree building, and line-count logic.
+懒加载主 `codekit-ast-detail` 的运行时助手，让本工具复用 FFI 扫描器定位、文件收集、建树与行数统计逻辑。
+Lazily load runtime helpers from the main `codekit-ast-detail` tool so this tool can reuse FFI scanner lookup, file collection, tree building, and line-count logic.
 ]]
 local function load_ast_runtime_helpers()
     if AST_RUNTIME_HELPERS then
@@ -736,11 +680,12 @@ return function(args)
         })
     end
 
-    local binary_path, binary_directory, executable_name = helpers.find_binary()
-    if not binary_path then
+    local scanner_client, _, _, scanner_error = helpers.find_binary()
+    if not scanner_client then
         return render_codekit_error_markdown("CodeKit AST Tree Error", {
-            error = "ast_grep_binary_not_found",
-            expected_path = build_tool_binary_path("ast-grep", "0.42.1", executable_name),
+            error = "ast_grep_ffi_not_found",
+            message = "ast-grep FFI library was not found or could not be loaded",
+            details = scanner_error,
         })
     end
 
@@ -759,7 +704,7 @@ return function(args)
 
     local normalized_by_file = {}
     for language_key, file_paths in pairs(grouped_files) do
-        local matches, diagnostics = helpers.run_language_scan(binary_directory, executable_name, language_key, file_paths)
+        local matches, diagnostics = helpers.run_language_scan(scanner_client, nil, language_key, file_paths)
         log_diagnostics(diagnostics)
         for _, match in ipairs(matches or {}) do
             local symbol = helpers.normalize_symbol(match, language_key)
