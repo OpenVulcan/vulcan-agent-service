@@ -24,6 +24,8 @@ local PARAMETER_ERROR_CODES = {
     invalid_file = true,
     file_is_directory = true,
     file_not_found = true,
+    environment_variable_not_found = true,
+    invalid_environment_variable_reference = true,
     invalid_mode = true,
     invalid_content = true,
     empty_content_noop = true,
@@ -65,6 +67,44 @@ local function render_error(error_code, message, details)
         table.insert(lines, "- " .. tostring(key) .. ": `" .. tostring(value) .. "`")
     end
     return table.concat(lines, "\n")
+end
+
+-- Expand `${env:NAME}` placeholders in a caller-provided path before filesystem access.
+-- 在访问文件系统之前展开调用方路径中的 `${env:NAME}` 占位符。
+-- Parameters: path is the caller path text and field_name is the argument name rendered in errors; returns expanded path or Markdown error text.
+-- 参数：path 为调用方路径文本，field_name 为错误中展示的参数名；返回展开后的路径或 Markdown 错误文本。
+local function expand_environment_path(path, field_name)
+    local source = tostring(path or "")
+    local unresolved_variable = nil
+    local expanded = source:gsub("%${env:([^}]+)}", function(variable_name)
+        local normalized_name = trim(variable_name)
+        if normalized_name == "" then
+            unresolved_variable = variable_name
+            return ""
+        end
+
+        local environment_value = os.getenv(normalized_name)
+        if environment_value == nil then
+            unresolved_variable = normalized_name
+            return ""
+        end
+        return environment_value
+    end)
+
+    if unresolved_variable ~= nil then
+        return nil, render_error("environment_variable_not_found", "environment variable referenced in path is not defined", {
+            field = tostring(field_name or "path"),
+            variable = tostring(unresolved_variable),
+            path = source,
+        })
+    end
+    if expanded:find("${env:", 1, true) ~= nil then
+        return nil, render_error("invalid_environment_variable_reference", "environment variable path placeholder must use ${env:NAME} syntax", {
+            field = tostring(field_name or "path"),
+            path = source,
+        })
+    end
+    return expanded, nil
 end
 
 -- Validate an optional boolean argument and report type mistakes clearly.
@@ -109,12 +149,20 @@ local function validate_request(args)
     if (request.mode == "append" or request.mode == "insert_before" or request.mode == "insert_after") and request.content == "" then
         return nil, render_error("empty_content_noop", "append and insert modes require non-empty content")
     end
+    local file_path, environment_error = expand_environment_path(trim(request.file), "file")
+    if environment_error then
+        return nil, environment_error
+    end
+    file_path = trim(file_path)
+    if file_path == "" then
+        return nil, render_error("invalid_file", "file must resolve to a non-empty string")
+    end
     local apply_error = validate_optional_boolean(request.apply, "apply")
     if apply_error then
         return nil, apply_error
     end
     return {
-        file = trim(request.file),
+        file = file_path,
         mode = request.mode,
         content = request.content,
         start_line = request.start_line,

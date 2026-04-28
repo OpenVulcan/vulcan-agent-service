@@ -36,6 +36,8 @@ local PARAMETER_ERROR_CODES = {
     invalid_path = true,
     path_not_found = true,
     path_not_directory = true,
+    environment_variable_not_found = true,
+    invalid_environment_variable_reference = true,
     invalid_pattern_argument = true,
     invalid_recursive_argument = true,
     invalid_noignore_argument = true,
@@ -72,6 +74,44 @@ local function render_error(error_code, message, details)
         table.insert(lines, "- " .. tostring(key) .. ": `" .. tostring(value) .. "`")
     end
     return table.concat(lines, "\n")
+end
+
+-- Expand `${env:NAME}` placeholders in a caller-provided path before filesystem access.
+-- 在访问文件系统之前展开调用方路径中的 `${env:NAME}` 占位符。
+-- Parameters: path is the caller path text and field_name is the argument name rendered in errors; returns expanded path or Markdown error text.
+-- 参数：path 为调用方路径文本，field_name 为错误中展示的参数名；返回展开后的路径或 Markdown 错误文本。
+local function expand_environment_path(path, field_name)
+    local source = tostring(path or "")
+    local unresolved_variable = nil
+    local expanded = source:gsub("%${env:([^}]+)}", function(variable_name)
+        local normalized_name = trim(variable_name)
+        if normalized_name == "" then
+            unresolved_variable = variable_name
+            return ""
+        end
+
+        local environment_value = os.getenv(normalized_name)
+        if environment_value == nil then
+            unresolved_variable = normalized_name
+            return ""
+        end
+        return environment_value
+    end)
+
+    if unresolved_variable ~= nil then
+        return nil, render_error("environment_variable_not_found", "environment variable referenced in path is not defined", {
+            field = tostring(field_name or "path"),
+            variable = tostring(unresolved_variable),
+            path = source,
+        })
+    end
+    if expanded:find("${env:", 1, true) ~= nil then
+        return nil, render_error("invalid_environment_variable_reference", "environment variable path placeholder must use ${env:NAME} syntax", {
+            field = tostring(field_name or "path"),
+            path = source,
+        })
+    end
+    return expanded, nil
 end
 
 -- Normalize path separators to forward slashes for stable grouping.
@@ -115,7 +155,14 @@ local function validate_root_path(value)
         return nil, render_error("invalid_path", "path must be a non-empty directory path")
     end
 
-    local root_path = trim(value)
+    local root_path, environment_error = expand_environment_path(trim(value), "path")
+    if environment_error then
+        return nil, environment_error
+    end
+    root_path = trim(root_path)
+    if root_path == "" then
+        return nil, render_error("invalid_path", "path must resolve to a non-empty directory path")
+    end
     if not vulcan.fs.exists(root_path) then
         return nil, render_error("path_not_found", "path does not exist", { path = root_path })
     end

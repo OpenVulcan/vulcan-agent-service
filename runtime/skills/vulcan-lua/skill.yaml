@@ -3,7 +3,7 @@ version: 0.1.0
 debug: false
 help:
   main:
-    description: Vulcan Lua 的帮助文件，告知具体的工具使用说明
+    description: Help agents decide when to run bounded Lua tasks through the controlled Vulcan runtime bridge.
     file: help/help.md
 entries:
   - name: run

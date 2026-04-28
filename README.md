@@ -321,6 +321,42 @@ cargo run -- --stdio --runtime-root output
 ./output/bin/vulcan-mcp --stdio
 ```
 
+### ROOT Skill 管理命令
+
+以下命令只执行本地 ROOT 层 skill 管理动作，执行完成后直接退出，不会启动 HTTP、gRPC 或 stdio 服务。
+
+安装指定 skill 到 ROOT 层：
+
+```bash
+cargo run -- --install-root-skill LuaSkills/vulcan-codekit --runtime-root output
+```
+
+如果直接执行构建产物：
+
+```bash
+./output/bin/vulcan-mcp --install-root-skill LuaSkills/vulcan-codekit --runtime-root output
+```
+
+安装时也可以显式指定来源类型：
+
+```bash
+./output/bin/vulcan-mcp --install-root-skill LuaSkills/vulcan-codekit --source-type github --runtime-root output
+```
+
+更新 ROOT 层全部受管 skill：
+
+```bash
+cargo run -- --update-root-skills --runtime-root output
+```
+
+如果直接执行构建产物：
+
+```bash
+./output/bin/vulcan-mcp --update-root-skills --runtime-root output
+```
+
+`--update-root-skills` 只会更新带受管安装记录的 ROOT skill；手工放入 ROOT 但没有安装记录的目录会被跳过。
+
 ## 与 `luaskills` 的关系
 
 当前仓库通过 Cargo 原生版本依赖引用：

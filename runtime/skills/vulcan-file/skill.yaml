@@ -1,19 +1,19 @@
 name: vulcan-file
-version: 0.1.0
+version: 0.1.1
 debug: true
 help:
   main:
-    description: 帮助 AI 判断何时使用 vulcan-file，而不是 codekit、rg 或 shell。
+    description: Help agents decide when to use vulcan-file instead of CodeKit, rg, or shell snippets.
     file: help/help.md
   topics:
     - name: read
-      description: 当已知道文件路径和大致行号时，读取一个或多个原文片段。
+      description: Read one or more raw text snippets when the file path and approximate line area are known.
       file: help/read.md
     - name: list
-      description: 当还不知道目标文件位置时，先获取低 token 文件名地图。
+      description: Find candidate files cheaply before reading them.
       file: help/list.md
     - name: edit
-      description: 当需要做小范围文本编辑且希望先看预览时使用。
+      description: Make small preview-first text edits after target lines have been inspected.
       file: help/edit.md
 entries:
   - name: read
@@ -24,7 +24,7 @@ entries:
     parameters:
       - name: file
         type: string
-        description: "Use the file path you already selected. Passing a directory is only for a quick direct-child Name listing; use vulcan-file-list for recursive discovery."
+        description: "Use the file path you already selected. Supports ${env:NAME} placeholders. Passing a directory is only for a quick direct-child Name listing; use vulcan-file-list for recursive discovery."
         required: true
       - name: lines_rule
         type: string
@@ -42,7 +42,7 @@ entries:
     parameters:
       - name: path
         type: string
-        description: "Use the narrowest directory that may contain the target files. Omit only for a project-level map."
+        description: "Use the narrowest directory that may contain the target files. Supports ${env:NAME} placeholders. Omit only for a project-level map."
         required: false
       - name: pattern
         type: string
@@ -68,7 +68,7 @@ entries:
     parameters:
       - name: file
         type: string
-        description: "Use the exact file path to edit."
+        description: "Use the exact file path to edit. Supports ${env:NAME} placeholders."
         required: true
       - name: mode
         type: string

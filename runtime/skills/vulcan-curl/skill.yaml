@@ -3,17 +3,17 @@ version: 0.1.0
 debug: true
 help:
   main:
-    description: Vulcan Curl 的主帮助，包含快捷 HTTP 工作流与底层请求入口说明。
+    description: Help agents choose structured GET/POST entries or curl-style argv for one HTTP request.
     file: help/help.md
   topics:
     - name: get
-      description: 简单 GET 请求工作流。
+      description: Simple GET request workflow.
       file: help/get.md
     - name: post
-      description: 简单 POST 与 multipart 工作流。
+      description: Simple POST and multipart request workflow.
       file: help/post.md
     - name: request
-      description: 原始 curl argv 请求入口说明。
+      description: Curl-style argv request workflow.
       file: help/request.md
 entries:
   - name: get

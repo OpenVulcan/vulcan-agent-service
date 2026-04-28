@@ -26,7 +26,11 @@ pub mod pb_mcp {
 
 use client_budget::{initialize_client_budget_runtime_root, preload_client_budget_config};
 use config::Config;
-use luaskills::{LuaEngine, LuaVmPoolConfig, RuntimeSkillRoot};
+use luaskills::{
+    LuaEngine, LuaRuntimeHostOptions, LuaVmPoolConfig, RuntimeSkillRoot, SkillApplyResult,
+    SkillInstallRequest, SkillInstallSourceType, SkillManagementAuthority, SkillManager,
+    SkillManagerConfig,
+};
 use luaskills_host::{
     build_luaskills_cache_config, build_luaskills_engine_options, build_runtime_invocation_context,
     client_budget_snapshot_for_render, default_user_skill_root, install_luaskills_log_callback,
@@ -37,6 +41,7 @@ use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext, ToolCallResu
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
 use serde_json::{Value, json};
 use server::{McpServer, host_tool_requires_lua_engine, is_host_tool_name};
+use std::fmt::Write as _;
 use temp_maintenance::{
     CleanupTrigger, ensure_runtime_temp_dir, initialize_runtime_temp_root,
     maintain_runtime_temp_dir, spawn_cross_day_cleanup_task,
@@ -165,6 +170,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             arguments,
             simulated_client_name,
         } => run_call_tool_mode(&tool_name, arguments, &simulated_client_name),
+        RuntimeMode::RootSkillInstall {
+            source,
+            source_type,
+        } => run_root_skill_install_mode(&source, source_type),
+        RuntimeMode::RootSkillsUpdate => run_root_skills_update_mode(),
         RuntimeMode::InternalLuaexecRequest { request_file } => {
             run_internal_luaexec_request_mode(&request_file)
         }
@@ -289,6 +299,19 @@ enum RuntimeMode {
         arguments: Value,
         simulated_client_name: String,
     },
+    /// Install one managed LuaSkill into the host-controlled ROOT layer without starting MCP transports.
+    /// 在不启动 MCP 传输服务的情况下，将单个受管 LuaSkill 安装到宿主控制的 ROOT 层。
+    RootSkillInstall {
+        /// Source locator such as `LuaSkills/vulcan-codekit` or a GitHub repository URL.
+        /// 来源定位值，例如 `LuaSkills/vulcan-codekit` 或 GitHub 仓库 URL。
+        source: String,
+        /// Optional source type override parsed from the CLI.
+        /// 从 CLI 解析得到的可选来源类型覆盖。
+        source_type: Option<SkillInstallSourceType>,
+    },
+    /// Update every managed LuaSkill declared in the host-controlled ROOT layer without starting MCP transports.
+    /// 在不启动 MCP 传输服务的情况下，更新宿主控制的 ROOT 层内所有受管 LuaSkill。
+    RootSkillsUpdate,
     /// Internal-only luaexec subprocess execution mode.
     /// 内部专用的 luaexec 子进程执行模式。
     InternalLuaexecRequest { request_file: String },
@@ -297,6 +320,23 @@ enum RuntimeMode {
 /// Default simulated client name used by the `--call-tools` debug mode.
 /// `--call-tools` 调试模式使用的默认模拟客户端名称。
 const DEFAULT_CALL_TOOL_CLIENT_NAME: &str = "VulcanMcpTest";
+
+/// Runtime state required by local ROOT skill-management commands.
+/// 本地 ROOT 技能管理命令所需的运行时状态。
+struct RootSkillCliContext {
+    /// Single-VM LuaSkills engine used to execute lifecycle operations in-process.
+    /// 用于在当前进程内执行生命周期操作的单 VM LuaSkills 引擎。
+    engine: LuaEngine,
+    /// Fully resolved formal skill-root chain used for lifecycle preflight checks.
+    /// 用于生命周期预检查的完整正式技能根链。
+    skill_roots: Vec<RuntimeSkillRoot>,
+    /// Concrete ROOT target selected from the formal skill-root chain.
+    /// 从正式技能根链中选出的具体 ROOT 目标。
+    target_root: RuntimeSkillRoot,
+    /// Host options cloned from the engine configuration for record inspection.
+    /// 从引擎配置中克隆出的宿主选项，用于检查安装记录。
+    host_options: LuaRuntimeHostOptions,
+}
 
 /// Return whether one raw CLI token still uses the removed `--config` / `-config` entrypoint, including inline `--config=...` forms.
 /// 返回某个原始 CLI 片段是否仍在使用已移除的 `--config` / `-config` 入口，包含内联 `--config=...` 形式。
@@ -321,6 +361,10 @@ fn is_inline_runtime_root_flag_arg(arg: &str) -> bool {
 /// - `--call-tools <tool_name> [json_arguments]`
 /// - `--call-client-name <name>`: set the simulated client name
 /// - `--call-client-name <name>`：指定模拟客户端名称
+/// - `--install-root-skill <source> [--source-type github|url]`
+/// - `--install-root-skill <source> [--source-type github|url]`
+/// - `--update-root-skills`
+/// - `--update-root-skills`
 fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     parse_runtime_mode_from_args(&args)
@@ -343,6 +387,30 @@ fn parse_runtime_mode_from_args(
     for argument in args {
         if argument == "--stdio" {
             return Ok(RuntimeMode::Stdio);
+        }
+    }
+    for index in 0..args.len() {
+        if args[index] == "--install-root-skill" {
+            // Extract the install source before parsing command-local optional flags.
+            // 在解析命令局部可选标志前提取安装来源。
+            let source = args
+                .get(index + 1)
+                .filter(|value| !value.starts_with('-'))
+                .ok_or("--install-root-skill requires a source")?
+                .clone();
+            // Parse the optional install source type after the source locator.
+            // 在来源定位值之后解析可选安装来源类型。
+            let source_type = parse_root_skill_install_source_type_from_args(args, index + 2)?;
+            return Ok(RuntimeMode::RootSkillInstall {
+                source,
+                source_type,
+            });
+        }
+    }
+    for index in 0..args.len() {
+        if args[index] == "--update-root-skills" {
+            validate_root_skills_update_args(args, index + 1)?;
+            return Ok(RuntimeMode::RootSkillsUpdate);
         }
     }
     for index in 0..args.len() {
@@ -415,6 +483,109 @@ fn require_cli_flag_value(
         return Err(format!("{flag} requires a value").into());
     }
     Ok(())
+}
+
+/// Parse optional `--source-type` arguments accepted by the ROOT install command.
+/// 解析 ROOT 安装命令接受的可选 `--source-type` 参数。
+fn parse_root_skill_install_source_type_from_args(
+    args: &[String],
+    start_index: usize,
+) -> Result<Option<SkillInstallSourceType>, Box<dyn std::error::Error>> {
+    // Track the optional source type while scanning command-local flags.
+    // 扫描命令局部标志时跟踪可选来源类型。
+    let mut source_type = None;
+    // Walk only the suffix after the install source so global flags before the command stay valid.
+    // 仅遍历安装来源之后的参数后缀，使命令之前的全局标志仍然有效。
+    let mut cursor = start_index;
+    while cursor < args.len() {
+        match args[cursor].as_str() {
+            "--source-type" => {
+                require_cli_flag_value(args, cursor, "--source-type")?;
+                // Parse the explicit source type value immediately after the flag.
+                // 解析紧跟在标志后的显式来源类型值。
+                let raw_source_type = args
+                    .get(cursor + 1)
+                    .ok_or("--source-type requires a value")?;
+                source_type = Some(parse_skill_install_source_type(raw_source_type)?);
+                cursor += 2;
+            }
+            "-runtime-root" | "--runtime-root" => {
+                require_cli_flag_value(args, cursor, args[cursor].as_str())?;
+                cursor += 2;
+            }
+            value if is_inline_runtime_root_flag_arg(value) => {
+                if value.ends_with('=') {
+                    return Err("--runtime-root requires a value".into());
+                }
+                cursor += 1;
+            }
+            value if is_removed_config_flag_arg(value) => {
+                return Err("Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into());
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("Unknown --install-root-skill flag: {}", value).into());
+            }
+            value => {
+                return Err(format!(
+                    "Unexpected --install-root-skill argument after source: {}",
+                    value
+                )
+                .into());
+            }
+        }
+    }
+    Ok(source_type)
+}
+
+/// Validate command-local arguments accepted by the ROOT update-all command.
+/// 校验 ROOT 全量更新命令接受的命令局部参数。
+fn validate_root_skills_update_args(
+    args: &[String],
+    start_index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Walk only the suffix after `--update-root-skills` so global flags before the command stay valid.
+    // 仅遍历 `--update-root-skills` 之后的参数后缀，使命令之前的全局标志仍然有效。
+    let mut cursor = start_index;
+    while cursor < args.len() {
+        match args[cursor].as_str() {
+            "-runtime-root" | "--runtime-root" => {
+                require_cli_flag_value(args, cursor, args[cursor].as_str())?;
+                cursor += 2;
+            }
+            value if is_inline_runtime_root_flag_arg(value) => {
+                if value.ends_with('=') {
+                    return Err("--runtime-root requires a value".into());
+                }
+                cursor += 1;
+            }
+            value if is_removed_config_flag_arg(value) => {
+                return Err("Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into());
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("Unknown --update-root-skills flag: {}", value).into());
+            }
+            value => {
+                return Err(format!("Unexpected --update-root-skills argument: {}", value).into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse one CLI source-type token into the LuaSkills install source enum.
+/// 将单个 CLI 来源类型片段解析为 LuaSkills 安装来源枚举。
+fn parse_skill_install_source_type(
+    value: &str,
+) -> Result<SkillInstallSourceType, Box<dyn std::error::Error>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "github" => Ok(SkillInstallSourceType::Github),
+        "url" => Ok(SkillInstallSourceType::Url),
+        _ => Err(format!(
+            "unsupported source type '{}'; expected github or url",
+            value
+        )
+        .into()),
+    }
 }
 
 /// Build and initialize the MCP server, including external clients, Lua skills, and shared cache.
@@ -702,6 +873,346 @@ fn run_call_tool_mode(
     )
 }
 
+/// Install one managed LuaSkill into ROOT from the local CLI without starting MCP transports.
+/// 在不启动 MCP 传输服务的情况下，从本地 CLI 将单个受管 LuaSkill 安装到 ROOT。
+fn run_root_skill_install_mode(
+    source: &str,
+    source_type: Option<SkillInstallSourceType>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Prepare configuration, cache, PATH, and LuaSkills callbacks for a local lifecycle command.
+    // 为本地生命周期命令准备配置、缓存、PATH 与 LuaSkills 回调。
+    let config = initialize_root_skill_cli_config()?;
+    // Build the single-process ROOT lifecycle context after runtime paths are ready.
+    // 在运行路径就绪后构建单进程 ROOT 生命周期上下文。
+    let mut context = build_root_skill_cli_context(&config)?;
+    // Infer the install source type only when the caller did not supply an override.
+    // 仅在调用方未提供覆盖时推导安装来源类型。
+    let source_type = infer_root_skill_install_source_type(source, source_type);
+    // Keep the CLI request shape aligned with the LuaSkills managed install API.
+    // 保持 CLI 请求形态与 LuaSkills 受管安装 API 对齐。
+    let request = SkillInstallRequest {
+        skill_id: None,
+        source: Some(source.to_string()),
+        source_type,
+    };
+    // Execute through the system authority so ROOT remains inaccessible to delegated tools.
+    // 通过 system 权限执行，确保 ROOT 仍不会暴露给委托工具。
+    let result = context.engine.system_install_skill_in_root(
+        &context.skill_roots,
+        &context.target_root,
+        SkillManagementAuthority::System,
+        &request,
+    )?;
+
+    println!("{}", render_root_skill_apply_result("install", &result));
+    Ok(())
+}
+
+/// Update every managed LuaSkill declared in ROOT from the local CLI without starting MCP transports.
+/// 在不启动 MCP 传输服务的情况下，从本地 CLI 更新 ROOT 中声明的全部受管 LuaSkill。
+fn run_root_skills_update_mode() -> Result<(), Box<dyn std::error::Error>> {
+    // Prepare configuration, cache, PATH, and LuaSkills callbacks for a local lifecycle command.
+    // 为本地生命周期命令准备配置、缓存、PATH 与 LuaSkills 回调。
+    let config = initialize_root_skill_cli_config()?;
+    // Build the single-process ROOT lifecycle context after runtime paths are ready.
+    // 在运行路径就绪后构建单进程 ROOT 生命周期上下文。
+    let mut context = build_root_skill_cli_context(&config)?;
+    // Build a manager for reading ROOT install records before attempting updates.
+    // 构建用于在尝试更新前读取 ROOT 安装记录的管理器。
+    let manager = build_root_skill_manager_for_cli(&context.target_root, &context.host_options)?;
+    // Collect only managed ROOT skills, because unmanaged directories have no update source.
+    // 仅收集受管 ROOT 技能，因为非受管目录没有可用的更新来源。
+    let managed_skill_ids = collect_managed_root_skill_ids(&context.target_root, &manager)?;
+    // Render a single command summary so partial failures remain visible to shell callers.
+    // 渲染单份命令摘要，确保 shell 调用方能看到局部失败。
+    let mut rendered = String::new();
+    writeln!(&mut rendered, "# root-skill-manager update-all")
+        .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- layer: ROOT").expect("writing to String should not fail");
+    writeln!(
+        &mut rendered,
+        "- target_root: {}",
+        context.target_root.skills_dir.display()
+    )
+    .expect("writing to String should not fail");
+
+    if managed_skill_ids.is_empty() {
+        writeln!(&mut rendered, "- status: no_managed_skills")
+            .expect("writing to String should not fail");
+        writeln!(
+            &mut rendered,
+            "- message: no managed ROOT LuaSkills are installed"
+        )
+        .expect("writing to String should not fail");
+        println!("{}", rendered);
+        return Ok(());
+    }
+
+    // Count failed updates so the command can return a non-zero process status after printing details.
+    // 统计失败更新数量，以便命令打印详情后返回非零进程状态。
+    let mut failure_count = 0usize;
+    for skill_id in managed_skill_ids {
+        // Build one update request from the persisted managed install record identity.
+        // 根据持久化受管安装记录标识构建单个更新请求。
+        let request = SkillInstallRequest {
+            skill_id: Some(skill_id.clone()),
+            source: None,
+            source_type: SkillInstallSourceType::Github,
+        };
+        // Execute each update through the system authority so ROOT writes stay host-controlled.
+        // 每个更新都通过 system 权限执行，确保 ROOT 写入保持宿主控制。
+        let result = context.engine.system_update_skill_in_root(
+            &context.skill_roots,
+            &context.target_root,
+            SkillManagementAuthority::System,
+            &request,
+        );
+        match result {
+            Ok(result) => append_root_skill_update_result(&mut rendered, &result),
+            Err(error) => {
+                failure_count += 1;
+                append_root_skill_update_error(&mut rendered, &skill_id, error.as_ref());
+            }
+        }
+    }
+
+    println!("{}", rendered);
+    if failure_count > 0 {
+        return Err(format!("ROOT skill update failed for {} skill(s)", failure_count).into());
+    }
+    Ok(())
+}
+
+/// Initialize shared runtime state for local ROOT lifecycle commands.
+/// 为本地 ROOT 生命周期命令初始化共享运行时状态。
+fn initialize_root_skill_cli_config() -> Result<Config, Box<dyn std::error::Error>> {
+    set_non_error_logging_enabled(false);
+    install_luaskills_log_callback();
+    // Load config through the normal runtime-root discovery path so CLI behavior stays consistent.
+    // 通过标准 runtime-root 发现路径加载配置，保持 CLI 行为一致。
+    let config = Config::load()?;
+    initialize_runtime_temp_root_from_config(&config)?;
+    maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
+    preload_runtime_mcp_configs(&config)?;
+    add_libs_to_path(&config)?;
+    Ok(config)
+}
+
+/// Build the single-VM LuaSkills context used by local ROOT lifecycle commands.
+/// 构建本地 ROOT 生命周期命令使用的单 VM LuaSkills 上下文。
+fn build_root_skill_cli_context(
+    config: &Config,
+) -> Result<RootSkillCliContext, Box<dyn std::error::Error>> {
+    // Resolve runtime root first so implicit ROOT/USER layers match normal service startup.
+    // 先解析运行根，确保隐式 ROOT/USER 层与正常服务启动保持一致。
+    let runtime_root = resolve_runtime_root_for_host(config)?;
+    // Resolve and normalize the complete formal skill-root chain before selecting ROOT.
+    // 在选择 ROOT 前解析并规范化完整正式技能根链。
+    let mut skill_roots = find_skill_roots(config)?;
+    ensure_skill_manager_runtime_roots(runtime_root.as_deref(), &mut skill_roots)?;
+    // Select a concrete ROOT target and fail explicitly when none exists.
+    // 选择具体 ROOT 目标，并在不存在时给出明确失败。
+    let target_root = select_root_skill_manager_root(&skill_roots)?;
+    // Build engine options once so the manager and engine share identical host paths.
+    // 只构建一次引擎选项，确保管理器与引擎共享完全一致的宿主路径。
+    let engine_options = build_luaskills_engine_options(
+        config,
+        LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 1,
+            idle_ttl_secs: 300,
+        },
+        build_luaskills_cache_config(None, None, None),
+    )?;
+    // Clone host options before moving the full options into LuaEngine.
+    // 在完整选项移入 LuaEngine 前克隆宿主选项。
+    let host_options = engine_options.host_options.clone();
+    // Load existing skills so lifecycle preflight sees the same declared runtime state as service mode.
+    // 加载现有技能，使生命周期预检查看到与服务模式一致的声明运行状态。
+    let mut engine = LuaEngine::new(engine_options)?;
+    engine.load_from_roots(&skill_roots)?;
+
+    Ok(RootSkillCliContext {
+        engine,
+        skill_roots,
+        target_root,
+        host_options,
+    })
+}
+
+/// Select the ROOT layer from an already normalized formal skill-root chain.
+/// 从已经规范化的正式技能根链中选择 ROOT 层。
+fn select_root_skill_manager_root(
+    roots: &[RuntimeSkillRoot],
+) -> Result<RuntimeSkillRoot, Box<dyn std::error::Error>> {
+    roots
+        .iter()
+        .find(|root| normalize_skill_manager_layer_name(&root.name) == "ROOT")
+        .cloned()
+        .ok_or_else(|| "ROOT skill root is not configured for local skill management.".into())
+}
+
+/// Build one SkillManager for ROOT install-record inspection using the engine host options.
+/// 使用引擎宿主选项构建一个用于检查 ROOT 安装记录的 SkillManager。
+fn build_root_skill_manager_for_cli(
+    root: &RuntimeSkillRoot,
+    host_options: &LuaRuntimeHostOptions,
+) -> Result<SkillManager, Box<dyn std::error::Error>> {
+    // Derive the lifecycle root exactly like the MCP skill-manager tool does.
+    // 按照 MCP skill-manager 工具的方式推导生命周期根目录。
+    let runtime_root = root
+        .skills_dir
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| root.skills_dir.clone());
+    // Reuse the host download-cache fallback so update checks share cached archives.
+    // 复用宿主下载缓存回退逻辑，让更新检查共享归档缓存。
+    let download_cache_root = host_options.download_cache_root.clone().unwrap_or_else(|| {
+        host_options
+            .temp_dir
+            .clone()
+            .unwrap_or_else(|| runtime_root.join("temp"))
+            .join("downloads")
+    });
+    Ok(SkillManager::new(SkillManagerConfig {
+        skill_root: root.clone(),
+        lifecycle_root: runtime_root.join(host_options.state_dir_name.as_str()),
+        download_cache_root,
+        allow_network_download: host_options.allow_network_download,
+        github_base_url: host_options.github_base_url.clone(),
+        github_api_base_url: host_options.github_api_base_url.clone(),
+    }))
+}
+
+/// Collect ROOT skill ids that are managed by install records and therefore updateable.
+/// 收集由安装记录管理、因此可更新的 ROOT 技能标识。
+fn collect_managed_root_skill_ids(
+    root: &RuntimeSkillRoot,
+    manager: &SkillManager,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if !root.skills_dir.exists() {
+        return Ok(Vec::new());
+    }
+    // Keep output deterministic regardless of filesystem iteration order.
+    // 无论文件系统迭代顺序如何，都保持输出稳定。
+    let mut skill_ids = Vec::new();
+    for entry in std::fs::read_dir(&root.skills_dir)? {
+        // Read one directory entry from the ROOT skills directory.
+        // 从 ROOT skills 目录读取单个目录项。
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        // Convert the directory name into the skill id used by LuaSkills records.
+        // 将目录名转换为 LuaSkills 记录使用的技能标识。
+        let Some(skill_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !entry.path().join("skill.yaml").exists() {
+            continue;
+        }
+        // Only managed records carry an update source; unmanaged ROOT directories are intentionally skipped.
+        // 只有受管记录携带更新来源；非受管 ROOT 目录会被有意跳过。
+        let Some(record) = manager.install_record(&skill_id)? else {
+            continue;
+        };
+        if record.managed {
+            skill_ids.push(skill_id);
+        }
+    }
+    skill_ids.sort();
+    Ok(skill_ids)
+}
+
+/// Infer the ROOT install source type when the CLI caller did not provide an explicit override.
+/// 当 CLI 调用方未提供显式覆盖时推导 ROOT 安装来源类型。
+fn infer_root_skill_install_source_type(
+    source: &str,
+    explicit: Option<SkillInstallSourceType>,
+) -> SkillInstallSourceType {
+    if let Some(source_type) = explicit {
+        return source_type;
+    }
+    // Treat non-GitHub HTTP(S) locators as URL sources and everything else as GitHub.
+    // 将非 GitHub HTTP(S) 定位值视为 URL 来源，其余视为 GitHub 来源。
+    let normalized_source = source.trim().to_ascii_lowercase();
+    if (normalized_source.starts_with("http://") || normalized_source.starts_with("https://"))
+        && !normalized_source.contains("github.com/")
+    {
+        SkillInstallSourceType::Url
+    } else {
+        SkillInstallSourceType::Github
+    }
+}
+
+/// Render one ROOT install or update result as compact command-line Markdown.
+/// 将单个 ROOT 安装或更新结果渲染为紧凑的命令行 Markdown。
+fn render_root_skill_apply_result(action: &str, result: &SkillApplyResult) -> String {
+    // Build output in the same high-signal shape as the MCP skill-manager result.
+    // 使用与 MCP skill-manager 结果相同的高信号形态构建输出。
+    let mut rendered = String::new();
+    writeln!(&mut rendered, "# root-skill-manager {}", action)
+        .expect("writing to String should not fail");
+    writeln!(&mut rendered, "- layer: ROOT").expect("writing to String should not fail");
+    append_root_skill_apply_fields(&mut rendered, result);
+    rendered
+}
+
+/// Append common apply-result fields shared by ROOT install and update output.
+/// 追加 ROOT 安装与更新输出共享的应用结果字段。
+fn append_root_skill_apply_fields(rendered: &mut String, result: &SkillApplyResult) {
+    writeln!(rendered, "- skill_id: {}", result.skill_id)
+        .expect("writing to String should not fail");
+    writeln!(rendered, "- status: {}", result.status).expect("writing to String should not fail");
+    if let Some(version) = result.version.as_deref() {
+        writeln!(rendered, "- version: {}", version).expect("writing to String should not fail");
+    }
+    if let Some(source_type) = result.source_type {
+        writeln!(
+            rendered,
+            "- source_type: {}",
+            render_root_skill_install_source_type(source_type)
+        )
+        .expect("writing to String should not fail");
+    }
+    if let Some(source_locator) = result.source_locator.as_deref() {
+        writeln!(rendered, "- source: {}", source_locator)
+            .expect("writing to String should not fail");
+    }
+    writeln!(rendered, "- message: {}", result.message).expect("writing to String should not fail");
+}
+
+/// Append one successful ROOT update result to the update-all command summary.
+/// 将单个成功的 ROOT 更新结果追加到全量更新命令摘要。
+fn append_root_skill_update_result(rendered: &mut String, result: &SkillApplyResult) {
+    writeln!(rendered).expect("writing to String should not fail");
+    writeln!(rendered, "## {}", result.skill_id).expect("writing to String should not fail");
+    append_root_skill_apply_fields(rendered, result);
+}
+
+/// Append one failed ROOT update result to the update-all command summary.
+/// 将单个失败的 ROOT 更新结果追加到全量更新命令摘要。
+fn append_root_skill_update_error(
+    rendered: &mut String,
+    skill_id: &str,
+    error: &dyn std::error::Error,
+) {
+    writeln!(rendered).expect("writing to String should not fail");
+    writeln!(rendered, "## {}", skill_id).expect("writing to String should not fail");
+    writeln!(rendered, "- skill_id: {}", skill_id).expect("writing to String should not fail");
+    writeln!(rendered, "- status: failed").expect("writing to String should not fail");
+    writeln!(rendered, "- message: {}", error).expect("writing to String should not fail");
+}
+
+/// Render one skill install source type as a stable CLI string.
+/// 将单个技能安装来源类型渲染为稳定的 CLI 字符串。
+fn render_root_skill_install_source_type(source_type: SkillInstallSourceType) -> &'static str {
+    match source_type {
+        SkillInstallSourceType::Github => "github",
+        SkillInstallSourceType::Url => "url",
+    }
+}
+
 /// Invoke one host-owned MCP tool through the full server path during `--call-tools` local debug mode.
 /// 在 `--call-tools` 本地调试模式下，经由完整服务路径调用单个宿主自有 MCP 工具。
 fn run_call_host_tool_mode(
@@ -931,6 +1442,48 @@ mod tests {
         std::env::temp_dir().join(unique)
     }
 
+    /// Write one minimal ROOT skill directory used by local CLI tests.
+    /// 写入一个供本地 CLI 测试使用的最小 ROOT 技能目录。
+    fn write_minimal_root_skill(skill_root: &std::path::Path, skill_id: &str) {
+        // Create the skill directory before writing the manifest.
+        // 写入清单前先创建技能目录。
+        let skill_dir = skill_root.join(skill_id);
+        std::fs::create_dir_all(&skill_dir).expect("skill directory should be created");
+        std::fs::write(
+            skill_dir.join("skill.yaml"),
+            format!("name: {skill_id}\nversion: 0.1.0\nenable: true\ndebug: false\nentries: []\n"),
+        )
+        .expect("skill manifest should be written");
+    }
+
+    /// Write one managed install record under the ROOT lifecycle state directory.
+    /// 在 ROOT 生命周期状态目录下写入一条受管安装记录。
+    fn write_root_install_record(runtime_root: &std::path::Path, skill_id: &str) {
+        // Match the lifecycle layout derived by build_root_skill_manager_for_cli.
+        // 匹配 build_root_skill_manager_for_cli 推导出的生命周期布局。
+        let install_record_root = runtime_root.join("state").join("installs");
+        std::fs::create_dir_all(&install_record_root)
+            .expect("install record directory should be created");
+        // Persist a GitHub-managed record so update-all considers the skill updateable.
+        // 持久化 GitHub 受管记录，使全量更新认为该技能可更新。
+        let record = luaskills::InstalledSkillRecord {
+            skill_id: skill_id.to_string(),
+            version: "0.1.0".to_string(),
+            managed: true,
+            source: luaskills::InstalledSkillSourceRecord {
+                source_type: SkillInstallSourceType::Github,
+                locator: format!("LuaSkills/{skill_id}"),
+                tag: Some("v0.1.0".to_string()),
+            },
+            installed_at_unix_ms: 1,
+        };
+        std::fs::write(
+            install_record_root.join(format!("{skill_id}.yaml")),
+            serde_yaml::to_string(&record).expect("record should serialize"),
+        )
+        .expect("install record should be written");
+    }
+
     /// Call-tools mode should accept --runtime-root so isolated runtime validation can use the same CLI entrypoint.
     /// call-tools 模式应当接受 --runtime-root，以便隔离运行根验证复用同一 CLI 入口。
     #[test]
@@ -955,7 +1508,10 @@ mod tests {
                 assert_eq!(arguments, json!({ "ok": true }));
                 assert_eq!(simulated_client_name, DEFAULT_CALL_TOOL_CLIENT_NAME);
             }
-            RuntimeMode::Serve | RuntimeMode::InternalLuaexecRequest { .. } => {
+            RuntimeMode::Serve
+            | RuntimeMode::RootSkillInstall { .. }
+            | RuntimeMode::RootSkillsUpdate
+            | RuntimeMode::InternalLuaexecRequest { .. } => {
                 panic!("expected call-tools runtime mode");
             }
         }
@@ -971,8 +1527,64 @@ mod tests {
             RuntimeMode::Stdio => {}
             RuntimeMode::Serve
             | RuntimeMode::CallTool { .. }
+            | RuntimeMode::RootSkillInstall { .. }
+            | RuntimeMode::RootSkillsUpdate
             | RuntimeMode::InternalLuaexecRequest { .. } => {
                 panic!("expected stdio runtime mode");
+            }
+        }
+    }
+
+    /// ROOT install mode should parse as a local command instead of falling through to service mode.
+    /// ROOT 安装模式应解析为本地命令，而不是落回服务模式。
+    #[test]
+    fn parse_runtime_mode_accepts_root_install_mode() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--install-root-skill".to_string(),
+            "LuaSkills/vulcan-codekit".to_string(),
+            "--source-type".to_string(),
+            "github".to_string(),
+            "--runtime-root".to_string(),
+            "output".to_string(),
+        ];
+        let mode = parse_runtime_mode_from_args(&args).expect("root install mode should parse");
+        match mode {
+            RuntimeMode::RootSkillInstall {
+                source,
+                source_type,
+            } => {
+                assert_eq!(source, "LuaSkills/vulcan-codekit");
+                assert_eq!(source_type, Some(SkillInstallSourceType::Github));
+            }
+            RuntimeMode::Serve
+            | RuntimeMode::Stdio
+            | RuntimeMode::CallTool { .. }
+            | RuntimeMode::RootSkillsUpdate
+            | RuntimeMode::InternalLuaexecRequest { .. } => {
+                panic!("expected root skill install runtime mode");
+            }
+        }
+    }
+
+    /// ROOT update-all mode should parse as a local command that does not start transports.
+    /// ROOT 全量更新模式应解析为不启动传输服务的本地命令。
+    #[test]
+    fn parse_runtime_mode_accepts_root_update_mode() {
+        let args = vec![
+            "vulcan-mcp.exe".to_string(),
+            "--update-root-skills".to_string(),
+            "--runtime-root=output".to_string(),
+        ];
+        let mode = parse_runtime_mode_from_args(&args).expect("root update mode should parse");
+        match mode {
+            RuntimeMode::RootSkillsUpdate => {}
+            RuntimeMode::Serve
+            | RuntimeMode::Stdio
+            | RuntimeMode::CallTool { .. }
+            | RuntimeMode::RootSkillInstall { .. }
+            | RuntimeMode::InternalLuaexecRequest { .. } => {
+                panic!("expected root skills update runtime mode");
             }
         }
     }
@@ -1058,6 +1670,8 @@ mod tests {
             }
             RuntimeMode::Serve
             | RuntimeMode::Stdio
+            | RuntimeMode::RootSkillInstall { .. }
+            | RuntimeMode::RootSkillsUpdate
             | RuntimeMode::InternalLuaexecRequest { .. } => {
                 panic!("expected call-tools runtime mode");
             }
@@ -1326,6 +1940,59 @@ mod tests {
         assert!(skill_roots.len() >= 2);
         assert_eq!(skill_roots[0].name, "ROOT");
         assert_eq!(skill_roots[1].name, "USER");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ROOT CLI selection should choose the system layer even when ordinary layers are also present.
+    /// 即使普通层同时存在，ROOT CLI 选择逻辑也应选中系统层。
+    #[test]
+    fn root_skill_cli_selection_uses_root_layer() {
+        let roots = vec![
+            RuntimeSkillRoot {
+                name: "USER".to_string(),
+                skills_dir: std::path::PathBuf::from("D:/user/skills"),
+            },
+            RuntimeSkillRoot {
+                name: "ROOT".to_string(),
+                skills_dir: std::path::PathBuf::from("D:/runtime/skills"),
+            },
+        ];
+
+        let root = select_root_skill_manager_root(&roots).expect("ROOT layer should resolve");
+
+        assert_eq!(root.name, "ROOT");
+        assert_eq!(
+            root.skills_dir,
+            std::path::PathBuf::from("D:/runtime/skills")
+        );
+    }
+
+    /// ROOT update-all discovery should include only skill directories with managed install records.
+    /// ROOT 全量更新发现逻辑应只包含带受管安装记录的技能目录。
+    #[test]
+    fn collect_managed_root_skill_ids_skips_unmanaged_skills() {
+        let root = unique_test_dir("root-managed-skill-ids");
+        let runtime_root = root.join("runtime");
+        let root_layer = RuntimeSkillRoot {
+            name: "ROOT".to_string(),
+            skills_dir: runtime_root.join("skills"),
+        };
+        write_minimal_root_skill(&root_layer.skills_dir, "managed-skill");
+        write_minimal_root_skill(&root_layer.skills_dir, "unmanaged-skill");
+        write_root_install_record(&runtime_root, "managed-skill");
+        let host_options = LuaRuntimeHostOptions {
+            temp_dir: Some(runtime_root.join("temp")),
+            state_dir_name: "state".to_string(),
+            allow_network_download: false,
+            ..LuaRuntimeHostOptions::default()
+        };
+        let manager = build_root_skill_manager_for_cli(&root_layer, &host_options)
+            .expect("ROOT manager should build");
+
+        let skill_ids = collect_managed_root_skill_ids(&root_layer, &manager)
+            .expect("managed skill ids should be collected");
+
+        assert_eq!(skill_ids, vec!["managed-skill".to_string()]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

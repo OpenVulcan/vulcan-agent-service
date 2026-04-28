@@ -21,6 +21,8 @@ local MAX_SAFE_RULE_INTEGER_TEXT = "9007199254740991"
 local PARAMETER_ERROR_CODES = {
     invalid_path = true,
     path_not_found = true,
+    environment_variable_not_found = true,
+    invalid_environment_variable_reference = true,
     invalid_lines_rule = true,
     range_out_of_bounds = true,
     invalid_numbered_argument = true,
@@ -82,6 +84,44 @@ local function render_error(error_code, message, details)
     return table.concat(lines, "\n")
 end
 
+-- Expand `${env:NAME}` placeholders in a caller-provided path before filesystem access.
+-- 在访问文件系统之前展开调用方路径中的 `${env:NAME}` 占位符。
+-- Parameters: path is the caller path text and field_name is the argument name rendered in errors; returns expanded path or Markdown error text.
+-- 参数：path 为调用方路径文本，field_name 为错误中展示的参数名；返回展开后的路径或 Markdown 错误文本。
+local function expand_environment_path(path, field_name)
+    local source = tostring(path or "")
+    local unresolved_variable = nil
+    local expanded = source:gsub("%${env:([^}]+)}", function(variable_name)
+        local normalized_name = trim(variable_name)
+        if normalized_name == "" then
+            unresolved_variable = variable_name
+            return ""
+        end
+
+        local environment_value = os.getenv(normalized_name)
+        if environment_value == nil then
+            unresolved_variable = normalized_name
+            return ""
+        end
+        return environment_value
+    end)
+
+    if unresolved_variable ~= nil then
+        return nil, render_error("environment_variable_not_found", "environment variable referenced in path is not defined", {
+            field = tostring(field_name or "path"),
+            variable = tostring(unresolved_variable),
+            path = source,
+        })
+    end
+    if expanded:find("${env:", 1, true) ~= nil then
+        return nil, render_error("invalid_environment_variable_reference", "environment variable path placeholder must use ${env:NAME} syntax", {
+            field = tostring(field_name or "path"),
+            path = source,
+        })
+    end
+    return expanded, nil
+end
+
 -- Parse a positive integer text value without accepting overflowing Lua numbers.
 -- 解析正整数文本，并拒绝会溢出 Lua 安全数字范围的值。
 local function parse_positive_integer_text(value, field_name, segment, segment_index)
@@ -130,7 +170,14 @@ local function validate_target_path(value)
         return nil, render_error("invalid_path", "file must be a non-empty string")
     end
 
-    local target_path = trim(value)
+    local target_path, environment_error = expand_environment_path(trim(value), "file")
+    if environment_error then
+        return nil, environment_error
+    end
+    target_path = trim(target_path)
+    if target_path == "" then
+        return nil, render_error("invalid_path", "file must resolve to a non-empty string")
+    end
     if not vulcan.fs.exists(target_path) then
         return nil, render_error("path_not_found", "path does not exist", { file = target_path })
     end

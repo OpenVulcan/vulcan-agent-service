@@ -78,6 +78,16 @@ else
     echo "==> No runtime/resources directory found"
 fi
 
+# Sync runtime state records to output/state/
+# 同步运行时状态记录到 output/state/
+mkdir -p output/state
+if [ -d "runtime/state" ] && [ "$(ls -A runtime/state/ 2>/dev/null)" ]; then
+    cp -rf runtime/state/* output/state/
+    echo "==> Runtime state synced to output/state/"
+else
+    echo "==> No runtime/state directory found"
+fi
+
 # Sync runtime Lua skills to output/skills/
 SKILLS_OUT="output/skills"
 mkdir -p "$SKILLS_OUT"

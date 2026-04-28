@@ -108,6 +108,15 @@ if (Test-Path "runtime\resources") {
     Write-Host "==> No runtime/resources directory found"
 }
 
+# Sync runtime state records to output/state/
+# 同步运行时状态记录到 output/state/
+if (Test-Path "runtime\state") {
+    Copy-Item -Force -Recurse "runtime\state\*" "$StateOut\"
+    Write-Host "==> Runtime state synced to $StateOut\"
+} else {
+    Write-Host "==> No runtime/state directory found"
+}
+
 # Sync build-time runtime resource manifests to output/resources/
 $LuaPackagesManifestSource = Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt"
 if (Test-Path -LiteralPath (Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt")) {
