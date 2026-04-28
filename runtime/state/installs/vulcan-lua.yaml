@@ -1,0 +1,8 @@
+skill_id: vulcan-lua
+version: 0.1.0
+managed: true
+source:
+  source_type: github
+  locator: LuaSkills/vulcan-lua
+  tag: v0.1.0
+installed_at_unix_ms: 1777382375985

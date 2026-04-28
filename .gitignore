@@ -14,7 +14,6 @@
 /runtime/libs/
 /runtime/logs/
 /runtime/lua_packages/
-/runtime/state/
 /runtime/temp/
 /docs/plan/
 /docs/completed/
