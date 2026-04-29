@@ -136,8 +136,9 @@ Usage:
   ./make.sh release     # release build
   ./make.sh run         # run debug build
   ./make.sh run release # run release build
-  ./make.sh deps host   # install host native dependencies
-  ./make.sh deps lua    # install host + lua dependencies
+  ./make.sh deps        # install host + official LuaSkills runtime dependencies
+  ./make.sh deps host   # install host native dependencies only
+  ./make.sh deps lua    # install host + official LuaSkills runtime dependencies
 EOF
 }
 
@@ -172,6 +173,9 @@ case "${NORMALIZED_MODE}" in
         ;;
     deps)
         case "${NORMALIZED_VARIANT}" in
+            ""|all)
+                invoke_dependency_install "lua"
+                ;;
             host)
                 invoke_dependency_install "host"
                 ;;

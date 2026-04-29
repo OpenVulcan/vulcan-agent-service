@@ -196,7 +196,7 @@ Also keep the two host-side paths separate:
 
 If the skill being debugged touches SQLite or LanceDB, also verify that:
 
-- you have already run `make deps host` and `make build`
+- you have already run `make deps` and `make build`
 - `output/bin/vldb-controller.exe` exists
 - when `space_controller.auto_spawn=true`, `space_controller.endpoint` is a locally spawnable address
 - when using a remote controller, `auto_spawn=false` is set and the remote controller is already running

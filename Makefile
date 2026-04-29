@@ -18,10 +18,14 @@ release:
 run:
 	@bash ./make.sh run
 
-# deps is a grouping alias so commands like `make deps host` remain valid.
-# deps 用作分组别名，使 `make deps host` 这类命令保持可用。
+# deps installs all dependencies unless a specific dependency target is also requested.
+# deps 用于安装全部依赖；如果同时指定了具体依赖目标，则保持分组兼容语义。
 deps:
+ifeq ($(filter host lua,$(MAKECMDGOALS)),)
+	@bash ./make.sh deps
+else
 	@:
+endif
 
 # host maps to the host-level native dependency bootstrap flow.
 # host 用于映射宿主级原生依赖初始化流程。

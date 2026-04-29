@@ -257,7 +257,7 @@ PowerShell 下推荐：
 
 如果当前调试的是会访问 SQLite / LanceDB 的 skill，还需要额外确认：
 
-- 已执行过 `make deps host` 与 `make build`
+- 已执行过 `make deps` 与 `make build`
 - `output/bin/vldb-controller.exe` 已存在
 - 如果 `space_controller.auto_spawn=true`，则 `space_controller.endpoint` 必须是本地可拉起地址
 - 如果连接远端 controller，则应设置 `auto_spawn=false`，并提前保证远端 controller 已启动

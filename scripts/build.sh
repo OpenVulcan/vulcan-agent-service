@@ -39,25 +39,59 @@ mkdir -p output/bin/tools
 mkdir -p output/dependencies/shared/lua
 mkdir -p output/dependencies/shared/ffi
 mkdir -p output/dependencies/skill
+mkdir -p output/lua_packages
+mkdir -p output/resources
+mkdir -p output/licenses
 mkdir -p output/databases/sqlite
 mkdir -p output/databases/lancedb
 mkdir -p output/state/skills
 mkdir -p output/temp
 mkdir -p output/logs
 
-# Sync C dependency DLLs to output/libs/
-mkdir -p output/libs
-if [ -d "third_party/deps" ]; then
-    find third_party/deps -type f \( -name "*.dll" -o -name "*.so" -o -name "*.dylib" \) -exec cp -f {} output/libs/ \;
-    echo "==> C runtime libs synced to output/libs/"
-else
-    echo "==> No third_party/deps found"
-fi
+reset_directory_contents() {
+    # Ensure one directory exists and remove stale contents before a structured sync.
+    # 确保目录存在，并在结构化同步前清理旧内容。
+    local target_dir="$1"
+    mkdir -p "$target_dir"
+    find "$target_dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+}
 
-# Copy LuaJIT runtime DLL (lua51.dll) — required by luarocks-built C modules like lfs.dll
-if [ -f "third_party/luajit/lua51.dll" ]; then
-    cp -f third_party/luajit/lua51.dll output/libs/
-    echo "==> LuaJIT lua51.dll synced to output/libs/"
+copy_directory_contents() {
+    # Copy direct directory contents into a destination while preserving package layout.
+    # 将目录直属内容复制到目标目录，并保持包布局。
+    local source_dir="$1"
+    local destination_dir="$2"
+    [ -d "$source_dir" ] || return 1
+    reset_directory_contents "$destination_dir"
+    cp -a "$source_dir"/. "$destination_dir"/
+}
+
+# Sync official LuaSkills runtime package exports to output/.
+mkdir -p output/libs
+LUASKILLS_RUNTIME_ROOT="third_party/luaskills_runtime"
+if [ -d "$LUASKILLS_RUNTIME_ROOT" ]; then
+    if copy_directory_contents "$LUASKILLS_RUNTIME_ROOT/lua_packages" "output/lua_packages"; then
+        echo "==> LuaSkills runtime lua_packages synced to output/lua_packages/"
+    else
+        echo "==> LuaSkills runtime package has no lua_packages directory"
+    fi
+    if copy_directory_contents "$LUASKILLS_RUNTIME_ROOT/libs" "output/libs"; then
+        echo "==> LuaSkills runtime libs synced to output/libs/"
+    else
+        echo "==> LuaSkills runtime package has no libs directory"
+    fi
+    if copy_directory_contents "$LUASKILLS_RUNTIME_ROOT/resources" "output/resources"; then
+        echo "==> LuaSkills runtime resources synced to output/resources/"
+    else
+        echo "==> LuaSkills runtime package has no resources directory"
+    fi
+    if copy_directory_contents "$LUASKILLS_RUNTIME_ROOT/licenses" "output/licenses"; then
+        echo "==> LuaSkills runtime licenses synced to output/licenses/"
+    else
+        echo "==> LuaSkills runtime package has no licenses directory"
+    fi
+else
+    echo "==> No third_party/luaskills_runtime found (run make deps first)"
 fi
 
 # Sync runtime config files to output/configs/
@@ -70,7 +104,6 @@ else
 fi
 
 # Sync runtime shared resources to output/resources/
-mkdir -p output/resources
 if [ -d "runtime/resources" ] && [ "$(ls -A runtime/resources/ 2>/dev/null)" ]; then
     cp -rf runtime/resources/* output/resources/
     echo "==> Runtime shared resources synced to output/resources/"
@@ -92,6 +125,7 @@ fi
 SKILLS_OUT="output/skills"
 mkdir -p "$SKILLS_OUT"
 if [ -d "runtime/skills" ] && [ "$(ls -A runtime/skills/ 2>/dev/null)" ]; then
+    reset_directory_contents "$SKILLS_OUT"
     cp -rf runtime/skills/* "$SKILLS_OUT/"
     echo "==> Runtime Lua skills synced to $SKILLS_OUT/"
 else
@@ -109,40 +143,17 @@ mkdir -p "$CONTROLLER_OUT"
 CONTROLLER_BINARY_SOURCE="third_party/vldb_controller/bin/vldb-controller"
 if [ -e "$CONTROLLER_BINARY_SOURCE" ]; then
     if [ -f "$CONTROLLER_BINARY_SOURCE" ]; then
-        cp -f "$CONTROLLER_BINARY_SOURCE" "$CONTROLLER_OUT/"
-        echo "==> vldb-controller synced to $CONTROLLER_OUT/"
+        if cp -f "$CONTROLLER_BINARY_SOURCE" "$CONTROLLER_OUT/" 2>/dev/null; then
+            echo "==> vldb-controller synced to $CONTROLLER_OUT/"
+        else
+            echo "==> vldb-controller is currently running or locked; keeping the existing output binary and continuing"
+        fi
     else
         echo "ERROR: vldb-controller source path is not a file: $CONTROLLER_BINARY_SOURCE" >&2
         exit 1
     fi
 else
     echo "==> No third_party/vldb_controller/bin/vldb-controller found"
-fi
-
-# Sync third-party Lua packages to output/lua_packages/
-# Only copy runtime-relevant directories: lib/lua/, share/lua/
-PKG_SRC="third_party/lua_packages"
-PKG_OUT="output/lua_packages"
-if [ -d "$PKG_SRC" ]; then
-    for dir in lib/lua share/lua; do
-        if [ -d "$PKG_SRC/$dir" ]; then
-            mkdir -p "$PKG_OUT/$dir"
-            copy_root="$PKG_SRC/$dir"
-            if [ -d "$PKG_SRC/$dir/5.1" ]; then
-                copy_root="$PKG_SRC/$dir/5.1"
-            fi
-            for entry in "$copy_root"/*; do
-                [ -e "$entry" ] || continue
-                if [ "$(basename "$entry")" = "5.1" ]; then
-                    continue
-                fi
-                cp -rf "$entry" "$PKG_OUT/$dir/"
-            done
-        fi
-    done
-    echo "==> Third-party Lua packages synced to $PKG_OUT/ (flattening 5.1 package layout into lua/)"
-else
-    echo "==> No third_party/lua_packages found (run scripts/install_lua_deps.sh first)"
 fi
 
 echo "==> Done. Binary: ${OUT_DIR}/"

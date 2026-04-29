@@ -980,7 +980,7 @@ local function action_get(request)
     }
     if #tags == 0 then
         lines[#lines + 1] = "- mode: `compact-summary`"
-        lines[#lines + 1] = "- note: Use `list` then `get(tags)` for precise recall, or `get-all` for full recovery."
+        lines[#lines + 1] = "- note: Use `vulcan-workmem-list` then `vulcan-workmem-get(tags)` for precise recall, or `vulcan-workmem-get-all` for full recovery."
     end
     lines[#lines + 1] = ""
 
@@ -1274,11 +1274,11 @@ local function dispatch(request)
     return action_task_close(request)
 end
 
---- Main LuaSkill entry for Vulcan WorkMem.
---- Vulcan WorkMem 的 LuaSkill 主入口。
+--- Handle one Vulcan WorkMem request through the shared dispatcher.
+--- 通过共享分发器处理一次 Vulcan WorkMem 请求。
 --- @param args table|nil Tool arguments.
 --- @return string
-return function(args)
+local function handle(args)
     local request = type(args) == "table" and args or {}
 
     local sqlite_err = ensure_sqlite_enabled()
@@ -1293,3 +1293,27 @@ return function(args)
 
     return dispatch(request)
 end
+
+--- Return a shallow request copy with one fixed action injected.
+--- 返回注入固定 action 的请求浅拷贝。
+--- @param args table|nil Tool arguments.
+--- @param action string Fixed WorkMem action.
+--- @return table
+local function with_action(args, action)
+    local request = {}
+    if type(args) == "table" then
+        for key, value in pairs(args) do
+            request[key] = value
+        end
+    end
+
+    request.action = action
+    return request
+end
+
+--- Export the WorkMem core as a reusable module for split MCP entries.
+--- 将 WorkMem 核心导出为可供拆分 MCP 入口复用的模块。
+return {
+    handle = handle,
+    with_action = with_action,
+}

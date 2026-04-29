@@ -46,16 +46,70 @@ $SkillsOut = "$BaseOutDir\skills"
 $PkgOut = "$BaseOutDir\lua_packages"
 $ConfigOut = "$BaseOutDir\configs"
 $ResourcesOut = "$BaseOutDir\resources"
+$LicensesOut = "$BaseOutDir\licenses"
 $DependenciesOut = "$BaseOutDir\dependencies"
 $DatabasesOut = "$BaseOutDir\databases"
 $StateOut = "$BaseOutDir\state"
 $TempOut = "$BaseOutDir\temp"
 $LogsOut = "$BaseOutDir\logs"
+$LuaSkillsRuntimeRoot = Join-Path $ProjectDir "third_party\luaskills_runtime"
+
+function Reset-DirectoryContents {
+    <#
+    .SYNOPSIS
+    Ensure one directory exists and remove stale contents before a structured sync.
+    确保目录存在，并在结构化同步前清理旧内容。
+
+    .PARAMETER Path
+    Directory path to reset.
+    需要重置的目录路径。
+    #>
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        return
+    }
+
+    Get-ChildItem -Force -LiteralPath $Path -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Recurse -Force
+    }
+}
+
+function Copy-DirectoryContents {
+    <#
+    .SYNOPSIS
+    Copy direct directory contents into a destination while preserving package layout.
+    将目录直属内容复制到目标目录，并保持包布局。
+
+    .PARAMETER Source
+    Source directory.
+    来源目录。
+
+    .PARAMETER Destination
+    Destination directory.
+    目标目录。
+    #>
+    param(
+        [string]$Source,
+        [string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source)) {
+        return $false
+    }
+
+    Reset-DirectoryContents -Path $Destination
+    Get-ChildItem -Force -LiteralPath $Source | ForEach-Object {
+        Copy-Item -Recurse -Force -LiteralPath $_.FullName -Destination $Destination
+    }
+    return $true
+}
 
 # Ensure output directories exist
 if (-not (Test-Path $BaseOutDir)) { New-Item -ItemType Directory -Path $BaseOutDir -Force | Out-Null }
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
-foreach ($dir in @($LibsOut, $SkillsOut, $PkgOut, $ConfigOut, $ResourcesOut, $DependenciesOut, $DatabasesOut, $StateOut, $TempOut, $LogsOut)) {
+foreach ($dir in @($LibsOut, $SkillsOut, $PkgOut, $ConfigOut, $ResourcesOut, $LicensesOut, $DependenciesOut, $DatabasesOut, $StateOut, $TempOut, $LogsOut)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 foreach ($dir in @(
@@ -74,21 +128,24 @@ foreach ($dir in @(
 Copy-Item -Force $BinExe "$OutDir\$BinName.exe"
 Write-Host "==> Binary copied to $OutDir\"
 
-# Sync C dependency DLLs to output/libs/
-if (-not (Test-Path $LibsOut)) { New-Item -ItemType Directory -Path $LibsOut -Force | Out-Null }
-if (Test-Path "third_party\deps") {
-    Get-ChildItem -Recurse -Path "third_party\deps" -Include "*.dll","*.so","*.dylib" -ErrorAction SilentlyContinue | ForEach-Object {
-        Copy-Item -Force $_.FullName "$LibsOut\$($_.Name)"
-    }
-    Write-Host "==> C runtime DLLs synced to $LibsOut\"
-} else {
-    Write-Host "==> No third_party/deps found"
-}
+# Sync official LuaSkills runtime package exports to output/.
+if (Test-Path -LiteralPath $LuaSkillsRuntimeRoot) {
+    $RuntimeSyncs = @(
+        @{ source = Join-Path $LuaSkillsRuntimeRoot "lua_packages"; destination = $PkgOut; name = "lua_packages" },
+        @{ source = Join-Path $LuaSkillsRuntimeRoot "libs"; destination = $LibsOut; name = "libs" },
+        @{ source = Join-Path $LuaSkillsRuntimeRoot "resources"; destination = $ResourcesOut; name = "resources" },
+        @{ source = Join-Path $LuaSkillsRuntimeRoot "licenses"; destination = $LicensesOut; name = "licenses" }
+    )
 
-# Copy LuaJIT runtime DLL (lua51.dll) — required by luarocks-built C modules like lfs.dll
-if (Test-Path "third_party\luajit\lua51.dll") {
-    Copy-Item -Force "third_party\luajit\lua51.dll" "$LibsOut\"
-    Write-Host "==> LuaJIT lua51.dll synced to $LibsOut\"
+    foreach ($Sync in $RuntimeSyncs) {
+        if (Copy-DirectoryContents -Source $Sync.source -Destination $Sync.destination) {
+            Write-Host "==> LuaSkills runtime $($Sync.name) synced to $($Sync.destination)\"
+        } else {
+            Write-Host "==> LuaSkills runtime package has no $($Sync.name) directory"
+        }
+    }
+} else {
+    Write-Host "==> No third_party/luaskills_runtime found (run make deps first)"
 }
 
 # Sync runtime config files to output/configs/
@@ -117,18 +174,9 @@ if (Test-Path "runtime\state") {
     Write-Host "==> No runtime/state directory found"
 }
 
-# Sync build-time runtime resource manifests to output/resources/
-$LuaPackagesManifestSource = Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt"
-if (Test-Path -LiteralPath (Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt")) {
-    if (-not (Test-Path $ResourcesOut)) { New-Item -ItemType Directory -Path $ResourcesOut -Force | Out-Null }
-    Copy-Item -Force -LiteralPath (Join-Path -Path $ProjectDir -ChildPath "scripts\lua_packages.txt") -Destination (Join-Path $ResourcesOut "lua_packages.txt")
-    Write-Host "==> Runtime resources synced to $ResourcesOut\"
-} else {
-    Write-Host "==> No scripts/lua_packages.txt manifest found"
-}
-
 # Sync runtime Lua skills to output/skills/
 if (Test-Path "runtime\skills") {
+    Reset-DirectoryContents -Path $SkillsOut
     Copy-Item -Force -Recurse "runtime\skills\*" "$SkillsOut\"
     Write-Host "==> Runtime Lua skills synced to $SkillsOut\"
 } else {
@@ -151,37 +199,18 @@ $ControllerBinaryName = if ([System.Runtime.InteropServices.RuntimeInformation]:
 $ControllerBinarySource = Join-Path $ProjectDir "third_party\vldb_controller\bin\$ControllerBinaryName"
 if (Test-Path $ControllerBinarySource) {
     if (-not (Get-Item -LiteralPath $ControllerBinarySource).PSIsContainer) {
-        Copy-Item -Force $ControllerBinarySource "$ControllerOut\$ControllerBinaryName"
-        Write-Host "==> vldb-controller synced to $ControllerOut\"
+        try {
+            Copy-Item -Force $ControllerBinarySource "$ControllerOut\$ControllerBinaryName" -ErrorAction Stop
+            Write-Host "==> vldb-controller synced to $ControllerOut\"
+        } catch {
+            Write-Warning "vldb-controller is currently running or locked; keeping the existing output binary and continuing."
+        }
     } else {
         Write-Error "vldb-controller source path is not a file: $ControllerBinarySource"
         exit 1
     }
 } else {
     Write-Host "==> No third_party/vldb_controller/bin/$ControllerBinaryName found"
-}
-
-# Sync third-party Lua packages to output/lua_packages/
-# Only copy runtime-relevant directories: lib/lua/, share/lua/
-$ThirdPartyPackages = "third_party\lua_packages"
-if (Test-Path $ThirdPartyPackages) {
-    $pkgSrcDirs = @("lib\lua", "share\lua")
-    foreach ($dir in $pkgSrcDirs) {
-        $src = Join-Path $ThirdPartyPackages $dir
-        $dst = Join-Path $PkgOut $dir
-        if (Test-Path $src) {
-            New-Item -ItemType Directory -Path $dst -Force | Out-Null
-            $versioned = Join-Path $src "5.1"
-            $copyRoot = if (Test-Path $versioned) { $versioned } else { $src }
-            Get-ChildItem $copyRoot -Force | Where-Object { $_.Name -ne "5.1" } | ForEach-Object {
-                $target = Join-Path $dst $_.Name
-                Copy-Item -LiteralPath $_.FullName -Destination $target -Force -Recurse
-            }
-        }
-    }
-    Write-Host "==> Third-party Lua packages synced to $PkgOut\ (flattening 5.1 package layout into lua/)"
-} else {
-    Write-Host "==> No third_party/lua_packages found (run scripts/install_lua_deps.ps1 first)"
 }
 
 Write-Host "==> Done. Binary: $OutDir\$BinName.exe"

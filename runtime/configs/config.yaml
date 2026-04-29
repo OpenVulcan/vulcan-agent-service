@@ -65,13 +65,13 @@ grpc: "127.0.0.1:19202"
 # English: To change the controller default port, edit the port number in endpoint directly, for example 20333.
 # 中文：若 auto_spawn=true，则 endpoint 必须是本地可拉起地址；远端 controller 只能与 auto_spawn=false 搭配使用。
 # English: When auto_spawn=true, endpoint must be a locally spawnable address. Remote controllers must be used with auto_spawn=false.
-# 中文：建议优先通过 make deps host + make build 同步 controller 二进制，避免 output/bin/vldb-controller.exe 与当前锁定的 vldb-controller-client release tag 漂移。
-# English: Prefer make deps host + make build to sync the controller binary so output/bin/vldb-controller.exe does not drift from the currently pinned vldb-controller-client release tag.
+# 中文：建议优先通过 make deps + make build 同步 controller 二进制，避免 output/bin/vldb-controller.exe 与当前锁定的 vldb-controller-client release tag 漂移。
+# English: Prefer make deps + make build to sync the controller binary so output/bin/vldb-controller.exe does not drift from the currently pinned vldb-controller-client release tag.
 space_controller:
   endpoint: "http://127.0.0.1:19801"
   auto_spawn: true
-  # 中文：默认可省略；执行 make deps host + make build 后会自动从 output/bin/vldb-controller.exe 发现。
-  # English: Optional by default; after make deps host + make build the host auto-discovers output/bin/vldb-controller.exe.
+  # 中文：默认可省略；执行 make deps + make build 后会自动从 output/bin/vldb-controller.exe 发现。
+  # English: Optional by default; after make deps + make build the host auto-discovers output/bin/vldb-controller.exe.
   # executable_path: "D:/projects/vulcan-mcp-client/output/bin/vldb-controller.exe"
   process_mode: "managed"
   minimum_uptime_secs: 300

@@ -8,58 +8,142 @@ sqlite:
   slow_log_threshold_ms: 500
 help:
   main:
-    description: Vulcan WorkMem main help for project-scoped AI working memory.
+    description: Vulcan WorkMem workflow and tool reference for project-scoped AI working memory.
     file: help/main.md
-  topics:
-    - name: actions
-      description: Action reference for task and node operations.
-      file: help/actions.md
-    - name: rule-file
-      description: Persistent VULCAN_WORKMEM_ID rule-file workflow.
-      file: help/rule-file.md
-    - name: examples
-      description: Compact work memory usage examples.
-      file: help/examples.md
 entries:
-  - name: run
-    description: "Project-scoped AI working memory for long or resumed coding tasks. Use this when the user enables WorkMem, when project instructions contain a VULCAN_WORKMEM_ID, after reading several important files, after key decisions, before context compression, before or after core edits, and after validation. Minimal loop: `task-create` once, `set` short nodes after important findings or progress changes, `list` then `get` for selective recall, `get-all` only for full recovery or handoff, and `task-close` when the task is finished. Use `workmem_id` as the stable VULCAN_WORKMEM_ID; caller-provided IDs may use host, plugin, or session-derived formats when they are single-line and 20-128 characters. Store short, accurate, structured task facts only; do not store full logs, full source, or long narration. When `task-create` has no `workmem_id`, it generates one and returns a visible reminder to ask the user whether to persist it in AGENTS.md or CLAUDE.md."
-    lua_entry: runtime/vulcan-workmem.lua
-    lua_module: vulcan_workmem
-    help: actions
+  - name: task-create
+    description: "Create or resume one project-scoped WorkMem task. Use this at the start of a remembered task with an existing VULCAN_WORKMEM_ID, or omit workmem_id to generate a new one. After every create call, visibly tell the user the current VULCAN_WORKMEM_ID and highlight it so it survives context compression."
+    lua_entry: runtime/vulcan-workmem-task-create.lua
+    lua_module: vulcan_workmem_task_create
+    help: main
     parameters:
-      - name: action
-        type: string
-        description: "Work memory operation. Use `task-create` at task start, `set` after important findings/progress, `list` to inspect tags, `get` for selected recall, `get-all` for full recovery/handoff only, `del` for stale tags, `task-list` to inspect tasks, and `task-close` when finished."
-        required: true
       - name: workmem_id
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Prefer the value saved in AGENTS.md or CLAUDE.md. Optional only for `task-create`, which generates a new ID when omitted. Caller-provided IDs may use host, plugin, or session-derived formats, but must be single-line and 20-128 characters."
+        description: "Optional project-level stable VULCAN_WORKMEM_ID. Omit this only when a new ID should be generated. Caller-provided IDs must be single-line strings from 20 to 128 characters."
         required: false
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory, for example `implement-workmem`. Required for task and node actions except `task-list`."
-        required: false
+        description: "Stable task name for task-scoped memory, for example `implement-workmem`. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        required: true
       - name: detail
         type: string
-        description: "Short task detail used by `task-create`: goal, boundary, known focus, and current starting point. Keep it concise."
-        required: false
+        description: "Short task detail: goal, boundary, known focus, and current starting point. Maximum length: 1200 characters."
+        required: true
+  - name: set
+    description: "Batch write or update compact WorkMem nodes for one task. Use after meaningful findings, decisions, progress changes, risks, or validation results."
+    lua_entry: runtime/vulcan-workmem-set.lua
+    lua_module: vulcan_workmem_set
+    help: main
+    parameters:
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        required: true
+      - name: task_name
+        type: string
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        required: true
       - name: list
         type: array
-        description: "`set` node array. Each item must contain `tag`, `type`, `title`, and `content`. Save compact facts, paths, symbols, decisions, progress, risks, and next steps; never paste full logs or large source blocks."
-        required: false
+        description: "Node array to write. Maximum 30 nodes. Each item must be an object with `tag` (max 96 chars, lowercase letters/digits/`_`/`-`), `type` (`note`, `file_summary`, `decision`, `todo`, `progress`, `risk`, `checkpoint`, or `tool_result`), `title` (max 160 chars), and `content` (max 2000 chars)."
+        required: true
       - name: delete_tags
         type: array
-        description: "Optional `set` delete-before-write tag list. Use it to replace old progress nodes and write new ones in one call."
+        description: "Optional tag string array to delete before writing the new nodes. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters. Use this to replace stale progress nodes."
         required: false
-      - name: tags
-        type: array
-        description: "`get` or `del` tag list. `get` may omit it for a compact task summary; `del` requires it."
-        required: false
+  - name: list
+    description: "List stored WorkMem node tags for one task without expanding full content. Use this before get when exact tags are unknown."
+    lua_entry: runtime/vulcan-workmem-list.lua
+    lua_module: vulcan_workmem_list
+    help: main
+    parameters:
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        required: true
+      - name: task_name
+        type: string
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        required: true
       - name: type
         type: string
-        description: "Optional `list` node type filter: `note`, `file_summary`, `decision`, `todo`, `progress`, `risk`, `checkpoint`, or `tool_result`."
+        description: "Optional node type filter: `note`, `file_summary`, `decision`, `todo`, `progress`, `risk`, `checkpoint`, or `tool_result`."
         required: false
       - name: tag_prefix
         type: string
-        description: "Optional `list` tag prefix filter, for example `progress-`."
+        description: "Optional tag prefix filter, for example `progress-`. Use lowercase letters, digits, `_`, or `-`; maximum 96 characters."
         required: false
+  - name: get
+    description: "Read selected WorkMem nodes for one task. Omit tags only when a compact task summary is enough."
+    lua_entry: runtime/vulcan-workmem-get.lua
+    lua_module: vulcan_workmem_get
+    help: main
+    parameters:
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        required: true
+      - name: task_name
+        type: string
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        required: true
+      - name: tags
+        type: array
+        description: "Optional tag string array to read. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters. When omitted, returns a compact task summary."
+        required: false
+  - name: get-all
+    description: "Recall every WorkMem node for one task. Use only for compression recovery, handoff, audit, or explicit full recall requests."
+    lua_entry: runtime/vulcan-workmem-get-all.lua
+    lua_module: vulcan_workmem_get_all
+    help: main
+    parameters:
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        required: true
+      - name: task_name
+        type: string
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        required: true
+  - name: delete
+    description: "Delete selected WorkMem node tags from one task."
+    lua_entry: runtime/vulcan-workmem-delete.lua
+    lua_module: vulcan_workmem_delete
+    help: main
+    parameters:
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        required: true
+      - name: task_name
+        type: string
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        required: true
+      - name: tags
+        type: array
+        description: "Tag string array to delete. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters."
+        required: true
+  - name: task-list
+    description: "List all remembered WorkMem tasks under one VULCAN_WORKMEM_ID."
+    lua_entry: runtime/vulcan-workmem-task-list.lua
+    lua_module: vulcan_workmem_task_list
+    help: main
+    parameters:
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        required: true
+  - name: task-close
+    description: "Close one WorkMem task and remove its task-scoped nodes without invalidating the long-lived VULCAN_WORKMEM_ID."
+    lua_entry: runtime/vulcan-workmem-task-close.lua
+    lua_module: vulcan_workmem_task_close
+    help: main
+    parameters:
+      - name: workmem_id
+        type: string
+        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        required: true
+      - name: task_name
+        type: string
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        required: true

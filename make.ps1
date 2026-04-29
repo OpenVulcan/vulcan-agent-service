@@ -135,8 +135,9 @@ function Show-Usage {
     Write-Host "  ./make release     # release build"
     Write-Host "  ./make run         # run debug build"
     Write-Host "  ./make run release # run release build"
-    Write-Host "  ./make deps host   # install host native dependencies"
-    Write-Host "  ./make deps lua    # install host + lua dependencies"
+    Write-Host "  ./make deps        # install host + official LuaSkills runtime dependencies"
+    Write-Host "  ./make deps host   # install host native dependencies only"
+    Write-Host "  ./make deps lua    # install host + official LuaSkills runtime dependencies"
 }
 
 # NormalizedMode stores the canonical top-level command token used by the dispatcher below.
@@ -162,6 +163,12 @@ switch ($NormalizedMode) {
     }
     "deps" {
         switch ($NormalizedVariant) {
+            "" {
+                Invoke-DependencyInstall -DependencyKind "lua"
+            }
+            "all" {
+                Invoke-DependencyInstall -DependencyKind "lua"
+            }
             "host" {
                 Invoke-DependencyInstall -DependencyKind "host"
             }

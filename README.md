@@ -54,7 +54,7 @@
 因此运行时需要准备：
 
 - `output/bin/vldb-controller(.exe)`
-  - 可通过 `make deps host` 自动下载对应平台 release 产物，构建时会自动复制到这里
+  - 可通过 `make deps` 自动下载对应平台 release 产物，构建时会自动复制到这里
 
 通用宿主工具依赖则位于：
 
@@ -82,7 +82,7 @@ space_controller:
 
 - `auto_spawn=true` 只能和**本地可拉起**的 controller endpoint 搭配使用
 - 如果 `endpoint` 指向远端 controller，则必须改为 `auto_spawn=false`，并由外部保证 controller 已经启动
-- `output/bin/vldb-controller(.exe)` 应尽量通过 `make deps host + make build` 生成；如果手工替换二进制，必须确保它与当前仓库锁定的 `vldb-controller-client` 使用同一 release tag，避免静默版本漂移
+- `output/bin/vldb-controller(.exe)` 应尽量通过 `make deps + make build` 生成；如果手工替换二进制，必须确保它与当前仓库锁定的 `vldb-controller-client` 使用同一 release tag，避免静默版本漂移
 
 ## 当前公开方式
 
