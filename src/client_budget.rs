@@ -51,6 +51,8 @@ pub struct ClientBudgetLoadReport {
     pub source_path: Option<String>,
     pub client_count: usize,
     pub client_patterns: Vec<String>,
+    pub grpc_client_count: usize,
+    pub grpc_client_names: Vec<String>,
     pub estimation: EffectiveBudgetEstimation,
     pub resolved_previews: BTreeMap<String, Value>,
 }
@@ -63,6 +65,8 @@ pub struct ClientBudgetConfig {
     pub defaults: ClientBudgetDefaults,
     #[serde(default)]
     pub clients: Vec<ClientBudgetRule>,
+    #[serde(default)]
+    pub grpc_clients: BTreeMap<String, ExactClientBudgetRule>,
 }
 
 /// Default client-budget settings containing both fallback budget values and fallback estimation multipliers.
@@ -80,6 +84,16 @@ pub struct ClientBudgetDefaults {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientBudgetRule {
     pub pattern: String,
+    #[serde(default)]
+    pub estimation: BudgetEstimationConfig,
+    #[serde(default)]
+    pub budgets: BudgetScopesConfig,
+}
+
+/// Exact gRPC client-budget rule activated only by a trusted `client_name` equality lookup.
+/// gRPC 精确客户端预算规则，仅通过受信任的 `client_name` 等值查找生效。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ExactClientBudgetRule {
     #[serde(default)]
     pub estimation: BudgetEstimationConfig,
     #[serde(default)]
@@ -224,9 +238,131 @@ pub fn resolve_client_budget_snapshot(
     tool_name: Option<&str>,
     skill_name: Option<&str>,
 ) -> ClientBudgetSnapshot {
+    if let Some(context) = request_context.filter(|context| context.disable_client_match_overrides)
+    {
+        let exact_client_name = context
+            .exact_client_name
+            .as_deref()
+            .or_else(|| context.client_info.as_ref().map(|info| info.name.as_str()))
+            .unwrap_or("");
+        return resolve_grpc_client_budget_snapshot(exact_client_name, tool_name, skill_name);
+    }
+
+    if let Some(exact_client_name) = request_context
+        .and_then(|context| context.exact_client_name.as_deref())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return resolve_grpc_client_budget_snapshot(exact_client_name, tool_name, skill_name);
+    }
+
     let config = load_client_budget_config();
     let client_name = resolve_effective_client_match_name(request_context);
     let normalized_client_name = client_name.as_ref().map(|name| name.to_lowercase());
+
+    let matched_client_rule = normalized_client_name
+        .as_ref()
+        .and_then(|name| match_client_budget_rule(&config.clients, name));
+
+    build_client_budget_snapshot(
+        &config,
+        client_name,
+        matched_client_rule.map(|rule| rule.pattern.clone()),
+        matched_client_rule.map(|rule| &rule.estimation),
+        matched_client_rule.map(|rule| &rule.budgets),
+        tool_name,
+        skill_name,
+    )
+}
+
+/// Resolve a gRPC client-budget snapshot by exact `client_name` without environment or pattern matching.
+/// 通过精确 `client_name` 解析 gRPC 客户端预算快照，不读取环境变量，也不执行 pattern 匹配。
+pub fn resolve_grpc_client_budget_snapshot(
+    client_name: &str,
+    tool_name: Option<&str>,
+    skill_name: Option<&str>,
+) -> ClientBudgetSnapshot {
+    let config = load_client_budget_config();
+    let normalized_client_name = client_name.trim().to_string();
+    let client_name = if normalized_client_name.is_empty() {
+        None
+    } else {
+        Some(normalized_client_name)
+    };
+    let matched_grpc_rule = client_name
+        .as_ref()
+        .and_then(|name| config.grpc_clients.get_key_value(name));
+
+    build_client_budget_snapshot(
+        &config,
+        client_name,
+        matched_grpc_rule.map(|(name, _)| name.clone()),
+        matched_grpc_rule.map(|(_, rule)| &rule.estimation),
+        matched_grpc_rule.map(|(_, rule)| &rule.budgets),
+        tool_name,
+        skill_name,
+    )
+}
+
+/// Resolve the effective client name used by host-side matching and runtime request context exposure.
+/// 解析宿主侧匹配与运行时请求上下文统一使用的最终客户端名称。
+pub fn resolve_effective_client_match_name(
+    request_context: Option<&RequestContext>,
+) -> Option<String> {
+    if let Some(context) = request_context.filter(|context| context.disable_client_match_overrides)
+    {
+        return context
+            .exact_client_name
+            .as_ref()
+            .or_else(|| context.client_info.as_ref().map(|info| &info.name))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
+
+    request_context
+        .and_then(|context| context.exact_client_name.as_ref())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            request_context
+                .and_then(|context| context.client_match_name_override.as_ref())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            request_context
+                .and_then(|context| context.client_info.as_ref())
+                .map(|info| info.name.trim().to_string())
+                .filter(|name| !name.is_empty())
+        })
+}
+
+/// Load the client-budget config, preferring the in-memory cache and otherwise parsing the runtime YAML file.
+/// 加载客户端预算配置；优先读取缓存，其次从运行时配置文件中解析。
+fn load_client_budget_config() -> ClientBudgetConfig {
+    match client_budget_runtime().read() {
+        Ok(guard) => guard.config.clone(),
+        Err(_) => ClientBudgetConfig::default(),
+    }
+}
+
+/// Build one final budget snapshot from already-selected client rule fragments.
+/// 基于已选定的客户端规则片段构造最终预算快照。
+fn build_client_budget_snapshot(
+    config: &ClientBudgetConfig,
+    client_name: Option<String>,
+    matched_client_pattern: Option<String>,
+    matched_estimation: Option<&BudgetEstimationConfig>,
+    matched_budgets: Option<&BudgetScopesConfig>,
+    tool_name: Option<&str>,
+    skill_name: Option<&str>,
+) -> ClientBudgetSnapshot {
     let normalized_tool_name = tool_name
         .map(str::trim)
         .filter(|name| !name.is_empty())
@@ -236,18 +372,13 @@ pub fn resolve_client_budget_snapshot(
         .filter(|name| !name.is_empty())
         .map(str::to_string);
 
-    let matched_client_rule = normalized_client_name
-        .as_ref()
-        .and_then(|name| match_client_budget_rule(&config.clients, name));
-
     let estimation = merge_effective_estimation(
         &config.defaults.estimation,
-        matched_client_rule.map(|rule| &rule.estimation),
+        matched_estimation,
         normalized_skill_name.as_deref(),
     );
 
-    let scope_configs = matched_client_rule
-        .map(|rule| &rule.budgets)
+    let scope_configs = matched_budgets
         .filter(|budgets| !budgets.is_empty())
         .unwrap_or(&config.defaults.budgets);
 
@@ -282,42 +413,10 @@ pub fn resolve_client_budget_snapshot(
         client_name,
         tool_name: normalized_tool_name.clone(),
         skill_name: normalized_skill_name,
-        matched_client_pattern: matched_client_rule.map(|rule| rule.pattern.clone()),
+        matched_client_pattern,
         tool_result,
         file_read,
         tool_config,
-    }
-}
-
-/// Resolve the effective client name used by host-side matching and runtime request context exposure.
-/// 解析宿主侧匹配与运行时请求上下文统一使用的最终客户端名称。
-pub fn resolve_effective_client_match_name(
-    request_context: Option<&RequestContext>,
-) -> Option<String> {
-    request_context
-        .and_then(|context| context.client_match_name_override.as_ref())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
-        .or_else(|| {
-            request_context
-                .and_then(|context| context.client_info.as_ref())
-                .map(|info| info.name.trim().to_string())
-                .filter(|name| !name.is_empty())
-        })
-}
-
-/// Load the client-budget config, preferring the in-memory cache and otherwise parsing the runtime YAML file.
-/// 加载客户端预算配置；优先读取缓存，其次从运行时配置文件中解析。
-fn load_client_budget_config() -> ClientBudgetConfig {
-    match client_budget_runtime().read() {
-        Ok(guard) => guard.config.clone(),
-        Err(_) => ClientBudgetConfig::default(),
     }
 }
 
@@ -394,6 +493,8 @@ fn build_client_budget_load_report(runtime: &ClientBudgetRuntime) -> ClientBudge
             .iter()
             .map(|rule| rule.pattern.clone())
             .collect(),
+        grpc_client_count: runtime.config.grpc_clients.len(),
+        grpc_client_names: runtime.config.grpc_clients.keys().cloned().collect(),
         estimation: merge_effective_estimation(&runtime.config.defaults.estimation, None, None),
         resolved_previews: build_resolved_preview_map(&runtime.config),
     }
@@ -405,6 +506,9 @@ fn resolve_budget_sources_in_place(config: &mut ClientBudgetConfig) {
     resolve_scope_sources_in_place(&mut config.defaults.budgets);
     for client_rule in &mut config.clients {
         resolve_scope_sources_in_place(&mut client_rule.budgets);
+    }
+    for grpc_client_rule in config.grpc_clients.values_mut() {
+        resolve_scope_sources_in_place(&mut grpc_client_rule.budgets);
     }
 }
 
@@ -433,6 +537,17 @@ fn build_resolved_preview_map(config: &ClientBudgetConfig) -> BTreeMap<String, V
         );
         previews.insert(
             client_rule.pattern.clone(),
+            build_scope_preview_value(&client_rule.budgets, &estimation),
+        );
+    }
+    for (client_name, client_rule) in &config.grpc_clients {
+        let estimation = merge_effective_estimation(
+            &config.defaults.estimation,
+            Some(&client_rule.estimation),
+            None,
+        );
+        previews.insert(
+            format!("grpc:{}", client_name),
             build_scope_preview_value(&client_rule.budgets, &estimation),
         );
     }
@@ -1398,6 +1513,122 @@ clients:
                 std::env::remove_var(CLIENT_MATCH_NAME_OVERRIDE_ENV);
             }
         }
+        cleanup_isolated_client_budget_runtime_root(&root);
+    }
+
+    /// gRPC budget resolution should use only exact grpc_clients entries and ignore generic overrides.
+    /// gRPC 预算解析应仅使用精确 grpc_clients 配置，并忽略通用覆盖来源。
+    #[test]
+    fn resolve_grpc_client_budget_snapshot_uses_exact_client_name_only() {
+        let _environment_guard = environment_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _runtime_root_guard = runtime_root_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
+        let root = prepare_isolated_client_budget_runtime_root_with_yaml(
+            r#"
+defaults:
+  budgets:
+    tool_result:
+      bytes:
+        default: 10000
+      lines:
+        default: -1
+grpc_clients:
+  exact-client:
+    budgets:
+      tool_result:
+        bytes:
+          default: 50000
+        lines:
+          default: -1
+clients:
+  - pattern: "*exact*"
+    budgets:
+      tool_result:
+        bytes:
+          default: 90000
+        lines:
+          default: -1
+  - pattern: "*qwen*"
+    budgets:
+      tool_result:
+        bytes:
+          default: 25000
+        lines:
+          default: -1
+"#,
+        );
+        unsafe {
+            std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "qwen-forced");
+        }
+
+        let snapshot = resolve_grpc_client_budget_snapshot("exact-client", None, None);
+        assert_eq!(snapshot.client_name.as_deref(), Some("exact-client"));
+        assert_eq!(
+            snapshot.matched_client_pattern.as_deref(),
+            Some("exact-client")
+        );
+        assert_eq!(snapshot.tool_result.bytes, 47_500);
+
+        let request_context = RequestContext {
+            client_info: Some(ClientInfo {
+                name: "exact-client".to_string(),
+                version: "1.0.0".to_string(),
+            }),
+            disable_client_match_overrides: true,
+            ..RequestContext::default()
+        };
+        let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+        assert_eq!(snapshot.client_name.as_deref(), Some("exact-client"));
+        assert_eq!(snapshot.tool_result.bytes, 47_500);
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(CLIENT_MATCH_NAME_OVERRIDE_ENV);
+            }
+        }
+        cleanup_isolated_client_budget_runtime_root(&root);
+    }
+
+    /// gRPC budget resolution should not activate generic wildcard client rules.
+    /// gRPC 预算解析不应激活通用通配客户端规则。
+    #[test]
+    fn resolve_grpc_client_budget_snapshot_does_not_use_wildcard_rules() {
+        let _runtime_root_guard = runtime_root_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let root = prepare_isolated_client_budget_runtime_root_with_yaml(
+            r#"
+defaults:
+  budgets:
+    tool_result:
+      bytes:
+        default: 10000
+      lines:
+        default: -1
+clients:
+  - pattern: "*qwen*"
+    budgets:
+      tool_result:
+        bytes:
+          default: 25000
+        lines:
+          default: -1
+"#,
+        );
+
+        let snapshot = resolve_grpc_client_budget_snapshot("qwen-grpc", None, None);
+        assert_eq!(snapshot.client_name.as_deref(), Some("qwen-grpc"));
+        assert_eq!(snapshot.matched_client_pattern, None);
+        assert_eq!(snapshot.tool_result.bytes, 9_500);
+
         cleanup_isolated_client_budget_runtime_root(&root);
     }
 }

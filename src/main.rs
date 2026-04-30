@@ -1359,6 +1359,8 @@ fn build_call_tool_request_context(client_name: &str) -> RequestContext {
             version: "local-debug".to_string(),
         }),
         client_match_name_override: None,
+        exact_client_name: None,
+        disable_client_match_overrides: false,
         client_capabilities: json!({}),
     }
 }

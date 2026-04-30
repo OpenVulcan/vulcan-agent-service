@@ -23,6 +23,70 @@ service McpService {
   rpc Connect(ConnectRequest) returns (stream ConnectEvent);
 }
 
+// LuaSkillsService exposes stable LuaSkills management methods plus one dynamic tool-call entry.
+// LuaSkillsService 暴露稳定的 LuaSkills 管理方法，以及一个动态工具调用入口。
+service LuaSkillsService {
+  // ListSkills returns loaded LuaSkill packages grouped by skill id and root.
+  // ListSkills 返回按技能标识和根目录分组的已加载 LuaSkill 包。
+  rpc ListSkills(LuaSkillListSkillsRequest) returns (LuaSkillListSkillsResponse);
+
+  // ListTools returns only LuaSkills dynamic runtime entries exposed as callable tools.
+  // ListTools 仅返回 LuaSkills 动态运行时入口暴露出的可调用工具。
+  rpc ListTools(LuaSkillListToolsRequest) returns (LuaSkillListToolsResponse);
+
+  // GetTool returns one LuaSkills dynamic tool descriptor by canonical tool name.
+  // GetTool 按标准工具名返回一个 LuaSkills 动态工具描述。
+  rpc GetTool(LuaSkillGetToolRequest) returns (LuaSkillGetToolResponse);
+
+  // CallTool invokes one LuaSkills dynamic tool. Host-owned stable tools have dedicated RPCs instead.
+  // CallTool 调用一个 LuaSkills 动态工具；宿主稳定工具应使用专门 RPC。
+  rpc CallTool(LuaSkillCallToolRequest) returns (LuaSkillCallToolResponse);
+
+  // ListHelp returns the registered LuaSkills help tree rendered as Markdown.
+  // ListHelp 返回已注册 LuaSkills 帮助树的 Markdown 渲染文本。
+  rpc ListHelp(LuaSkillListHelpRequest) returns (LuaSkillTextResponse);
+
+  // GetHelp returns one LuaSkills help flow rendered as Markdown.
+  // GetHelp 返回一个 LuaSkills 帮助流程的 Markdown 渲染文本。
+  rpc GetHelp(LuaSkillGetHelpRequest) returns (LuaSkillTextResponse);
+
+  // ListSkillConfig lists host-managed LuaSkill configuration entries.
+  // ListSkillConfig 列出宿主管理的 LuaSkill 配置项。
+  rpc ListSkillConfig(LuaSkillConfigListRequest) returns (LuaSkillTextResponse);
+
+  // GetSkillConfig reads one host-managed LuaSkill configuration value.
+  // GetSkillConfig 读取一个宿主管理的 LuaSkill 配置值。
+  rpc GetSkillConfig(LuaSkillConfigGetRequest) returns (LuaSkillTextResponse);
+
+  // SetSkillConfig writes one host-managed LuaSkill configuration value.
+  // SetSkillConfig 写入一个宿主管理的 LuaSkill 配置值。
+  rpc SetSkillConfig(LuaSkillConfigSetRequest) returns (LuaSkillTextResponse);
+
+  // DeleteSkillConfig deletes one host-managed LuaSkill configuration value.
+  // DeleteSkillConfig 删除一个宿主管理的 LuaSkill 配置值。
+  rpc DeleteSkillConfig(LuaSkillConfigDeleteRequest) returns (LuaSkillTextResponse);
+
+  // ListInstalledSkills renders the USER-layer managed LuaSkills inventory.
+  // ListInstalledSkills 渲染 USER 层受管 LuaSkills 清单。
+  rpc ListInstalledSkills(LuaSkillListInstalledSkillsRequest) returns (LuaSkillTextResponse);
+
+  // InstallSkill installs one USER-layer managed LuaSkill from an approved source.
+  // InstallSkill 从已批准来源安装一个 USER 层受管 LuaSkill。
+  rpc InstallSkill(LuaSkillInstallRequest) returns (LuaSkillTextResponse);
+
+  // UpdateSkill updates one USER-layer managed LuaSkill by skill id.
+  // UpdateSkill 按技能标识更新一个 USER 层受管 LuaSkill。
+  rpc UpdateSkill(LuaSkillUpdateRequest) returns (LuaSkillTextResponse);
+
+  // UninstallSkill uninstalls one USER-layer LuaSkill while retaining databases.
+  // UninstallSkill 卸载一个 USER 层 LuaSkill，并保留数据库。
+  rpc UninstallSkill(LuaSkillUninstallRequest) returns (LuaSkillTextResponse);
+
+  // ReloadRuntimeConfigs reloads hot-reloadable runtime configs used by LuaSkills calls.
+  // ReloadRuntimeConfigs 重载 LuaSkills 调用使用的可热重载运行时配置。
+  rpc ReloadRuntimeConfigs(LuaSkillReloadRuntimeConfigsRequest) returns (LuaSkillTextResponse);
+}
+
 // ============================================================
 // Health check
 // ============================================================
@@ -43,6 +107,15 @@ message McpCallRequest {
   uint64 project_id = 3;
   uint64 user_id = 4;
   string session_id = 5;
+  // Trusted gRPC client name used for exact budget resolution.
+  // 用于精确预算解析的受信任 gRPC 客户端名称。
+  string client_name = 6;
+  // Optional gRPC client version used for diagnostics.
+  // 用于诊断的可选 gRPC 客户端版本。
+  string client_version = 7;
+  // Optional request correlation id; it is not a session identifier.
+  // 可选请求关联标识；它不是会话标识。
+  string request_id = 8;
 }
 
 message McpCallResponse {
@@ -95,4 +168,294 @@ message CallResponseEvent {
 message NotificationEvent {
   string type = 1;    // e.g. "tools_changed", "resources_changed"
   string payload = 2; // JSON string
+}
+
+// ============================================================
+// LuaSkills service
+// ============================================================
+
+// LuaSkillClientContext carries the trusted gRPC client identity used for exact budget resolution.
+// LuaSkillClientContext 承载受信任的 gRPC 客户端身份，用于精确预算解析。
+message LuaSkillClientContext {
+  // Trusted gRPC client name used for exact budget resolution.
+  // 用于精确预算解析的受信任 gRPC 客户端名称。
+  string client_name = 1;
+  // Optional gRPC client version used for diagnostics and runtime context.
+  // 用于诊断和运行时上下文的可选 gRPC 客户端版本。
+  string client_version = 2;
+  // Optional request correlation id; it does not express conversation state.
+  // 可选请求关联标识；它不表达对话状态。
+  string request_id = 3;
+}
+
+// LuaSkillDescriptor describes one loaded LuaSkill package and its exposed tool names.
+// LuaSkillDescriptor 描述一个已加载 LuaSkill 包及其暴露的工具名。
+message LuaSkillDescriptor {
+  // Skill identifier declared by the LuaSkill package.
+  // LuaSkill 包声明的技能标识。
+  string skill_id = 1;
+  // Runtime root name that contributed this package.
+  // 提供该技能包的运行时根名称。
+  string root_name = 2;
+  // Concrete skill directory path.
+  // 具体技能目录路径。
+  string skill_dir = 3;
+  // Canonical dynamic tool names exposed by this package.
+  // 该技能包暴露的标准动态工具名。
+  repeated string tool_names = 4;
+}
+
+// LuaSkillToolDescriptor describes one callable LuaSkills dynamic runtime entry.
+// LuaSkillToolDescriptor 描述一个可调用的 LuaSkills 动态运行时入口。
+message LuaSkillToolDescriptor {
+  // Canonical dynamic tool name.
+  // 标准动态工具名称。
+  string name = 1;
+  // Human-readable tool description.
+  // 面向人的工具描述。
+  string description = 2;
+  // JSON-encoded MCP input schema.
+  // JSON 编码的 MCP 输入 schema。
+  string input_schema_json = 3;
+  // JSON-encoded MCP tool annotations.
+  // JSON 编码的 MCP 工具注解。
+  string annotations_json = 4;
+  // Skill identifier that owns this tool.
+  // 拥有该工具的技能标识。
+  string skill_id = 5;
+  // Local entry name inside the owning LuaSkill package.
+  // 所属 LuaSkill 包内的本地入口名称。
+  string entry_name = 6;
+  // Runtime root name that contributed this tool.
+  // 提供该工具的运行时根名称。
+  string root_name = 7;
+  // Concrete skill directory path.
+  // 具体技能目录路径。
+  string skill_dir = 8;
+}
+
+// LuaSkillTextResponse carries a rendered text result for stable LuaSkills RPCs.
+// LuaSkillTextResponse 承载稳定 LuaSkills RPC 的文本渲染结果。
+message LuaSkillTextResponse {
+  // Rendered response text.
+  // 渲染后的响应文本。
+  string text = 1;
+  // Whether the stable method completed with a tool-level error.
+  // 稳定方法是否产生工具级错误。
+  bool is_error = 2;
+  // Error summary when is_error is true.
+  // is_error 为 true 时的错误摘要。
+  string message = 3;
+}
+
+// LuaSkillListSkillsRequest asks for loaded LuaSkills package descriptors.
+// LuaSkillListSkillsRequest 请求已加载 LuaSkills 包描述。
+message LuaSkillListSkillsRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+}
+
+// LuaSkillListSkillsResponse returns loaded LuaSkills package descriptors.
+// LuaSkillListSkillsResponse 返回已加载 LuaSkills 包描述。
+message LuaSkillListSkillsResponse {
+  // Loaded LuaSkill package descriptors.
+  // 已加载的 LuaSkill 包描述列表。
+  repeated LuaSkillDescriptor skills = 1;
+}
+
+// LuaSkillListToolsRequest asks for dynamic LuaSkills tool descriptors.
+// LuaSkillListToolsRequest 请求动态 LuaSkills 工具描述。
+message LuaSkillListToolsRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+}
+
+// LuaSkillListToolsResponse returns dynamic LuaSkills tool descriptors.
+// LuaSkillListToolsResponse 返回动态 LuaSkills 工具描述。
+message LuaSkillListToolsResponse {
+  // Dynamic LuaSkills tool descriptors.
+  // 动态 LuaSkills 工具描述列表。
+  repeated LuaSkillToolDescriptor tools = 1;
+}
+
+// LuaSkillGetToolRequest selects one dynamic LuaSkills tool by canonical name.
+// LuaSkillGetToolRequest 按标准名称选择一个动态 LuaSkills 工具。
+message LuaSkillGetToolRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Canonical dynamic tool name to read.
+  // 要读取的标准动态工具名称。
+  string tool_name = 2;
+}
+
+// LuaSkillGetToolResponse returns one dynamic LuaSkills tool descriptor.
+// LuaSkillGetToolResponse 返回一个动态 LuaSkills 工具描述。
+message LuaSkillGetToolResponse {
+  // Dynamic LuaSkills tool descriptor.
+  // 动态 LuaSkills 工具描述。
+  LuaSkillToolDescriptor tool = 1;
+}
+
+// LuaSkillCallToolRequest invokes one dynamic LuaSkills tool with JSON arguments.
+// LuaSkillCallToolRequest 使用 JSON 参数调用一个动态 LuaSkills 工具。
+message LuaSkillCallToolRequest {
+  // Trusted client context for budget resolution.
+  // 用于预算解析的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Canonical dynamic tool name to call.
+  // 要调用的标准动态工具名称。
+  string tool_name = 2;
+  // JSON-encoded tool arguments.
+  // JSON 编码的工具参数。
+  string arguments_json = 3;
+}
+
+// LuaSkillCallToolResponse returns the rendered MCP-compatible tool result.
+// LuaSkillCallToolResponse 返回渲染后的 MCP 兼容工具结果。
+message LuaSkillCallToolResponse {
+  // JSON-encoded MCP-compatible ToolCallResult.
+  // JSON 编码的 MCP 兼容 ToolCallResult。
+  string result_json = 1;
+  // Convenience joined text extracted from result_json content blocks.
+  // 从 result_json 内容块提取并拼接出的便捷文本。
+  string text = 2;
+  // Whether the dynamic tool returned a tool-level error.
+  // 动态工具是否返回工具级错误。
+  bool is_error = 3;
+  // Error summary when is_error is true.
+  // is_error 为 true 时的错误摘要。
+  string message = 4;
+}
+
+// LuaSkillListHelpRequest asks for the full LuaSkills help tree.
+// LuaSkillListHelpRequest 请求完整 LuaSkills 帮助树。
+message LuaSkillListHelpRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+}
+
+// LuaSkillGetHelpRequest selects one LuaSkills help flow.
+// LuaSkillGetHelpRequest 选择一个 LuaSkills 帮助流程。
+message LuaSkillGetHelpRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Target skill id.
+  // 目标技能标识。
+  string skill_id = 2;
+  // Help flow name.
+  // 帮助流程名称。
+  string flow = 3;
+}
+
+// LuaSkillConfigListRequest lists configuration entries, optionally scoped by skill id.
+// LuaSkillConfigListRequest 列出配置项，可选按技能标识限定范围。
+message LuaSkillConfigListRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Optional skill id filter.
+  // 可选技能标识过滤条件。
+  string skill_id = 2;
+}
+
+// LuaSkillConfigGetRequest reads one configuration key.
+// LuaSkillConfigGetRequest 读取一个配置键。
+message LuaSkillConfigGetRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Target skill id.
+  // 目标技能标识。
+  string skill_id = 2;
+  // Configuration key.
+  // 配置键。
+  string key = 3;
+}
+
+// LuaSkillConfigSetRequest writes one configuration key.
+// LuaSkillConfigSetRequest 写入一个配置键。
+message LuaSkillConfigSetRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Target skill id.
+  // 目标技能标识。
+  string skill_id = 2;
+  // Configuration key.
+  // 配置键。
+  string key = 3;
+  // Configuration value.
+  // 配置值。
+  string value = 4;
+}
+
+// LuaSkillConfigDeleteRequest deletes one configuration key.
+// LuaSkillConfigDeleteRequest 删除一个配置键。
+message LuaSkillConfigDeleteRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Target skill id.
+  // 目标技能标识。
+  string skill_id = 2;
+  // Configuration key.
+  // 配置键。
+  string key = 3;
+}
+
+// LuaSkillListInstalledSkillsRequest asks for the USER-layer managed inventory.
+// LuaSkillListInstalledSkillsRequest 请求 USER 层受管清单。
+message LuaSkillListInstalledSkillsRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+}
+
+// LuaSkillInstallRequest installs one USER-layer managed skill.
+// LuaSkillInstallRequest 安装一个 USER 层受管技能。
+message LuaSkillInstallRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Install source locator.
+  // 安装来源定位值。
+  string source = 2;
+  // Optional source type override.
+  // 可选来源类型覆盖。
+  string source_type = 3;
+}
+
+// LuaSkillUpdateRequest updates one USER-layer managed skill.
+// LuaSkillUpdateRequest 更新一个 USER 层受管技能。
+message LuaSkillUpdateRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Target skill id.
+  // 目标技能标识。
+  string skill_id = 2;
+}
+
+// LuaSkillUninstallRequest uninstalls one USER-layer skill.
+// LuaSkillUninstallRequest 卸载一个 USER 层技能。
+message LuaSkillUninstallRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
+  // Target skill id.
+  // 目标技能标识。
+  string skill_id = 2;
+}
+
+// LuaSkillReloadRuntimeConfigsRequest reloads hot-reloadable runtime config files.
+// LuaSkillReloadRuntimeConfigsRequest 重载可热重载运行时配置文件。
+message LuaSkillReloadRuntimeConfigsRequest {
+  // Trusted client context for this request.
+  // 本次请求的受信任客户端上下文。
+  LuaSkillClientContext context = 1;
 }

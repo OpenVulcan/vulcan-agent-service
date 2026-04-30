@@ -11,9 +11,11 @@ use crate::client_budget::reload_client_budget_config;
 use crate::config::Config;
 use crate::grpc_client::VmmClient;
 use crate::luaskills_host::{
+    build_grpc_runtime_invocation_context, build_grpc_runtime_request_context,
     build_luaskills_engine_options, build_runtime_invocation_context,
     build_runtime_request_context, client_budget_snapshot_for_render,
-    install_luaskills_log_callback, map_runtime_entry_to_mcp_tool,
+    grpc_client_budget_snapshot_for_render, install_luaskills_log_callback,
+    map_runtime_entry_to_mcp_tool,
 };
 use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
@@ -22,12 +24,12 @@ use crate::tool_result_format::{HostRenderOptions, render_tool_result_text};
 use luaskills::skill::manager::collect_effective_skill_instances_from_roots;
 use luaskills::{
     InstalledSkillRecord, LuaEngine, LuaEngineOptions, LuaRuntimeHostOptions, LuaVmPoolConfig,
-    RuntimeEntryRegistryDelta, RuntimeHelpDetail, RuntimeSkillHelpDescriptor,
-    RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent, RuntimeSkillRoot, SkillApplyResult,
-    SkillConfigEntry, SkillInstallRequest, SkillInstallSourceType, SkillManager,
-    SkillManagerConfig, SkillUninstallOptions, SkillUninstallResult, ToolCacheConfig,
-    runtime_config_store::SkillConfigStore, set_entry_registry_callback,
-    set_skill_lifecycle_callback,
+    RuntimeEntryDescriptor, RuntimeEntryRegistryDelta, RuntimeHelpDetail,
+    RuntimeSkillHelpDescriptor, RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent,
+    RuntimeSkillRoot, SkillApplyResult, SkillConfigEntry, SkillInstallRequest,
+    SkillInstallSourceType, SkillManager, SkillManagerConfig, SkillUninstallOptions,
+    SkillUninstallResult, ToolCacheConfig, runtime_config_store::SkillConfigStore,
+    set_entry_registry_callback, set_skill_lifecycle_callback,
 };
 
 // ============================================================
@@ -70,6 +72,45 @@ pub fn host_tool_requires_lua_engine(tool_name: &str) -> bool {
     )
 }
 
+/// Loaded LuaSkill package descriptor exposed to the gRPC LuaSkills surface.
+/// 暴露给 gRPC LuaSkills 接口的已加载技能包描述。
+#[derive(Debug, Clone)]
+pub struct LuaSkillPackageDescriptor {
+    /// Skill identifier declared by the LuaSkill package.
+    /// LuaSkill 包声明的技能标识。
+    pub skill_id: String,
+    /// Runtime root name that contributed this effective package.
+    /// 提供该生效包的运行时根名称。
+    pub root_name: String,
+    /// Concrete skill directory path.
+    /// 具体技能目录路径。
+    pub skill_dir: String,
+    /// Canonical dynamic tool names exposed by this package.
+    /// 该技能包暴露出的标准动态工具名称。
+    pub tool_names: Vec<String>,
+}
+
+/// Dynamic LuaSkill tool descriptor with both MCP schema and LuaSkills runtime metadata.
+/// 同时包含 MCP schema 与 LuaSkills 运行时元数据的动态工具描述。
+#[derive(Debug, Clone)]
+pub struct LuaSkillToolDescriptor {
+    /// MCP-compatible tool definition used by existing clients.
+    /// 现有客户端使用的 MCP 兼容工具定义。
+    pub tool: Tool,
+    /// Skill identifier that owns the runtime entry.
+    /// 拥有该运行时入口的技能标识。
+    pub skill_id: String,
+    /// Local entry name inside the owning LuaSkill package.
+    /// 所属 LuaSkill 包内的本地入口名称。
+    pub entry_name: String,
+    /// Runtime root name that contributed the entry.
+    /// 提供该入口的运行时根名称。
+    pub root_name: String,
+    /// Concrete skill directory path for diagnostics and inventory views.
+    /// 用于诊断和清单展示的具体技能目录路径。
+    pub skill_dir: String,
+}
+
 struct ServerInner {
     /// Host-owned MCP tools registered by the current host adapter and never mutated by LuaSkills runtime deltas.
     /// 当前宿主适配层拥有的 MCP 工具注册表，不会被 LuaSkills 运行时差异事件修改。
@@ -77,6 +118,9 @@ struct ServerInner {
     /// LuaSkills-managed dynamic MCP tools derived from runtime entries and fully driven by runtime registry deltas.
     /// 由 LuaSkills 运行时入口派生并完全受运行时注册表差异驱动的动态 MCP 工具注册表。
     skill_tools: HashMap<String, Tool>,
+    /// LuaSkills runtime entry metadata keyed by canonical dynamic tool name.
+    /// 按标准动态工具名索引的 LuaSkills 运行时入口元数据。
+    skill_entries: HashMap<String, RuntimeEntryDescriptor>,
     resources: Vec<Resource>,
     resource_templates: Vec<ResourceTemplate>,
     prompts: Vec<Prompt>,
@@ -177,6 +221,7 @@ impl McpServer {
         let inner = ServerInner {
             host_tools: HashMap::new(),
             skill_tools: HashMap::new(),
+            skill_entries: HashMap::new(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             prompts: Vec::new(),
@@ -261,8 +306,7 @@ impl McpServer {
         {
             let mut inner = self.inner.try_lock().unwrap();
             for entry in entries {
-                let tool = map_runtime_entry_to_mcp_tool(&entry);
-                insert_skill_tool(&mut inner, tool);
+                insert_skill_entry(&mut inner, entry);
             }
         }
 
@@ -479,6 +523,365 @@ impl McpServer {
             )
         })?;
         Ok(store)
+    }
+
+    /// List loaded LuaSkill packages from the dynamic runtime entry registry.
+    /// 从动态运行时入口注册表列出已加载 LuaSkill 包。
+    pub async fn list_luaskill_packages(
+        &self,
+    ) -> Result<Vec<LuaSkillPackageDescriptor>, (i64, String)> {
+        let inner = self.inner.lock().await;
+        let mut grouped: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+        for entry in inner.skill_entries.values() {
+            grouped
+                .entry((
+                    entry.skill_id.clone(),
+                    entry.root_name.clone(),
+                    entry.skill_dir.clone(),
+                ))
+                .or_default()
+                .push(entry.canonical_name.clone());
+        }
+
+        Ok(grouped
+            .into_iter()
+            .map(|((skill_id, root_name, skill_dir), mut tool_names)| {
+                tool_names.sort();
+                LuaSkillPackageDescriptor {
+                    skill_id,
+                    root_name,
+                    skill_dir,
+                    tool_names,
+                }
+            })
+            .collect())
+    }
+
+    /// List dynamic LuaSkill tools without including host-owned stable tools.
+    /// 列出动态 LuaSkill 工具，不包含宿主自有稳定工具。
+    pub async fn list_luaskill_tools(&self) -> Result<Vec<LuaSkillToolDescriptor>, (i64, String)> {
+        let inner = self.inner.lock().await;
+        let mut tools = Vec::new();
+        for (tool_name, entry) in &inner.skill_entries {
+            if let Some(tool) = inner.skill_tools.get(tool_name) {
+                tools.push(build_luaskill_tool_descriptor(tool, entry));
+            }
+        }
+        tools.sort_by(|left, right| left.tool.name.cmp(&right.tool.name));
+        Ok(tools)
+    }
+
+    /// Get one dynamic LuaSkill tool descriptor by canonical tool name.
+    /// 按标准工具名读取一个动态 LuaSkill 工具描述。
+    pub async fn get_luaskill_tool(
+        &self,
+        tool_name: &str,
+    ) -> Result<LuaSkillToolDescriptor, (i64, String)> {
+        let tool_name = require_non_empty_grpc_field(tool_name, "tool_name")?;
+        let inner = self.inner.lock().await;
+        let entry = inner.skill_entries.get(&tool_name).ok_or_else(|| {
+            (
+                -32601,
+                format!("Dynamic LuaSkill tool not found: {}", tool_name),
+            )
+        })?;
+        let tool = inner.skill_tools.get(&tool_name).ok_or_else(|| {
+            (
+                -32603,
+                format!("LuaSkill tool metadata is inconsistent: {}", tool_name),
+            )
+        })?;
+        Ok(build_luaskill_tool_descriptor(tool, entry))
+    }
+
+    /// Invoke one dynamic LuaSkill tool through the gRPC-specific budget path.
+    /// 通过 gRPC 专用预算路径调用一个动态 LuaSkill 工具。
+    pub async fn call_luaskill_tool(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        client_name: &str,
+        client_version: Option<&str>,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        let tool_name = require_non_empty_grpc_field(tool_name, "tool_name")?;
+        let client_name = require_non_empty_grpc_field(client_name, "client_name")?;
+        let inner = self.inner.lock().await;
+        let tool = inner.skill_tools.get(&tool_name).ok_or_else(|| {
+            (
+                -32601,
+                format!(
+                    "Dynamic LuaSkill tool not found or not callable through CallTool: {}",
+                    tool_name
+                ),
+            )
+        })?;
+        let tool = tool.clone();
+        drop(inner);
+
+        let (target_engine, target_skill_roots) = self.resolve_lua_runtime_target()?;
+        let is_skill = target_engine
+            .read()
+            .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+            .is_skill(&tool.name);
+        if !is_skill {
+            return Err((
+                -32603,
+                format!("LuaSkills runtime no longer owns tool: {}", tool.name),
+            ));
+        }
+
+        let skill_name = target_engine
+            .read()
+            .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+            .skill_name_for_tool(&tool.name);
+        let engine_clone = target_engine.clone();
+        let tool_name_for_call = tool.name.clone();
+        let args_clone = arguments.clone();
+        let invocation_context = build_grpc_runtime_invocation_context(
+            &client_name,
+            client_version,
+            Some(&tool_name_for_call),
+            skill_name.as_deref(),
+        );
+        let result = tokio::task::spawn_blocking(move || {
+            let engine = engine_clone
+                .read()
+                .map_err(|_| "Lua engine lock poisoned".to_string())?;
+            engine.call_skill(&tool_name_for_call, &args_clone, Some(&invocation_context))
+        })
+        .await
+        .map_err(|error| (-32603, format!("Lua skill spawn error: {}", error)))?;
+
+        match result {
+            Ok(value) => {
+                let client_budget = grpc_client_budget_snapshot_for_render(
+                    &client_name,
+                    Some(&tool.name),
+                    skill_name.as_deref(),
+                );
+                let spill_root = ensure_runtime_temp_dir()
+                    .map_err(|error| {
+                        (
+                            -32603,
+                            format!("resolve runtime spill dir failed: {}", error),
+                        )
+                    })?
+                    .join("mcp")
+                    .join("cache");
+                Ok(ToolCallResult {
+                    content: vec![TextContent::text(&render_tool_result_text(
+                        &value,
+                        skill_name.as_deref(),
+                        Some(&client_budget),
+                        &HostRenderOptions {
+                            spill_root: Some(spill_root),
+                            template_skill_roots: target_skill_roots
+                                .iter()
+                                .map(|root| root.skills_dir.clone())
+                                .collect(),
+                            template_resources_root: self
+                                .lua_engine_options
+                                .as_ref()
+                                .and_then(|options| options.host_options.resources_dir.clone()),
+                        },
+                    ))],
+                    is_error: None,
+                })
+            }
+            Err(error) => Ok(ToolCallResult {
+                content: vec![TextContent::text(&error)],
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    /// Render the registered LuaSkills help tree for the gRPC stable help method.
+    /// 为 gRPC 稳定帮助方法渲染已注册的 LuaSkills 帮助树。
+    pub fn list_luaskill_help(&self) -> Result<String, (i64, String)> {
+        let engine = self.resolve_lua_engine_for_environment()?;
+        let help_tree = engine
+            .read()
+            .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
+            .list_skill_help();
+        Ok(render_help_list_markdown(&help_tree))
+    }
+
+    /// Render one LuaSkills help flow for the gRPC stable help method.
+    /// 为 gRPC 稳定帮助方法渲染一个 LuaSkills 帮助流程。
+    pub async fn get_luaskill_help(
+        &self,
+        skill_id: &str,
+        flow: &str,
+        client_name: &str,
+        client_version: Option<&str>,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        let skill_id = require_non_empty_grpc_field(skill_id, "skill_id")?;
+        let flow = require_non_empty_grpc_field(flow, "flow")?;
+        let client_name = require_non_empty_grpc_field(client_name, "client_name")?;
+        let engine = self.resolve_lua_engine_for_environment()?;
+        let runtime_request_context =
+            build_grpc_runtime_request_context(&client_name, client_version);
+        let result = tokio::task::spawn_blocking(move || {
+            let engine = engine
+                .read()
+                .map_err(|_| "Lua engine lock poisoned".to_string())?;
+            engine.render_skill_help_detail(&skill_id, &flow, Some(&runtime_request_context))
+        })
+        .await
+        .map_err(|error| (-32603, format!("vulcan-help-detail spawn error: {}", error)))?;
+
+        match result {
+            Ok(Some(detail)) => Ok(ToolCallResult {
+                content: vec![TextContent::text(&render_help_detail_markdown(&detail))],
+                is_error: None,
+            }),
+            Ok(None) => Ok(ToolCallResult {
+                content: vec![TextContent::text("Skill help not found.")],
+                is_error: Some(true),
+            }),
+            Err(error) => Ok(ToolCallResult {
+                content: vec![TextContent::text(&error)],
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    /// List host-managed LuaSkill config values through a stable gRPC method.
+    /// 通过稳定 gRPC 方法列出宿主管理的 LuaSkill 配置值。
+    pub fn list_luaskill_config(&self, skill_id: Option<String>) -> Result<String, (i64, String)> {
+        let store = self.resolve_runtime_skill_config_store()?;
+        let request = RuntimeConfigToolArguments {
+            action: RuntimeConfigAction::List,
+            skill_id,
+            key: None,
+            value: None,
+        };
+        execute_runtime_config_tool(&store, &request)
+    }
+
+    /// Read one host-managed LuaSkill config value through a stable gRPC method.
+    /// 通过稳定 gRPC 方法读取一个宿主管理的 LuaSkill 配置值。
+    pub fn get_luaskill_config(
+        &self,
+        skill_id: String,
+        key: String,
+    ) -> Result<String, (i64, String)> {
+        let store = self.resolve_runtime_skill_config_store()?;
+        let request = RuntimeConfigToolArguments {
+            action: RuntimeConfigAction::Get,
+            skill_id: Some(skill_id),
+            key: Some(key),
+            value: None,
+        };
+        execute_runtime_config_tool(&store, &request)
+    }
+
+    /// Write one host-managed LuaSkill config value through a stable gRPC method.
+    /// 通过稳定 gRPC 方法写入一个宿主管理的 LuaSkill 配置值。
+    pub fn set_luaskill_config(
+        &self,
+        skill_id: String,
+        key: String,
+        value: String,
+    ) -> Result<String, (i64, String)> {
+        let store = self.resolve_runtime_skill_config_store()?;
+        let request = RuntimeConfigToolArguments {
+            action: RuntimeConfigAction::Set,
+            skill_id: Some(skill_id),
+            key: Some(key),
+            value: Some(value),
+        };
+        execute_runtime_config_tool(&store, &request)
+    }
+
+    /// Delete one host-managed LuaSkill config value through a stable gRPC method.
+    /// 通过稳定 gRPC 方法删除一个宿主管理的 LuaSkill 配置值。
+    pub fn delete_luaskill_config(
+        &self,
+        skill_id: String,
+        key: String,
+    ) -> Result<String, (i64, String)> {
+        let store = self.resolve_runtime_skill_config_store()?;
+        let request = RuntimeConfigToolArguments {
+            action: RuntimeConfigAction::Delete,
+            skill_id: Some(skill_id),
+            key: Some(key),
+            value: None,
+        };
+        execute_runtime_config_tool(&store, &request)
+    }
+
+    /// Render the USER-layer managed LuaSkill inventory through a stable gRPC method.
+    /// 通过稳定 gRPC 方法渲染 USER 层受管 LuaSkill 清单。
+    pub fn list_installed_luaskills(&self) -> Result<String, (i64, String)> {
+        self.render_skill_manager_list()
+    }
+
+    /// Install one USER-layer managed LuaSkill through a stable gRPC method.
+    /// 通过稳定 gRPC 方法安装一个 USER 层受管 LuaSkill。
+    pub async fn install_luaskill(
+        &self,
+        source: String,
+        source_type: Option<String>,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        let source = require_skill_manager_source(Some(source.as_str()), "install")?;
+        let source_type = parse_optional_skill_install_source_type(source_type.as_deref())?
+            .unwrap_or_else(|| infer_skill_install_source_type(&source, None));
+        if matches!(source_type, SkillInstallSourceType::Url) {
+            return Ok(render_skill_url_install_not_implemented_result());
+        }
+        self.execute_skill_install(SkillInstallRequest {
+            skill_id: None,
+            source: Some(source),
+            source_type,
+        })
+        .await
+    }
+
+    /// Update one USER-layer managed LuaSkill through a stable gRPC method.
+    /// 通过稳定 gRPC 方法更新一个 USER 层受管 LuaSkill。
+    pub async fn update_luaskill(&self, skill_id: String) -> Result<ToolCallResult, (i64, String)> {
+        let skill_id = require_skill_manager_skill_id(Some(skill_id.as_str()), "update")?;
+        self.execute_skill_update(SkillInstallRequest {
+            skill_id: Some(skill_id),
+            source: None,
+            source_type: SkillInstallSourceType::Github,
+        })
+        .await
+    }
+
+    /// Uninstall one USER-layer LuaSkill through a stable gRPC method.
+    /// 通过稳定 gRPC 方法卸载一个 USER 层 LuaSkill。
+    pub async fn uninstall_luaskill(
+        &self,
+        skill_id: String,
+    ) -> Result<ToolCallResult, (i64, String)> {
+        let skill_id = require_skill_manager_skill_id(Some(skill_id.as_str()), "uninstall")?;
+        self.execute_skill_uninstall(skill_id).await
+    }
+
+    /// Reload hot-reloadable runtime configs through a stable gRPC method.
+    /// 通过稳定 gRPC 方法重载可热重载运行时配置。
+    pub fn reload_luaskill_runtime_configs(&self) -> Result<String, (i64, String)> {
+        let client_budget_report = reload_client_budget_config()
+            .map_err(|error| (-32603, format!("reload client budgets failed: {}", error)))?;
+        let tool_config_report = reload_tool_configs()
+            .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
+
+        Ok(format!(
+            "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, grpc_clients={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded",
+            client_budget_report.client_count,
+            client_budget_report.grpc_client_count,
+            client_budget_report
+                .source_path
+                .as_deref()
+                .unwrap_or("unavailable"),
+            tool_config_report.tool_count,
+            tool_config_report
+                .source_path
+                .as_deref()
+                .unwrap_or("unavailable")
+        ))
     }
 
     /// Handle a single JSON-RPC message and return the JSON response (if any).
@@ -805,8 +1208,9 @@ impl McpServer {
                     .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
 
                 let reload_message = format!(
-                    "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded",
+                    "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, grpc_clients={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded",
                     client_budget_report.client_count,
+                    client_budget_report.grpc_client_count,
                     client_budget_report
                         .source_path
                         .as_deref()
@@ -1299,6 +1703,35 @@ fn render_help_list_markdown(help_tree: &[RuntimeSkillHelpDescriptor]) -> String
     lines.join("\n")
 }
 
+/// Build one gRPC-facing LuaSkill tool descriptor from MCP tool schema and runtime entry metadata.
+/// 基于 MCP 工具 schema 与运行时入口元数据构造一个面向 gRPC 的 LuaSkill 工具描述。
+fn build_luaskill_tool_descriptor(
+    tool: &Tool,
+    entry: &RuntimeEntryDescriptor,
+) -> LuaSkillToolDescriptor {
+    LuaSkillToolDescriptor {
+        tool: tool.clone(),
+        skill_id: entry.skill_id.clone(),
+        entry_name: entry.local_name.clone(),
+        root_name: entry.root_name.clone(),
+        skill_dir: entry.skill_dir.clone(),
+    }
+}
+
+/// Require one non-empty gRPC field and return its trimmed value.
+/// 要求一个 gRPC 字段非空，并返回去除首尾空白后的值。
+fn require_non_empty_grpc_field(value: &str, field_name: &str) -> Result<String, (i64, String)> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err((
+            -32602,
+            format!("gRPC LuaSkills request requires parameter: {}", field_name),
+        ))
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
 /// Parse one skill-manager argument payload into the strongly typed host-tool request model.
 /// 把一份 skill-manager 参数载荷解析为强类型宿主工具请求模型。
 fn parse_skill_manager_tool_arguments(
@@ -1317,6 +1750,27 @@ fn parse_skill_manager_tool_arguments(
             format!("Invalid skill-manager arguments: {}", error),
         )
     })
+}
+
+/// Parse an optional skill install source type supplied by a stable gRPC method.
+/// 解析稳定 gRPC 方法传入的可选技能安装来源类型。
+fn parse_optional_skill_install_source_type(
+    value: Option<&str>,
+) -> Result<Option<SkillInstallSourceType>, (i64, String)> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    match value {
+        "github" => Ok(Some(SkillInstallSourceType::Github)),
+        "url" => Ok(Some(SkillInstallSourceType::Url)),
+        _ => Err((
+            -32602,
+            format!(
+                "Unsupported skill install source_type '{}'; expected 'github' or 'url'.",
+                value
+            ),
+        )),
+    }
 }
 
 /// Select the concrete USER runtime root used by the user-facing skill-manager tool.
@@ -2405,28 +2859,30 @@ mod tests {
 fn apply_runtime_entry_registry_delta(inner: &mut ServerInner, delta: &RuntimeEntryRegistryDelta) {
     for removed_name in &delta.removed_entry_names {
         inner.skill_tools.remove(removed_name);
+        inner.skill_entries.remove(removed_name);
     }
     for entry in &delta.updated_entries {
-        let tool = map_runtime_entry_to_mcp_tool(entry);
-        insert_skill_tool(inner, tool);
+        insert_skill_entry(inner, entry.clone());
     }
     for entry in &delta.added_entries {
-        let tool = map_runtime_entry_to_mcp_tool(entry);
-        insert_skill_tool(inner, tool);
+        insert_skill_entry(inner, entry.clone());
     }
 }
 
-/// Insert one LuaSkills-managed tool into the dynamic registry while rejecting host-reserved name collisions.
-/// 将单个 LuaSkills 动态工具插入动态注册表，并拒绝与宿主保留名称发生冲突。
-fn insert_skill_tool(inner: &mut ServerInner, tool: Tool) {
+/// Insert one LuaSkills runtime entry into the dynamic registry while rejecting host-reserved name collisions.
+/// 将单个 LuaSkills 运行时入口插入动态注册表，并拒绝与宿主保留名称发生冲突。
+fn insert_skill_entry(inner: &mut ServerInner, entry: RuntimeEntryDescriptor) {
+    let tool = map_runtime_entry_to_mcp_tool(&entry);
     if inner.host_tools.contains_key(&tool.name) {
         eprintln!(
             "[LuaSkills] Skip dynamic tool '{}' because it collides with a host-owned tool",
             tool.name
         );
         inner.skill_tools.remove(&tool.name);
+        inner.skill_entries.remove(&tool.name);
         return;
     }
+    inner.skill_entries.insert(tool.name.clone(), entry);
     inner.skill_tools.insert(tool.name.clone(), tool);
 }
 

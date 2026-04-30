@@ -1,0 +1,219 @@
+# LuaSkills gRPC 接口说明
+
+本文说明 `vulcan-mcp` 通过 gRPC 暴露 LuaSkills 能力的接口边界、请求上下文、预算解析规则和主要 RPC 用法。本文只覆盖 LuaSkills 服务面；VMM 相关 gRPC 对接不在本文范围内。
+
+## 接口文件
+
+- Proto 定义：`proto/v1/mcp_service.proto`
+- Package：`vulcan.mcp.v1`
+- 默认监听地址：`127.0.0.1:19202`
+- 监听配置：`runtime/configs/config.yaml` 的 `grpc` 字段
+
+服务启动后会同时注册两个 gRPC service：
+
+- `vulcan.mcp.v1.McpService`
+- `vulcan.mcp.v1.LuaSkillsService`
+
+## 设计原则
+
+LuaSkills 的 gRPC 对外面遵循以下规则：
+
+- 常见稳定功能直接映射为显式 RPC，例如工具发现、help 读取、skill config、skill lifecycle 和运行期配置重载。
+- 只有 LuaSkill package 暴露出的动态 runtime entry 通过 `LuaSkillsService.CallTool` 调用。
+- LuaSkills gRPC 调用不使用 `session_id` 表达上下文；工具调用本身是请求级上下文。
+- 每个 `LuaSkillsService` 请求都必须携带 `context.client_name`。
+- `client_name` 是 gRPC 专用的可信客户端名，用于精确解析 bytes 预算。
+- gRPC 不走 `VULCAN_CLIENT_MATCH_NAME` 环境变量、`Vulcan-Client-Match-Name` 请求头覆盖，也不走通配 match。
+- `request_id` 只作为可选请求关联标识，不是会话标识，也不表达对话状态。
+
+## McpService
+
+`McpService` 是兼容型 MCP gRPC 服务面，保留基础健康检查、通用调用和长连接能力。
+
+| RPC | 请求 | 响应 | 说明 |
+| --- | --- | --- | --- |
+| `Healthz` | `google.protobuf.Empty` | `HealthzResponse` | 返回服务存活状态、版本和 MCP 协议版本。 |
+| `Call` | `McpCallRequest` | `McpCallResponse` | 旧版通用 MCP 方法调用入口，例如 `tools/call`、`tools/list`。 |
+| `Connect` | `ConnectRequest` | `stream ConnectEvent` | 建立带心跳的长连接，当前主要用于基础连接管理。 |
+
+新接入 LuaSkills 能力时，推荐优先使用 `LuaSkillsService` 的显式 RPC。`McpService.Call` 可作为兼容入口保留，但不应承载新的稳定 LuaSkills 管理能力。
+
+## LuaSkillsService
+
+`LuaSkillsService` 是 LuaSkills 的主服务面，稳定能力全部通过明确 RPC 暴露，动态工具只通过 `CallTool` 暴露。
+
+| 分组 | RPC | 说明 |
+| --- | --- | --- |
+| 工具发现 | `ListSkills` | 列出已加载 LuaSkill package。 |
+| 工具发现 | `ListTools` | 列出 LuaSkills 动态 runtime entry 暴露出的可调用工具。 |
+| 工具发现 | `GetTool` | 按标准工具名获取单个动态工具描述。 |
+| 动态调用 | `CallTool` | 调用一个 LuaSkills 动态工具。 |
+| Help | `ListHelp` | 返回已注册 LuaSkills help 树的 Markdown 渲染文本。 |
+| Help | `GetHelp` | 按 `skill_id + flow` 返回指定 help 节点的 Markdown 文本。 |
+| 配置 | `ListSkillConfig` | 列出宿主管理的 LuaSkill 配置项，可按 `skill_id` 过滤。 |
+| 配置 | `GetSkillConfig` | 读取一个 LuaSkill 配置值。 |
+| 配置 | `SetSkillConfig` | 写入一个 LuaSkill 配置值。 |
+| 配置 | `DeleteSkillConfig` | 删除一个 LuaSkill 配置值。 |
+| 安装管理 | `ListInstalledSkills` | 渲染 USER 层受管 LuaSkills 清单。 |
+| 安装管理 | `InstallSkill` | 从来源安装一个 USER 层 LuaSkill。 |
+| 安装管理 | `UpdateSkill` | 按 `skill_id` 更新一个 USER 层 LuaSkill。 |
+| 安装管理 | `UninstallSkill` | 卸载一个 USER 层 LuaSkill，并保留 SQLite / LanceDB 数据。 |
+| 运行期配置 | `ReloadRuntimeConfigs` | 重载可热更新的运行期配置，目前覆盖 `client_budgets.yaml` 与 `tool_configs.yaml`。 |
+
+## 请求上下文
+
+所有 `LuaSkillsService` 请求都包含 `LuaSkillClientContext context`。
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `client_name` | 是 | 受信任 gRPC 客户端名称，用于精确 bytes 预算解析。空字符串会返回 `INVALID_ARGUMENT`。 |
+| `client_version` | 否 | 客户端版本，进入运行时上下文用于诊断。 |
+| `request_id` | 否 | 请求关联标识；不是 `session_id`，不参与会话状态管理。 |
+
+示例：
+
+```json
+{
+  "context": {
+    "clientName": "workbench-grpc",
+    "clientVersion": "1.0.0",
+    "requestId": "req-20260429-001"
+  }
+}
+```
+
+上例采用 protobuf JSON 映射的 lowerCamel 字段名。实际业务代码应以目标语言生成的 gRPC stub 字段名为准。
+
+## 预算解析
+
+LuaSkills gRPC 专用预算配置位于 `runtime/configs/client_budgets.yaml`：
+
+```yaml
+grpc_clients:
+  workbench-grpc:
+    budgets:
+      tool_result:
+        bytes:
+          default: 50000
+        lines:
+          default: -1
+      file_read:
+        bytes:
+          default: 50000
+        lines:
+          default: -1
+```
+
+解析规则：
+
+- `grpc_clients` 的 key 必须与请求中的 `context.client_name` 完全一致。
+- 不支持通配符、正则或包含匹配。
+- 不读取 `VULCAN_CLIENT_MATCH_NAME` 环境变量。
+- 不读取 HTTP / SSE 的 `Vulcan-Client-Match-Name` 请求头。
+- 如果没有命中 `grpc_clients`，会回退到默认预算。
+
+## 动态工具发现
+
+`ListTools` 返回 LuaSkills 动态工具描述：
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 标准动态工具名，调用 `CallTool` 时使用。 |
+| `description` | 工具描述。 |
+| `input_schema_json` | JSON 编码的 MCP input schema。 |
+| `annotations_json` | JSON 编码的 MCP tool annotations。 |
+| `skill_id` | 拥有该工具的 LuaSkill package 标识。 |
+| `entry_name` | package 内本地 entry 名称。 |
+| `root_name` | 提供该工具的 runtime root 名称。 |
+| `skill_dir` | 具体 skill 目录路径。 |
+
+示例：
+
+```bash
+grpcurl -plaintext \
+  -d '{"context":{"clientName":"workbench-grpc"}}' \
+  127.0.0.1:19202 \
+  vulcan.mcp.v1.LuaSkillsService/ListTools
+```
+
+## 动态工具调用
+
+`CallTool` 只调用 LuaSkills 动态 runtime entry。宿主稳定能力不要再包装成动态 tool 调用，应使用上面的显式 RPC。
+
+请求字段：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `context` | 是 | `LuaSkillClientContext`。 |
+| `tool_name` | 是 | `ListTools` 或 `GetTool` 返回的标准工具名。 |
+| `arguments_json` | 否 | JSON 编码的工具参数；为空时按 `{}` 处理。 |
+
+示例：
+
+```bash
+grpcurl -plaintext \
+  -d '{"context":{"clientName":"workbench-grpc","requestId":"req-001"},"toolName":"vulcan-file-read","argumentsJson":"{\"file\":\"D:/tmp/example.txt\"}"}' \
+  127.0.0.1:19202 \
+  vulcan.mcp.v1.LuaSkillsService/CallTool
+```
+
+响应字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `result_json` | JSON 编码的 MCP 兼容 `ToolCallResult`。 |
+| `text` | 从 `result_json.content` 文本块提取并拼接出的便捷文本。 |
+| `is_error` | 动态工具是否返回工具级错误。 |
+| `message` | `is_error=true` 时的错误摘要。 |
+
+## Help 接口
+
+`ListHelp` 和 `GetHelp` 返回 `LuaSkillTextResponse`：
+
+| RPC | 参数 | 说明 |
+| --- | --- | --- |
+| `ListHelp` | `context` | 返回全部已注册 help 节点目录。 |
+| `GetHelp` | `context`、`skill_id`、`flow` | 返回指定技能的指定 help flow。`flow=main` 表示 skill 包说明节点。 |
+
+## 配置接口
+
+Skill 配置由宿主管理，和 Lua skill 内部的 `vulcan.config.*` 共用同一份运行期配置。
+
+| RPC | 参数 | 说明 |
+| --- | --- | --- |
+| `ListSkillConfig` | `context`、可选 `skill_id` | 列出配置项。 |
+| `GetSkillConfig` | `context`、`skill_id`、`key` | 读取配置值。 |
+| `SetSkillConfig` | `context`、`skill_id`、`key`、`value` | 写入配置值。 |
+| `DeleteSkillConfig` | `context`、`skill_id`、`key` | 删除配置值。 |
+
+`SetSkillConfig` 和 `DeleteSkillConfig` 是写操作，客户端应在 UI 或上层协议中明确展示影响的 `skill_id` 与 `key`。
+
+## 安装管理接口
+
+安装管理 RPC 固定面向 USER 层：
+
+| RPC | 参数 | 说明 |
+| --- | --- | --- |
+| `ListInstalledSkills` | `context` | 列出 USER 层受管 LuaSkills。 |
+| `InstallSkill` | `context`、`source`、可选 `source_type` | 安装 LuaSkill。`source_type` 可为 `github` 或 `url`，为空时按来源自动推导。 |
+| `UpdateSkill` | `context`、`skill_id` | 更新指定 LuaSkill。 |
+| `UninstallSkill` | `context`、`skill_id` | 卸载指定 LuaSkill，并保留 SQLite / LanceDB 数据。 |
+
+## 错误语义
+
+常见 gRPC status 映射如下：
+
+| Status | 触发场景 |
+| --- | --- |
+| `INVALID_ARGUMENT` | 缺少 `context`、`context.client_name` 为空、`arguments_json` 不是合法 JSON、必填业务参数缺失。 |
+| `NOT_FOUND` | 请求的动态工具或内部方法不存在。 |
+| `INTERNAL` | LuaSkills 运行期、配置存储或宿主内部错误。 |
+| `UNKNOWN` | 未归类的内部错误。 |
+
+注意：`CallToolResponse.is_error=true` 表示工具级错误，gRPC 调用本身仍可能是成功返回；只有协议级或宿主级失败才会转为 gRPC status error。
+
+## 当前边界
+
+- 当前没有提供工具变更 watch stream，客户端需要主动调用 `ListTools` 刷新动态工具清单。
+- `request_id` 当前是请求关联字段，不作为会话状态，也不替代 VMM 场景可能需要的业务上下文。
+- 本文不描述 VMM 接口；VMM 的上下文模型和 LuaSkills 工具调用模型应保持分离。

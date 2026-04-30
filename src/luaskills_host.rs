@@ -1,5 +1,6 @@
 use crate::client_budget::{
     ClientBudgetSnapshot, resolve_client_budget_snapshot, resolve_effective_client_match_name,
+    resolve_grpc_client_budget_snapshot,
 };
 use crate::config::{Config, SkillRootConfigEntry, SpaceControllerProcessModeConfig};
 use crate::protocol::{RequestContext, Tool, ToolAnnotations};
@@ -71,6 +72,60 @@ pub fn build_runtime_invocation_context(
 ) -> LuaInvocationContext {
     let client_budget = resolve_client_budget_snapshot(request_context, tool_name, skill_name);
     let runtime_request_context = request_context.map(build_runtime_request_context);
+    LuaInvocationContext::new(
+        runtime_request_context,
+        serde_json::to_value(&client_budget).unwrap_or_else(|_| json!({})),
+        client_budget.tool_config.clone(),
+    )
+}
+
+/// Build one runtime request context from a trusted gRPC client identity.
+/// 基于受信任的 gRPC 客户端身份构造运行时请求上下文。
+pub fn build_grpc_runtime_request_context(
+    client_name: &str,
+    client_version: Option<&str>,
+) -> RuntimeRequestContext {
+    let normalized_client_name = client_name.trim().to_string();
+    let normalized_client_version = client_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let runtime_client_info =
+        if normalized_client_name.is_empty() && normalized_client_version.is_none() {
+            None
+        } else {
+            Some(RuntimeClientInfo {
+                kind: Some("grpc".to_string()),
+                name: if normalized_client_name.is_empty() {
+                    None
+                } else {
+                    Some(normalized_client_name)
+                },
+                version: normalized_client_version,
+            })
+        };
+
+    RuntimeRequestContext {
+        transport_name: Some("grpc_unary".to_string()),
+        session_id: None,
+        client_info: runtime_client_info,
+        client_capabilities: json!({}),
+    }
+}
+
+/// Build one Lua invocation context for gRPC without generic MCP client matching.
+/// 为 gRPC 构造 Lua 调用上下文，不使用通用 MCP 客户端匹配逻辑。
+pub fn build_grpc_runtime_invocation_context(
+    client_name: &str,
+    client_version: Option<&str>,
+    tool_name: Option<&str>,
+    skill_name: Option<&str>,
+) -> LuaInvocationContext {
+    let client_budget = resolve_grpc_client_budget_snapshot(client_name, tool_name, skill_name);
+    let runtime_request_context = Some(build_grpc_runtime_request_context(
+        client_name,
+        client_version,
+    ));
     LuaInvocationContext::new(
         runtime_request_context,
         serde_json::to_value(&client_budget).unwrap_or_else(|_| json!({})),
@@ -809,6 +864,16 @@ pub fn client_budget_snapshot_for_render(
     skill_name: Option<&str>,
 ) -> ClientBudgetSnapshot {
     resolve_client_budget_snapshot(request_context, tool_name, skill_name)
+}
+
+/// Resolve the render budget for a gRPC tool call by exact `client_name`.
+/// 通过精确 `client_name` 解析 gRPC 工具调用的渲染预算。
+pub fn grpc_client_budget_snapshot_for_render(
+    client_name: &str,
+    tool_name: Option<&str>,
+    skill_name: Option<&str>,
+) -> ClientBudgetSnapshot {
+    resolve_grpc_client_budget_snapshot(client_name, tool_name, skill_name)
 }
 
 /// Resolve the Lua resources directory according to the current MCP host layout.

@@ -36,6 +36,11 @@
 - 提供宿主封装的 strict help 工具与统一 `luaskill-config` 配置工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
 - 支持宿主级 `client_budgets.yaml`、`tool_configs.yaml` 与统一 Skill 运行时配置
+- 提供 LuaSkills 专用 gRPC 服务面，稳定能力走显式 RPC，动态 entry 走 `CallTool`
+
+接口文档：
+
+- [LuaSkills gRPC 接口说明](docs/grpc_luaskills_api_cn.md)
 
 ## 数据库访问模型
 

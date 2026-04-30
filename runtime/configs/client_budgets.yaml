@@ -24,6 +24,10 @@ defaults:
       lines:
         default: -1
 
+# 中文：gRPC 专用精确客户端预算。key 必须等于协议中的 client_name，不支持通配、环境变量或 header 覆盖。
+# English: Exact gRPC-only client budgets. Keys must equal the protocol client_name; wildcards, env overrides, and header overrides are not supported.
+grpc_clients: {}
+
 clients:
   # 中文：以下客户端匹配规则复刻自 vulcan-codekit 原始已验证逻辑。
   # English: The client match rules below replicate the original validated logic from vulcan-codekit.

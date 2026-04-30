@@ -242,6 +242,14 @@ pub struct RequestContext {
     /// 宿主侧可选覆盖值，用于强制指定策略解析时使用的客户端匹配名称。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_match_name_override: Option<String>,
+    /// Trusted exact client name used by controlled transports such as gRPC to bypass generic matching.
+    /// gRPC 等受控传输使用的受信任精确客户端名称，用于绕过通用匹配。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_client_name: Option<String>,
+    /// Whether generic client-name overrides from environment or headers must be ignored.
+    /// 是否必须忽略来自环境变量或请求头的通用客户端名称覆盖。
+    #[serde(default)]
+    pub disable_client_match_overrides: bool,
     /// Raw client capabilities payload preserved from initialize.
     /// 从 initialize 中保留的客户端能力原始负载。
     #[serde(default = "default_request_context_capabilities")]
@@ -260,6 +268,8 @@ impl Default for RequestContext {
             protocol_version: None,
             client_info: None,
             client_match_name_override: None,
+            exact_client_name: None,
+            disable_client_match_overrides: false,
             client_capabilities: default_request_context_capabilities(),
         }
     }

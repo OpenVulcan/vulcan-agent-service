@@ -333,6 +333,8 @@ async fn handle_initialize_request(
             protocol_version: Some(protocol_version),
             client_info: initialize_request.client_info,
             client_match_name_override: client_match_name_override_header_value(&headers),
+            exact_client_name: None,
+            disable_client_match_overrides: false,
             client_capabilities: initialize_request.capabilities,
         })
         .await;
