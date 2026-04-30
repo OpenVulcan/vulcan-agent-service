@@ -1,0 +1,65 @@
+# English: Host-owned model configuration for LuaSkills-facing simplified model capabilities.
+# 中文：宿主管理的模型配置，用于面向 LuaSkills 的简化模型能力。
+#
+# English: This file is intentionally separate from skill_config.json; Lua skills must not read or mutate model provider secrets.
+# 中文：本文件刻意与 skill_config.json 分离；Lua skill 不应读取或修改模型供应商密钥。
+#
+# English: The only provider shape currently supported by this host is OpenAI-compatible HTTP APIs.
+# 中文：当前宿主只支持 OpenAI-compatible HTTP API 这一类供应商形态。
+
+openai_compatible:
+  # English: Keep the provider disabled by default so builds and tests never call a remote model accidentally.
+  # 中文：默认关闭供应商，避免构建与测试意外调用远程模型。
+  enabled: false
+
+  embedding:
+    # English: Exposes the future vulcan.models.embed(text) capability when true and the provider is enabled.
+    # 中文：为 true 且供应商启用时，开放未来的 vulcan.models.embed(text) 能力。
+    enabled: false
+    # English: Embedding API base URL, usually ending with /v1; /embeddings is appended by the host.
+    # 中文：向量 API 基础地址，通常以 /v1 结尾；宿主会追加 /embeddings。
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # English: Embedding API key can be a literal secret or an exact ${env:NAME} reference.
+    # 中文：向量 API key 可以是字面密钥，也可以是精确 ${env:NAME} 引用。
+    api_key: "${env:BAILIAN_API_KEY}"
+    # English: Configure one embedding model; batch embeddings are intentionally not supported at the skill level.
+    # 中文：配置单个向量模型；skill 层刻意不支持批量向量。
+    model: "text-embedding-v4"
+    # English: Per-request timeout for embedding calls.
+    # 中文：向量调用的单请求超时时间。
+    timeout_ms: 30000
+    # English: Optional provider-specific fields; reserved keys model/input are ignored by the host.
+    # 中文：可选供应商专用字段；宿主会忽略 model/input 这类保留键。
+    request_overrides: {}
+
+  llm:
+    # English: Exposes the future vulcan.models.llm(system, user) capability when true and the provider is enabled.
+    # 中文：为 true 且供应商启用时，开放未来的 vulcan.models.llm(system, user) 能力。
+    enabled: false
+    # English: LLM API base URL, usually ending with /v1; /chat/completions is appended by the host.
+    # 中文：LLM API 基础地址，通常以 /v1 结尾；宿主会追加 /chat/completions。
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # English: LLM API key can be a literal secret or an exact ${env:NAME} reference.
+    # 中文：LLM API key 可以是字面密钥，也可以是精确 ${env:NAME} 引用。
+    api_key: "${env:BAILIAN_API_KEY}"
+    # English: Prefer a lightweight low-cost model for tool-side analysis instead of the main agent model.
+    # 中文：建议使用轻量低成本模型服务工具侧分析，而不是主 Agent 模型。
+    model: "qwen3.6-flash"
+    # English: LLM calls are always non-streaming; stream overrides are ignored.
+    # 中文：LLM 调用始终非流式；stream 覆盖会被忽略。
+    temperature: 0.2
+    # English: Caps concise tool-side analysis responses.
+    # 中文：限制工具侧分析返回保持简洁。
+    max_tokens: 1200
+    # English: Per-request timeout for LLM calls.
+    # 中文：LLM 调用的单请求超时时间。
+    timeout_ms: 60000
+    # English: Use this for provider-specific thinking-disable flags such as enable_thinking=false when required.
+    # 中文：需要供应商专用关闭思考参数时在此配置，例如 enable_thinking=false。
+    request_overrides:
+      enable_thinking: false
+    # 阿里百炼关闭思考
+    #  enable_thinking: true
+    # 火山方舟关闭思考
+    #  thinking:
+    #    type: "disabled"

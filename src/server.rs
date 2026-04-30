@@ -17,6 +17,8 @@ use crate::luaskills_host::{
     grpc_client_budget_snapshot_for_render, install_luaskills_log_callback,
     map_runtime_entry_to_mcp_tool,
 };
+use crate::model_config::reload_model_config;
+use crate::model_provider::install_luaskills_model_callbacks;
 use crate::protocol::*;
 use crate::temp_maintenance::ensure_runtime_temp_dir;
 use crate::tool_config::reload_tool_configs;
@@ -321,7 +323,7 @@ impl McpServer {
             "reload_vulcan_mcp_configs".to_string(),
             Tool::with_annotations(
                 "reload_vulcan_mcp_configs",
-                "Reload hot-reloadable Vulcan MCP runtime config files. This refreshes client_budgets.yaml and tool_configs.yaml, but does not reload config.yaml or restart-bound transport settings. Use this only when the user explicitly asks to reload runtime configs; do not call it proactively during normal tool execution.",
+                "Reload hot-reloadable Vulcan MCP runtime config files. This refreshes client_budgets.yaml, tool_configs.yaml, and model_config.yaml, but does not reload config.yaml or restart-bound transport settings. Use this only when the user explicitly asks to reload runtime configs; do not call it proactively during normal tool execution.",
                 json!({}),
                 vec![],
                 ToolAnnotations {
@@ -602,6 +604,7 @@ impl McpServer {
         arguments: Value,
         client_name: &str,
         client_version: Option<&str>,
+        request_id: Option<&str>,
     ) -> Result<ToolCallResult, (i64, String)> {
         let tool_name = require_non_empty_grpc_field(tool_name, "tool_name")?;
         let client_name = require_non_empty_grpc_field(client_name, "client_name")?;
@@ -640,6 +643,7 @@ impl McpServer {
         let invocation_context = build_grpc_runtime_invocation_context(
             &client_name,
             client_version,
+            request_id,
             Some(&tool_name_for_call),
             skill_name.as_deref(),
         );
@@ -714,13 +718,14 @@ impl McpServer {
         flow: &str,
         client_name: &str,
         client_version: Option<&str>,
+        request_id: Option<&str>,
     ) -> Result<ToolCallResult, (i64, String)> {
         let skill_id = require_non_empty_grpc_field(skill_id, "skill_id")?;
         let flow = require_non_empty_grpc_field(flow, "flow")?;
         let client_name = require_non_empty_grpc_field(client_name, "client_name")?;
         let engine = self.resolve_lua_engine_for_environment()?;
         let runtime_request_context =
-            build_grpc_runtime_request_context(&client_name, client_version);
+            build_grpc_runtime_request_context(&client_name, client_version, request_id);
         let result = tokio::task::spawn_blocking(move || {
             let engine = engine
                 .read()
@@ -867,9 +872,12 @@ impl McpServer {
             .map_err(|error| (-32603, format!("reload client budgets failed: {}", error)))?;
         let tool_config_report = reload_tool_configs()
             .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
+        let model_config_report = reload_model_config()
+            .map_err(|error| (-32603, format!("reload model configs failed: {}", error)))?;
+        install_luaskills_model_callbacks();
 
         Ok(format!(
-            "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, grpc_clients={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded",
+            "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, grpc_clients={}, source={}\n- tool_configs: tools={}, source={}\n- model_config: provider_enabled={}, embed={}, embed_api_key={}, embed_base_url={}, llm={}, llm_api_key={}, llm_base_url={}, source={}\n- config.yaml: not reloaded",
             client_budget_report.client_count,
             client_budget_report.grpc_client_count,
             client_budget_report
@@ -878,6 +886,17 @@ impl McpServer {
                 .unwrap_or("unavailable"),
             tool_config_report.tool_count,
             tool_config_report
+                .source_path
+                .as_deref()
+                .unwrap_or("unavailable"),
+            model_config_report.provider_enabled,
+            model_config_report.embedding_enabled,
+            model_config_report.embedding_api_key_configured,
+            model_config_report.embedding_base_url_configured,
+            model_config_report.llm_enabled,
+            model_config_report.llm_api_key_configured,
+            model_config_report.llm_base_url_configured,
+            model_config_report
                 .source_path
                 .as_deref()
                 .unwrap_or("unavailable")
@@ -1206,9 +1225,12 @@ impl McpServer {
                 })?;
                 let tool_config_report = reload_tool_configs()
                     .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
+                let model_config_report = reload_model_config()
+                    .map_err(|error| (-32603, format!("reload model configs failed: {}", error)))?;
+                install_luaskills_model_callbacks();
 
                 let reload_message = format!(
-                    "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, grpc_clients={}, source={}\n- tool_configs: tools={}, source={}\n- config.yaml: not reloaded",
+                    "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, grpc_clients={}, source={}\n- tool_configs: tools={}, source={}\n- model_config: provider_enabled={}, embed={}, embed_api_key={}, embed_base_url={}, llm={}, llm_api_key={}, llm_base_url={}, source={}\n- config.yaml: not reloaded",
                     client_budget_report.client_count,
                     client_budget_report.grpc_client_count,
                     client_budget_report
@@ -1217,6 +1239,17 @@ impl McpServer {
                         .unwrap_or("unavailable"),
                     tool_config_report.tool_count,
                     tool_config_report
+                        .source_path
+                        .as_deref()
+                        .unwrap_or("unavailable"),
+                    model_config_report.provider_enabled,
+                    model_config_report.embedding_enabled,
+                    model_config_report.embedding_api_key_configured,
+                    model_config_report.embedding_base_url_configured,
+                    model_config_report.llm_enabled,
+                    model_config_report.llm_api_key_configured,
+                    model_config_report.llm_base_url_configured,
+                    model_config_report
                         .source_path
                         .as_deref()
                         .unwrap_or("unavailable")

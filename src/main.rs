@@ -5,6 +5,8 @@ mod grpc_client;
 mod grpc_server;
 mod http_server;
 mod luaskills_host;
+mod model_config;
+mod model_provider;
 #[allow(dead_code)]
 mod protocol;
 mod runtime_logging;
@@ -37,6 +39,8 @@ use luaskills_host::{
     normalize_skill_root_key, resolve_runtime_root_from_config, resolve_skill_config_file_path,
     resolve_skill_roots_from_config, validate_unique_skill_root_spaces,
 };
+use model_config::{initialize_model_config_runtime_root, preload_model_config};
+use model_provider::install_luaskills_model_callbacks;
 use protocol::{ClientInfo, PROTOCOL_VERSION_LATEST, RequestContext, ToolCallResult};
 use runtime_logging::{info as log_info, set_non_error_logging_enabled};
 use serde_json::{Value, json};
@@ -160,6 +164,23 @@ fn print_tool_config_preload_log(report: &tool_config::ToolConfigLoadReport) {
             tool_name, count
         ));
     }
+}
+
+/// Format the preloaded model-config summary without exposing provider secrets.
+/// 把模型配置预载摘要格式化为不暴露供应商密钥的启动日志。
+fn print_model_config_preload_log(report: &model_config::ModelConfigLoadReport) {
+    log_info(format!(
+        "[models_config]provider={},enabled={},embed_api_key={},embed_base_url={},llm_api_key={},llm_base_url={},embed={},llm={},source={}",
+        report.provider,
+        report.provider_enabled,
+        report.embedding_api_key_configured,
+        report.embedding_base_url_configured,
+        report.llm_api_key_configured,
+        report.llm_base_url_configured,
+        report.embedding_enabled,
+        report.llm_enabled,
+        report.source_path.as_deref().unwrap_or("unavailable")
+    ));
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1373,13 +1394,19 @@ fn preload_runtime_mcp_configs(cfg: &Config) -> Result<(), Box<dyn std::error::E
         .map_err(|error| format!("Failed to initialize client budget runtime root: {}", error))?;
     initialize_tool_config_runtime_root(runtime_root.as_deref())
         .map_err(|error| format!("Failed to initialize tool config runtime root: {}", error))?;
+    initialize_model_config_runtime_root(runtime_root.as_deref())
+        .map_err(|error| format!("Failed to initialize model config runtime root: {}", error))?;
     let client_budget_report = preload_client_budget_config()
         .map_err(|error| format!("Failed to preload client budgets: {}", error))?;
     let tool_config_report = preload_tool_configs()
         .map_err(|error| format!("Failed to preload tool configs: {}", error))?;
+    let model_config_report = preload_model_config()
+        .map_err(|error| format!("Failed to preload model configs: {}", error))?;
+    install_luaskills_model_callbacks();
 
     print_client_budget_preload_log(&client_budget_report);
     print_tool_config_preload_log(&tool_config_report);
+    print_model_config_preload_log(&model_config_report);
     Ok(())
 }
 

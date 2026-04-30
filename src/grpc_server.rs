@@ -308,6 +308,7 @@ impl LuaSkillsService for McpServiceImpl {
                 arguments,
                 &context.client_name,
                 optional_str(&context.client_version),
+                optional_str(&context.request_id),
             )
             .await
             .map_err(mcp_error_to_status)?;
@@ -340,6 +341,7 @@ impl LuaSkillsService for McpServiceImpl {
                 &req.flow,
                 &context.client_name,
                 optional_str(&context.client_version),
+                optional_str(&context.request_id),
             )
             .await
             .map_err(mcp_error_to_status)?;

@@ -48,7 +48,7 @@ pub fn build_runtime_request_context(request_context: &RequestContext) -> Runtim
         if effective_client_name.is_some() || effective_client_version.is_some() {
             Some(RuntimeClientInfo {
                 kind: Some("mcp".to_string()),
-                name: effective_client_name,
+                name: effective_client_name.clone(),
                 version: effective_client_version,
             })
         } else {
@@ -56,6 +56,8 @@ pub fn build_runtime_request_context(request_context: &RequestContext) -> Runtim
         };
 
     RuntimeRequestContext {
+        request_id: None,
+        client_name: effective_client_name,
         transport_name: request_context.transport.clone(),
         session_id: request_context.session_id.clone(),
         client_info: runtime_client_info,
@@ -84,9 +86,14 @@ pub fn build_runtime_invocation_context(
 pub fn build_grpc_runtime_request_context(
     client_name: &str,
     client_version: Option<&str>,
+    request_id: Option<&str>,
 ) -> RuntimeRequestContext {
     let normalized_client_name = client_name.trim().to_string();
     let normalized_client_version = client_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let normalized_request_id = request_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
@@ -99,13 +106,19 @@ pub fn build_grpc_runtime_request_context(
                 name: if normalized_client_name.is_empty() {
                     None
                 } else {
-                    Some(normalized_client_name)
+                    Some(normalized_client_name.clone())
                 },
                 version: normalized_client_version,
             })
         };
 
     RuntimeRequestContext {
+        request_id: normalized_request_id,
+        client_name: if normalized_client_name.is_empty() {
+            None
+        } else {
+            Some(normalized_client_name.clone())
+        },
         transport_name: Some("grpc_unary".to_string()),
         session_id: None,
         client_info: runtime_client_info,
@@ -118,6 +131,7 @@ pub fn build_grpc_runtime_request_context(
 pub fn build_grpc_runtime_invocation_context(
     client_name: &str,
     client_version: Option<&str>,
+    request_id: Option<&str>,
     tool_name: Option<&str>,
     skill_name: Option<&str>,
 ) -> LuaInvocationContext {
@@ -125,6 +139,7 @@ pub fn build_grpc_runtime_invocation_context(
     let runtime_request_context = Some(build_grpc_runtime_request_context(
         client_name,
         client_version,
+        request_id,
     ));
     LuaInvocationContext::new(
         runtime_request_context,

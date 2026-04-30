@@ -66,6 +66,20 @@ copy_directory_contents() {
     cp -a "$source_dir"/. "$destination_dir"/
 }
 
+enable_output_model_config_for_local_testing() {
+    # Enable model capabilities only in the built output runtime config for local smoke testing.
+    # 仅在构建后的输出运行配置中启用模型能力，方便本地冒烟测试。
+    local config_dir="$1"
+    local model_config_out="$config_dir/model_config.yaml"
+    [ -f "$model_config_out" ] || return 0
+    sed -i.bak -E \
+        -e 's/^  enabled:[[:space:]]*false[[:space:]]*$/  enabled: true/' \
+        -e 's/^    enabled:[[:space:]]*false[[:space:]]*$/    enabled: true/' \
+        "$model_config_out"
+    rm -f "$model_config_out.bak"
+    echo "==> Output model_config.yaml enabled for local model smoke tests"
+}
+
 # Sync official LuaSkills runtime package exports to output/.
 mkdir -p output/libs
 LUASKILLS_RUNTIME_ROOT="third_party/luaskills_runtime"
@@ -98,6 +112,7 @@ fi
 mkdir -p output/configs
 if [ -d "runtime/configs" ] && [ "$(ls -A runtime/configs/ 2>/dev/null)" ]; then
     cp -rf runtime/configs/* output/configs/
+    enable_output_model_config_for_local_testing "output/configs"
     echo "==> Runtime configs synced to output/configs/"
 else
     echo "==> No runtime/configs directory found"

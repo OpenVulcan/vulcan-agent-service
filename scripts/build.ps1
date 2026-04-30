@@ -106,6 +106,30 @@ function Copy-DirectoryContents {
     return $true
 }
 
+function Enable-OutputModelConfigForLocalTesting {
+    <#
+    .SYNOPSIS
+    Enable model capabilities only in the built output runtime config for local smoke testing.
+    仅在构建后的输出运行配置中启用模型能力，方便本地冒烟测试。
+
+    .PARAMETER ConfigDirectory
+    Output config directory that may contain model_config.yaml.
+    可能包含 model_config.yaml 的输出配置目录。
+    #>
+    param([string]$ConfigDirectory)
+
+    $ModelConfigOut = Join-Path $ConfigDirectory "model_config.yaml"
+    if (-not (Test-Path -LiteralPath $ModelConfigOut)) {
+        return
+    }
+
+    $Content = Get-Content -LiteralPath $ModelConfigOut -Raw
+    $Content = $Content -replace '(?m)^  enabled:\s*false\s*$', '  enabled: true'
+    $Content = $Content -replace '(?m)^    enabled:\s*false\s*$', '    enabled: true'
+    Set-Content -LiteralPath $ModelConfigOut -Value $Content -Encoding UTF8
+    Write-Host "==> Output model_config.yaml enabled for local model smoke tests"
+}
+
 # Ensure output directories exist
 if (-not (Test-Path $BaseOutDir)) { New-Item -ItemType Directory -Path $BaseOutDir -Force | Out-Null }
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
@@ -152,6 +176,7 @@ if (Test-Path -LiteralPath $LuaSkillsRuntimeRoot) {
 if (Test-Path "runtime\configs") {
     if (-not (Test-Path $ConfigOut)) { New-Item -ItemType Directory -Path $ConfigOut -Force | Out-Null }
     Copy-Item -Force -Recurse "runtime\configs\*" "$ConfigOut\"
+    Enable-OutputModelConfigForLocalTesting -ConfigDirectory $ConfigOut
     Write-Host "==> Runtime configs synced to $ConfigOut\"
 } else {
     Write-Host "==> No runtime/configs directory found"
