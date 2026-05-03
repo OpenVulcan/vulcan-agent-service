@@ -372,6 +372,7 @@ message MemorySearchHit {
   string abstract = 3;
   string details_preview = 4;
   string category = 5;
+  string created_datetime = 6;
 }
 
 // MemorySearchGroupResult echoes one normalized query string and returns the hit list produced for that query.
@@ -488,23 +489,20 @@ message ChatCompactResponse {
 // ContextItem transports one assembled context item back to the caller.
 // ContextItem 用于把一条组装后的上下文项返回给调用方。
 message ContextItem {
-  string kind = 1 [deprecated = true];
-  string title = 2 [deprecated = true];
-  string text = 3;
-  string source = 4 [deprecated = true];
-  double score = 5;
-  uint64 turn_id = 6;
-  bool has_dialogue = 7;
+  string text = 1;
+  double score = 2;
+  uint64 turn_id = 3;
+  bool has_dialogue = 4;
+  string created_datetime = 5;
 }
 
 // PreCheckResponse returns the injection decision and assembled context payload.
 // PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
 message PreCheckResponse {
   bool should_inject = 1;
-  string context_text = 2 [deprecated = true];
-  repeated ContextItem context_items = 3;
-  bool degraded = 4;
-  string trace_id = 5;
+  repeated ContextItem context_items = 2;
+  bool degraded = 3;
+  string trace_id = 4;
 }
 
 // PostActionTimelineItem carries one middle timeline node from the text-only contract.
