@@ -328,14 +328,16 @@ fn build_server_exposes_luaskill_config_without_skill_roots() {
         .block_on(build_server(&config))
         .expect("build_server should succeed without skills");
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/list"
-            }),
-            RequestContext::default(),
-        ))
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list"
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("tools/list should return one response");
     let tool_names = response
         .get("result")
@@ -375,14 +377,16 @@ fn build_server_exposes_skill_manager_without_existing_skills() {
     );
 
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/list"
-            }),
-            RequestContext::default(),
-        ))
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list"
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("tools/list should return one response");
     let tool_names = response
         .get("result")
@@ -395,20 +399,22 @@ fn build_server_exposes_skill_manager_without_existing_skills() {
     assert!(tool_names.contains(&"skill-manager"));
 
     let list_response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "skill-manager",
-                    "arguments": {
-                        "action": "list"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "list"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("skill-manager list should return one response");
     let tool_result: ToolCallResult = serde_json::from_value(
         list_response
@@ -446,21 +452,23 @@ fn skill_manager_update_missing_skill_returns_tool_error() {
         .block_on(build_server(&config))
         .expect("build_server should succeed without preinstalled skills");
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "skill-manager",
-                    "arguments": {
-                        "action": "update",
-                        "skill_id": "vulcan-codekit"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "update",
+                            "skill_id": "vulcan-codekit"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("skill-manager update should return one response");
     let tool_result: ToolCallResult = serde_json::from_value(
         response
@@ -630,20 +638,22 @@ fn skill_manager_update_requires_skill_id() {
         .expect("build_server should succeed without preinstalled skills");
 
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "skill-manager",
-                    "arguments": {
-                        "action": "update"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "update"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("skill-manager update should return one response");
     let message = response
         .get("error")

@@ -1,33 +1,30 @@
 use serde_json::Value;
 
 use crate::host_core::HostRuntime;
+use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallRequest, RuntimeToolCallResult};
 use crate::host_core::projections::render_help_detail_markdown;
 use crate::luaskills_adapter::{
     build_runtime_invocation_context, build_runtime_request_context,
     client_budget_snapshot_for_render,
 };
+use crate::support::RuntimeRequestContext;
 use crate::support::temp_maintenance::ensure_runtime_temp_dir;
 use crate::support::tool_result_format::{HostRenderOptions, render_tool_result_text};
-use crate::transport::mcp::protocol::{
-    RequestContext, TextContent, ToolCallRequest, ToolCallResult,
-};
 
 impl HostRuntime {
-    /// Build the tools/call response value used by the MCP dispatcher.
-    /// 构建 MCP dispatcher 使用的 tools/call 响应值。
-    pub(crate) async fn call_mcp_tool_value(
+    /// Invoke one runtime tool and return a transport-neutral tool-call result.
+    /// 调用单个运行时工具并返回传输无关的工具调用结果。
+    pub(crate) async fn call_runtime_tool(
         &self,
-        params: Option<Value>,
-        request_context: &RequestContext,
-    ) -> Result<Value, (i64, String)> {
-        let req: ToolCallRequest = serde_json::from_value(params.unwrap_or_default())
-            .map_err(|error| (-32602, format!("Invalid tools/call params: {}", error)))?;
-        let tool = self.resolve_mcp_tool(&req.name).await?;
+        req: RuntimeToolCallRequest,
+        request_context: &RuntimeRequestContext,
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
+        let tool = self.resolve_tool_descriptor(&req.name).await?;
         let args = req.arguments.unwrap_or_default();
 
         let result = match tool.name.as_str() {
-            "vulcan-help-list" => ToolCallResult {
-                content: vec![TextContent::text(&self.list_luaskill_help()?)],
+            "vulcan-help-list" => RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text(&self.list_luaskill_help()?)],
                 is_error: None,
             },
 
@@ -62,28 +59,32 @@ impl HostRuntime {
                 .map_err(|error| (-32603, format!("vulcan-help-detail spawn error: {}", error)))?;
 
                 match result {
-                    Ok(Some(detail)) => ToolCallResult {
-                        content: vec![TextContent::text(&render_help_detail_markdown(&detail))],
+                    Ok(Some(detail)) => RuntimeToolCallResult {
+                        content: vec![RuntimeTextContent::text(&render_help_detail_markdown(
+                            &detail,
+                        ))],
                         is_error: None,
                     },
-                    Ok(None) => ToolCallResult {
-                        content: vec![TextContent::text("Skill help not found.")],
+                    Ok(None) => RuntimeToolCallResult {
+                        content: vec![RuntimeTextContent::text("Skill help not found.")],
                         is_error: Some(true),
                     },
-                    Err(error) => ToolCallResult {
-                        content: vec![TextContent::text(&error)],
+                    Err(error) => RuntimeToolCallResult {
+                        content: vec![RuntimeTextContent::text(&error)],
                         is_error: Some(true),
                     },
                 }
             }
 
-            "reload_vulcan_mcp_configs" => ToolCallResult {
-                content: vec![TextContent::text(&self.reload_luaskill_runtime_configs()?)],
+            "reload_vulcan_mcp_configs" => RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text(
+                    &self.reload_luaskill_runtime_configs()?,
+                )],
                 is_error: None,
             },
 
-            "luaskill-config" => ToolCallResult {
-                content: vec![TextContent::text(
+            "luaskill-config" => RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text(
                     &self.execute_luaskill_config_tool_text(&args)?,
                 )],
                 is_error: None,
@@ -97,8 +98,7 @@ impl HostRuntime {
             }
         };
 
-        serde_json::to_value(result)
-            .map_err(|error| (-32603, format!("Serialization error: {}", error)))
+        Ok(result)
     }
 
     /// Call one dynamic LuaSkill tool and render it into an MCP tool result.
@@ -107,8 +107,8 @@ impl HostRuntime {
         &self,
         tool_name: &str,
         args: Value,
-        request_context: &RequestContext,
-    ) -> Result<ToolCallResult, (i64, String)> {
+        request_context: &RuntimeRequestContext,
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         if !self.has_lua_engine() {
             return Err((-32603, format!("Tool not implemented: {}", tool_name)));
         }
@@ -166,8 +166,8 @@ impl HostRuntime {
                     })?
                     .join("mcp")
                     .join("cache");
-                Ok(ToolCallResult {
-                    content: vec![TextContent::text(&render_tool_result_text(
+                Ok(RuntimeToolCallResult {
+                    content: vec![RuntimeTextContent::text(&render_tool_result_text(
                         &value,
                         skill_name.as_deref(),
                         Some(&client_budget),
@@ -177,14 +177,14 @@ impl HostRuntime {
                                 .iter()
                                 .map(|root| root.skills_dir.clone())
                                 .collect(),
-                            template_resources_root: self.mcp_template_resources_root(),
+                            template_resources_root: self.tool_result_template_resources_root(),
                         },
                     ))],
                     is_error: None,
                 })
             }
-            Err(error) => Ok(ToolCallResult {
-                content: vec![TextContent::text(&error)],
+            Err(error) => Ok(RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text(&error)],
                 is_error: Some(true),
             }),
         }

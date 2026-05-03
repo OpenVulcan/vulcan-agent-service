@@ -15,13 +15,13 @@ use futures::stream::{self, StreamExt};
 use serde_json::Value;
 use std::convert::Infallible;
 
-use crate::host_core::McpServer;
 use crate::transport::http::helpers::{
     JsonRpcMessageKind, McpQuery, accepts_sse, classify_jsonrpc_message,
     client_match_name_override_header_value, extract_session_id, json_with_status,
     jsonrpc_error_response, merge_header_client_match_name_override,
     negotiated_protocol_from_initialize, plain_response, protocol_header_value, validate_origin,
 };
+use crate::transport::mcp::McpDispatcher;
 use crate::transport::mcp::protocol::{InitializeRequest, RequestContext, negotiate_version};
 
 use super::AppState;
@@ -49,7 +49,7 @@ pub(super) async fn handle_streamable_post(
         Err(e) => {
             return json_with_status(
                 StatusCode::BAD_REQUEST,
-                McpServer::parse_error(&format!("Invalid UTF-8: {}", e)),
+                McpDispatcher::parse_error(&format!("Invalid UTF-8: {}", e)),
             );
         }
     };
@@ -59,7 +59,7 @@ pub(super) async fn handle_streamable_post(
         Err(e) => {
             return json_with_status(
                 StatusCode::BAD_REQUEST,
-                McpServer::parse_error(&format!("Parse error: {}", e)),
+                McpDispatcher::parse_error(&format!("Parse error: {}", e)),
             );
         }
     };

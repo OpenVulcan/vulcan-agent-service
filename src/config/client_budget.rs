@@ -1,4 +1,4 @@
-use crate::transport::mcp::protocol::RequestContext;
+use crate::support::RuntimeRequestContext;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -104,7 +104,7 @@ pub fn reload_client_budget_config() -> Result<ClientBudgetLoadReport, String> {
 /// Resolve the client-budget snapshot for the current request; return a safe fallback when the config is missing or cannot be parsed.
 /// 解析当前请求对应的客户端预算快照；当配置缺失或解析失败时，返回安全默认值。
 pub fn resolve_client_budget_snapshot(
-    request_context: Option<&RequestContext>,
+    request_context: Option<&RuntimeRequestContext>,
     tool_name: Option<&str>,
     skill_name: Option<&str>,
 ) -> ClientBudgetSnapshot {
@@ -177,7 +177,7 @@ pub fn resolve_grpc_client_budget_snapshot(
 /// Resolve the effective client name used by host-side matching and runtime request context exposure.
 /// 解析宿主侧匹配与运行时请求上下文统一使用的最终客户端名称。
 pub fn resolve_effective_client_match_name(
-    request_context: Option<&RequestContext>,
+    request_context: Option<&RuntimeRequestContext>,
 ) -> Option<String> {
     if let Some(context) = request_context.filter(|context| context.disable_client_match_overrides)
     {

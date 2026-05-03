@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use crate::config::client_budget::reload_client_budget_config;
 use crate::config::model_config::reload_model_config;
 use crate::config::tool_config::reload_tool_configs;
+use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallResult};
 use crate::host_core::projections::{
     build_luaskill_tool_descriptor, render_help_detail_markdown, render_help_list_markdown,
     require_non_empty_grpc_field,
@@ -26,7 +27,6 @@ use crate::luaskills_adapter::{
 use crate::model_provider::install_luaskills_model_callbacks;
 use crate::support::temp_maintenance::ensure_runtime_temp_dir;
 use crate::support::tool_result_format::{HostRenderOptions, render_tool_result_text};
-use crate::transport::mcp::protocol::{TextContent, ToolCallResult};
 use luaskills::{SkillInstallRequest, SkillInstallSourceType};
 
 impl HostRuntime {
@@ -108,7 +108,7 @@ impl HostRuntime {
         client_name: &str,
         client_version: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let tool_name = require_non_empty_grpc_field(tool_name, "tool_name")?;
         let client_name = require_non_empty_grpc_field(client_name, "client_name")?;
         let inner = self.inner.lock().await;
@@ -175,8 +175,8 @@ impl HostRuntime {
                     })?
                     .join("mcp")
                     .join("cache");
-                Ok(ToolCallResult {
-                    content: vec![TextContent::text(&render_tool_result_text(
+                Ok(RuntimeToolCallResult {
+                    content: vec![RuntimeTextContent::text(&render_tool_result_text(
                         &value,
                         skill_name.as_deref(),
                         Some(&client_budget),
@@ -195,8 +195,8 @@ impl HostRuntime {
                     is_error: None,
                 })
             }
-            Err(error) => Ok(ToolCallResult {
-                content: vec![TextContent::text(&error)],
+            Err(error) => Ok(RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text(&error)],
                 is_error: Some(true),
             }),
         }
@@ -222,7 +222,7 @@ impl HostRuntime {
         client_name: &str,
         client_version: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let skill_id = require_non_empty_grpc_field(skill_id, "skill_id")?;
         let flow = require_non_empty_grpc_field(flow, "flow")?;
         let client_name = require_non_empty_grpc_field(client_name, "client_name")?;
@@ -239,16 +239,18 @@ impl HostRuntime {
         .map_err(|error| (-32603, format!("vulcan-help-detail spawn error: {}", error)))?;
 
         match result {
-            Ok(Some(detail)) => Ok(ToolCallResult {
-                content: vec![TextContent::text(&render_help_detail_markdown(&detail))],
+            Ok(Some(detail)) => Ok(RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text(&render_help_detail_markdown(
+                    &detail,
+                ))],
                 is_error: None,
             }),
-            Ok(None) => Ok(ToolCallResult {
-                content: vec![TextContent::text("Skill help not found.")],
+            Ok(None) => Ok(RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text("Skill help not found.")],
                 is_error: Some(true),
             }),
-            Err(error) => Ok(ToolCallResult {
-                content: vec![TextContent::text(&error)],
+            Err(error) => Ok(RuntimeToolCallResult {
+                content: vec![RuntimeTextContent::text(&error)],
                 is_error: Some(true),
             }),
         }
@@ -331,7 +333,7 @@ impl HostRuntime {
         &self,
         source: String,
         source_type: Option<String>,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let source = require_skill_manager_source(Some(source.as_str()), "install")?;
         let source_type = parse_optional_skill_install_source_type(source_type.as_deref())?
             .unwrap_or_else(|| infer_skill_install_source_type(&source, None));
@@ -348,7 +350,10 @@ impl HostRuntime {
 
     /// Update one USER-layer managed LuaSkill through a stable gRPC method.
     /// 通过稳定 gRPC 方法更新一个 USER 层受管 LuaSkill。
-    pub async fn update_luaskill(&self, skill_id: String) -> Result<ToolCallResult, (i64, String)> {
+    pub async fn update_luaskill(
+        &self,
+        skill_id: String,
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let skill_id = require_skill_manager_skill_id(Some(skill_id.as_str()), "update")?;
         self.execute_skill_update(SkillInstallRequest {
             skill_id: Some(skill_id),
@@ -363,7 +368,7 @@ impl HostRuntime {
     pub async fn uninstall_luaskill(
         &self,
         skill_id: String,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let skill_id = require_skill_manager_skill_id(Some(skill_id.as_str()), "uninstall")?;
         self.execute_skill_uninstall(skill_id).await
     }

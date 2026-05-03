@@ -2,7 +2,7 @@ use super::*;
 use crate::config::{
     Config, SkillRootConfigEntry, SpaceControllerConfig, SpaceControllerProcessModeConfig,
 };
-use crate::transport::mcp::protocol::RequestContext;
+use crate::support::{RuntimeClientInfo, RuntimeRequestContext};
 use luaskills::runtime_options::LuaRuntimeRunLuaPoolConfig;
 use luaskills::{
     LuaRuntimeDatabaseCallbackMode, LuaRuntimeDatabaseProviderMode,
@@ -231,12 +231,12 @@ fn build_runtime_request_context_prefers_env_override_name() {
         );
     }
 
-    let request_context = RequestContext {
-        client_info: Some(crate::transport::mcp::protocol::ClientInfo {
+    let request_context = RuntimeRequestContext {
+        client_info: Some(RuntimeClientInfo {
             name: "mcphost".to_string(),
             version: "1.0.0".to_string(),
         }),
-        ..RequestContext::default()
+        ..RuntimeRequestContext::default()
     };
 
     let runtime_context = build_runtime_request_context(&request_context);
@@ -282,13 +282,13 @@ fn build_runtime_request_context_prefers_request_override_name() {
         );
     }
 
-    let request_context = RequestContext {
-        client_info: Some(crate::transport::mcp::protocol::ClientInfo {
+    let request_context = RuntimeRequestContext {
+        client_info: Some(RuntimeClientInfo {
             name: "copilot".to_string(),
             version: "2.0.0".to_string(),
         }),
         client_match_name_override: Some("workbuddy".to_string()),
-        ..RequestContext::default()
+        ..RuntimeRequestContext::default()
     };
 
     let runtime_context = build_runtime_request_context(&request_context);

@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallResult};
 use crate::host_core::runtime::HostRuntime;
 use crate::host_core::skill_tools::{
     SkillManagerAction, SkillManagerToolArguments, build_skill_manager_for_root,
@@ -8,7 +9,6 @@ use crate::host_core::skill_tools::{
     render_skill_uninstall_tool_result, render_skill_url_install_not_implemented_result,
     require_skill_manager_skill_id, require_skill_manager_source, select_skill_manager_user_root,
 };
-use crate::transport::mcp::protocol::{TextContent, ToolCallResult};
 use luaskills::skill::manager::collect_effective_skill_instances_from_roots;
 use luaskills::{
     RuntimeSkillRoot, SkillInstallRequest, SkillInstallSourceType, SkillUninstallOptions,
@@ -21,7 +21,7 @@ impl HostRuntime {
     pub(crate) async fn execute_skill_manager_tool_args(
         &self,
         args: &Value,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let request = parse_skill_manager_tool_arguments(args)?;
         self.execute_skill_manager_tool(request).await
     }
@@ -31,12 +31,12 @@ impl HostRuntime {
     async fn execute_skill_manager_tool(
         &self,
         request: SkillManagerToolArguments,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         match request.action {
             SkillManagerAction::List => {
                 let rendered = self.render_skill_manager_list()?;
-                Ok(ToolCallResult {
-                    content: vec![TextContent::text(&rendered)],
+                Ok(RuntimeToolCallResult {
+                    content: vec![RuntimeTextContent::text(&rendered)],
                     is_error: None,
                 })
             }
@@ -159,7 +159,7 @@ impl HostRuntime {
     pub(super) async fn execute_skill_install(
         &self,
         request: SkillInstallRequest,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let (engine, roots, target_root) = self.resolve_lua_runtime_user_target()?;
         let operation = tokio::task::spawn_blocking(move || {
             let mut engine = engine
@@ -184,7 +184,7 @@ impl HostRuntime {
     pub(super) async fn execute_skill_update(
         &self,
         request: SkillInstallRequest,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let (engine, roots, target_root) = self.resolve_lua_runtime_user_target()?;
         let operation = tokio::task::spawn_blocking(move || {
             let mut engine = engine
@@ -209,7 +209,7 @@ impl HostRuntime {
     pub(super) async fn execute_skill_uninstall(
         &self,
         skill_id: String,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let (engine, roots, target_root) = self.resolve_lua_runtime_user_target()?;
         let operation = tokio::task::spawn_blocking(move || {
             let mut engine = engine

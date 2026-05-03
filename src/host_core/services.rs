@@ -1,6 +1,7 @@
-use serde_json::Value;
-
-use crate::transport::mcp::protocol::{RequestContext, ToolCallResult};
+use crate::host_core::model::{
+    RuntimeToolCallRequest, RuntimeToolCallResult, RuntimeToolDescriptor,
+};
+use crate::support::RuntimeRequestContext;
 
 /// Internal service surface for runtime tool discovery and invocation.
 /// 面向运行时工具发现与调用的内部服务能力面。
@@ -8,15 +9,15 @@ use crate::transport::mcp::protocol::{RequestContext, ToolCallResult};
 pub(crate) trait RuntimeToolService {
     /// List every tool currently exposed by the host runtime.
     /// 列出当前宿主运行时暴露的全部工具。
-    fn list_tools(&self) -> Result<Value, (i64, String)>;
+    fn list_tools(&self) -> Result<Vec<RuntimeToolDescriptor>, (i64, String)>;
 
     /// Invoke one tool through the transport-neutral runtime service surface.
     /// 通过传输无关的运行时服务能力面调用单个工具。
     async fn call_tool(
         &self,
-        params: Option<Value>,
-        request_context: &RequestContext,
-    ) -> Result<Value, (i64, String)>;
+        request: RuntimeToolCallRequest,
+        request_context: &RuntimeRequestContext,
+    ) -> Result<RuntimeToolCallResult, (i64, String)>;
 }
 
 /// Internal service surface for LuaSkills help projection.
@@ -36,7 +37,7 @@ pub(crate) trait RuntimeHelpService {
         client_name: &str,
         client_version: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<ToolCallResult, (i64, String)>;
+    ) -> Result<RuntimeToolCallResult, (i64, String)>;
 }
 
 /// Internal service surface for LuaSkills configuration and package administration.
@@ -74,15 +75,18 @@ pub(crate) trait RuntimeSkillAdminService {
         &self,
         source: String,
         source_type: Option<String>,
-    ) -> Result<ToolCallResult, (i64, String)>;
+    ) -> Result<RuntimeToolCallResult, (i64, String)>;
 
     /// Update one installed LuaSkill in the mutable runtime layer.
     /// 更新可变运行层中的单个已安装 LuaSkill。
-    async fn update_skill(&self, skill_id: String) -> Result<ToolCallResult, (i64, String)>;
+    async fn update_skill(&self, skill_id: String) -> Result<RuntimeToolCallResult, (i64, String)>;
 
     /// Uninstall one LuaSkill from the mutable runtime layer.
     /// 从可变运行层卸载单个 LuaSkill。
-    async fn uninstall_skill(&self, skill_id: String) -> Result<ToolCallResult, (i64, String)>;
+    async fn uninstall_skill(
+        &self,
+        skill_id: String,
+    ) -> Result<RuntimeToolCallResult, (i64, String)>;
 
     /// Reload hot-reloadable runtime configuration files.
     /// 重新加载支持热重载的运行时配置文件。

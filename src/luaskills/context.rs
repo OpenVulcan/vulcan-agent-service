@@ -2,13 +2,17 @@ use crate::config::client_budget::{
     ClientBudgetSnapshot, resolve_client_budget_snapshot, resolve_effective_client_match_name,
     resolve_grpc_client_budget_snapshot,
 };
-use crate::transport::mcp::protocol::RequestContext;
-use luaskills::{LuaInvocationContext, RuntimeClientInfo, RuntimeRequestContext};
+use crate::support::RuntimeRequestContext as HostRuntimeRequestContext;
+use luaskills::{
+    LuaInvocationContext, RuntimeClientInfo, RuntimeRequestContext as LuaRuntimeRequestContext,
+};
 use serde_json::json;
 
-/// Convert one MCP request context into the generic runtime request context expected by the LuaSkills library.
-/// 把一份 MCP 请求上下文转换为 LuaSkills 库期望的通用运行时请求上下文。
-pub fn build_runtime_request_context(request_context: &RequestContext) -> RuntimeRequestContext {
+/// Convert one host request context into the generic runtime request context expected by the LuaSkills library.
+/// 把一份宿主请求上下文转换为 LuaSkills 库期望的通用运行时请求上下文。
+pub fn build_runtime_request_context(
+    request_context: &HostRuntimeRequestContext,
+) -> LuaRuntimeRequestContext {
     let effective_client_name = resolve_effective_client_match_name(Some(request_context));
     let effective_client_version = request_context
         .client_info
@@ -17,7 +21,10 @@ pub fn build_runtime_request_context(request_context: &RequestContext) -> Runtim
     let runtime_client_info =
         if effective_client_name.is_some() || effective_client_version.is_some() {
             Some(RuntimeClientInfo {
-                kind: Some("mcp".to_string()),
+                kind: request_context
+                    .transport
+                    .clone()
+                    .or_else(|| Some("host".to_string())),
                 name: effective_client_name.clone(),
                 version: effective_client_version,
             })
@@ -25,7 +32,7 @@ pub fn build_runtime_request_context(request_context: &RequestContext) -> Runtim
             None
         };
 
-    RuntimeRequestContext {
+    LuaRuntimeRequestContext {
         request_id: None,
         client_name: effective_client_name,
         transport_name: request_context.transport.clone(),
@@ -35,10 +42,10 @@ pub fn build_runtime_request_context(request_context: &RequestContext) -> Runtim
     }
 }
 
-/// Build one host-injected runtime invocation context from MCP request context, client budgets, and tool config.
-/// 基于 MCP 请求上下文、客户端预算与工具配置构造一份宿主注入式运行时调用上下文。
+/// Build one host-injected runtime invocation context from host request context, client budgets, and tool config.
+/// 基于宿主请求上下文、客户端预算与工具配置构造一份宿主注入式运行时调用上下文。
 pub fn build_runtime_invocation_context(
-    request_context: Option<&RequestContext>,
+    request_context: Option<&HostRuntimeRequestContext>,
     tool_name: Option<&str>,
     skill_name: Option<&str>,
 ) -> LuaInvocationContext {
@@ -57,7 +64,7 @@ pub fn build_grpc_runtime_request_context(
     client_name: &str,
     client_version: Option<&str>,
     request_id: Option<&str>,
-) -> RuntimeRequestContext {
+) -> LuaRuntimeRequestContext {
     let normalized_client_name = client_name.trim().to_string();
     let normalized_client_version = client_version
         .map(str::trim)
@@ -82,7 +89,7 @@ pub fn build_grpc_runtime_request_context(
             })
         };
 
-    RuntimeRequestContext {
+    LuaRuntimeRequestContext {
         request_id: normalized_request_id,
         client_name: if normalized_client_name.is_empty() {
             None
@@ -118,10 +125,10 @@ pub fn build_grpc_runtime_invocation_context(
     )
 }
 
-/// Convert the host-side client budget snapshot into the exact spill-render input still used by the MCP host.
-/// 把宿主侧客户端预算快照转换为 MCP 宿主当前仍在使用的溢出渲染输入。
+/// Convert the host-side client budget snapshot into the exact spill-render input used by runtime rendering.
+/// 把宿主侧客户端预算快照转换为运行时渲染使用的精确溢出渲染输入。
 pub fn client_budget_snapshot_for_render(
-    request_context: Option<&RequestContext>,
+    request_context: Option<&HostRuntimeRequestContext>,
     tool_name: Option<&str>,
     skill_name: Option<&str>,
 ) -> ClientBudgetSnapshot {

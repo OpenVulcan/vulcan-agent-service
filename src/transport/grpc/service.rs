@@ -7,7 +7,7 @@ use tokio_stream::StreamExt;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
-use crate::host_core::McpServer;
+use crate::host_core::HostRuntime;
 use crate::transport::mcp::McpDispatcher;
 use crate::transport::mcp::protocol::PROTOCOL_VERSION_LATEST;
 use crate::transport::mcp::protocol::RequestContext;
@@ -83,7 +83,7 @@ impl ConnectionManager {
 pub struct McpServiceImpl {
     /// Host runtime used by stable LuaSkills gRPC methods.
     /// 稳定 LuaSkills gRPC 方法使用的宿主运行时。
-    runtime: McpServer,
+    runtime: HostRuntime,
     /// MCP JSON-RPC dispatcher used by the generic gRPC MCP compatibility method.
     /// 通用 gRPC MCP 兼容方法使用的 MCP JSON-RPC dispatcher。
     dispatcher: McpDispatcher,
@@ -98,7 +98,7 @@ pub struct McpServiceImpl {
 impl McpServiceImpl {
     /// Build one gRPC service implementation from the host runtime and stream manager.
     /// 基于宿主运行时与流管理器构建一个 gRPC 服务实现。
-    pub fn new(runtime: McpServer, manager: ConnectionManager) -> Self {
+    pub fn new(runtime: HostRuntime, manager: ConnectionManager) -> Self {
         // Build the MCP dispatcher beside the runtime so only generic MCP calls use JSON-RPC routing.
         // 在运行时旁构建 MCP dispatcher，使只有通用 MCP 调用走 JSON-RPC 路由。
         let dispatcher = McpDispatcher::new(runtime.clone());
@@ -495,7 +495,7 @@ impl LuaSkillsService for McpServiceImpl {
 // gRPC server runner
 // ============================================================
 
-pub async fn run_grpc(server: McpServer, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_grpc(server: HostRuntime, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = addr.parse()?;
     let manager = ConnectionManager::new();
     let service = McpServiceImpl::new(server, manager);

@@ -15,11 +15,12 @@ use super::runtime_init::{
 };
 use super::runtime_preload::preload_runtime_mcp_configs;
 use crate::config::Config;
-use crate::host_core::{McpServer, host_tool_requires_lua_engine, is_host_tool_name};
+use crate::host_core::{HostRuntime, host_tool_requires_lua_engine, is_host_tool_name};
 use crate::luaskills_adapter::{
     build_runtime_invocation_context, client_budget_snapshot_for_render,
     install_luaskills_log_callback,
 };
+use crate::support::RuntimeRequestContext;
 use crate::support::runtime_logging::set_non_error_logging_enabled;
 use crate::support::temp_maintenance::{
     CleanupTrigger, ensure_runtime_temp_dir, maintain_runtime_temp_dir,
@@ -30,7 +31,10 @@ use crate::support::tool_result_format::{
 };
 use crate::transport;
 use crate::transport::mcp::McpDispatcher;
-use crate::transport::mcp::protocol::{RequestContext, ToolCallResult};
+use crate::transport::mcp::mapping::runtime_context_from_mcp;
+#[cfg(test)]
+use crate::transport::mcp::protocol::RequestContext;
+use crate::transport::mcp::protocol::ToolCallResult;
 #[cfg(test)]
 use luaskills::{LuaRuntimeHostOptions, RuntimeSkillRoot, SkillInstallSourceType};
 use serde_json::{Value, json};
@@ -43,7 +47,7 @@ fn print_call_tools_result(
     value: &RuntimeInvocationResult,
     skill_name: Option<&str>,
     tool_name: Option<&str>,
-    request_context: Option<&RequestContext>,
+    request_context: Option<&RuntimeRequestContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client_budget = client_budget_snapshot_for_render(request_context, tool_name, skill_name);
     let spill_root = ensure_runtime_temp_dir()?.join("mcp").join("cache");
@@ -122,7 +126,7 @@ async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Async stdio bootstrap flow that prepares one initialized server without starting network transports.
 /// 为 stdio 模式准备一份已初始化服务且不启动网络传输的异步引导流程。
-async fn async_build_stdio_server(cfg: Config) -> Result<McpServer, Box<dyn std::error::Error>> {
+async fn async_build_stdio_server(cfg: Config) -> Result<HostRuntime, Box<dyn std::error::Error>> {
     install_luaskills_log_callback();
     initialize_runtime_temp_root_from_config(&cfg)?;
 
@@ -134,7 +138,7 @@ async fn async_build_stdio_server(cfg: Config) -> Result<McpServer, Box<dyn std:
 
 /// Async stdio serving flow that runs one already prepared server on stdin/stdout only.
 /// 仅通过标准输入输出运行一份已准备服务实例的异步 stdio 服务流程。
-async fn async_run_stdio_server(server: McpServer) -> Result<(), Box<dyn std::error::Error>> {
+async fn async_run_stdio_server(server: HostRuntime) -> Result<(), Box<dyn std::error::Error>> {
     spawn_cross_day_cleanup_task();
     transport::stdio::run_stdio(server).await
 }
@@ -142,7 +146,7 @@ async fn async_run_stdio_server(server: McpServer) -> Result<(), Box<dyn std::er
 /// Run the default HTTP/gRPC service mode.
 /// 运行默认的 HTTP/gRPC 服务模式。
 async fn run_network_transports(
-    server: McpServer,
+    server: HostRuntime,
     cfg: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http_addr = cfg
@@ -204,7 +208,8 @@ fn run_call_tool_mode(
     }
 
     let skill_name = engine.skill_name_for_tool(tool_name);
-    let request_context = build_call_tool_request_context(simulated_client_name);
+    let mcp_request_context = build_call_tool_request_context(simulated_client_name);
+    let request_context = runtime_context_from_mcp(&mcp_request_context);
     let invocation_context = build_runtime_invocation_context(
         Some(&request_context),
         Some(tool_name),

@@ -6,7 +6,7 @@ use axum::{
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::host_core::McpServer;
+use crate::host_core::HostRuntime;
 use crate::transport::http::session::{SessionManager, SseSessionManager};
 use crate::transport::mcp::McpDispatcher;
 
@@ -41,7 +41,7 @@ pub struct AppState {
 // HTTP 传输入口
 // ============================================================
 
-pub async fn run_http(server: McpServer, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_http(server: HostRuntime, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Build the MCP dispatcher once so HTTP handlers depend on the transport adapter boundary.
     // 只构建一次 MCP dispatcher，使 HTTP 处理器依赖传输适配边界。
     let dispatcher = McpDispatcher::new(server);

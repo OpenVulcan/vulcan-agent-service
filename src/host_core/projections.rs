@@ -1,16 +1,15 @@
-use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 
+use crate::host_core::model::RuntimeToolDescriptor;
 use crate::host_core::state::LuaSkillToolDescriptor;
-use crate::transport::mcp::protocol::{Prompt, Resource, ResourceTemplate, Tool};
 use luaskills::{RuntimeEntryDescriptor, RuntimeHelpDetail, RuntimeSkillHelpDescriptor};
 
-/// Build the tools/list response value from the host and LuaSkills tool registries.
-/// 基于宿主工具注册表与 LuaSkills 工具注册表构建 tools/list 响应值。
-pub(super) fn build_mcp_tools_value(
-    host_tools: &HashMap<String, Tool>,
-    skill_tools: &HashMap<String, Tool>,
-) -> Value {
+/// Merge host and LuaSkills tool registries into stable runtime tool descriptors.
+/// 将宿主工具与 LuaSkills 工具注册表合并为稳定的运行时工具描述。
+pub(super) fn build_runtime_tools(
+    host_tools: &HashMap<String, RuntimeToolDescriptor>,
+    skill_tools: &HashMap<String, RuntimeToolDescriptor>,
+) -> Vec<RuntimeToolDescriptor> {
     let mut merged = BTreeMap::new();
     for (name, tool) in skill_tools {
         merged.insert(name.clone(), tool.clone());
@@ -18,114 +17,7 @@ pub(super) fn build_mcp_tools_value(
     for (name, tool) in host_tools {
         merged.insert(name.clone(), tool.clone());
     }
-    let tools: Vec<Tool> = merged.into_values().collect();
-    json!({ "tools": tools })
-}
-
-/// Build the resources/list response value from registered static resources.
-/// 基于已注册静态资源构建 resources/list 响应值。
-pub(super) fn build_mcp_resources_value(resources: &[Resource]) -> Value {
-    json!({ "resources": resources })
-}
-
-/// Build the resources/read response value or the stable not-found error from raw MCP params.
-/// 基于原始 MCP 参数构建 resources/read 响应值或稳定的未找到错误。
-pub(super) fn build_mcp_resource_read_value(params: Option<Value>) -> Result<Value, (i64, String)> {
-    let uri = params
-        .and_then(|params| params.get("uri").cloned())
-        .and_then(|value| value.as_str().map(String::from))
-        .ok_or_else(|| (-32602, "Missing required parameter: uri".to_string()))?;
-
-    Err((-32602, format!("Resource not found: {}", uri)))
-}
-
-/// Build the resources/templates/list response value from registered resource templates.
-/// 基于已注册资源模板构建 resources/templates/list 响应值。
-pub(super) fn build_mcp_resource_templates_value(resource_templates: &[ResourceTemplate]) -> Value {
-    json!({ "resourceTemplates": resource_templates })
-}
-
-/// Build the prompts/list response value from registered static prompts.
-/// 基于已注册静态提示构建 prompts/list 响应值。
-pub(super) fn build_mcp_prompts_value(prompts: &[Prompt]) -> Value {
-    json!({ "prompts": prompts })
-}
-
-/// Build the prompts/get response value or stable not-found error from raw MCP params.
-/// 基于原始 MCP 参数构建 prompts/get 响应值或稳定的未找到错误。
-pub(super) fn build_mcp_prompt_get_value(params: Option<Value>) -> Result<Value, (i64, String)> {
-    let params = params.unwrap_or_default();
-    let name = params
-        .get("name")
-        .and_then(|value| value.as_str().map(String::from))
-        .ok_or_else(|| (-32602, "Missing required parameter: name".to_string()))?;
-
-    Err((-32602, format!("Prompt not found: {}", name)))
-}
-
-/// Build the completion/complete response value and delegate prompt-specific values to the caller.
-/// 构建 completion/complete 响应值，并把 prompt 专属候选值委托给调用方提供。
-pub(super) fn build_mcp_completion_value<F>(
-    params: Option<Value>,
-    prompt_completions: F,
-) -> Result<Value, (i64, String)>
-where
-    F: FnOnce(&str, &str) -> Result<Option<Vec<String>>, (i64, String)>,
-{
-    let params = params.unwrap_or_default();
-
-    let ref_type = params
-        .get("ref")
-        .and_then(|reference| reference.get("type"))
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| (-32602, "Missing ref.type".to_string()))?;
-
-    let argument_name = params
-        .get("argument")
-        .and_then(|argument| argument.get("name"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let argument_value = params
-        .get("argument")
-        .and_then(|argument| argument.get("value"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let ref_name = params
-        .get("ref")
-        .and_then(|reference| reference.get("name"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-
-    let prompt_completion_values = if ref_type == "ref/prompt" {
-        prompt_completions(ref_name, argument_name)?
-    } else {
-        None
-    };
-
-    let values: Vec<String> = match (ref_type, argument_name) {
-        ("ref/prompt", _) if prompt_completion_values.is_some() => prompt_completion_values
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|value| {
-                if argument_value.is_empty() {
-                    true
-                } else {
-                    value
-                        .to_ascii_lowercase()
-                        .contains(&argument_value.to_ascii_lowercase())
-                }
-            })
-            .collect(),
-        _ => vec![],
-    };
-
-    Ok(json!({
-        "completion": {
-            "values": values,
-            "total": values.len() as u32,
-            "hasMore": false
-        }
-    }))
+    merged.into_values().collect()
 }
 
 /// Render one structured help list payload into user-facing Markdown.
@@ -173,7 +65,7 @@ pub(super) fn render_help_detail_markdown(detail: &RuntimeHelpDetail) -> String 
 /// Build one gRPC-facing LuaSkill tool descriptor from MCP tool schema and runtime entry metadata.
 /// 基于 MCP 工具 schema 与运行时入口元数据构造一个面向 gRPC 的 LuaSkill 工具描述。
 pub(super) fn build_luaskill_tool_descriptor(
-    tool: &Tool,
+    tool: &RuntimeToolDescriptor,
     entry: &RuntimeEntryDescriptor,
 ) -> LuaSkillToolDescriptor {
     LuaSkillToolDescriptor {

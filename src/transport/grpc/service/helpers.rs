@@ -3,8 +3,9 @@ use tonic::Status;
 
 use crate::host_core::{
     LuaSkillPackageDescriptor, LuaSkillToolDescriptor as RuntimeLuaSkillToolDescriptor,
+    RuntimeToolCallResult,
 };
-use crate::transport::mcp::protocol::{ClientInfo, RequestContext, ToolCallResult};
+use crate::transport::mcp::protocol::{ClientInfo, RequestContext};
 
 use super::pb::{
     LuaSkillCallToolResponse, LuaSkillClientContext, LuaSkillDescriptor, LuaSkillTextResponse,
@@ -112,7 +113,7 @@ pub(super) fn lua_skill_tool_to_pb(
 /// Convert one tool-call result into the dynamic gRPC CallTool response.
 /// 将一个工具调用结果转换为动态 gRPC CallTool 响应。
 pub(super) fn tool_call_result_to_call_response(
-    result: &ToolCallResult,
+    result: &RuntimeToolCallResult,
 ) -> LuaSkillCallToolResponse {
     let text = tool_call_result_text(result);
     let is_error = result.is_error.unwrap_or(false);
@@ -126,7 +127,9 @@ pub(super) fn tool_call_result_to_call_response(
 
 /// Convert one tool-call result into a stable text response.
 /// 将一个工具调用结果转换为稳定文本响应。
-pub(super) fn tool_call_result_to_text_response(result: &ToolCallResult) -> LuaSkillTextResponse {
+pub(super) fn tool_call_result_to_text_response(
+    result: &RuntimeToolCallResult,
+) -> LuaSkillTextResponse {
     let text = tool_call_result_text(result);
     let is_error = result.is_error.unwrap_or(false);
     LuaSkillTextResponse {
@@ -148,7 +151,7 @@ pub(super) fn text_response(text: String) -> LuaSkillTextResponse {
 
 /// Join the text blocks inside one MCP-compatible tool result.
 /// 拼接一个 MCP 兼容工具结果内的文本块。
-fn tool_call_result_text(result: &ToolCallResult) -> String {
+fn tool_call_result_text(result: &RuntimeToolCallResult) -> String {
     result
         .content
         .iter()

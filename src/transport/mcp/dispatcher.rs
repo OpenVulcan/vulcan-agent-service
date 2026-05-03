@@ -1,7 +1,13 @@
 use serde_json::{Value, json};
 
-use crate::host_core::McpServer;
-use crate::transport::mcp::protocol::{CancellationNotification, RequestContext};
+use crate::host_core::HostRuntime;
+use crate::host_core::model::RuntimeToolCallRequest;
+use crate::transport::mcp::mapping::{
+    mcp_tool_call_result_value_from_runtime, mcp_tools_list_value_from_runtime,
+    runtime_context_from_mcp,
+};
+use crate::transport::mcp::protocol::{RequestContext, ToolCallRequest};
+use crate::transport::mcp::views;
 
 /// MCP JSON-RPC adapter that owns the protocol-facing dispatch entrypoints for transports.
 /// 拥有面向传输层协议分发入口的 MCP JSON-RPC 适配器。
@@ -9,13 +15,13 @@ use crate::transport::mcp::protocol::{CancellationNotification, RequestContext};
 pub struct McpDispatcher {
     /// Host runtime used by the dispatcher while MCP handlers are migrated out incrementally.
     /// 在 MCP handler 逐步迁出期间由 dispatcher 使用的宿主运行时。
-    runtime: McpServer,
+    runtime: HostRuntime,
 }
 
 impl McpDispatcher {
     /// Build a new MCP dispatcher around one host runtime instance.
     /// 围绕单个宿主运行时实例构建新的 MCP dispatcher。
-    pub fn new(runtime: McpServer) -> Self {
+    pub fn new(runtime: HostRuntime) -> Self {
         Self { runtime }
     }
 
@@ -117,12 +123,6 @@ impl McpDispatcher {
             "ping" => Ok(json!({})),
             "tools/list" => self.handle_tools_list(),
             "tools/call" => self.handle_tools_call(params, &request_context).await,
-            "resources/list" => self.handle_resources_list(),
-            "resources/read" => self.handle_resources_read(params, &request_context),
-            "resources/templates/list" => self.handle_resource_templates_list(),
-            "prompts/list" => self.handle_prompts_list(),
-            "prompts/get" => self.handle_prompts_get(params, &request_context),
-            "completion/complete" => self.handle_completion(params),
             _ => {
                 eprintln!("[MCP] Unknown method: {}", method);
                 Err((-32601, format!("Method not found: {}", method)))
@@ -135,28 +135,13 @@ impl McpDispatcher {
     async fn handle_notification(
         &self,
         method: &str,
-        params: Option<Value>,
+        _params: Option<Value>,
         _request_context: RequestContext,
     ) {
         match method {
             "notifications/initialized" => {
-                self.runtime.mark_mcp_initialized().await;
+                views::mark_initialized(&self.runtime).await;
                 eprintln!("[MCP] Client initialized");
-            }
-            "notifications/cancelled" => {
-                if let Some(params) = params {
-                    let cancel: Result<CancellationNotification, _> =
-                        serde_json::from_value(params);
-                    if let Ok(cancel) = cancel {
-                        eprintln!(
-                            "[MCP] Request cancelled: {:?}, reason: {:?}",
-                            cancel.request_id, cancel.reason
-                        );
-                    }
-                }
-            }
-            "notifications/roots/list_changed" => {
-                eprintln!("[MCP] Roots list changed notification received");
             }
             _ => {
                 eprintln!("[MCP] Unknown notification: {}", method);
@@ -167,13 +152,13 @@ impl McpDispatcher {
     /// Handle initialize through the MCP adapter boundary.
     /// 通过 MCP 适配边界处理 initialize。
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
-        self.runtime.initialize_mcp_client_value(params)
+        views::initialize_value(&self.runtime, params)
     }
 
     /// Handle tools/list through the MCP adapter boundary.
     /// 通过 MCP 适配边界处理 tools/list。
     fn handle_tools_list(&self) -> Result<Value, (i64, String)> {
-        self.runtime.list_mcp_tools_value()
+        mcp_tools_list_value_from_runtime(self.runtime.list_runtime_tools()?)
     }
 
     /// Handle tools/call through the MCP adapter boundary.
@@ -183,53 +168,17 @@ impl McpDispatcher {
         params: Option<Value>,
         request_context: &RequestContext,
     ) -> Result<Value, (i64, String)> {
-        self.runtime
-            .call_mcp_tool_value(params, request_context)
-            .await
-    }
-
-    /// Handle resources/list through the MCP adapter boundary.
-    /// 通过 MCP 适配边界处理 resources/list。
-    fn handle_resources_list(&self) -> Result<Value, (i64, String)> {
-        self.runtime.list_mcp_resources_value()
-    }
-
-    /// Handle resources/read through the MCP adapter boundary.
-    /// 通过 MCP 适配边界处理 resources/read。
-    fn handle_resources_read(
-        &self,
-        params: Option<Value>,
-        request_context: &RequestContext,
-    ) -> Result<Value, (i64, String)> {
-        self.runtime
-            .read_mcp_resource_value(params, request_context)
-    }
-
-    /// Handle resources/templates/list through the MCP adapter boundary.
-    /// 通过 MCP 适配边界处理 resources/templates/list。
-    fn handle_resource_templates_list(&self) -> Result<Value, (i64, String)> {
-        self.runtime.list_mcp_resource_templates_value()
-    }
-
-    /// Handle prompts/list through the MCP adapter boundary.
-    /// 通过 MCP 适配边界处理 prompts/list。
-    fn handle_prompts_list(&self) -> Result<Value, (i64, String)> {
-        self.runtime.list_mcp_prompts_value()
-    }
-
-    /// Handle prompts/get through the MCP adapter boundary.
-    /// 通过 MCP 适配边界处理 prompts/get。
-    fn handle_prompts_get(
-        &self,
-        params: Option<Value>,
-        request_context: &RequestContext,
-    ) -> Result<Value, (i64, String)> {
-        self.runtime.get_mcp_prompt_value(params, request_context)
-    }
-
-    /// Handle completion/complete through the MCP adapter boundary.
-    /// 通过 MCP 适配边界处理 completion/complete。
-    fn handle_completion(&self, params: Option<Value>) -> Result<Value, (i64, String)> {
-        self.runtime.complete_mcp_argument_value(params)
+        let request: ToolCallRequest = serde_json::from_value(params.unwrap_or_default())
+            .map_err(|error| (-32602, format!("Invalid tools/call params: {}", error)))?;
+        let runtime_request = RuntimeToolCallRequest {
+            name: request.name,
+            arguments: request.arguments,
+        };
+        let runtime_context = runtime_context_from_mcp(request_context);
+        let result = self
+            .runtime
+            .call_runtime_tool(runtime_request, &runtime_context)
+            .await?;
+        mcp_tool_call_result_value_from_runtime(result)
     }
 }

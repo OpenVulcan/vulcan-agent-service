@@ -1,6 +1,6 @@
 use super::resolution::parse_metric_literal;
 use super::*;
-use crate::transport::mcp::protocol::ClientInfo;
+use crate::support::{RuntimeClientInfo, RuntimeRequestContext};
 use serde_yaml::from_str;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -431,12 +431,12 @@ clients:
         std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "qwen-forced");
     }
 
-    let request_context = RequestContext {
-        client_info: Some(ClientInfo {
+    let request_context = RuntimeRequestContext {
+        client_info: Some(RuntimeClientInfo {
             name: "mcphost".to_string(),
             version: "1.0.0".to_string(),
         }),
-        ..RequestContext::default()
+        ..RuntimeRequestContext::default()
     };
 
     let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
@@ -490,12 +490,12 @@ clients:
         std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "   ");
     }
 
-    let request_context = RequestContext {
-        client_info: Some(ClientInfo {
+    let request_context = RuntimeRequestContext {
+        client_info: Some(RuntimeClientInfo {
             name: "mcphost".to_string(),
             version: "1.0.0".to_string(),
         }),
-        ..RequestContext::default()
+        ..RuntimeRequestContext::default()
     };
 
     let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
@@ -556,13 +556,13 @@ clients:
         std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "mcphost");
     }
 
-    let request_context = RequestContext {
-        client_info: Some(ClientInfo {
+    let request_context = RuntimeRequestContext {
+        client_info: Some(RuntimeClientInfo {
             name: "copilot".to_string(),
             version: "1.0.0".to_string(),
         }),
         client_match_name_override: Some("qwen-inline".to_string()),
-        ..RequestContext::default()
+        ..RuntimeRequestContext::default()
     };
 
     let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
@@ -639,13 +639,13 @@ clients:
     );
     assert_eq!(snapshot.tool_result.bytes, 47_500);
 
-    let request_context = RequestContext {
-        client_info: Some(ClientInfo {
+    let request_context = RuntimeRequestContext {
+        client_info: Some(RuntimeClientInfo {
             name: "exact-client".to_string(),
             version: "1.0.0".to_string(),
         }),
         disable_client_match_overrides: true,
-        ..RequestContext::default()
+        ..RuntimeRequestContext::default()
     };
     let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
     assert_eq!(snapshot.client_name.as_deref(), Some("exact-client"));

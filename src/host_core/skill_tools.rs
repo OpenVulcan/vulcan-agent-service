@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::Write as _;
 
-use crate::transport::mcp::protocol::{TextContent, ToolCallResult};
+use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallResult};
 use luaskills::{
     InstalledSkillRecord, LuaRuntimeHostOptions, RuntimeSkillRoot, SkillApplyResult,
     SkillInstallSourceType, SkillManager, SkillManagerConfig, SkillUninstallResult,
@@ -226,30 +226,30 @@ fn render_skill_install_source_type(source_type: SkillInstallSourceType) -> &'st
 
 /// Render the current explicit URL-install unsupported result before LuaSkills sees the request.
 /// 在 LuaSkills 接收请求前渲染当前 URL 安装不支持的明确结果。
-pub(super) fn render_skill_url_install_not_implemented_result() -> ToolCallResult {
-    ToolCallResult {
-        content: vec![TextContent::text(
+pub(super) fn render_skill_url_install_not_implemented_result() -> RuntimeToolCallResult {
+    RuntimeToolCallResult {
+        content: vec![RuntimeTextContent::text(
             "skill-manager install failed: managed URL install is not implemented yet; GitHub install is currently the only supported install source.",
         )],
         is_error: Some(true),
     }
 }
 
-/// Render one install or update operation result into an MCP tool result.
-/// 将单个安装或更新操作结果渲染为 MCP 工具结果。
+/// Render one install or update operation result into a runtime tool result.
+/// 将单个安装或更新操作结果渲染为运行时工具结果。
 pub(super) fn render_skill_apply_tool_result(
     action: &str,
     result: Result<SkillApplyResult, String>,
-) -> ToolCallResult {
+) -> RuntimeToolCallResult {
     match result {
-        Ok(result) => ToolCallResult {
-            content: vec![TextContent::text(&render_skill_apply_result(
+        Ok(result) => RuntimeToolCallResult {
+            content: vec![RuntimeTextContent::text(&render_skill_apply_result(
                 action, &result,
             ))],
             is_error: None,
         },
-        Err(error) => ToolCallResult {
-            content: vec![TextContent::text(&format!(
+        Err(error) => RuntimeToolCallResult {
+            content: vec![RuntimeTextContent::text(&format!(
                 "skill-manager {} failed: {}",
                 action, error
             ))],
@@ -290,18 +290,20 @@ fn render_skill_apply_result(action: &str, result: &SkillApplyResult) -> String 
     rendered
 }
 
-/// Render one uninstall operation result into an MCP tool result.
-/// 将单个卸载操作结果渲染为 MCP 工具结果。
+/// Render one uninstall operation result into a runtime tool result.
+/// 将单个卸载操作结果渲染为运行时工具结果。
 pub(super) fn render_skill_uninstall_tool_result(
     result: Result<SkillUninstallResult, String>,
-) -> ToolCallResult {
+) -> RuntimeToolCallResult {
     match result {
-        Ok(result) => ToolCallResult {
-            content: vec![TextContent::text(&render_skill_uninstall_result(&result))],
+        Ok(result) => RuntimeToolCallResult {
+            content: vec![RuntimeTextContent::text(&render_skill_uninstall_result(
+                &result,
+            ))],
             is_error: None,
         },
-        Err(error) => ToolCallResult {
-            content: vec![TextContent::text(&format!(
+        Err(error) => RuntimeToolCallResult {
+            content: vec![RuntimeTextContent::text(&format!(
                 "skill-manager uninstall failed: {}",
                 error
             ))],

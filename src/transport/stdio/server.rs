@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
-use crate::host_core::McpServer;
+use crate::host_core::HostRuntime;
 use crate::transport::mcp::McpDispatcher;
 use crate::transport::mcp::protocol::{
     InitializeRequest, PROTOCOL_VERSION_LATEST, RequestContext, negotiate_version,
@@ -18,7 +18,7 @@ struct StdioSessionState {
 
 /// Run the MCP server over stdio using newline-delimited JSON-RPC messages.
 /// 使用换行分隔的 JSON-RPC 消息通过 stdio 运行 MCP 服务。
-pub async fn run_stdio(server: McpServer) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_stdio(server: HostRuntime) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[MCP] Starting stdio transport on stdin/stdout ...");
 
     // Build the MCP dispatcher once so stdio only depends on the protocol adapter entrypoint.

@@ -3,6 +3,8 @@ use crate::host_core::projections::render_help_list_markdown;
 use crate::host_core::skill_tools::{
     parse_skill_manager_tool_arguments, select_skill_manager_user_root,
 };
+use crate::transport::mcp::McpDispatcher;
+use crate::transport::mcp::protocol::{RequestContext, ToolCallResult};
 use luaskills::{RuntimeHelpNodeDescriptor, RuntimeSkillHelpDescriptor};
 use serde_json::Value;
 use serde_json::json;
@@ -170,21 +172,23 @@ fn skill_manager_uninstall_forces_user_target_when_root_shadows_skill() {
         .expect("tokio runtime should build");
 
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "skill-manager",
-                    "arguments": {
-                        "action": "uninstall",
-                        "skill_id": skill_id
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "uninstall",
+                            "skill_id": skill_id
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("skill-manager uninstall should return one response");
     let tool_result: ToolCallResult = serde_json::from_value(
         response
@@ -236,22 +240,24 @@ fn skill_manager_layer_parameter_returns_json_rpc_error() {
         .expect("tokio runtime should build");
 
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "skill-manager",
-                    "arguments": {
-                        "action": "install",
-                        "layer": "ROOT",
-                        "source": "LuaSkills/vulcan-codekit"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "install",
+                            "layer": "ROOT",
+                            "source": "LuaSkills/vulcan-codekit"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("skill-manager layer install should return one response");
 
     let message = response
@@ -288,15 +294,11 @@ fn render_help_list_markdown_labels_main_as_package_description() {
 #[test]
 fn tools_list_hides_help_tools_when_lua_engine_is_unavailable() {
     let server = HostRuntime::new();
-    let response = server
-        .list_mcp_tools_value()
-        .expect("tools/list should succeed on minimal server");
-    let tool_names: HashSet<String> = response
-        .get("tools")
-        .and_then(Value::as_array)
-        .expect("tools array should exist")
-        .iter()
-        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+    let tool_names: HashSet<String> = server
+        .list_runtime_tools()
+        .expect("tool listing should succeed on minimal server")
+        .into_iter()
+        .map(|tool| tool.name)
         .collect();
 
     assert!(tool_names.contains("reload_vulcan_mcp_configs"));
@@ -313,15 +315,11 @@ fn tools_list_exposes_luaskill_config_when_host_path_is_available() {
     let root = unique_test_dir("luaskill-config-tools-list");
     let config_file_path = root.join("configs").join("skill_config.json");
     let server = HostRuntime::new().with_runtime_skill_config_file_path(config_file_path);
-    let response = server
-        .list_mcp_tools_value()
-        .expect("tools/list should succeed after luaskill-config registration");
-    let tool_names: HashSet<String> = response
-        .get("tools")
-        .and_then(Value::as_array)
-        .expect("tools array should exist")
-        .iter()
-        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+    let tool_names: HashSet<String> = server
+        .list_runtime_tools()
+        .expect("tool listing should succeed after luaskill-config registration")
+        .into_iter()
+        .map(|tool| tool.name)
         .collect();
 
     assert!(tool_names.contains("luaskill-config"));
@@ -333,15 +331,11 @@ fn tools_list_exposes_luaskill_config_when_host_path_is_available() {
 fn register_lua_help_tools_exposes_help_tools_after_runtime_ready() {
     let mut server = HostRuntime::new();
     server.register_lua_help_tools();
-    let response = server
-        .list_mcp_tools_value()
-        .expect("tools/list should succeed after help registration");
-    let tool_names: HashSet<String> = response
-        .get("tools")
-        .and_then(Value::as_array)
-        .expect("tools array should exist")
-        .iter()
-        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+    let tool_names: HashSet<String> = server
+        .list_runtime_tools()
+        .expect("tool listing should succeed after help registration")
+        .into_iter()
+        .map(|tool| tool.name)
         .collect();
 
     assert!(tool_names.contains("vulcan-help-list"));
@@ -359,22 +353,24 @@ fn skill_manager_url_install_reports_not_implemented() {
         .expect("tokio runtime should build");
 
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "skill-manager",
-                    "arguments": {
-                        "action": "install",
-                        "source_type": "url",
-                        "source": "https://example.test/vulcan-codekit.source.yaml"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "skill-manager",
+                        "arguments": {
+                            "action": "install",
+                            "source_type": "url",
+                            "source": "https://example.test/vulcan-codekit.source.yaml"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("skill-manager URL install should return one response");
 
     assert!(
@@ -412,23 +408,25 @@ fn luaskill_config_tool_works_without_lua_engine() {
         .expect("tokio runtime should build");
 
     let set_response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "luaskill-config",
-                    "arguments": {
-                        "action": "set",
-                        "skill_id": "demo-skill",
-                        "key": "api_token",
-                        "value": "sk-runtime"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "set",
+                            "skill_id": "demo-skill",
+                            "key": "api_token",
+                            "value": "sk-runtime"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("luaskill-config set should produce one response");
     assert!(
         set_response.get("error").is_none(),
@@ -443,22 +441,24 @@ fn luaskill_config_tool_works_without_lua_engine() {
     assert_eq!(persisted["skills"]["demo-skill"]["api_token"], "sk-runtime");
 
     let get_response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "luaskill-config",
-                    "arguments": {
-                        "action": "get",
-                        "skill_id": "demo-skill",
-                        "key": "api_token"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "get",
+                            "skill_id": "demo-skill",
+                            "key": "api_token"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("luaskill-config get should produce one response");
     let tool_result: ToolCallResult = serde_json::from_value(
         get_response
@@ -493,20 +493,22 @@ fn luaskill_config_list_reports_empty_state() {
         .expect("tokio runtime should build");
 
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "luaskill-config",
-                    "arguments": {
-                        "action": "list"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "list"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("luaskill-config list should produce one response");
     let tool_result: ToolCallResult = serde_json::from_value(
         response
@@ -544,41 +546,45 @@ fn luaskill_config_list_groups_entries_by_skill_id() {
         ("beta-skill", "region", "cn-sh"),
     ] {
         runtime
-            .block_on(server.handle_message_with_context(
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "luaskill-config",
-                        "arguments": {
-                            "action": "set",
-                            "skill_id": skill_id,
-                            "key": key,
-                            "value": value
+            .block_on(
+                McpDispatcher::new(server.clone()).handle_message_with_context(
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "luaskill-config",
+                            "arguments": {
+                                "action": "set",
+                                "skill_id": skill_id,
+                                "key": key,
+                                "value": value
+                            }
                         }
-                    }
-                }),
-                RequestContext::default(),
-            ))
+                    }),
+                    RequestContext::default(),
+                ),
+            )
             .expect("luaskill-config set should succeed for grouped list setup");
     }
 
     let response = runtime
-        .block_on(server.handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "luaskill-config",
-                    "arguments": {
-                        "action": "list"
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "luaskill-config",
+                        "arguments": {
+                            "action": "list"
+                        }
                     }
-                }
-            }),
-            RequestContext::default(),
-        ))
+                }),
+                RequestContext::default(),
+            ),
+        )
         .expect("luaskill-config list should produce one response");
     let tool_result: ToolCallResult = serde_json::from_value(
         response
@@ -602,4 +608,100 @@ fn luaskill_config_list_groups_entries_by_skill_id() {
     assert!(!rendered.contains("```json"));
     assert!(!rendered.contains("skill_config.json"));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// MCP initialize should advertise only the retained tool surface for a plain host runtime.
+/// 普通宿主运行时的 MCP initialize 只应声明保留的工具能力面。
+#[test]
+fn initialize_advertises_dynamic_tools_without_prompt_or_resource_surfaces() {
+    let server = HostRuntime::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime should build");
+
+    let response = runtime
+        .block_on(McpDispatcher::new(server).handle_message_with_context(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "unit-test-client",
+                        "version": "1.0.0"
+                    }
+                }
+            }),
+            RequestContext::default(),
+        ))
+        .expect("initialize should produce one response");
+    let capabilities = response
+        .get("result")
+        .and_then(|result| result.get("capabilities"))
+        .expect("initialize result should include capabilities");
+
+    assert_eq!(
+        capabilities
+            .get("tools")
+            .and_then(|tools| tools.get("listChanged"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(capabilities.get("prompts").is_none());
+    assert!(capabilities.get("resources").is_none());
+    assert!(capabilities.get("resourceTemplates").is_none());
+    assert!(capabilities.get("sampling").is_none());
+    assert!(capabilities.get("logging").is_none());
+    assert!(capabilities.get("completions").is_none());
+}
+
+/// MCP prompt, resource, and completion methods should stay closed while the host does not implement those surfaces.
+/// 宿主未实现 prompts、resources 与 completions 能力面时，对应 MCP 方法应保持关闭。
+#[test]
+fn prompt_resource_and_completion_methods_are_not_supported() {
+    let server = HostRuntime::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime should build");
+
+    for method in [
+        "prompts/list",
+        "prompts/get",
+        "resources/list",
+        "resources/read",
+        "resources/templates/list",
+        "completion/complete",
+    ] {
+        let response = runtime
+            .block_on(
+                McpDispatcher::new(server.clone()).handle_message_with_context(
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": method,
+                        "method": method,
+                        "params": {}
+                    }),
+                    RequestContext::default(),
+                ),
+            )
+            .expect(
+                "unsupported prompt/resource/completion method should produce an error response",
+            );
+        let error = response
+            .get("error")
+            .expect("unsupported prompt/resource/completion method should return an error");
+
+        assert_eq!(error.get("code").and_then(Value::as_i64), Some(-32601));
+        assert!(
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("Method not found")
+        );
+    }
 }

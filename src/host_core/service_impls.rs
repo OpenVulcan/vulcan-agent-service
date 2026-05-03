@@ -1,26 +1,25 @@
-use serde_json::Value;
-
+use crate::host_core::model::RuntimeToolCallRequest;
 use crate::host_core::runtime::HostRuntime;
 use crate::host_core::services::{
     RuntimeHealthService, RuntimeHelpService, RuntimeSkillAdminService, RuntimeToolService,
 };
-use crate::transport::mcp::protocol::{RequestContext, ToolCallResult};
+use crate::host_core::{RuntimeRequestContext, RuntimeToolCallResult, RuntimeToolDescriptor};
 
 impl RuntimeToolService for HostRuntime {
     /// List every host and LuaSkills tool through the internal runtime service trait.
     /// 通过内部运行时服务接口列出全部宿主工具与 LuaSkills 工具。
-    fn list_tools(&self) -> Result<Value, (i64, String)> {
-        self.list_mcp_tools_value()
+    fn list_tools(&self) -> Result<Vec<RuntimeToolDescriptor>, (i64, String)> {
+        self.list_runtime_tools()
     }
 
     /// Invoke one tool through the internal runtime service trait.
     /// 通过内部运行时服务接口调用单个工具。
     async fn call_tool(
         &self,
-        params: Option<Value>,
-        request_context: &RequestContext,
-    ) -> Result<Value, (i64, String)> {
-        self.call_mcp_tool_value(params, request_context).await
+        request: RuntimeToolCallRequest,
+        request_context: &RuntimeRequestContext,
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
+        self.call_runtime_tool(request, request_context).await
     }
 }
 
@@ -40,7 +39,7 @@ impl RuntimeHelpService for HostRuntime {
         client_name: &str,
         client_version: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         self.get_luaskill_help(skill_id, flow, client_name, client_version, request_id)
             .await
     }
@@ -88,19 +87,22 @@ impl RuntimeSkillAdminService for HostRuntime {
         &self,
         source: String,
         source_type: Option<String>,
-    ) -> Result<ToolCallResult, (i64, String)> {
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         self.install_luaskill(source, source_type).await
     }
 
     /// Update one LuaSkill through the internal runtime service trait.
     /// 通过内部运行时服务接口更新单个 LuaSkill。
-    async fn update_skill(&self, skill_id: String) -> Result<ToolCallResult, (i64, String)> {
+    async fn update_skill(&self, skill_id: String) -> Result<RuntimeToolCallResult, (i64, String)> {
         self.update_luaskill(skill_id).await
     }
 
     /// Uninstall one LuaSkill through the internal runtime service trait.
     /// 通过内部运行时服务接口卸载单个 LuaSkill。
-    async fn uninstall_skill(&self, skill_id: String) -> Result<ToolCallResult, (i64, String)> {
+    async fn uninstall_skill(
+        &self,
+        skill_id: String,
+    ) -> Result<RuntimeToolCallResult, (i64, String)> {
         self.uninstall_luaskill(skill_id).await
     }
 

@@ -1,6 +1,6 @@
 use crate::config;
 use crate::config::Config;
-use crate::host_core::McpServer;
+use crate::host_core::HostRuntime;
 use crate::luaskills_adapter::{
     build_luaskills_cache_config, build_luaskills_engine_options, default_user_skill_root,
     normalize_skill_root_key, resolve_runtime_root_from_config, resolve_skill_config_file_path,
@@ -36,12 +36,12 @@ fn resolve_runtime_skill_config_file_path_for_host(
     Ok(Some(file_path))
 }
 
-/// Build one host-only MCP server surface and inject luaskill-config when the runtime root is available.
-/// 构建一份仅含宿主工具面的 MCP 服务，并在运行根可用时注入 luaskill-config。
+/// Build one host-only runtime surface and inject luaskill-config when the runtime root is available.
+/// 构建一份仅含宿主工具面的运行时服务，并在运行根可用时注入 luaskill-config。
 pub(super) fn build_host_tool_surface_server(
     config: &Config,
-) -> Result<McpServer, Box<dyn std::error::Error>> {
-    let mut server = McpServer::new();
+) -> Result<HostRuntime, Box<dyn std::error::Error>> {
+    let mut server = HostRuntime::new();
     if let Some(skill_config_file_path) = resolve_runtime_skill_config_file_path_for_host(config)? {
         server = server.with_runtime_skill_config_file_path(skill_config_file_path);
     }
@@ -75,9 +75,9 @@ pub(super) struct RootSkillCliContext {
     pub(super) host_options: LuaRuntimeHostOptions,
 }
 
-/// Build and initialize the MCP server, including external clients, Lua skills, and shared cache.
-/// 构建并初始化 MCP Server，包括外部客户端、Lua Skills 与共享缓存。
-pub(super) async fn build_server(cfg: &Config) -> Result<McpServer, Box<dyn std::error::Error>> {
+/// Build and initialize the host runtime, including external clients, Lua skills, and shared cache.
+/// 构建并初始化宿主运行时，包括外部客户端、Lua Skills 与共享缓存。
+pub(super) async fn build_server(cfg: &Config) -> Result<HostRuntime, Box<dyn std::error::Error>> {
     let mut server = build_host_tool_surface_server(cfg)?;
 
     // Connect the VMM gRPC client only when explicitly enabled.

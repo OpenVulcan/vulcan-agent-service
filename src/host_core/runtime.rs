@@ -16,7 +16,7 @@ use crate::host_core::lifecycle::{
 use crate::host_core::skill_tools::select_skill_manager_user_root;
 use crate::host_core::state::ServerInner;
 use crate::luaskills_adapter::{build_luaskills_engine_options, install_luaskills_log_callback};
-use crate::transport::mcp::protocol::*;
+use crate::support::RuntimeRequestContext;
 use luaskills::{
     LuaEngine, LuaEngineOptions, LuaVmPoolConfig, RuntimeEntryRegistryDelta,
     RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent, RuntimeSkillRoot, ToolCacheConfig,
@@ -51,12 +51,9 @@ impl HostRuntime {
             host_tools: HashMap::new(),
             skill_tools: HashMap::new(),
             skill_entries: HashMap::new(),
-            resources: Vec::new(),
-            resource_templates: Vec::new(),
-            prompts: Vec::new(),
             version: None,
             initialized: false,
-            client_capabilities: ClientCapabilities::default(),
+            client_capabilities: RuntimeRequestContext::default().client_capabilities,
         };
         let mut server = Self {
             inner: Arc::new(Mutex::new(inner)),
