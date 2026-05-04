@@ -84,7 +84,7 @@ In short:
 
 Use this when the target file is not known yet and you need a low-token file map first.
 
-It returns a compact directory-grouped file list, supports filename globs, and respects `.gitignore`, `.ignore`, and built-in high-noise directory ignores by default.
+It returns a compact directory-grouped file list, supports basename-only filename globs, and respects a common `.gitignore` / `.ignore` subset plus built-in high-noise directory ignores by default.
 
 Good fits:
 
@@ -96,12 +96,14 @@ Good fits:
 Typical parameters:
 
 - `path`: scan root; pass the narrowest plausible directory. Path values may include `${env:NAME}` placeholders.
-- `pattern`: filename glob, such as `*.lua`, `*.md`, or `Cargo.*`.
+- `pattern`: basename-only filename glob, such as `*.lua`, `*.md`, or `Cargo.*`; use `path` instead of `src/*.lua` or `**/*.md` when narrowing directories.
 - `recursive`: recursive by default; set to `false` for direct children only.
-- `noignore`: set to `true` only when ignored or generated files are intentionally needed.
-- `limit`: cap the number of returned candidate files.
+- `noignore`: set to `true` only when ignored or generated files are intentionally needed; this disables both ignore files and built-in high-noise directory skips.
+- `limit`: cap the number of returned candidate files; defaults to 1000 and accepts up to 100000.
 
 This is not a content search tool. If you have a log line, error string, function name, or text anchor, use `vulcan-codekit-rg` first.
+
+Ignore handling is not a full Git ignore engine; complex escapes and some advanced negation cases are not guaranteed to match Git exactly.
 
 ### `vulcan-file-read`
 
@@ -116,6 +118,17 @@ Its core argument is `lines_rule`, using `start,count` format:
 
 This reads 10 lines starting at line 5, then 30 lines starting at line 25. Multi-segment reads are rendered in request order, and overlapping ranges are not merged implicitly.
 
+In JSON arguments, separate multiple segments with `\n` inside the string:
+
+```json
+{
+  "file": "src/example.lua",
+  "lines_rule": "5,10\n25,30"
+}
+```
+
+The separator is a real newline in the JSON string, not the literal word `"newline"`.
+
 The result includes:
 
 - File path
@@ -126,13 +139,15 @@ The result includes:
 - Segment count
 - Whether the request was clipped at EOF
 
-By default, it keeps stable prefixes such as `L12:` so later review comments, citations, or `vulcan-file-edit` calls can refer to exact lines. Set `numbered=false` when plain raw text is more useful.
+By default, it keeps stable prefixes such as `L12:` so later review comments, citations, or `vulcan-file-edit` calls can refer to exact lines. Set `numbered=false` when plain raw text lines are more useful; the metadata header and multi-segment separators still remain.
 
 Boundary behavior is explicit:
 
 - `start` and `count` must be positive integers.
 - A `start` beyond the total line count returns a parameter error.
 - A `count` that extends past EOF is clipped and marked in the header.
+- Omitting `lines_rule` reads the beginning of the file using the host `file_read` budget, with a 200-line fallback when the host provides no budget.
+- A literal `"newline"` token in `lines_rule` returns `invalid_lines_rule`; use `\n` in the JSON string instead.
 - Directory paths are only for a quick direct-child name listing; recursive discovery belongs in `vulcan-file-list`.
 - Path values may include `${env:NAME}` placeholders, which are expanded with Lua `os.getenv` before filesystem access.
 
@@ -148,11 +163,13 @@ The `file` path may include `${env:NAME}` placeholders, which are expanded with 
 
 Supported modes:
 
-- `overwrite`: replace the whole file.
-- `append`: append to the end of the file.
-- `replace_range`: replace a 1-based closed line range.
-- `insert_before`: insert before an existing line.
-- `insert_after`: insert after an existing line.
+- `overwrite`: replace the whole file, or create it when it does not exist; `content=""` creates or leaves an empty file.
+- `append`: append at the end of the file as new lines; if the original file is non-empty and lacks a final newline, one is inserted before the appended content.
+- `replace_range`: replace an existing 1-based closed line range; `content=""` deletes that range.
+- `insert_before`: insert before an existing 1-based anchor line.
+- `insert_after`: insert after an existing 1-based anchor line.
+
+`insert_before` and `insert_after` require `1 <= line <= total_lines`. Out-of-range anchors return `line_out_of_bounds`; they do not silently append. For empty files, use `overwrite` to create content or `append` for file-end additions.
 
 The result includes:
 
@@ -285,7 +302,7 @@ Recommended local release steps:
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.1
+.\scripts\tag_release.ps1 0.1.2
 ```
 
 Unix-like shell:
@@ -293,7 +310,7 @@ Unix-like shell:
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.1
+./scripts/tag_release.sh 0.1.2
 ```
 
 ## One-Sentence Summary

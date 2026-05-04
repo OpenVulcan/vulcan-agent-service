@@ -4,7 +4,7 @@ AI-native HTTP request skill for Vulcan agents.
 
 Chinese version: [README.zh-CN.md](README.zh-CN.md)
 
-`vulcan-curl` provides an AI-friendly HTTP request layer for Vulcan agents. It offers simple structured `GET` and `POST` entries for common API calls, plus a lower-level curl-style argv entry for advanced request shapes, all without requiring agents to assemble platform-specific shell commands.
+`vulcan-curl` provides an AI-friendly HTTP request layer for Vulcan agents. It offers simple structured `GET` and `POST` entries for common API calls, plus a lower-level supported curl-style argv entry for advanced request shapes, all without requiring agents to assemble platform-specific shell commands.
 
 ## When To Use
 
@@ -15,7 +15,7 @@ Use `vulcan-curl` when an agent needs to make one HTTP request with predictable 
 - Use Bearer or Basic Auth shortcuts.
 - Send JSON, form, multipart, or raw POST bodies.
 - Save response bodies or response headers to local files.
-- Use curl-style argv semantics for advanced request shapes while avoiding shell quoting problems.
+- Use supported curl-style argv semantics for advanced request shapes while avoiding shell quoting problems.
 
 Use a browser tool for interactive page flows, JavaScript-rendered UI testing, or screenshots. Use a normal shell command only when raw terminal curl behavior is the actual thing being tested.
 
@@ -73,7 +73,7 @@ flags: request-header,response-header
 
 ### `vulcan-curl-request`
 
-Use this entry when you need curl-style argv semantics without depending on platform-specific shell quoting.
+Use this entry when you need supported curl-style argv semantics without depending on platform-specific shell quoting.
 
 Example:
 
@@ -89,7 +89,15 @@ args:
 flags: response-header
 ```
 
-This entry is best for advanced TLS, proxy, upload, retry, and unusual request combinations. It still executes inside the Lua runtime layer rather than through a shell.
+This entry is best for advanced TLS, proxy, multipart upload, retry, and unusual request combinations covered by the runtime parser. It still executes inside the Lua runtime layer rather than through a shell.
+
+`args` is a supported curl-style subset parsed by the Lua runtime, not full curl CLI compatibility. Shell expansion, stdin/TTY interaction, interactive prompts, curl config files, and unsupported dash-prefixed curl options are not available; unknown curl options fail fast.
+
+## TLS And Proxy Certificates
+
+On Windows, `vulcan-curl` enables libcurl native CA lookup for target TLS and HTTPS proxy TLS when the request does not provide explicit CA files. This lets proxy certificates chain to the Windows trust store without disabling verification.
+
+On Linux and macOS, libcurl uses the CA bundle or trust backend selected by the host build. If an HTTPS proxy uses a private or enterprise CA that is not visible to that backend, pass `--proxy-cacert` or `--proxy-capath` through `vulcan-curl-request`. Use `--cacert` or `--capath` for the target server certificate chain, and reserve `--proxy-insecure` for temporary diagnostics.
 
 ## Output Controls
 
@@ -165,7 +173,7 @@ Recommended local release steps:
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.0
+.\scripts\tag_release.ps1 0.1.1
 ```
 
 Or on Unix-like shells:
@@ -173,7 +181,7 @@ Or on Unix-like shells:
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.0
+./scripts/tag_release.sh 0.1.1
 ```
 
 ## Notes

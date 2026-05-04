@@ -1,13 +1,33 @@
 # `vulcan-curl-request`
 
-Use this workflow when you want Linux curl-style argv semantics without depending on the shell's quoting rules.
+Use this workflow when you want supported Linux curl-style argv semantics without depending on the shell's quoting rules.
 
 Best for:
 
 - complex headers and flags
 - advanced TLS or proxy options
+- multipart form uploads
 - unusual request combinations
 - cases where `get` and `post` are too restrictive
+
+Argument support:
+
+- `args` is a runtime-parsed supported subset, not full curl CLI compatibility
+- shell expansion, stdin/TTY interaction, interactive prompts, and curl config files are not available
+- unsupported dash-prefixed curl options fail fast instead of being passed through to a system `curl`
+
+Supported option families:
+
+- method, URL, headers, data/json, `--data-urlencode`, and multipart `-F/--form`
+- auth, user-agent, referer, cookie, output, header dump, timeout, retry, proxy, and TLS certificate options
+- compatibility switches such as location, insecure, head, get, compressed, fail, silent, show-error, and include
+
+TLS and proxy certificate notes:
+
+- use `--cacert` or `--capath` for the target server certificate chain
+- use `--proxy-cacert` or `--proxy-capath` for HTTPS proxy certificate chains
+- use `--proxy-insecure` only for temporary proxy TLS diagnostics
+- Windows native CA lookup is enabled separately for target TLS and HTTPS proxy TLS when no explicit CA option overrides it
 
 Output defaults:
 
@@ -18,4 +38,4 @@ Output defaults:
 - unknown flags are ignored
 - `-i` and `--include` remain supported as compatibility switches for response headers
 
-You pass raw curl-style arguments, but execution still happens inside the Lua runtime layer.
+You pass supported curl-style arguments, and execution happens inside the Lua runtime layer.

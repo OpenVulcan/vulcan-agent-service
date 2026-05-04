@@ -1,28 +1,28 @@
 name: vulcan-codekit
-version: 0.1.0
-debug: true
+version: 0.1.2
+debug: false
 help:
   main:
-    description: Vulcan CodeKit 的主帮助与工作流导航。
+    description: Main Vulcan CodeKit help and workflow navigation.
     file: help/vulcan_codekit_skill.lua
   topics:
     - name: ast-detail
-      description: 精确文件 AST 结构查看工作流。
+      description: Exact-file AST structure inspection workflow.
       file: help/ast-detail.md
     - name: rg
-      description: 文本锚点反查 owner 上下文工作流。
+      description: Text-anchor to owner-context lookup workflow.
       file: help/rg.md
     - name: markdown-menu
-      description: Markdown 标题导航工作流。
+      description: Markdown heading navigation workflow.
       file: help/markdown-menu.md
     - name: node-source
-      description: 按结构 selector 提取函数或方法源码工作流。
+      description: Function or method source extraction workflow by structural_path.
       file: help/node-source.md
     - name: tree
-      description: 项目结构建图与候选文件筛选工作流。
+      description: Project structure mapping and candidate-file selection workflow.
       file: help/tree.md
     - name: patch
-      description: 全函数安全替换工作流。
+      description: Safe whole-function replacement workflow.
       file: help/patch.md
 entries:
   - name: ast-detail
@@ -47,11 +47,11 @@ entries:
     parameters:
       - name: dir
         type: string
-        description: "Target directory to search recursively. This parameter is required for a fresh search and must point to an existing directory."
-        required: false
-      - name: ext
+        description: "Required. Target directory to search recursively; must point to an existing directory."
+        required: true
+      - name: extensions
         type: string
-        description: "Optional file-extension filter, comma-separated (for example lua,rs,ts). You may also pass common language names such as rust or typescript, which are normalized to their corresponding file extensions. When omitted, codekit-rg uses the same built-in source-code default set as codekit-ast-detail and excludes non-core formats such as css/html/json/yaml."
+        description: "Optional file-extension filter, comma-separated (for example lua,rs,ts). Common language names such as rust or typescript are normalized to their extensions. When omitted, the default source-code set is used: bash, sh, zsh, c, h, cpp, cxx, cc, c++, hpp, hh, hxx, cu, ino, cs, ex, exs, go, hs, java, js, jsx, mjs, cjs, kt, kts, ktm, lua, nix, php, phtml, py, pyi, py3, bzl, rb, rbw, gemspec, rs, scala, sc, sbt, sol, swift, ts, mts, cts, tsx. The default excludes css, html, json, yaml/yml, hcl/tf/tfvars, and md."
         required: false
       - name: noignore
         type: boolean
@@ -59,7 +59,11 @@ entries:
         required: false
       - name: rg_pattern
         type: string
-        description: "Ripgrep regex used for the first-pass text search. This parameter is required for a fresh search."
+        description: "Ripgrep regex used for the first-pass text search. By default this uses ripgrep's Rust regex engine, so PCRE2-only features such as look-around and backreferences are rejected unless regex_engine is set to pcre2."
+        required: true
+      - name: regex_engine
+        type: string
+        description: "Regex engine for rg_pattern. Allowed values: rust or pcre2. Defaults to rust for predictable performance; pcre2 adds ripgrep --pcre2 for look-around/backreference patterns."
         required: false
   - name: markdown-menu
     description: "[MARKDOWN MENU] Triage Markdown files by headings only. Use this to locate the right docs file or section before reading body text elsewhere."
@@ -80,14 +84,14 @@ entries:
         description: "Disable ignore rules only when set to true. Leave it unset for the normal ignored-by-default documentation scan behavior."
         required: false
   - name: node-source
-    description: "[NODE SOURCE] Extract the full source text for one or more function or method nodes selected by structural selectors. Uses a required nodes[] payload where each node item carries its own file and selector, including same-file and cross-file batches."
+    description: "[NODE SOURCE] Extract the full source text for one or more function or method nodes selected by structural_path. Uses a required nodes[] payload where each node item carries its own file and structural_path, including same-file and cross-file batches."
     lua_entry: runtime/codekit-node-source.lua
     lua_module: codekit_node_source
     help: node-source
     parameters:
       - name: nodes
         type: array
-        description: "Required node input. Each item must be an object with file and selector fields, for example [{\"file\":\"src/main.rs\",\"selector\":\"main\"}]. Put the file path inside every node item; for same-file batches repeat the same file or place newline-separated selectors in that item's selector field."
+        description: "Required node input. Each item must be an object with file and structural_path fields, for example [{\"file\":\"src/main.rs\",\"structural_path\":\"main\"}]. structural_path is a slash-separated structural path suffix, not a regex or glob; examples include main, UserService/get_user, impl MyType/new, and impl MyTrait for MyType/run. If a structural_path matches multiple functions or methods, the tool returns candidates instead of choosing automatically. For same-file batches repeat the same file or place newline-separated structural paths in that item's structural_path field."
         required: true
       - name: max_nodes
         type: number
@@ -99,39 +103,43 @@ entries:
     lua_module: codekit_ast_tree
     help: tree
     parameters:
-      - name: paths
+      - name: dir
         type: string
-        description: "Exactly one directory path. The parameter name remains `paths`, but the value must contain a single non-empty directory path only; multiple directories and file paths are rejected."
+        description: "Exactly one existing directory path to scan recursively. Files, newline-separated path lists, and multiple directories are rejected."
         required: true
-      - name: ext
+      - name: extensions
         type: string
-        description: "Optional file-extension filter, comma-separated (for example rs,ts,tsx). You may also pass common language names such as rust or typescript, which are normalized to their corresponding file extensions. When omitted, codekit-ast-tree uses the built-in source-code default set."
+        description: "Optional file-extension filter, comma-separated (for example rs,ts,tsx). Common language names such as rust or typescript are normalized to their extensions. When omitted, the default source-code set is used: bash, sh, zsh, c, h, cpp, cxx, cc, c++, hpp, hh, hxx, cu, ino, cs, ex, exs, go, hs, java, js, jsx, mjs, cjs, kt, kts, ktm, lua, nix, php, phtml, py, pyi, py3, bzl, rb, rbw, gemspec, rs, scala, sc, sbt, sol, swift, ts, mts, cts, tsx. The default excludes css, html, json, yaml/yml, hcl/tf/tfvars, and md."
         required: false
       - name: noignore
         type: boolean
         description: "Disable ignore rules only when set to true. Leave it unset for the normal ignored-by-default tree scan behavior."
         required: false
   - name: patch
-    description: "[FUNCTION AST PATCH] Replace one or more functions or methods by structural selector. Supports legacy file+selector+replacement and batch patches[] payloads. Batch mode defaults to atomic=true, so any validation failure rejects the whole batch before writing."
+    description: "[FUNCTION AST PATCH] Replace one or more functions or methods by structural_path. Supports either single mode (file+structural_path+replacement) or batch mode (patches[]); these modes are mutually exclusive. Batch mode defaults to atomic=true, so any validation failure rejects the whole batch before writing."
     lua_entry: runtime/codekit-patch.lua
     lua_module: codekit_patch
     help: patch
     parameters:
       - name: file
         type: string
-        description: "Legacy target file that contains the function to patch. Required only when patches[] is not provided."
+        description: "Target file that contains the function or method to patch. Required only in single mode; omit it when patches[] is non-empty."
         required: false
-      - name: selector
+      - name: structural_path
         type: string
-        description: "Legacy flexible structural selector for a function or method. Required only when patches[] is not provided."
+        description: "Slash-separated structural path suffix for a function or method. It is not a regex or glob; examples include main, UserService/get_user, impl MyType/new, and impl MyTrait for MyType/run. If it matches no node the patch is rejected; if it matches multiple nodes the patch is rejected with candidate paths. Required only in single mode; omit it when patches[] is non-empty."
         required: false
       - name: replacement
         type: string
-        description: "Legacy replacement source text. It must be the complete function source, starting from the declaration line. Required only when patches[] is not provided."
+        description: "Replacement source text. It must be the complete function or method source, starting from the declaration line. Required only in single mode; omit it when patches[] is non-empty."
+        required: false
+      - name: precondition
+        type: object
+        description: "Optional stale-check object for single mode: {node_hash, file_hash, range}. node_hash must match the currently matched node source, file_hash must match the current whole file, and range must match the current node line range. Any mismatch rejects the patch with stale_* diagnostics. Omit top-level precondition when patches[] is non-empty; use per-item precondition instead."
         required: false
       - name: patches
         type: array
-        description: "Optional batch input. Each item must include file, selector, and replacement. Optional item fields include expected_node_hash, expected_source_hash, expected_file_hash, and expected_range."
+        description: "Optional batch input. Each item must include file, structural_path, and replacement. Each item may include precondition: {node_hash, file_hash, range}. Do not combine a non-empty patches[] with top-level file, structural_path, replacement, or precondition; mixed modes are rejected. Any missing, ambiguous, stale, invalid, or overlapping patch rejects the whole batch when atomic=true."
         required: false
       - name: atomic
         type: boolean

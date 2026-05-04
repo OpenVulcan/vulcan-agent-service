@@ -1,48 +1,48 @@
 name: vulcan-testkit
-version: 0.1.0
-debug: true
+version: 0.1.1
+debug: false
 help:
   main:
-    description: Vulcan TestKit main help for AI validation routing and Markdown diagnostic reports.
+    description: Vulcan TestKit help for bounded AI validation routing and compact Markdown diagnostics.
     file: help/help.md
   topics:
     - name: run
-      description: Prefer TestKit over shell for noisy validation commands and return a compact Markdown diagnostic report.
+      description: Run one bounded validation command or analyze one existing validation log; never use it as a general shell.
       file: help/run.md
 entries:
   - name: run
-    description: "[AI VALIDATION ROUTER] Prefer this over shell for bounded build/test/check/lint/typecheck validation when output may be long. It runs only explicit allowlisted validation profiles or analyzes a provided log in the same call, then returns a compact Markdown report with root diagnostics, failed tests, source refs, collapsed noise, and next actions instead of full stdout/stderr. Use after code edits, before claiming verification, or when an existing validation log needs root-cause compression. It rejects app/runtime, install/publish/create, interactive debug, fix/write, browser-opening, benchmark, fuzz, watcher, dev-server, and shell-like profiles even when hidden behind global options, package-manager scripts, exec targets, or passthrough args. Do not use for general shell automation, git, file operations, deployments, or destructive commands."
+    description: "[AI VALIDATION ROUTER] Use for bounded build/test/check/lint/typecheck validation when output may be long. Choose exactly one mode: run mode with `program` plus optional `args`, or analyze-only mode with `log`; do not provide both `program` and `log`. It returns compact Markdown root diagnostics, failed tests, source refs, collapsed noise, and next actions instead of full stdout/stderr. Run mode only accepts registered validation profiles and rejects shell/app-runtime/install/publish/create/debug/fix/write/browser/benchmark/fuzz/watch/dev-server shapes, including hidden global options, package-manager scripts, exec targets, and passthrough args. Do not use for general shell automation, git, file operations, deployments, or destructive commands."
     lua_entry: runtime/vulcan-testkit-run.lua
     lua_module: vulcan_testkit_run
     help: run
     parameters:
       - name: program
         type: string
-        description: "Allowlisted validation executable for run mode, for example cargo, npm, pnpm, python, node, go, or tsc. Use direct bounded validation tools only; shell-like and app-runtime programs are blocked."
+        description: "Run-mode executable only. Must be a bare supported executable such as cargo, go, python, pytest, mypy, ruff, node, tsc, vitest, jest, npm, pnpm, or yarn. Omit when using analyze-only `log` mode. Shell-like/app-runtime programs and path-like values are blocked."
         required: false
       - name: args
         type: array
-        description: "Arguments for an allowlisted validation profile, for example cargo check, cargo test, go test -json ./..., python -m pytest, node --check file.js, or tsc --noEmit. Values are converted to strings; hidden run/dev/watch/fix/write/install/debug modes are rejected before execution."
+        description: "Run-mode argument array for a supported validation profile, for example cargo check, cargo test, go test -json ./..., python -m pytest, pytest, ruff check, node --check file.js, vitest run, jest, npm run test, or tsc --noEmit. Do not pass a shell command string. Values are converted to strings; hidden run/dev/watch/fix/write/install/debug modes are rejected before execution."
         required: false
       - name: cwd
         type: string
-        description: "Optional working directory for run mode. Defaults to the current runtime cwd."
+        description: "Optional run-mode working directory. Defaults to the current runtime cwd and is only used when `program` is provided."
         required: false
       - name: stdin
         type: string
-        description: "Optional stdin text for run mode."
+        description: "Optional run-mode stdin text. Omit for analyze-only `log` mode."
         required: false
       - name: log
         type: string
-        description: "Existing validation log for analyze-only mode. Use this to compress a prior log without rerunning the command."
+        description: "Analyze-only mode input. Provide an existing validation log instead of `program` to compress prior output without rerunning a command."
         required: false
       - name: phase
         type: string
-        description: "Validation phase hint for root-cause ranking: build, test, check, lint, typecheck, install, or auto. Defaults to auto."
+        description: "Validation phase hint for root-cause ranking: build, test, check, lint, typecheck, or auto. Defaults to auto."
         required: false
       - name: tool_hint
         type: string
-        description: "Known profile or adapter hint such as cargo, pytest, python, node, go-test, tsc, npm, pnpm, vitest, jest, or generic. Path-like or unknown names are rejected. Use when output is mixed or auto-detection may be ambiguous."
+        description: "Known profile or adapter hint such as cargo, pytest, mypy, ruff, python, node, go, go-test, tsc, npm, pnpm, yarn, vitest, jest, js-test, or generic. Path-like or unknown names are rejected. Use only when output is mixed or auto-detection may be ambiguous."
         required: false
       - name: timeout_ms
         type: number

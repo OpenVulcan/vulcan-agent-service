@@ -18,4 +18,4 @@ Output defaults:
 - unknown flags are ignored
 - `include_headers=true` remains supported as a compatibility switch for response headers
 
-Switch to `vulcan-curl-request` when you need complex curl flags or low-level request control.
+Switch to `vulcan-curl-request` when you need supported curl-style flags or request control beyond this structured GET schema.

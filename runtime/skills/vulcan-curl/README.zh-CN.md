@@ -2,7 +2,7 @@
 
 面向 Vulcan Agent 的 AI 原生 HTTP 请求技能。
 
-`vulcan-curl` 为 Vulcan Agent 提供一层适合 AI 调用的 HTTP 请求能力。常见 API 调用可以使用结构化 `GET` 和 `POST` 入口，复杂请求则可以使用较底层的 curl-style argv 入口，同时避免 Agent 自己拼接平台相关 shell 命令和引号转义。
+`vulcan-curl` 为 Vulcan Agent 提供一层适合 AI 调用的 HTTP 请求能力。常见 API 调用可以使用结构化 `GET` 和 `POST` 入口，复杂请求则可以使用较底层的受支持 curl-style argv 入口，同时避免 Agent 自己拼接平台相关 shell 命令和引号转义。
 
 ## 什么时候使用
 
@@ -13,7 +13,7 @@
 - 使用 Bearer 或 Basic Auth 快捷参数。
 - 发送 JSON、form、multipart 或 raw POST body。
 - 将响应体或响应头保存到本地文件。
-- 需要 curl-style argv 语义，但不想依赖 shell 引号规则。
+- 需要受支持的 curl-style argv 语义，但不想依赖 shell 引号规则。
 
 交互式网页流程、JS 渲染 UI 测试或截图应使用浏览器工具。只有在确实要测试原始终端 curl 行为时，才使用普通 shell。
 
@@ -48,9 +48,17 @@
 
 ### `vulcan-curl-request`
 
-当需要 curl-style argv 语义，但不希望依赖平台相关 shell 引号规则时使用。
+当需要受支持的 curl-style argv 语义，但不希望依赖平台相关 shell 引号规则时使用。
 
-它适合高级 TLS、代理、上传、重试和不常见请求组合。请求仍在 Lua runtime 层执行，而不是通过 shell 执行。
+它适合运行时解析器已覆盖的高级 TLS、代理、multipart 上传、重试和不常见请求组合。请求仍在 Lua runtime 层执行，而不是通过 shell 执行。
+
+`args` 是 Lua runtime 解析的 curl-style 支持子集，不是完整 curl CLI。它不支持 shell 展开、stdin/TTY 交互、交互式提示、curl 配置文件或未实现的 `-` 开头 curl 选项；未知 curl 选项会直接报错。
+
+## TLS 与代理证书
+
+在 Windows 上，当请求没有显式提供 CA 文件时，`vulcan-curl` 会为目标 TLS 与 HTTPS 代理 TLS 启用 libcurl 原生 CA 查找。这样代理证书可以走 Windows 信任库完成校验，不需要关闭证书验证。
+
+在 Linux 和 macOS 上，libcurl 会使用宿主构建所选择的 CA bundle 或信任后端。如果 HTTPS 代理使用的私有 CA 或企业 CA 不在该后端可见范围内，应通过 `vulcan-curl-request` 传入 `--proxy-cacert` 或 `--proxy-capath`。目标站点证书链仍使用 `--cacert` 或 `--capath`，`--proxy-insecure` 仅建议用于临时诊断。
 
 ## 输出控制
 

@@ -1,8 +1,8 @@
 skill_id: vulcan-codekit
-version: 0.1.0
+version: 0.1.2
 managed: true
 source:
   source_type: github
   locator: LuaSkills/vulcan-codekit
-  tag: v0.1.0
-installed_at_unix_ms: 1777275446283
+  tag: v0.1.2
+installed_at_unix_ms: 1777881436261

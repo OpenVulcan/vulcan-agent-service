@@ -76,14 +76,12 @@ local function is_windows_runtime()
     return separator == "\\"
 end
 
--- Return whether the request should prefer Windows native CA lookup.
--- 判断当前请求是否应优先启用 Windows 原生 CA 查找。
-local function should_enable_windows_native_ca(curl, spec)
+-- Return whether the runtime can request Windows native CA lookup.
+-- 判断当前运行时是否支持请求 Windows 原生 CA 查找。
+-- Parameters: curl is the lua-curl module; returns true when native CA flags are available.
+-- 参数：curl 为 lua-curl 模块；当原生 CA 标记可用时返回 true。
+local function can_enable_windows_native_ca(curl)
     if not is_windows_runtime() then
-        return false
-    end
-
-    if spec.insecure or spec.cacert or spec.capath then
         return false
     end
 
@@ -98,24 +96,86 @@ local function should_enable_windows_native_ca(curl, spec)
     return true
 end
 
+-- Set one curl option by numeric constant and raise a contextual error when unsupported.
+-- 通过数字常量设置一个 curl 选项，并在运行时不支持时抛出带上下文的错误。
+-- Parameters: curl is the lua-curl module, easy is the curl easy handle, option_name is a lua-curl constant name, value is the option value, and label describes the user-facing option; returns nothing.
+-- 参数：curl 为 lua-curl 模块，easy 为 curl easy 句柄，option_name 为 lua-curl 常量名，value 为选项值，label 为面向用户的选项描述；无返回值。
+local function set_curl_option_or_error(curl, easy, option_name, value, label)
+    -- Resolved numeric option constant exposed by lua-curl.
+    -- lua-curl 暴露出的数字选项常量。
+    local option = type(curl) == "table" and curl[option_name] or nil
+    if type(option) ~= "number" then
+        error("Current lua-curl runtime does not support " .. label .. " (" .. option_name .. ")")
+    end
+
+    -- Result tuple returned by lua-curl setopt.
+    -- lua-curl setopt 返回的结果二元组。
+    local ok, err = easy:setopt(option, value)
+    if not ok then
+        error("Failed to set " .. label .. ": " .. tostring(err))
+    end
+end
+
 -- Apply native CA preferences to the easy handle when the runtime supports it.
 -- 在运行时支持时将原生 CA 偏好应用到 easy 句柄。
+-- Parameters: curl is the lua-curl module, easy is the curl easy handle, and spec contains target and proxy TLS fields; returns nothing.
+-- 参数：curl 为 lua-curl 模块，easy 为 curl easy 句柄，spec 包含目标与代理 TLS 字段；无返回值。
 local function apply_native_ca_preferences(curl, easy, spec)
-    if not should_enable_windows_native_ca(curl, spec) then
+    if not can_enable_windows_native_ca(curl) then
         return
     end
 
+    -- Windows native CA flag shared by target TLS and proxy TLS option slots.
+    -- 目标 TLS 与代理 TLS 选项位共用的 Windows 原生 CA 标记。
     local native_ca_flag = curl.SSLOPT_NATIVE_CA
-    local ok, err = easy:setopt(curl.OPT_SSL_OPTIONS, native_ca_flag)
-    if not ok then
-        error("Failed to enable Windows native CA for target TLS: " .. tostring(err))
+
+    -- Whether target TLS can use the Windows trust store without overriding explicit user CA choices.
+    -- 目标 TLS 是否可以在不覆盖用户显式 CA 选择的情况下使用 Windows 信任库。
+    local enable_target_native_ca = not spec.insecure and not spec.cacert and not spec.capath
+    if enable_target_native_ca then
+        set_curl_option_or_error(curl, easy, "OPT_SSL_OPTIONS", native_ca_flag, "Windows native CA for target TLS")
     end
 
-    if spec.proxy and type(curl.OPT_PROXY_SSL_OPTIONS) == "number" then
-        ok, err = easy:setopt(curl.OPT_PROXY_SSL_OPTIONS, native_ca_flag)
-        if not ok then
-            error("Failed to enable Windows native CA for proxy TLS: " .. tostring(err))
-        end
+    -- Whether HTTPS proxy TLS can independently use the Windows trust store.
+    -- HTTPS 代理 TLS 是否可以独立使用 Windows 信任库。
+    local enable_proxy_native_ca = spec.proxy
+        and not spec.proxy_insecure
+        and not spec.proxy_cacert
+        and not spec.proxy_capath
+        and type(curl.OPT_PROXY_SSL_OPTIONS) == "number"
+    if enable_proxy_native_ca then
+        set_curl_option_or_error(curl, easy, "OPT_PROXY_SSL_OPTIONS", native_ca_flag, "Windows native CA for proxy TLS")
+    end
+end
+
+-- Apply explicit HTTPS proxy TLS options from parsed curl arguments.
+-- 将解析后的 curl 参数中的 HTTPS 代理 TLS 选项应用到 easy 句柄。
+-- Parameters: curl is the lua-curl module, easy is the curl easy handle, and spec contains proxy TLS fields; returns nothing.
+-- 参数：curl 为 lua-curl 模块，easy 为 curl easy 句柄，spec 包含代理 TLS 字段；无返回值。
+local function apply_proxy_tls_options(curl, easy, spec)
+    if not spec.proxy then
+        return
+    end
+
+    if spec.proxy_insecure then
+        set_curl_option_or_error(curl, easy, "OPT_PROXY_SSL_VERIFYPEER", 0, "HTTPS proxy TLS peer verification")
+        set_curl_option_or_error(curl, easy, "OPT_PROXY_SSL_VERIFYHOST", 0, "HTTPS proxy TLS host verification")
+    end
+
+    if spec.proxy_cacert then
+        set_curl_option_or_error(curl, easy, "OPT_PROXY_CAINFO", spec.proxy_cacert, "HTTPS proxy CA certificate")
+    end
+
+    if spec.proxy_capath then
+        set_curl_option_or_error(curl, easy, "OPT_PROXY_CAPATH", spec.proxy_capath, "HTTPS proxy CA path")
+    end
+
+    if spec.proxy_cert then
+        set_curl_option_or_error(curl, easy, "OPT_PROXY_SSLCERT", spec.proxy_cert, "HTTPS proxy client certificate")
+    end
+
+    if spec.proxy_key then
+        set_curl_option_or_error(curl, easy, "OPT_PROXY_SSLKEY", spec.proxy_key, "HTTPS proxy client private key")
     end
 end
 
@@ -376,6 +436,13 @@ local function parse_curl_argv(argv, base_dir)
         cookie_jar = nil,
         proxy = nil,
         proxy_userpwd = nil,
+        -- Explicit TLS settings for HTTPS proxy connections.
+        -- HTTPS 代理连接的显式 TLS 设置。
+        proxy_insecure = false,
+        proxy_cacert = nil,
+        proxy_capath = nil,
+        proxy_cert = nil,
+        proxy_key = nil,
         cacert = nil,
         capath = nil,
         cert = nil,
@@ -426,6 +493,10 @@ local function parse_curl_argv(argv, base_dir)
         ["--url"] = "url",
         ["--proxy"] = "proxy",
         ["--proxy-user"] = "proxy_userpwd",
+        ["--proxy-cacert"] = "proxy_cacert",
+        ["--proxy-capath"] = "proxy_capath",
+        ["--proxy-cert"] = "proxy_cert",
+        ["--proxy-key"] = "proxy_key",
         ["-b"] = "cookie",
         ["--cookie"] = "cookie",
         ["-c"] = "cookie_jar",
@@ -445,6 +516,8 @@ local function parse_curl_argv(argv, base_dir)
             spec.follow_location = true
         elseif token == "-k" or token == "--insecure" then
             spec.insecure = true
+        elseif token == "--proxy-insecure" then
+            spec.proxy_insecure = true
         elseif token == "-I" or token == "--head" then
             spec.head_only = true
         elseif token == "-G" or token == "--get" then
@@ -493,6 +566,8 @@ local function parse_curl_argv(argv, base_dir)
             elseif field_name == "output_path" or field_name == "dump_header_path"
                 or field_name == "cacert" or field_name == "capath"
                 or field_name == "cert" or field_name == "key"
+                or field_name == "proxy_cacert" or field_name == "proxy_capath"
+                or field_name == "proxy_cert" or field_name == "proxy_key"
                 or field_name == "cookie_jar"
             then
                 spec[field_name] = resolve_local_path(base_dir, next_value)
@@ -720,6 +795,7 @@ local function create_easy_handle(curl, spec, base_dir, default_timeout)
         error("Failed to create curl easy handle: " .. tostring(easy_error))
     end
 
+    apply_proxy_tls_options(curl, easy, spec)
     apply_native_ca_preferences(curl, easy, spec)
 
     local ok, err = easy:setopt_headerfunction(table.insert, header_chunks)
@@ -1275,6 +1351,13 @@ local function build_get_spec(args, base_dir)
         cookie_jar = nil,
         proxy = nil,
         proxy_userpwd = nil,
+        -- Explicit TLS settings for HTTPS proxy connections.
+        -- HTTPS 代理连接的显式 TLS 设置。
+        proxy_insecure = false,
+        proxy_cacert = nil,
+        proxy_capath = nil,
+        proxy_cert = nil,
+        proxy_key = nil,
         cacert = nil,
         capath = nil,
         cert = nil,
@@ -1352,6 +1435,13 @@ local function build_post_like_spec(args, base_dir, method_name)
         cookie_jar = nil,
         proxy = nil,
         proxy_userpwd = nil,
+        -- Explicit TLS settings for HTTPS proxy connections.
+        -- HTTPS 代理连接的显式 TLS 设置。
+        proxy_insecure = false,
+        proxy_cacert = nil,
+        proxy_capath = nil,
+        proxy_cert = nil,
+        proxy_key = nil,
         cacert = nil,
         capath = nil,
         cert = nil,

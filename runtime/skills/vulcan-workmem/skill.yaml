@@ -1,6 +1,6 @@
 name: vulcan-workmem
-version: 0.1.0
-debug: true
+version: 0.1.1
+debug: false
 sqlite:
   enable: true
   log_level: info
@@ -12,18 +12,18 @@ help:
     file: help/main.md
 entries:
   - name: task-create
-    description: "Create or resume one project-scoped WorkMem task. Use this at the start of a remembered task with an existing VULCAN_WORKMEM_ID, or omit workmem_id to generate a new one. After every create call, visibly tell the user the current VULCAN_WORKMEM_ID and highlight it so it survives context compression."
+    description: "Create or resume one project-scoped WorkMem task. Use this at the start of a remembered task with an existing LUASKILL_SID, or omit LUASKILL_SID to generate a new public identity. After every create call, visibly tell the user the current LUASKILL_SID when it is not host-managed."
     lua_entry: runtime/vulcan-workmem-task-create.lua
     lua_module: vulcan_workmem_task_create
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Optional project-level stable VULCAN_WORKMEM_ID. Omit this only when a new ID should be generated. Caller-provided IDs must be single-line strings from 20 to 128 characters."
+        description: "Optional standard LuaSkills managed identity field. Omit this only when task-create should generate a new public identity. Caller-provided values must be single-line strings from 20 to 128 characters."
         required: false
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory, for example `implement-workmem`. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        description: "Stable task name for task-scoped memory, for example `implement-workmem`. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit."
         required: true
       - name: detail
         type: string
@@ -35,21 +35,21 @@ entries:
     lua_module: vulcan_workmem_set
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit."
         required: true
       - name: list
         type: array
-        description: "Node array to write. Maximum 30 nodes. Each item must be an object with `tag` (max 96 chars, lowercase letters/digits/`_`/`-`), `type` (`note`, `file_summary`, `decision`, `todo`, `progress`, `risk`, `checkpoint`, or `tool_result`), `title` (max 160 chars), and `content` (max 2000 chars)."
+        description: "Node array to write. Maximum 30 nodes. Each item must be an object with `tag` (max 96 chars, lowercase letters/digits/`_`/`-`, must start and end with a letter or digit), `type` (`note`, `file_summary`, `decision`, `todo`, `progress`, `risk`, `checkpoint`, or `tool_result`), `title` (max 160 chars), and `content` (max 2000 chars)."
         required: true
       - name: delete_tags
         type: array
-        description: "Optional tag string array to delete before writing the new nodes. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters. Use this to replace stale progress nodes."
+        description: "Optional tag string array to delete before writing the new nodes. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters, and must start and end with a letter or digit. Use this to replace stale progress nodes."
         required: false
   - name: list
     description: "List stored WorkMem node tags for one task without expanding full content. Use this before get when exact tags are unknown."
@@ -57,13 +57,13 @@ entries:
     lua_module: vulcan_workmem_list
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit."
         required: true
       - name: type
         type: string
@@ -71,25 +71,25 @@ entries:
         required: false
       - name: tag_prefix
         type: string
-        description: "Optional tag prefix filter, for example `progress-`. Use lowercase letters, digits, `_`, or `-`; maximum 96 characters."
+        description: "Optional tag prefix filter, for example `progress-`. Use lowercase letters, digits, `_`, or `-`; maximum 96 characters; must start with a letter or digit."
         required: false
   - name: get
-    description: "Read selected WorkMem nodes for one task. Omit tags only when a compact task summary is enough."
+    description: "Read selected WorkMem nodes for one task. Omit tags only when a latest compact node preview of up to 8 nodes is enough."
     lua_entry: runtime/vulcan-workmem-get.lua
     lua_module: vulcan_workmem_get
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit."
         required: true
       - name: tags
         type: array
-        description: "Optional tag string array to read. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters. When omitted, returns a compact task summary."
+        description: "Optional tag string array to read. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters, and must start and end with a letter or digit. When omitted, returns a latest compact node preview of up to 8 nodes."
         required: false
   - name: get-all
     description: "Recall every WorkMem node for one task. Use only for compression recovery, handoff, audit, or explicit full recall requests."
@@ -97,13 +97,13 @@ entries:
     lua_module: vulcan_workmem_get_all
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit."
         required: true
   - name: delete
     description: "Delete selected WorkMem node tags from one task."
@@ -111,39 +111,39 @@ entries:
     lua_module: vulcan_workmem_delete
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit."
         required: true
       - name: tags
         type: array
-        description: "Tag string array to delete. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters."
+        description: "Tag string array to delete. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters, and must start and end with a letter or digit."
         required: true
   - name: task-list
-    description: "List all remembered WorkMem tasks under one VULCAN_WORKMEM_ID."
+    description: "List all remembered WorkMem tasks under one LUASKILL_SID."
     lua_entry: runtime/vulcan-workmem-task-list.lua
     lua_module: vulcan_workmem_task_list
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
   - name: task-close
-    description: "Close one WorkMem task and remove its task-scoped nodes without invalidating the long-lived VULCAN_WORKMEM_ID."
+    description: "Close one WorkMem task and remove its task-scoped nodes without invalidating the long-lived LUASKILL_SID."
     lua_entry: runtime/vulcan-workmem-task-close.lua
     lua_module: vulcan_workmem_task_close
     help: main
     parameters:
-      - name: workmem_id
+      - name: LUASKILL_SID
         type: string
-        description: "Project-level stable VULCAN_WORKMEM_ID. Must be a single-line string from 20 to 128 characters."
+        description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
       - name: task_name
         type: string
-        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`."
+        description: "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit."
         required: true

@@ -1,7 +1,7 @@
 --[[
 codekit-node-source
-Extract full source text for one or more function or method nodes selected by structural selectors.
-根据结构 selectors 提取一个或多个函数或方法节点的完整源码。
+Extract full source text for one or more function or method nodes selected by structural paths.
+根据 structural_path 提取一个或多个函数或方法节点的完整源码。
 ]]
 
 -- Cached helper bundle loaded from codekit-patch.
@@ -57,8 +57,8 @@ local function get_entry_dir()
     return tostring(vulcan.context.entry_dir or get_skill_dir())
 end
 
--- Lazily load selector and AST helpers from the existing patch entry.
--- 从现有 patch 入口懒加载 selector 与 AST helper。
+-- Lazily load structural-path and AST helpers from the existing patch entry.
+-- 从现有 patch 入口懒加载 structural_path 与 AST helper。
 local function load_patch_runtime_helpers()
     if PATCH_RUNTIME_HELPERS then
         return PATCH_RUNTIME_HELPERS, nil
@@ -86,7 +86,7 @@ local function load_patch_runtime_helpers()
     local helpers = {
         load_ast_runtime_helpers = extract_upvalue_by_name(patch_entry, "load_ast_runtime_helpers"),
         validate_file_argument = extract_upvalue_by_name(patch_entry, "validate_file_argument"),
-        validate_selector_argument = extract_upvalue_by_name(patch_entry, "validate_selector_argument"),
+        validate_structural_path_argument = extract_upvalue_by_name(patch_entry, "validate_structural_path_argument"),
         collect_ast_for_file = extract_upvalue_by_name(patch_entry, "collect_ast_for_file"),
         find_matching_patch_targets = extract_upvalue_by_name(patch_entry, "find_matching_patch_targets"),
         build_candidate_descriptor = extract_upvalue_by_name(patch_entry, "build_candidate_descriptor"),
@@ -228,54 +228,54 @@ local function normalize_max_nodes(value)
     return math.floor(normalized)
 end
 
--- Parse one selector string into one or more non-empty selector lines.
--- 将单个 selector 字符串解析为一个或多个非空 selector 行。
-local function parse_selector_lines(value)
+-- Parse one structural_path string into one or more non-empty structural path lines.
+-- 将单个 structural_path 字符串解析为一个或多个非空结构路径行。
+local function parse_structural_path_lines(value)
     if type(value) ~= "string" then
         return nil, {
-            error = "invalid_selector_argument",
-            message = "selector must be a non-empty string or newline-separated selector list",
+            error = "invalid_structural_path_argument",
+            message = "structural_path must be a non-empty string or newline-separated structural path list",
             actual_type = type(value),
         }
     end
 
-    local selectors = {}
+    local structural_paths = {}
     for _, line in ipairs(split_lines(value)) do
-        local selector = trim(line)
-        if selector ~= "" then
-            table.insert(selectors, selector)
+        local structural_path = trim(line)
+        if structural_path ~= "" then
+            table.insert(structural_paths, structural_path)
         end
     end
 
-    if #selectors == 0 then
+    if #structural_paths == 0 then
         return nil, {
-            error = "invalid_selector_argument",
-            message = "selector must include at least one non-empty selector line",
+            error = "invalid_structural_path_argument",
+            message = "structural_path must include at least one non-empty structural path line",
         }
     end
 
-    return selectors, nil
+    return structural_paths, nil
 end
 
 -- Push one parsed node request into the normalized request list.
 -- 将一个解析后的节点请求写入规范化请求列表。
-local function push_node_request(requests, node_index, file_path, selector)
+local function push_node_request(requests, node_index, file_path, structural_path)
     table.insert(requests, {
         request_index = #requests + 1,
         node_index = node_index,
         file = file_path,
-        selector = selector,
+        structural_path = structural_path,
     })
 end
 
 -- Push one invalid node request so batch execution can report it without aborting other nodes.
 -- 写入一个无效节点请求，使批量执行能报告该节点错误而不终止其他节点。
-local function push_node_error_request(requests, node_index, file_path, selector, error_payload)
+local function push_node_error_request(requests, node_index, file_path, structural_path, error_payload)
     table.insert(requests, {
         request_index = #requests + 1,
         node_index = node_index,
         file = trim(file_path or ""),
-        selector = trim(selector or ""),
+        structural_path = trim(structural_path or ""),
         initial_error = error_payload,
     })
 end
@@ -289,7 +289,7 @@ local function normalize_node_requests(args, helpers)
     if type(raw_nodes) ~= "table" or #raw_nodes == 0 then
         return nil, {
             error = "invalid_nodes_argument",
-            message = "node-source requires nodes[]; each node item must include file and selector fields",
+            message = "node-source requires nodes[]; each node item must include file and structural_path fields",
             actual_type = type(raw_nodes),
         }
     end
@@ -298,7 +298,7 @@ local function normalize_node_requests(args, helpers)
         if type(node) ~= "table" then
             push_node_error_request(requests, node_index, "", "", {
                 error = "invalid_nodes_argument",
-                message = "nodes must be an array of objects with file and selector fields",
+                message = "nodes must be an array of objects with file and structural_path fields",
                 node_index = node_index,
                 actual_type = type(node),
             })
@@ -306,16 +306,16 @@ local function normalize_node_requests(args, helpers)
             local file_path, file_error = helpers.validate_file_argument(node.file)
             if file_error then
                 file_error.node_index = node_index
-                push_node_error_request(requests, node_index, node.file, node.selector, file_error)
+                push_node_error_request(requests, node_index, node.file, node.structural_path, file_error)
             else
-                local selectors, selector_error = parse_selector_lines(node.selector)
-                if selector_error then
-                    selector_error.node_index = node_index
-                    selector_error.file = file_path
-                    push_node_error_request(requests, node_index, file_path, node.selector, selector_error)
+                local structural_paths, structural_path_error = parse_structural_path_lines(node.structural_path)
+                if structural_path_error then
+                    structural_path_error.node_index = node_index
+                    structural_path_error.file = file_path
+                    push_node_error_request(requests, node_index, file_path, node.structural_path, structural_path_error)
                 else
-                    for _, selector in ipairs(selectors) do
-                        push_node_request(requests, node_index, file_path, selector)
+                    for _, structural_path in ipairs(structural_paths) do
+                        push_node_request(requests, node_index, file_path, structural_path)
                     end
                 end
             end
@@ -326,15 +326,15 @@ local function normalize_node_requests(args, helpers)
     if #requests == 0 then
         return nil, {
             error = "empty_nodes_argument",
-            message = "node-source requires at least one node selector",
+            message = "node-source requires at least one structural_path",
         }
     end
 
     return requests, nil
 end
 
--- Build a stable key for de-duplicating repeated selectors that resolve to the same node.
--- 构造稳定键，用于去重多个 selector 命中的同一节点。
+-- Build a stable key for de-duplicating repeated structural paths that resolve to the same node.
+-- 构造稳定键，用于去重多个 structural_path 命中的同一节点。
 local function build_node_identity_key(candidate)
     return table.concat({
         tostring(candidate.file or ""),
@@ -374,7 +374,7 @@ local function render_node_source_result(summary, results)
             table.insert(lines, string.format("- node_index: `%d`", tonumber(result.node_index) or 0))
         end
         table.insert(lines, string.format("- file: `%s`", tostring(result.file or "")))
-        table.insert(lines, string.format("- selector: `%s`", tostring(result.selector or "")))
+        table.insert(lines, string.format("- structural_path: `%s`", tostring(result.structural_path or "")))
         if result.status == "ok" or result.status == "duplicate" then
             table.insert(lines, string.format("- path: `%s`", tostring(candidate.path or "")))
             table.insert(lines, string.format("- signature: `%s`", tostring(candidate.signature or "")))
@@ -470,7 +470,7 @@ return function(args)
                 request_index = request.request_index,
                 node_index = request.node_index,
                 file = request.file,
-                selector = request.selector,
+                structural_path = request.structural_path,
                 message = "request skipped because max_nodes was reached",
             })
         else
@@ -482,7 +482,7 @@ return function(args)
                     request_index = request.request_index,
                     node_index = request.node_index,
                     file = request.file,
-                    selector = request.selector,
+                    structural_path = request.structural_path,
                     error = tostring(request.initial_error.error or "invalid_node_request"),
                     message = tostring(request.initial_error.message or "node request is invalid"),
                 })
@@ -506,12 +506,12 @@ return function(args)
                     request_index = request.request_index,
                     node_index = request.node_index,
                     file = request.file,
-                    selector = request.selector,
+                    structural_path = request.structural_path,
                     error = tostring(ast_entry.error.error or "ast_analysis_failed"),
                     message = tostring(ast_entry.error.message or ast_entry.error.error or "failed to analyze file"),
                 })
             else
-                local matches = helpers.find_matching_patch_targets(ast_entry.symbol_roots, request.selector)
+                local matches = helpers.find_matching_patch_targets(ast_entry.symbol_roots, request.structural_path)
                 if #matches == 0 then
                     summary.missing = summary.missing + 1
                     table.insert(results, {
@@ -519,8 +519,8 @@ return function(args)
                         request_index = request.request_index,
                         node_index = request.node_index,
                         file = request.file,
-                        selector = request.selector,
-                        message = "no function or method matched the selector",
+                        structural_path = request.structural_path,
+                        message = "no function or method matched the structural_path",
                     })
                 elseif #matches > 1 then
                     local candidates = {}
@@ -542,8 +542,8 @@ return function(args)
                         request_index = request.request_index,
                         node_index = request.node_index,
                         file = request.file,
-                        selector = request.selector,
-                        message = "multiple functions or methods matched the selector",
+                        structural_path = request.structural_path,
+                        message = "multiple functions or methods matched the structural_path",
                         candidates = candidates,
                     })
                 else
@@ -556,12 +556,12 @@ return function(args)
                             request_index = request.request_index,
                             node_index = request.node_index,
                             file = request.file,
-                            selector = request.selector,
+                            structural_path = request.structural_path,
                             candidate = candidate,
                             node_hash = seen_nodes[identity_key].node_hash,
                             file_hash = seen_nodes[identity_key].file_hash,
                             duplicate_of = seen_nodes[identity_key].request_index,
-                            message = "selector resolved to a node that was already returned",
+                            message = "structural_path resolved to a node that was already returned",
                         })
                     else
                         local file_content = file_cache_by_file[request.file]
@@ -574,7 +574,7 @@ return function(args)
                                     request_index = request.request_index,
                                     node_index = request.node_index,
                                     file = request.file,
-                                    selector = request.selector,
+                                    structural_path = request.structural_path,
                                     error = tostring(read_error.error or "file_read_failed"),
                                     message = tostring(read_error.message or read_error.error or "failed to read file"),
                                 })
@@ -592,7 +592,7 @@ return function(args)
                                 request_index = request.request_index,
                                 node_index = request.node_index,
                                 file = request.file,
-                                selector = request.selector,
+                                structural_path = request.structural_path,
                                 candidate = candidate,
                                 error = tostring(source_error.error or "source_extract_failed"),
                                 message = tostring(source_error.message or source_error.error or "failed to extract node source"),
@@ -612,7 +612,7 @@ return function(args)
                                 request_index = request.request_index,
                                 node_index = request.node_index,
                                 file = request.file,
-                                selector = request.selector,
+                                structural_path = request.structural_path,
                                 candidate = candidate,
                                 node_hash = node_hash,
                                 file_hash = file_hash,

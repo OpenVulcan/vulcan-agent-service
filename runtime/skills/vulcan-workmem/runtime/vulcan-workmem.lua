@@ -15,13 +15,13 @@ local MAX_DETAIL_CHARS = 1200
 -- 最大节点标题长度让列表输出保持可读。
 local MAX_TITLE_CHARS = 160
 
--- Minimum caller-provided workmem ID length prevents accidental tiny anchors from being persisted.
--- 调用方传入的工作记忆 ID 最小长度用于避免意外持久化过短锚点。
-local MIN_WORKMEM_ID_CHARS = 20
+-- Minimum caller-provided LUASKILL_SID length prevents accidental tiny anchors from being persisted.
+-- 调用方传入的 LUASKILL_SID 最小长度用于避免意外持久化过短锚点。
+local MIN_LUASKILL_SID_CHARS = 20
 
--- Maximum caller-provided workmem ID length keeps stable anchors compact and readable.
--- 调用方传入的工作记忆 ID 最大长度让稳定锚点保持紧凑且可读。
-local MAX_WORKMEM_ID_CHARS = 128
+-- Maximum caller-provided LUASKILL_SID length keeps stable anchors compact and readable.
+-- 调用方传入的 LUASKILL_SID 最大长度让稳定锚点保持紧凑且可读。
+local MAX_LUASKILL_SID_CHARS = 128
 
 -- Maximum nodes accepted in one set call bounds write volume and tool result summaries.
 -- 单次 set 允许的最大节点数量用于限制写入量和工具结果摘要。
@@ -125,23 +125,23 @@ local function inline_code(value)
     return "`" .. text .. "`"
 end
 
---- Return true when the workmem ID is provided by a trusted plugin bridge.
---- 当工作记忆 ID 由可信插件桥接提供时返回 true。
---- @param workmem_id string Work memory ID.
+--- Return true when the LUASKILL_SID is provided by a trusted plugin bridge.
+--- 当 LUASKILL_SID 由可信插件桥接提供时返回 true。
+--- @param luaskill_sid string LuaSkills managed identity.
 --- @return boolean
-local function is_plugin_managed(workmem_id)
-    return tostring(workmem_id or ""):sub(1, #PLUGIN_MANAGED_PREFIX) == PLUGIN_MANAGED_PREFIX
+local function is_plugin_managed(luaskill_sid)
+    return tostring(luaskill_sid or ""):sub(1, #PLUGIN_MANAGED_PREFIX) == PLUGIN_MANAGED_PREFIX
 end
 
---- Render a workmem ID while hiding plugin-managed secret-like values.
---- 渲染工作记忆 ID，同时隐藏插件托管的类密钥值。
---- @param workmem_id string Work memory ID.
+--- Render a LUASKILL_SID while hiding plugin-managed secret-like values.
+--- 渲染 LUASKILL_SID，同时隐藏插件托管的类密钥值。
+--- @param luaskill_sid string LuaSkills managed identity.
 --- @return string
-local function display_workmem_id(workmem_id)
-    if is_plugin_managed(workmem_id) then
+local function display_luaskill_sid(luaskill_sid)
+    if is_plugin_managed(luaskill_sid) then
         return "`plugin-managed`"
     end
-    return inline_code(workmem_id)
+    return inline_code(luaskill_sid)
 end
 
 --- Seed Lua's pseudo-random generator with lightweight local entropy.
@@ -173,10 +173,10 @@ local function random_hex(length)
     return table.concat(parts)
 end
 
---- Generate a compact random workmem ID with the public VWM prefix.
---- 生成带公开 VWM 前缀的紧凑随机工作记忆 ID。
+--- Generate a compact random LUASKILL_SID with the public VWM prefix.
+--- 生成带公开 VWM 前缀的紧凑随机 LUASKILL_SID。
 --- @return string
-local function generate_workmem_id()
+local function generate_luaskill_sid()
     seed_random()
     return "vwm_" .. random_hex(32)
 end
@@ -375,29 +375,40 @@ local function validate_token(value, label, max_length, allow_upper)
     return text, nil
 end
 
---- Validate and normalize a public workmem ID.
---- 校验并归一化公开工作记忆 ID。
+--- Validate and normalize a LUASKILL_SID value.
+--- 校验并归一化 LUASKILL_SID 值。
 --- @param value any Input value.
 --- @param required boolean Whether the ID is required.
 --- @return string|nil, string|nil
-local function validate_workmem_id(value, required)
+local function validate_luaskill_sid(value, required)
     local text = trim(value)
     if text == "" then
         if required then
-            return nil, "workmem_id is required. Use the saved VULCAN_WORKMEM_ID or call task-create without workmem_id first."
+            return nil, "LUASKILL_SID is required. Use the saved LUASKILL_SID or call task-create without LUASKILL_SID first."
         end
         return nil, nil
     end
-    if #text < MIN_WORKMEM_ID_CHARS then
-        return nil, "workmem_id is too short; min " .. tostring(MIN_WORKMEM_ID_CHARS) .. " characters. Pass a stable saved VULCAN_WORKMEM_ID, or omit workmem_id in task-create to generate one."
+    if #text < MIN_LUASKILL_SID_CHARS then
+        return nil, "LUASKILL_SID is too short; min " .. tostring(MIN_LUASKILL_SID_CHARS) .. " characters. Pass a stable saved LUASKILL_SID, or omit LUASKILL_SID in task-create to generate one."
     end
-    if #text > MAX_WORKMEM_ID_CHARS then
-        return nil, "workmem_id is too long; max " .. tostring(MAX_WORKMEM_ID_CHARS) .. " characters."
+    if #text > MAX_LUASKILL_SID_CHARS then
+        return nil, "LUASKILL_SID is too long; max " .. tostring(MAX_LUASKILL_SID_CHARS) .. " characters."
     end
     if text:find("[%c]") then
-        return nil, "workmem_id must be a single-line stable ID. Remove newlines or control characters."
+        return nil, "LUASKILL_SID must be a single-line stable identity. Remove newlines or control characters."
     end
     return text, nil
+end
+
+--- Reject the deprecated workmem_id field before identity resolution.
+--- 在身份解析前拒绝已废弃的 workmem_id 字段。
+--- @param request table Tool request.
+--- @return string|nil
+local function reject_deprecated_workmem_id(request)
+    if type(request) == "table" and request.workmem_id ~= nil then
+        return "workmem_id is no longer supported. Use LUASKILL_SID."
+    end
+    return nil
 end
 
 --- Validate and normalize a task name.
@@ -414,6 +425,24 @@ end
 --- @return string|nil, string|nil
 local function validate_tag(value)
     return validate_token(value, "tag", 96, false)
+end
+
+--- Validate and normalize an optional tag prefix filter.
+--- 校验并归一化可选 tag 前缀过滤器。
+--- @param value any Input value.
+--- @return string|nil, string|nil
+local function validate_optional_tag_prefix(value)
+    local text = trim(value)
+    if text == "" then
+        return "", nil
+    end
+    if #text > 96 then
+        return nil, "tag_prefix is too long; max 96 characters."
+    end
+    if not text:match("^[a-z0-9][a-z0-9_-]*$") then
+        return nil, "tag_prefix must use lowercase letters, digits, `_`, or `-`, and must start with a letter or digit."
+    end
+    return text, nil
 end
 
 --- Validate and normalize a node type.
@@ -566,13 +595,13 @@ local function normalize_node_list(value)
     return nodes, nil
 end
 
---- Upsert the project-level workmem row.
---- 写入或更新项目级 workmem 行。
---- @param workmem_id string Work memory ID.
+--- Upsert the project-level WorkMem row for one LUASKILL_SID.
+--- 为一个 LUASKILL_SID 写入或更新项目级 WorkMem 行。
+--- @param luaskill_sid string LuaSkills managed identity.
 --- @param source string ID source label.
 --- @param updated_at string Current timestamp.
 --- @return string|nil
-local function upsert_workmem(workmem_id, source, updated_at)
+local function upsert_workmem(luaskill_sid, source, updated_at)
     local _, err = sqlite_call(vulcan.sqlite.execute_batch, {
         sql = [[
 INSERT INTO wm_workmem(workmem_id, source, created_at, updated_at, metadata_json)
@@ -580,7 +609,7 @@ VALUES (?1, ?2, ?3, ?3, '{}')
 ON CONFLICT(workmem_id) DO UPDATE SET updated_at = excluded.updated_at
 ]],
         items = {
-            { workmem_id, source, updated_at },
+            { luaskill_sid, source, updated_at },
         },
     })
     return err
@@ -588,13 +617,13 @@ end
 
 --- Upsert one task row and optionally replace the task detail.
 --- 写入或更新一个任务行，并可选择替换任务说明。
---- @param workmem_id string Work memory ID.
+--- @param luaskill_sid string LuaSkills managed identity.
 --- @param task_name string Task name.
 --- @param detail string Task detail.
 --- @param update_detail boolean Whether to update detail on conflict.
 --- @param updated_at string Current timestamp.
 --- @return string|nil
-local function upsert_task(workmem_id, task_name, detail, update_detail, updated_at)
+local function upsert_task(luaskill_sid, task_name, detail, update_detail, updated_at)
     local conflict_sql = update_detail
             and "ON CONFLICT(workmem_id, task_name) DO UPDATE SET detail = excluded.detail, updated_at = excluded.updated_at"
         or "ON CONFLICT(workmem_id, task_name) DO UPDATE SET updated_at = excluded.updated_at"
@@ -606,7 +635,7 @@ VALUES (?1, ?2, ?3, ?4, ?4)
 ]]
             .. conflict_sql,
         items = {
-            { workmem_id, task_name, detail or "", updated_at },
+            { luaskill_sid, task_name, detail or "", updated_at },
         },
     })
     return err
@@ -614,28 +643,28 @@ end
 
 --- Ensure a task namespace exists before node operations.
 --- 在节点操作前确保任务命名空间存在。
---- @param workmem_id string Work memory ID.
+--- @param luaskill_sid string LuaSkills managed identity.
 --- @param task_name string Task name.
 --- @param updated_at string Current timestamp.
 --- @return string|nil
-local function ensure_task_namespace(workmem_id, task_name, updated_at)
-    local source = is_plugin_managed(workmem_id) and "plugin" or "provided"
-    local err = upsert_workmem(workmem_id, source, updated_at)
+local function ensure_task_namespace(luaskill_sid, task_name, updated_at)
+    local source = is_plugin_managed(luaskill_sid) and "plugin" or "provided"
+    local err = upsert_workmem(luaskill_sid, source, updated_at)
     if err then
         return err
     end
-    return upsert_task(workmem_id, task_name, "", false, updated_at)
+    return upsert_task(luaskill_sid, task_name, "", false, updated_at)
 end
 
 --- Count nodes for one task.
 --- 统计一个任务的节点数量。
---- @param workmem_id string Work memory ID.
+--- @param luaskill_sid string LuaSkills managed identity.
 --- @param task_name string Task name.
 --- @return number, string|nil
-local function count_task_nodes(workmem_id, task_name)
+local function count_task_nodes(luaskill_sid, task_name)
     local rows, err = query_rows(
         "SELECT COUNT(*) AS count FROM wm_nodes WHERE workmem_id = "
-            .. sql_quote(workmem_id)
+            .. sql_quote(luaskill_sid)
             .. " AND task_name = "
             .. sql_quote(task_name)
     )
@@ -645,17 +674,17 @@ local function count_task_nodes(workmem_id, task_name)
     return count_from_row(rows[1]), nil
 end
 
---- Render the persistent setup hint after generating a new workmem ID.
---- 生成新工作记忆 ID 后渲染持久化设置提示。
---- @param workmem_id string Generated workmem ID.
+--- Render the persistent setup hint after generating a new LUASKILL_SID.
+--- 生成新 LUASKILL_SID 后渲染持久化设置提示。
+--- @param luaskill_sid string Generated LuaSkills managed identity.
 --- @return string
-local function render_persistent_setup_hint(workmem_id)
+local function render_persistent_setup_hint(luaskill_sid)
     return table.concat({
         "## Persistent Setup Suggested",
         "",
-        "Ask the user whether to save this VULCAN_WORKMEM_ID into `AGENTS.md` or `CLAUDE.md`:",
+        "Ask the user whether to save this LUASKILL_SID into `AGENTS.md` or `CLAUDE.md`:",
         "",
-        "- VULCAN_WORKMEM_ID: " .. inline_code(workmem_id),
+        "- LUASKILL_SID: " .. inline_code(luaskill_sid),
         "- Once saved, it remains valid for future tasks.",
         "- Do not repeat this prompt when the rule file already contains the ID.",
     }, "\n")
@@ -668,8 +697,8 @@ local function render_plugin_hint()
     return table.concat({
         "## Plugin-Managed Mode",
         "",
-        "- The active VULCAN_WORKMEM_ID is injected by the plugin.",
-        "- Do not ask for, print, or persist the raw workmem_id.",
+        "- The active LUASKILL_SID is injected by the host or plugin.",
+        "- Do not ask for, print, or persist the raw LUASKILL_SID.",
         "- Continue using the task name and node tags normally.",
     }, "\n")
 end
@@ -692,24 +721,24 @@ local function action_task_create(request)
         return render_error("INPUT_ERROR", "detail is too long; max " .. tostring(MAX_DETAIL_CHARS) .. " characters.")
     end
 
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, false)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, false)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
 
     local generated = false
-    if not workmem_id then
-        workmem_id = generate_workmem_id()
+    if not luaskill_sid then
+        luaskill_sid = generate_luaskill_sid()
         generated = true
     end
 
     local updated_at = now_utc()
-    local source = generated and "generated" or (is_plugin_managed(workmem_id) and "plugin" or "provided")
-    local err = upsert_workmem(workmem_id, source, updated_at)
+    local source = generated and "generated" or (is_plugin_managed(luaskill_sid) and "plugin" or "provided")
+    local err = upsert_workmem(luaskill_sid, source, updated_at)
     if err then
         return render_error("SQLITE_ERROR", err)
     end
-    err = upsert_task(workmem_id, task_name, detail, true, updated_at)
+    err = upsert_task(luaskill_sid, task_name, detail, true, updated_at)
     if err then
         return render_error("SQLITE_ERROR", err)
     end
@@ -717,7 +746,7 @@ local function action_task_create(request)
     local lines = {
         "# Work Memory Task Ready",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- task: " .. inline_code(task_name),
         "- source: " .. inline_code(source),
         "- updated_at: " .. inline_code(updated_at),
@@ -727,12 +756,12 @@ local function action_task_create(request)
         shorten(detail, 500),
     }
 
-    if is_plugin_managed(workmem_id) then
+    if is_plugin_managed(luaskill_sid) then
         lines[#lines + 1] = ""
         lines[#lines + 1] = render_plugin_hint()
     elseif generated then
         lines[#lines + 1] = ""
-        lines[#lines + 1] = render_persistent_setup_hint(workmem_id)
+        lines[#lines + 1] = render_persistent_setup_hint(luaskill_sid)
     end
 
     return table.concat(lines, "\n")
@@ -743,7 +772,7 @@ end
 --- @param request table Tool request.
 --- @return string
 local function action_set(request)
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, true)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, true)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
@@ -761,7 +790,7 @@ local function action_set(request)
     end
 
     local updated_at = now_utc()
-    local err = ensure_task_namespace(workmem_id, task_name, updated_at)
+    local err = ensure_task_namespace(luaskill_sid, task_name, updated_at)
     if err then
         return render_error("SQLITE_ERROR", err)
     end
@@ -769,7 +798,7 @@ local function action_set(request)
     if #delete_tags > 0 then
         local delete_items = {}
         for _, tag in ipairs(delete_tags) do
-            delete_items[#delete_items + 1] = { workmem_id, task_name, tag }
+            delete_items[#delete_items + 1] = { luaskill_sid, task_name, tag }
         end
         local _, delete_sql_err = sqlite_call(vulcan.sqlite.execute_batch, {
             sql = "DELETE FROM wm_nodes WHERE workmem_id = ?1 AND task_name = ?2 AND tag = ?3",
@@ -783,7 +812,7 @@ local function action_set(request)
     local write_items = {}
     for _, node in ipairs(nodes) do
         write_items[#write_items + 1] = {
-            workmem_id,
+            luaskill_sid,
             task_name,
             node.tag,
             node.type,
@@ -817,7 +846,7 @@ ON CONFLICT(workmem_id, task_name, tag) DO UPDATE SET
     return table.concat({
         "# Work Memory Saved",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- task: " .. inline_code(task_name),
         "- written_nodes: " .. tostring(#nodes),
         "- delete_tags_requested: " .. tostring(#delete_tags),
@@ -836,7 +865,7 @@ end
 --- @param request table Tool request.
 --- @return string
 local function action_list(request)
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, true)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, true)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
@@ -848,16 +877,13 @@ local function action_list(request)
     if type_err then
         return render_error("INPUT_ERROR", type_err)
     end
-    local tag_prefix = trim(request.tag_prefix)
-    if tag_prefix ~= "" then
-        local _, prefix_err = validate_tag(tag_prefix:gsub("%-$", "a"))
-        if prefix_err and not tag_prefix:match("^[a-z0-9][a-z0-9_-]*%-?$") then
-            return render_error("INPUT_ERROR", "tag_prefix must use lowercase letters, digits, `_`, or `-`.")
-        end
+    local tag_prefix, prefix_err = validate_optional_tag_prefix(request.tag_prefix)
+    if prefix_err then
+        return render_error("INPUT_ERROR", prefix_err)
     end
 
     local conditions = {
-        "workmem_id = " .. sql_quote(workmem_id),
+        "workmem_id = " .. sql_quote(luaskill_sid),
         "task_name = " .. sql_quote(task_name),
     }
     if type_filter then
@@ -879,7 +905,7 @@ local function action_list(request)
     local lines = {
         "# Work Memory Tags",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- task: " .. inline_code(task_name),
         "- total_tags: " .. tostring(#rows),
     }
@@ -932,7 +958,7 @@ end
 --- @param request table Tool request.
 --- @return string
 local function action_get(request)
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, true)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, true)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
@@ -952,7 +978,7 @@ local function action_get(request)
             quoted[#quoted + 1] = sql_quote(tag)
         end
         sql = "SELECT tag, type, title, content, updated_at FROM wm_nodes WHERE workmem_id = "
-            .. sql_quote(workmem_id)
+            .. sql_quote(luaskill_sid)
             .. " AND task_name = "
             .. sql_quote(task_name)
             .. " AND tag IN ("
@@ -960,7 +986,7 @@ local function action_get(request)
             .. ") ORDER BY tag ASC"
     else
         sql = "SELECT tag, type, title, content, updated_at FROM wm_nodes WHERE workmem_id = "
-            .. sql_quote(workmem_id)
+            .. sql_quote(luaskill_sid)
             .. " AND task_name = "
             .. sql_quote(task_name)
             .. " ORDER BY updated_at DESC, tag ASC LIMIT 8"
@@ -974,13 +1000,14 @@ local function action_get(request)
     local lines = {
         "# Work Memory Recall",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- task: " .. inline_code(task_name),
         "- returned_nodes: " .. tostring(#rows),
     }
     if #tags == 0 then
-        lines[#lines + 1] = "- mode: `compact-summary`"
-        lines[#lines + 1] = "- note: Use `vulcan-workmem-list` then `vulcan-workmem-get(tags)` for precise recall, or `vulcan-workmem-get-all` for full recovery."
+        lines[#lines + 1] = "- mode: `latest-compact-node-preview`"
+        lines[#lines + 1] = "- limit: `8`"
+        lines[#lines + 1] = "- note: This is a latest compact node preview, not a full task summary. Use `vulcan-workmem-list` then `vulcan-workmem-get(tags)` for precise recall, or `vulcan-workmem-get-all` for full recovery."
     end
     lines[#lines + 1] = ""
 
@@ -990,7 +1017,7 @@ local function action_get(request)
     end
 
     if #tags == 0 then
-        lines[#lines + 1] = "## Compact Nodes"
+        lines[#lines + 1] = "## Latest Compact Node Preview"
         lines[#lines + 1] = ""
         for _, row in ipairs(rows) do
             lines[#lines + 1] = "- "
@@ -1019,7 +1046,7 @@ end
 --- @param request table Tool request.
 --- @return string
 local function action_get_all(request)
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, true)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, true)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
@@ -1030,7 +1057,7 @@ local function action_get_all(request)
 
     local rows, err = query_rows(
         "SELECT tag, type, title, content, updated_at FROM wm_nodes WHERE workmem_id = "
-            .. sql_quote(workmem_id)
+            .. sql_quote(luaskill_sid)
             .. " AND task_name = "
             .. sql_quote(task_name)
             .. " ORDER BY updated_at DESC, tag ASC"
@@ -1042,7 +1069,7 @@ local function action_get_all(request)
     local lines = {
         "# Work Memory Full Recall",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- task: " .. inline_code(task_name),
         "- total_nodes: " .. tostring(#rows),
         "- paging: `handled-by-luaskill-runtime`",
@@ -1068,7 +1095,7 @@ end
 --- @param request table Tool request.
 --- @return string
 local function action_del(request)
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, true)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, true)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
@@ -1083,7 +1110,7 @@ local function action_del(request)
 
     local delete_items = {}
     for _, tag in ipairs(tags) do
-        delete_items[#delete_items + 1] = { workmem_id, task_name, tag }
+        delete_items[#delete_items + 1] = { luaskill_sid, task_name, tag }
     end
     local _, err = sqlite_call(vulcan.sqlite.execute_batch, {
         sql = "DELETE FROM wm_nodes WHERE workmem_id = ?1 AND task_name = ?2 AND tag = ?3",
@@ -1101,7 +1128,7 @@ local function action_del(request)
     return table.concat({
         "# Work Memory Deleted",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- task: " .. inline_code(task_name),
         "- delete_tags_requested: " .. tostring(#tags),
         "",
@@ -1116,7 +1143,7 @@ end
 --- @param request table Tool request.
 --- @return string
 local function action_task_list(request)
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, true)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, true)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
@@ -1126,7 +1153,7 @@ local function action_task_list(request)
             .. "FROM wm_tasks t LEFT JOIN wm_nodes n "
             .. "ON t.workmem_id = n.workmem_id AND t.task_name = n.task_name "
             .. "WHERE t.workmem_id = "
-            .. sql_quote(workmem_id)
+            .. sql_quote(luaskill_sid)
             .. " GROUP BY t.task_name, t.detail, t.updated_at "
             .. "ORDER BY t.updated_at DESC, t.task_name ASC"
     )
@@ -1137,13 +1164,13 @@ local function action_task_list(request)
     local lines = {
         "# Work Memory Tasks",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- total_tasks: " .. tostring(#rows),
         "",
     }
 
     if #rows == 0 then
-        lines[#lines + 1] = "No tasks stored for this workmem ID."
+        lines[#lines + 1] = "No tasks stored for this LUASKILL_SID."
         return table.concat(lines, "\n")
     end
 
@@ -1167,7 +1194,7 @@ end
 --- @param request table Tool request.
 --- @return string
 local function action_task_close(request)
-    local workmem_id, id_err = validate_workmem_id(request.workmem_id, true)
+    local luaskill_sid, id_err = validate_luaskill_sid(request.LUASKILL_SID, true)
     if id_err then
         return render_error("INPUT_ERROR", id_err)
     end
@@ -1176,7 +1203,7 @@ local function action_task_close(request)
         return render_error("INPUT_ERROR", task_err)
     end
 
-    local node_count, count_err = count_task_nodes(workmem_id, task_name)
+    local node_count, count_err = count_task_nodes(luaskill_sid, task_name)
     if count_err then
         return render_error("SQLITE_ERROR", count_err)
     end
@@ -1184,7 +1211,7 @@ local function action_task_close(request)
     local _, err = sqlite_call(vulcan.sqlite.execute_batch, {
         sql = "DELETE FROM wm_nodes WHERE workmem_id = ?1 AND task_name = ?2",
         items = {
-            { workmem_id, task_name },
+            { luaskill_sid, task_name },
         },
     })
     if err then
@@ -1194,7 +1221,7 @@ local function action_task_close(request)
     _, err = sqlite_call(vulcan.sqlite.execute_batch, {
         sql = "DELETE FROM wm_tasks WHERE workmem_id = ?1 AND task_name = ?2",
         items = {
-            { workmem_id, task_name },
+            { luaskill_sid, task_name },
         },
     })
     if err then
@@ -1202,7 +1229,7 @@ local function action_task_close(request)
     end
 
     local remaining_rows, remaining_err = query_rows(
-        "SELECT COUNT(*) AS count FROM wm_tasks WHERE workmem_id = " .. sql_quote(workmem_id)
+        "SELECT COUNT(*) AS count FROM wm_tasks WHERE workmem_id = " .. sql_quote(luaskill_sid)
     )
     if remaining_err then
         return render_error("SQLITE_ERROR", remaining_err)
@@ -1213,7 +1240,7 @@ local function action_task_close(request)
         _, err = sqlite_call(vulcan.sqlite.execute_batch, {
             sql = "DELETE FROM wm_workmem WHERE workmem_id = ?1",
             items = {
-                { workmem_id },
+                { luaskill_sid },
             },
         })
         if err then
@@ -1222,19 +1249,19 @@ local function action_task_close(request)
         empty_workmem_cleaned = true
     end
 
-    local closing_note = "The VULCAN_WORKMEM_ID remains valid as a long-lived project rule value. Reuse it for future tasks if it is saved in `AGENTS.md` or `CLAUDE.md`."
-    if is_plugin_managed(workmem_id) then
-        closing_note = "Plugin-managed mode remains active through the host plugin. Do not ask for, print, or persist the raw workmem_id."
+    local closing_note = "The LUASKILL_SID remains valid as a long-lived project rule value. Reuse it for future tasks if it is saved in `AGENTS.md` or `CLAUDE.md`."
+    if is_plugin_managed(luaskill_sid) then
+        closing_note = "Plugin-managed mode remains active through the host or plugin. Do not ask for, print, or persist the raw LUASKILL_SID."
     end
 
     return table.concat({
         "# Work Memory Task Closed",
         "",
-        "- VULCAN_WORKMEM_ID: " .. display_workmem_id(workmem_id),
+        "- LUASKILL_SID: " .. display_luaskill_sid(luaskill_sid),
         "- task: " .. inline_code(task_name),
         "- deleted_nodes: " .. tostring(node_count),
         "- remaining_tasks: " .. tostring(remaining_tasks),
-        "- empty_workmem_row_cleaned: " .. tostring(empty_workmem_cleaned),
+        "- empty_identity_row_cleaned: " .. tostring(empty_workmem_cleaned),
         "",
         closing_note,
     }, "\n")
@@ -1248,6 +1275,11 @@ local function dispatch(request)
     local action = lower_text(request.action)
     if not ACTIONS[action] then
         return render_error("INPUT_ERROR", "action must be one of task-create, set, list, get, get-all, del, task-list, task-close.")
+    end
+
+    local deprecated_id_err = reject_deprecated_workmem_id(request)
+    if deprecated_id_err then
+        return render_error("INPUT_ERROR", deprecated_id_err)
     end
 
     if action == "task-create" then

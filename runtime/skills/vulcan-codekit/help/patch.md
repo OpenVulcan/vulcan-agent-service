@@ -7,13 +7,21 @@ Best for:
 - AST-safe whole-function replacement
 - batch patching handler/helper/test changes in one call
 - avoiding stale line-based edits
-- keeping selector-based targeting precise
+- keeping structural_path-based targeting precise
+
+Structural path syntax:
+
+- `structural_path` is a slash-separated structural path suffix, not a regex or glob
+- examples: `main`, `UserService/get_user`, `impl MyType/new`, `impl MyTrait for MyType/run`
+- ambiguous paths are rejected with candidate paths; retry with a returned candidate path
 
 Input options:
 
-- legacy mode: pass `file`, `selector`, and `replacement`
-- batch mode: pass `patches = [{ file, selector, replacement }, ...]`
-- optional stale checks: `expected_node_hash`, `expected_source_hash`, `expected_file_hash`, `expected_range`
+- single mode: pass `file`, `structural_path`, and `replacement`
+- batch mode: pass `patches = [{ file, structural_path, replacement }, ...]`
+- single mode and batch mode are mutually exclusive; non-empty `patches[]` must not be combined with top-level `file`, `structural_path`, `replacement`, or `precondition`
+- mixed single/batch input is rejected with `mixed_patch_modes`
+- optional stale checks: pass `precondition = { node_hash, file_hash, range }`
 
 Batch rules:
 
@@ -25,6 +33,7 @@ Batch rules:
 - `max_patches` defaults to 20
 - applied results report `previous_node_hash` and `new_node_hash`; use `new_node_hash` for later stale checks
 - stale rejections report expected/actual diagnostics such as `expected_node_hash` and `actual_node_hash`
+- `precondition.node_hash` checks the current matched node source, `precondition.file_hash` checks the whole file, and `precondition.range` checks the current node line range
 
 Typical route:
 

@@ -106,6 +106,10 @@ service HostAdapterService {
   // BuildToolRefreshNotice 将 tool 注册表变化转换为面向模型和用户的刷新提示。
   rpc BuildToolRefreshNotice(HostAdapterToolRefreshNoticeRequest) returns (HostAdapterToolRefreshNoticeResponse);
 
+  // GetVmmStatus reports whether the VMM backend is enabled for this host runtime.
+  // GetVmmStatus 返回当前宿主运行时是否启用了 VMM 后端。
+  rpc GetVmmStatus(HostAdapterVmmStatusRequest) returns (HostAdapterVmmStatusResponse);
+
   // ListVmmMemoryTools returns host-facing descriptors for the stable VMM memory tools.
   // ListVmmMemoryTools 返回稳定 VMM 记忆工具的宿主可见描述。
   rpc ListVmmMemoryTools(HostAdapterListVmmMemoryToolsRequest) returns (HostAdapterListVmmMemoryToolsResponse);
@@ -540,6 +544,12 @@ message HostAdapterProfileResponse {
   // Error summary or diagnostics.
   // 错误摘要或诊断信息。
   string message = 8;
+  // Whether the VMM backend is enabled in the current host runtime.
+  // 当前宿主运行时是否启用了 VMM 后端。
+  bool vmm_enabled = 9;
+  // Human-readable VMM backend status.
+  // 人类可读的 VMM 后端状态。
+  string vmm_status = 10;
 }
 
 // HostAdapterRuntimeRequest asks the host to normalize runtime context for one adapter call.
@@ -607,6 +617,12 @@ message HostAdapterRuntimeResponse {
   // Error summary or diagnostics.
   // 错误摘要或诊断信息。
   string message = 9;
+  // Whether the VMM backend is enabled in the current host runtime.
+  // 当前宿主运行时是否启用了 VMM 后端。
+  bool vmm_enabled = 10;
+  // Human-readable VMM backend status.
+  // 人类可读的 VMM 后端状态。
+  string vmm_status = 11;
 }
 
 // HostAdapterDiffToolRegistryRequest asks the host to diff two tool registry snapshots.
@@ -719,6 +735,31 @@ message HostAdapterToolRefreshNoticeResponse {
   string message = 10;
 }
 
+// HostAdapterVmmStatusRequest asks for the runtime VMM backend status.
+// HostAdapterVmmStatusRequest 请求运行时 VMM 后端状态。
+message HostAdapterVmmStatusRequest {
+  // Trusted client context used for diagnostics and future policy decisions.
+  // 用于诊断和未来策略判断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+}
+
+// HostAdapterVmmStatusResponse returns whether VMM-dependent features may run.
+// HostAdapterVmmStatusResponse 返回依赖 VMM 的能力是否可运行。
+message HostAdapterVmmStatusResponse {
+  // Whether the VMM backend is enabled in the current host runtime.
+  // 当前宿主运行时是否启用了 VMM 后端。
+  bool vmm_enabled = 1;
+  // Human-readable VMM backend status.
+  // 人类可读的 VMM 后端状态。
+  string vmm_status = 2;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 3;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 4;
+}
+
 // HostAdapterToolDescriptor describes one stable host-visible tool.
 // HostAdapterToolDescriptor 描述一个稳定的宿主可见工具。
 message HostAdapterToolDescriptor {
@@ -759,4 +800,10 @@ message HostAdapterListVmmMemoryToolsResponse {
   // Error summary or diagnostics.
   // 错误摘要或诊断信息。
   string message = 3;
+  // Whether the VMM backend is enabled in the current host runtime.
+  // 当前宿主运行时是否启用了 VMM 后端。
+  bool vmm_enabled = 4;
+  // Human-readable VMM backend status.
+  // 人类可读的 VMM 后端状态。
+  string vmm_status = 5;
 }

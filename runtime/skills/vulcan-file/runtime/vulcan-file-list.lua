@@ -589,6 +589,20 @@ local function validate_optional_string(value, argument_name)
     })
 end
 
+-- Validate that the file-name glob is scoped to one basename, not a relative path.
+-- 校验文件名 glob 仅作用于单个 basename，而不是相对路径。
+local function validate_basename_pattern(pattern)
+    local pattern_text = tostring(pattern or "")
+    if pattern_text:find("/", 1, true) ~= nil or pattern_text:find("\\", 1, true) ~= nil then
+        return render_error("invalid_pattern_argument", "pattern must be a basename-only glob; use path to narrow directories", {
+            argument = "pattern",
+            pattern = pattern_text,
+            example = "*.lua",
+        })
+    end
+    return nil
+end
+
 -- Validate and normalize the optional list limit.
 -- 校验并规范化可选的列表数量上限。
 local function validate_limit_argument(value)
@@ -635,6 +649,10 @@ local function parse_request(args)
     local pattern = type(input.pattern) == "string" and trim(input.pattern) or "*"
     if pattern == "" then
         pattern = "*"
+    end
+    local basename_pattern_error = validate_basename_pattern(pattern)
+    if basename_pattern_error then
+        return nil, basename_pattern_error
     end
 
     return {

@@ -40,7 +40,8 @@ use pb::{
     HostAdapterListVmmMemoryToolsRequest, HostAdapterListVmmMemoryToolsResponse,
     HostAdapterProfileRequest, HostAdapterProfileResponse, HostAdapterRuntimeRequest,
     HostAdapterRuntimeResponse, HostAdapterToolDescriptor, HostAdapterToolRefreshNoticeRequest,
-    HostAdapterToolRefreshNoticeResponse, LuaSkillCallToolRequest, LuaSkillCallToolResponse,
+    HostAdapterToolRefreshNoticeResponse, HostAdapterVmmStatusRequest,
+    HostAdapterVmmStatusResponse, LuaSkillCallToolRequest, LuaSkillCallToolResponse,
     LuaSkillConfigDeleteRequest, LuaSkillConfigGetRequest, LuaSkillConfigListRequest,
     LuaSkillConfigSetRequest, LuaSkillGetHelpRequest, LuaSkillGetToolRequest,
     LuaSkillGetToolResponse, LuaSkillInstallRequest, LuaSkillListHelpRequest,
@@ -724,6 +725,8 @@ impl HostAdapterService for McpServiceImpl {
             identity_mode: identity_mode_to_grpc(adapter.identity_mode).to_string(),
             is_error: false,
             message: String::new(),
+            vmm_enabled: self.runtime.is_vmm_backend_enabled(),
+            vmm_status: self.runtime.vmm_backend_status_message().to_string(),
         }))
     }
 
@@ -759,6 +762,8 @@ impl HostAdapterService for McpServiceImpl {
             degraded_reasons: runtime.degraded_reasons,
             is_error: false,
             message: String::new(),
+            vmm_enabled: self.runtime.is_vmm_backend_enabled(),
+            vmm_status: self.runtime.vmm_backend_status_message().to_string(),
         }))
     }
 
@@ -833,6 +838,24 @@ impl HostAdapterService for McpServiceImpl {
         }))
     }
 
+    /// Return whether the host runtime has an enabled VMM backend.
+    /// 返回当前宿主运行时是否启用了 VMM 后端。
+    async fn get_vmm_status(
+        &self,
+        request: Request<HostAdapterVmmStatusRequest>,
+    ) -> Result<Response<HostAdapterVmmStatusResponse>, Status> {
+        let _req = request.into_inner();
+        let vmm_enabled = self.runtime.is_vmm_backend_enabled();
+        let vmm_status = self.runtime.vmm_backend_status_message().to_string();
+
+        Ok(Response::new(HostAdapterVmmStatusResponse {
+            vmm_enabled,
+            vmm_status,
+            is_error: false,
+            message: String::new(),
+        }))
+    }
+
     /// Return stable VMM memory tool metadata for host plugin registration.
     /// 返回宿主插件注册工具时使用的稳定 VMM 记忆工具元信息。
     async fn list_vmm_memory_tools(
@@ -840,8 +863,25 @@ impl HostAdapterService for McpServiceImpl {
         request: Request<HostAdapterListVmmMemoryToolsRequest>,
     ) -> Result<Response<HostAdapterListVmmMemoryToolsResponse>, Status> {
         let _req = request.into_inner();
-        // Keep this endpoint independent from backend health so hosts can still register tools while VMM reconnects.
-        // 这里不依赖后端健康状态，确保 VMM 重连期间宿主仍可注册工具。
+        let vmm_enabled = self.runtime.is_vmm_backend_enabled();
+        let vmm_status = self.runtime.vmm_backend_status_message().to_string();
+
+        // Do not expose VMM tools when the VMM backend is not enabled.
+        // 当 VMM 后端未启用时，不向宿主暴露任何 VMM 工具。
+        if !vmm_enabled {
+            return Ok(Response::new(HostAdapterListVmmMemoryToolsResponse {
+                tools: Vec::new(),
+                is_error: false,
+                message: vmm_status.clone(),
+                vmm_enabled,
+                vmm_status,
+            }));
+        }
+
+        // Tool descriptors are available once the VMM backend is enabled; actual
+        // health errors are still surfaced by each VMM relay call.
+        // VMM 后端启用后即可暴露工具描述；
+        // 具体健康错误仍由每次 VMM 中转调用自行返回。
         let tools = vmm_memory_tool_descriptors()
             .into_iter()
             .map(|descriptor| HostAdapterToolDescriptor {
@@ -857,6 +897,8 @@ impl HostAdapterService for McpServiceImpl {
             tools,
             is_error: false,
             message: String::new(),
+            vmm_enabled,
+            vmm_status,
         }))
     }
 }
@@ -994,6 +1036,38 @@ mod host_adapter_grpc_tests {
             notice_severity_to_grpc(ToolRefreshNoticeSeverity::Warning),
             "warning"
         );
+    }
+
+    /// Verify VMM status is exposed and memory tools stay hidden when VMM is disabled.
+    /// 验证 VMM 状态会被公开，且 VMM 关闭时记忆工具不会暴露。
+    #[tokio::test]
+    async fn host_adapter_grpc_hides_vmm_tools_when_backend_disabled() {
+        let service = McpServiceImpl::new(HostRuntime::new(), ConnectionManager::new());
+        let context = Some(pb::HostAdapterClientContext {
+            client_name: "opencode".to_string(),
+            client_version: "test".to_string(),
+            request_id: "vmm-disabled-test".to_string(),
+        });
+
+        let status = service
+            .get_vmm_status(Request::new(HostAdapterVmmStatusRequest {
+                context: context.clone(),
+            }))
+            .await
+            .expect("VMM status request should succeed")
+            .into_inner();
+        assert!(!status.vmm_enabled);
+        assert!(status.vmm_status.contains("not configured"));
+
+        let tools = service
+            .list_vmm_memory_tools(Request::new(HostAdapterListVmmMemoryToolsRequest {
+                context,
+            }))
+            .await
+            .expect("VMM memory metadata request should succeed")
+            .into_inner();
+        assert!(!tools.vmm_enabled);
+        assert!(tools.tools.is_empty());
     }
 }
 

@@ -131,7 +131,7 @@ Remember:
 
 - pass exactly one directory
 - keep ignore rules enabled by default
-- add `ext` only when the tree is too noisy
+- add `extensions` only when the tree is too noisy
 - after reading it, you should be able to explain which modules exist and what they appear to own
 
 ### `vulcan-codekit-ast-detail`
@@ -159,6 +159,7 @@ Remember:
 
 - this is not the first-pass exploration tool
 - the output is limited to owner context plus matched lines; it does not expand full function bodies
+- `rg_pattern` uses Rust regex by default; set `regex_engine="pcre2"` only for PCRE2-only features
 - prefer this over plain grep when a clue may need owner context
 
 ### `vulcan-codekit-markdown-menu`
@@ -177,14 +178,15 @@ Remember:
 
 Use when:
 
-- exact file and function/method selectors are already known
+- exact file and function/method structural paths are already known
 - full node bodies are needed before review or patching
 
 Remember:
 
-- pass `nodes[]`; every node item must include its own `file` and `selector`
+- pass `nodes[]`; every node item must include its own `file` and `structural_path`
 - for same-file batches, repeat the same `file` in multiple node items
-- newline-separated selectors are supported inside each node item's selector field
+- newline-separated structural paths are supported inside each node item's `structural_path` field
+- `structural_path` is a slash-separated structural path suffix, not a regex or glob
 - it only extracts function or method nodes, matching the patch target model
 - missing, ambiguous, or invalid nodes are reported per node with `node_index` instead of failing the whole call
 - `max_nodes` defaults to 20; duplicates and skipped requests are reported explicitly
@@ -200,8 +202,10 @@ Remember:
 
 - prefer `patches[]` for related handler/helper/test changes
 - batch mode defaults to `atomic=true`
+- single mode and batch mode are mutually exclusive; do not mix top-level `file`/`structural_path`/`replacement` with non-empty `patches[]`
 - `replacement` must be the complete function source
-- use `expected_node_hash`, `expected_source_hash`, `expected_file_hash`, or `expected_range` when patching from `node-source` output
+- each patch item uses `structural_path`; it is a slash-separated structural path suffix, not a regex or glob
+- use `precondition = { node_hash, file_hash, range }` when patching from `node-source` output
 - after a successful patch, use `new_node_hash` rather than `previous_node_hash` for the next stale check
 - stale rejections include expected/actual diagnostics for the failed patch item
 - overlapping same-file targets are rejected
@@ -248,10 +252,10 @@ Subagents are not good for:
 
 ## Failure and Fallback
 
-- If `vulcan-codekit-ast-tree` fails because large-result cache writing fails, retry once with a smaller directory or narrower `ext`. If needed, fall back to file search plus direct reads.
+- If `vulcan-codekit-ast-tree` fails because large-result cache writing fails, retry once with a smaller directory or narrower `extensions`. If needed, fall back to file search plus direct reads.
 - If `vulcan-codekit-rg` returns too many matches, narrow the regex or shrink the directory scope before calling again.
 - If `vulcan-codekit-ast-detail` rejects the input, first confirm that the input is an explicit file list rather than a directory.
-- If `vulcan-codekit-node-source` returns multiple candidates for any selector, retry with the more specific structural path shown in the candidate list.
+- If `vulcan-codekit-node-source` returns multiple candidates for any structural path, retry with the more specific structural path shown in the candidate list.
 
 ## Boundaries
 

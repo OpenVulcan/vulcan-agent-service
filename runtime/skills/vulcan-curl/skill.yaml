@@ -1,9 +1,9 @@
 name: vulcan-curl
-version: 0.1.0
-debug: true
+version: 0.1.1
+debug: false
 help:
   main:
-    description: Help agents choose structured GET/POST entries or curl-style argv for one HTTP request.
+    description: Help agents choose structured GET/POST entries or supported curl-style argv for one HTTP request.
     file: help/help.md
   topics:
     - name: get
@@ -13,11 +13,11 @@ help:
       description: Simple POST and multipart request workflow.
       file: help/post.md
     - name: request
-      description: Curl-style argv request workflow.
+      description: Supported curl-style argv request workflow.
       file: help/request.md
 entries:
   - name: get
-    description: "Execute one simple GET request with url, params, headers, and timeout only. Use the base request entry for complex curl flags or advanced TLS, proxy, upload, and retry needs."
+    description: "Execute one simple GET request with url, params, headers, and timeout only. Use the base request entry for supported curl-style flags or advanced TLS, proxy, multipart upload, and retry needs."
     lua_entry: runtime/vulcan-curl-get.lua
     lua_module: vulcan_curl_get
     help: get
@@ -75,7 +75,7 @@ entries:
         description: "Optional comma-separated render flags string. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
         required: false
   - name: post
-    description: "Execute one simple POST request with url, headers, and one body mode: json, form, or raw body. Use the base request entry for complex curl flags or advanced TLS, proxy, upload, and retry needs."
+    description: "Execute one simple POST request with url, headers, and one body mode: json, form, or raw body. Use the base request entry for supported curl-style flags or advanced TLS, proxy, multipart upload, and retry needs."
     lua_entry: runtime/vulcan-curl-post.lua
     lua_module: vulcan_curl_post
     help: post
@@ -157,18 +157,18 @@ entries:
         description: "Optional comma-separated render flags string. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
         required: false
   - name: request
-    description: "Execute one HTTP request through lua-curl using Linux curl-style argv semantics without depending on platform-specific shell syntax."
+    description: "Execute one HTTP request through lua-curl using a runtime-parsed subset of Linux curl-style argv semantics without depending on platform-specific shell syntax, including supported target TLS and HTTPS proxy TLS flags."
     lua_entry: runtime/vulcan-curl.lua
     lua_module: vulcan_curl
     help: request
     parameters:
       - name: args
         type: array
-        description: "Curl-style argv list excluding the leading executable. Example: [\"-X\", \"POST\", \"https://example.com\", \"-H\", \"Authorization: Bearer ...\"]"
+        description: "Supported curl-style argv list excluding the leading executable. Parsed by the Lua runtime as a supported subset, not full curl CLI compatibility. Shell expansion, stdin/TTY interaction, interactive prompts, curl config files, and unsupported dash-prefixed curl options are not available. Example: [\"-X\", \"POST\", \"https://example.com\", \"-H\", \"Authorization: Bearer ...\"]"
         required: true
       - name: cwd
         type: string
-        description: "Optional working directory used to resolve relative file paths for -o, -F @file, <file, --cacert, --cert, --key and related inputs."
+        description: "Optional working directory used to resolve relative file paths for -o, -F @file, <file, --cacert, --capath, --cert, --key, --proxy-cacert, --proxy-capath, --proxy-cert, --proxy-key and related inputs."
         required: false
       - name: timeout_ms
         type: number

@@ -43,6 +43,8 @@ phase: check
 tool_hint: cargo
 ```
 
+Run mode and analyze-only mode are mutually exclusive. Provide `program` for a real validation run or `log` for existing output, but not both.
+
 The returned Markdown report is designed for AI reading and usually includes:
 
 - `Status`
@@ -62,9 +64,10 @@ Supported families include:
 
 - Rust: `cargo check`, `cargo test`, `cargo clippy`, `cargo build`
 - Go: `go test`, `go vet`, `go build`
-- Python: `python -m pytest`, `python -m unittest`, `python -m mypy`, `python -m ruff`
+- Python: `python -m pytest`, `python -m unittest`, `python -m mypy`, `python -m ruff`, direct `pytest`, direct `mypy`, direct `ruff check`, direct `ruff format --check`
 - Node: `node --check <file>`, `node --test ...`
 - TypeScript: `tsc --noEmit ...`
+- JavaScript test runners: `vitest run`, `vitest --run`, `jest`
 - Package managers: constrained `npm`, `pnpm`, and `yarn` validation scripts
 - Analyze-only logs: routed through detector and adapter heuristics
 
@@ -124,7 +127,7 @@ Recommended local release steps:
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.0
+.\scripts\tag_release.ps1 0.1.1
 ```
 
 Or on Unix-like shells:
@@ -132,7 +135,7 @@ Or on Unix-like shells:
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.0
+./scripts/tag_release.sh 0.1.1
 ```
 
 ## Notes

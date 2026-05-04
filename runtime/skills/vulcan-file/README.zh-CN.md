@@ -82,7 +82,7 @@ Agent 场景里真正缺的不是更多原始能力，而是更稳定的操作�
 
 在还不知道目标文件在哪里时，先看一个低 token 的文件名地图。
 
-它返回按目录分组的紧凑文件列表，支持文件名 glob，并默认遵守 `.gitignore`、`.ignore` 和内建高噪声目录忽略规则。
+它返回按目录分组的紧凑文件列表，支持 basename-only 文件名 glob，并默认遵守 `.gitignore` / `.ignore` 常见规则子集和内建高噪声目录忽略规则。
 
 适合场景：
 
@@ -94,12 +94,14 @@ Agent 场景里真正缺的不是更多原始能力，而是更稳定的操作�
 典型参数：
 
 - `path`：扫描根目录，应该尽量传最小可能目录；路径值可以包含 `${env:NAME}` 占位符
-- `pattern`：文件名 glob，例如 `*.lua`、`*.md`、`Cargo.*`
+- `pattern`：basename-only 文件名 glob，例如 `*.lua`、`*.md`、`Cargo.*`；只匹配文件名本身，不能传 `src/*.lua` 或 `**/*.md`，需要缩小目录时使用 `path`
 - `recursive`：默认递归；只看直接子项时设为 `false`
-- `noignore`：只有确实需要看生成物或被忽略目录时才设为 `true`
-- `limit`：控制最多返回多少候选文件
+- `noignore`：只有确实需要看生成物或被忽略目录时才设为 `true`；设为 `true` 会同时关闭 ignore 文件规则和内建高噪声目录忽略
+- `limit`：控制最多返回多少候选文件；默认 1000，最大 100000
 
 它不是内容搜索工具。如果你手里有日志、错误串、函数名或文本锚点，应该先用 `vulcan-codekit-rg`。
+
+ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定场景不保证与 Git 完全一致。
 
 ### `vulcan-file-read`
 
@@ -114,6 +116,17 @@ Agent 场景里真正缺的不是更多原始能力，而是更稳定的操作�
 
 这表示从第 5 行读取 10 行，再从第 25 行读取 30 行。多段读取会按请求顺序输出，不会擅自合并重叠区间。
 
+在 JSON 参数中，多段规则必须使用字符串里的 `\n` 分隔：
+
+```json
+{
+  "file": "src/example.lua",
+  "lines_rule": "5,10\n25,30"
+}
+```
+
+这里的分隔符是真实换行符，不是字面字符串 `"newline"`。
+
 它会返回：
 
 - 文件路径
@@ -124,13 +137,15 @@ Agent 场景里真正缺的不是更多原始能力，而是更稳定的操作�
 - 片段数量
 - 是否因为超过文件尾部而截断
 
-默认会保留 `L12:` 这类稳定行号前缀，便于后续 review、引用或调用 `vulcan-file-edit`。如果只需要纯文本，可以把 `numbered` 设为 `false`。
+默认会保留 `L12:` 这类稳定行号前缀，便于后续 review、引用或调用 `vulcan-file-edit`。如果只需要无行号前缀的正文行，可以把 `numbered` 设为 `false`；文件头和多段分隔线仍会保留。
 
 边界行为也很明确：
 
 - `start` 与 `count` 必须是正整数
 - `start` 超过文件总行数时返回参数错误
 - `count` 超过文件尾部时自动截到 EOF，并在 header 中标记
+- 不传 `lines_rule` 时读取文件开头，行数来自宿主 `file_read` 预算；宿主未提供预算时默认 200 行
+- `lines_rule` 中出现字面字符串 `"newline"` 会返回 `invalid_lines_rule`，需要改为 JSON 字符串中的 `\n`
 - 目录路径只用于快速查看直接子项名称，递归找文件应使用 `vulcan-file-list`
 - 路径值可以包含 `${env:NAME}` 占位符，工具会在访问文件系统前用 Lua `os.getenv` 展开
 
@@ -146,11 +161,13 @@ Agent 场景里真正缺的不是更多原始能力，而是更稳定的操作�
 
 支持模式：
 
-- `overwrite`：覆盖整个文件
-- `append`：追加到文件尾
-- `replace_range`：替换指定 1-based 行范围
-- `insert_before`：插入到指定行之前
-- `insert_after`：插入到指定行之后
+- `overwrite`：覆盖整个文件；文件不存在时这是唯一允许创建新文件的模式，`content=""` 会写成空文件
+- `append`：以新行形式追加到文件尾；如果原文件非空且末尾没有换行，会先补一个文件换行符
+- `replace_range`：替换指定既有 1-based 闭区间行范围；`content=""` 表示删除这段行
+- `insert_before`：插入到指定既有 1-based 锚点行之前
+- `insert_after`：插入到指定既有 1-based 锚点行之后
+
+`insert_before` 与 `insert_after` 要求 `1 <= line <= 文件总行数`。越界会返回 `line_out_of_bounds`，不会自动追加到文件末尾。空文件没有可锚定行，需要创建内容时使用 `overwrite`，需要文件尾新增时使用 `append`。
 
 返回结果会包含：
 
@@ -283,7 +300,7 @@ python .\scripts\package_skill.py --emit-source-yaml
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.1
+.\scripts\tag_release.ps1 0.1.2
 ```
 
 Unix-like shell：
@@ -291,7 +308,7 @@ Unix-like shell：
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.1
+./scripts/tag_release.sh 0.1.2
 ```
 
 ## 一句话总结

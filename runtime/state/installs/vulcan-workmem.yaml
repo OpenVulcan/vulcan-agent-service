@@ -1,0 +1,8 @@
+skill_id: vulcan-workmem
+version: 0.1.1
+managed: true
+source:
+  source_type: github
+  locator: LuaSkills/vulcan-workmem
+  tag: v0.1.1
+installed_at_unix_ms: 1777886350196

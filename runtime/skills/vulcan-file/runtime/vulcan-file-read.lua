@@ -317,6 +317,15 @@ end
 -- Parse a full lines_rule value into ordered read requests.
 -- 将完整 lines_rule 值解析为按顺序执行的读取请求。
 local function parse_lines_rule(lines_rule)
+    -- Reject the old ambiguous prose token before normal newline normalization hides the caller intent.
+    -- 在换行归一化前拒绝旧的歧义文字标记，避免调用意图被隐藏。
+    if tostring(lines_rule or ""):lower():find("newline", 1, true) ~= nil then
+        return nil, render_error("invalid_lines_rule", "lines_rule segments must be separated with LF newline (\\n) inside the JSON string, not the literal word newline", {
+            example = "5,10\\n25,30",
+            lines_rule = tostring(lines_rule or ""),
+        })
+    end
+
     local normalized_rule = tostring(lines_rule or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
     local requests = {}
     local segment_index = 0

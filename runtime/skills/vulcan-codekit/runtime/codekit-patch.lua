@@ -194,20 +194,24 @@ local function validate_file_argument(value)
 end
 
 --[[
-校验 selector 与 replacement 参数。
-Validate selector and replacement arguments.
+Validate the public structural_path argument used for function or method targeting.
+校验用于定位函数或方法的公开 structural_path 参数。
 ]]
-local function validate_selector_argument(value)
+local function validate_structural_path_argument(value)
     if type(value) ~= "string" or trim(value) == "" then
         return nil, {
-            error = "invalid_selector_argument",
-            message = "selector must be a non-empty string",
+            error = "invalid_structural_path_argument",
+            message = "structural_path must be a non-empty string",
             actual_type = type(value),
         }
     end
     return trim(value), nil
 end
 
+--[[
+Validate the replacement argument and require full function source text.
+校验 replacement 参数，并要求传入完整函数源码。
+]]
 local function validate_replacement_argument(value)
     if type(value) ~= "string" or trim(value) == "" then
         return nil, {
@@ -248,8 +252,8 @@ local function render_patch_error(error_payload)
     if payload.file then
         table.insert(lines, string.format("- file: `%s`", tostring(payload.file)))
     end
-    if payload.selector then
-        table.insert(lines, string.format("- selector: `%s`", tostring(payload.selector)))
+    if payload.structural_path then
+        table.insert(lines, string.format("- structural_path: `%s`", tostring(payload.structural_path)))
     end
     if payload.helper then
         table.insert(lines, string.format("- helper: `%s`", tostring(payload.helper)))
@@ -313,8 +317,8 @@ local function render_patch_success(result_payload)
     if payload.file then
         table.insert(lines, string.format("- file: `%s`", tostring(payload.file)))
     end
-    if payload.selector then
-        table.insert(lines, string.format("- selector: `%s`", tostring(payload.selector)))
+    if payload.structural_path then
+        table.insert(lines, string.format("- structural_path: `%s`", tostring(payload.structural_path)))
     end
 
     table.insert(lines, "")
@@ -670,7 +674,7 @@ local function validate_full_replacement_shape(symbol, replacement_text)
         return {
             error = "replacement_must_be_full_function",
             message = "replacement must contain the full function source, not an empty body fragment",
-            selector = build_canonical_symbol_path(symbol),
+            structural_path = build_canonical_symbol_path(symbol),
         }
     end
 
@@ -680,7 +684,7 @@ local function validate_full_replacement_shape(symbol, replacement_text)
         return {
             error = "replacement_must_be_full_function",
             message = "replacement must start from the target function declaration line",
-            selector = build_canonical_symbol_path(symbol),
+            structural_path = build_canonical_symbol_path(symbol),
             expected_name = symbol.name,
         }
     end
@@ -689,7 +693,7 @@ local function validate_full_replacement_shape(symbol, replacement_text)
         return {
             error = "replacement_must_be_full_function",
             message = "replacement must start from a function declaration instead of body-only statements",
-            selector = build_canonical_symbol_path(symbol),
+            structural_path = build_canonical_symbol_path(symbol),
         }
     end
 
@@ -889,7 +893,7 @@ local function validate_ast_after_write(file_path, helper_bundle, original_symbo
             error = "patched_target_not_found",
             message = "patched file no longer contains the target function under the original structural path",
             file = file_path,
-            selector = identity_selector,
+            structural_path = identity_selector,
         }
     end
     if #matches > 1 then
@@ -901,7 +905,7 @@ local function validate_ast_after_write(file_path, helper_bundle, original_symbo
             error = "patched_target_ambiguous",
             message = "patched file produced multiple candidate functions for the original structural path",
             file = file_path,
-            selector = identity_selector,
+            structural_path = identity_selector,
             candidates = candidates,
         }
     end
@@ -1041,7 +1045,7 @@ local function apply_patch_to_symbol(file_path, symbol, replacement_text)
     return {
         success = true,
         file = file_path,
-        selector = build_canonical_symbol_path(relocated_symbol or symbol),
+        structural_path = build_canonical_symbol_path(relocated_symbol or symbol),
         patched_node = {
             file = (relocated_symbol and relocated_symbol.file) or symbol.file,
             path = build_canonical_symbol_path(relocated_symbol or symbol),
@@ -1160,16 +1164,74 @@ local function parse_expected_range(value)
     }
 end
 
+-- Normalize one precondition hash field and reject non-string values.
+-- 规范化单个 precondition 哈希字段，并拒绝非字符串值。
+local function normalize_precondition_hash(value, field_name)
+    if value == nil then
+        return nil, nil
+    end
+    if type(value) ~= "string" then
+        return nil, {
+            error = "invalid_precondition_hash",
+            message = tostring(field_name or "hash") .. " must be a string when provided",
+            actual_type = type(value),
+        }
+    end
+    return normalize_expected_hash(value), nil
+end
+
+-- Parse the optional precondition object for stale-source checks.
+-- 解析可选的 precondition 对象，用于陈旧源码前置校验。
+local function parse_patch_precondition(value)
+    if value == nil then
+        return {
+            node_hash = nil,
+            file_hash = nil,
+            range = nil,
+        }, nil
+    end
+    if type(value) ~= "table" then
+        return nil, {
+            error = "invalid_precondition_argument",
+            message = "precondition must be an object with optional node_hash, file_hash, and range fields",
+            actual_type = type(value),
+        }
+    end
+
+    local node_hash, node_hash_error = normalize_precondition_hash(value.node_hash, "precondition.node_hash")
+    if node_hash_error then
+        return nil, node_hash_error
+    end
+
+    local file_hash, file_hash_error = normalize_precondition_hash(value.file_hash, "precondition.file_hash")
+    if file_hash_error then
+        return nil, file_hash_error
+    end
+
+    local parsed_range, range_error = parse_expected_range(value.range)
+    if range_error then
+        range_error.error = "invalid_precondition_range"
+        range_error.message = "precondition.range must be a table or string range such as L10-L42 or 10-42"
+        return nil, range_error
+    end
+
+    return {
+        node_hash = node_hash,
+        file_hash = file_hash,
+        range = parsed_range,
+    }, nil
+end
+
 -- Build one normalized patch request from raw arguments.
 -- 从原始参数构造一个规范化 patch 请求。
 local function build_patch_request(index, raw_patch)
     local source = type(raw_patch) == "table" and raw_patch or {}
     local file_path, file_error = validate_file_argument(source.file)
-    local selector, selector_error = validate_selector_argument(source.selector)
+    local structural_path, structural_path_error = validate_structural_path_argument(source.structural_path)
     local replacement_text, replacement_error = validate_replacement_argument(source.replacement)
-    local expected_range, expected_range_error = parse_expected_range(source.expected_range)
+    local precondition, precondition_error = parse_patch_precondition(source.precondition)
 
-    local initial_error = file_error or selector_error or replacement_error or expected_range_error
+    local initial_error = file_error or structural_path_error or replacement_error or precondition_error
     if initial_error then
         initial_error.patch_index = index
     end
@@ -1177,22 +1239,53 @@ local function build_patch_request(index, raw_patch)
     return {
         patch_index = index,
         file = file_path or trim(source.file or ""),
-        selector = selector or trim(source.selector or ""),
+        structural_path = structural_path or trim(source.structural_path or ""),
         replacement = replacement_text,
-        expected_node_hash = normalize_expected_hash(source.expected_node_hash or source.expected_source_hash),
-        expected_file_hash = normalize_expected_hash(source.expected_file_hash),
-        expected_range = expected_range,
+        precondition = precondition,
         initial_error = initial_error,
     }
 end
 
--- Normalize legacy single-patch arguments and new patches[] payloads.
--- 统一规范化旧版单 patch 参数与新版 patches[] 载荷。
+-- Detect whether a request mixes top-level single-patch fields with patches[] batch mode.
+-- 检测请求是否混用了顶层单 patch 字段与 patches[] 批量模式。
+local function has_top_level_single_patch_fields(request)
+    return request.file ~= nil
+        or request.structural_path ~= nil
+        or request.replacement ~= nil
+        or request.precondition ~= nil
+end
+
+-- Build one rejected patch request for mutually exclusive mode violations.
+-- 为互斥模式冲突构造一个被拒绝的 patch 请求。
+local function build_mixed_mode_patch_request(index, raw_patch)
+    local source = type(raw_patch) == "table" and raw_patch or {}
+    return {
+        patch_index = index,
+        file = trim(source.file or ""),
+        structural_path = trim(source.structural_path or ""),
+        replacement = nil,
+        precondition = nil,
+        initial_error = {
+            error = "mixed_patch_modes",
+            message = "patch accepts either top-level single mode or non-empty patches[] batch mode, not both",
+            patch_index = index,
+        },
+    }
+end
+
+-- Normalize single-patch arguments and patches[] payloads.
+-- 统一规范化单 patch 参数与 patches[] 载荷。
 local function normalize_patch_requests(args)
     local request = type(args) == "table" and args or {}
     local raw_patches = request.patches
     local patches = {}
     if type(raw_patches) == "table" and #raw_patches > 0 then
+        if has_top_level_single_patch_fields(request) then
+            for index, raw_patch in ipairs(raw_patches) do
+                table.insert(patches, build_mixed_mode_patch_request(index, raw_patch))
+            end
+            return patches
+        end
         for index, raw_patch in ipairs(raw_patches) do
             table.insert(patches, build_patch_request(index, raw_patch))
         end
@@ -1209,7 +1302,7 @@ local function build_rejected_result(patch_request, error_payload)
         patch_index = patch_request.patch_index,
         status = "rejected",
         file = patch_request.file,
-        selector = patch_request.selector,
+        structural_path = patch_request.structural_path,
         error = tostring((error_payload and error_payload.error) or "patch_rejected"),
         message = tostring((error_payload and error_payload.message) or "patch request was rejected"),
         candidates = error_payload and error_payload.candidates or nil,
@@ -1229,7 +1322,7 @@ local function build_validated_result(plan)
         patch_index = plan.patch_index,
         status = "validated",
         file = plan.file,
-        selector = plan.selector,
+        structural_path = plan.structural_path,
         path = plan.candidate.path,
         signature = plan.candidate.signature,
         start_line = plan.candidate.start_line,
@@ -1276,8 +1369,8 @@ local function get_batch_file_context(file_path, helper_bundle, cache)
     return context
 end
 
--- Prepare one patch request by resolving its selector and validating its replacement.
--- 通过解析 selector 与校验 replacement 准备一个 patch 请求。
+-- Prepare one patch request by resolving its structural path and validating its replacement.
+-- 通过解析 structural_path 与校验 replacement 准备一个 patch 请求。
 local function prepare_patch_request(patch_request, helper_bundle, file_context_cache)
     if patch_request.initial_error then
         return nil, patch_request.initial_error
@@ -1288,27 +1381,28 @@ local function prepare_patch_request(patch_request, helper_bundle, file_context_
         return nil, context.error
     end
 
-    if patch_request.expected_file_hash then
+    local precondition = patch_request.precondition or {}
+    if precondition.file_hash then
         local file_hash = compute_source_hash(context.content.raw)
-        if patch_request.expected_file_hash ~= file_hash then
+        if precondition.file_hash ~= file_hash then
             return nil, {
                 error = "stale_file_hash",
-                message = "expected_file_hash does not match the current file source",
+                message = "precondition.file_hash does not match the current file source",
                 file = patch_request.file,
-                selector = patch_request.selector,
-                expected_file_hash = patch_request.expected_file_hash,
+                structural_path = patch_request.structural_path,
+                expected_file_hash = precondition.file_hash,
                 actual_file_hash = file_hash,
             }
         end
     end
 
-    local matches = find_matching_patch_targets(context.symbol_roots, patch_request.selector)
+    local matches = find_matching_patch_targets(context.symbol_roots, patch_request.structural_path)
     if #matches == 0 then
         return nil, {
-            error = "selector_not_found",
-            message = "no patchable function matched the selector",
+            error = "structural_path_not_found",
+            message = "no patchable function matched the structural_path",
             file = patch_request.file,
-            selector = patch_request.selector,
+            structural_path = patch_request.structural_path,
         }
     end
     if #matches > 1 then
@@ -1318,10 +1412,10 @@ local function prepare_patch_request(patch_request, helper_bundle, file_context_
         end
         sort_candidate_descriptors(candidates)
         return nil, {
-            error = "ambiguous_selector",
-            message = "multiple patchable functions matched the selector; retry with a more specific structural path",
+            error = "ambiguous_structural_path",
+            message = "multiple patchable functions matched the structural_path; retry with a more specific structural path",
             file = patch_request.file,
-            selector = patch_request.selector,
+            structural_path = patch_request.structural_path,
             candidates = candidates,
         }
     end
@@ -1333,27 +1427,27 @@ local function prepare_patch_request(patch_request, helper_bundle, file_context_
     end
 
     local node_hash = compute_source_hash(source_text)
-    if patch_request.expected_node_hash and patch_request.expected_node_hash ~= node_hash then
+    if precondition.node_hash and precondition.node_hash ~= node_hash then
         return nil, {
             error = "stale_node_hash",
-            message = "expected_node_hash does not match the current node source",
+            message = "precondition.node_hash does not match the current node source",
             file = patch_request.file,
-            selector = patch_request.selector,
-            expected_node_hash = patch_request.expected_node_hash,
+            structural_path = patch_request.structural_path,
+            expected_node_hash = precondition.node_hash,
             actual_node_hash = node_hash,
         }
     end
 
-    if patch_request.expected_range then
-        local expected_start = tonumber(patch_request.expected_range.start_line)
-        local expected_end = tonumber(patch_request.expected_range.end_line)
+    if precondition.range then
+        local expected_start = tonumber(precondition.range.start_line)
+        local expected_end = tonumber(precondition.range.end_line)
         if expected_start ~= tonumber(symbol.start_line) or expected_end ~= tonumber(symbol.end_line) then
             return nil, {
                 error = "stale_node_range",
-                message = "expected_range does not match the current node range",
+                message = "precondition.range does not match the current node range",
                 file = patch_request.file,
-                selector = patch_request.selector,
-                expected_range = patch_request.expected_range,
+                structural_path = patch_request.structural_path,
+                expected_range = precondition.range,
                 actual_range = {
                     start_line = symbol.start_line,
                     end_line = symbol.end_line,
@@ -1372,7 +1466,7 @@ local function prepare_patch_request(patch_request, helper_bundle, file_context_
     return {
         patch_index = patch_request.patch_index,
         file = patch_request.file,
-        selector = patch_request.selector,
+        structural_path = patch_request.structural_path,
         symbol = symbol,
         candidate = candidate,
         node_hash = node_hash,
@@ -1389,7 +1483,7 @@ local function reject_plan(plan, results_by_index, error_payload)
     results_by_index[plan.patch_index] = build_rejected_result({
         patch_index = plan.patch_index,
         file = plan.file,
-        selector = plan.selector,
+        structural_path = plan.structural_path,
     }, error_payload)
 end
 
@@ -1407,7 +1501,7 @@ local function reject_overlapping_plans(plans_by_file, results_by_index)
                     error = "overlapping_patch_nodes",
                     message = "multiple patches target overlapping source ranges in the same file",
                     file = plan.file,
-                    selector = plan.selector,
+                    structural_path = plan.structural_path,
                 }
                 reject_plan(previous, results_by_index, overlap_error)
                 reject_plan(plan, results_by_index, overlap_error)
@@ -1468,7 +1562,7 @@ local function validate_ast_after_write_for_plans(file_path, helper_bundle, plan
                 error = "patched_target_not_found",
                 message = "patched file no longer contains the target function under the original structural path",
                 file = file_path,
-                selector = identity_selector,
+                structural_path = identity_selector,
                 patch_index = plan.patch_index,
             }
         end
@@ -1481,7 +1575,7 @@ local function validate_ast_after_write_for_plans(file_path, helper_bundle, plan
                 error = "patched_target_ambiguous",
                 message = "patched file produced multiple candidate functions for the original structural path",
                 file = file_path,
-                selector = identity_selector,
+                structural_path = identity_selector,
                 patch_index = plan.patch_index,
                 candidates = candidates,
             }
@@ -1702,7 +1796,7 @@ local function render_patch_batch_result(summary, results)
         table.insert(lines, string.format("### Patch %d", tonumber(result.patch_index) or 0))
         table.insert(lines, string.format("- status: `%s`", tostring(result.status or "unknown")))
         table.insert(lines, string.format("- file: `%s`", tostring(result.file or "")))
-        table.insert(lines, string.format("- selector: `%s`", tostring(result.selector or "")))
+        table.insert(lines, string.format("- structural_path: `%s`", tostring(result.structural_path or "")))
         if result.path then
             table.insert(lines, string.format("- path: `%s`", tostring(result.path)))
         end
@@ -1802,7 +1896,7 @@ local function execute_patch_batch(args, helper_bundle)
                 patch_index = patch_request.patch_index,
                 status = "skipped",
                 file = patch_request.file,
-                selector = patch_request.selector,
+                structural_path = patch_request.structural_path,
                 message = "patch request skipped because max_patches was reached",
             }
         else
@@ -1870,7 +1964,7 @@ local function execute_patch_batch(args, helper_bundle)
                     results_by_index[plan.patch_index] = build_rejected_result({
                         patch_index = plan.patch_index,
                         file = plan.file,
-                        selector = plan.selector,
+                        structural_path = plan.structural_path,
                     }, record_error.error)
                 end
             end
@@ -1884,7 +1978,7 @@ local function execute_patch_batch(args, helper_bundle)
                 results_by_index[plan.patch_index] = build_rejected_result({
                     patch_index = plan.patch_index,
                     file = plan.file,
-                    selector = plan.selector,
+                    structural_path = plan.structural_path,
                 }, record_error.error)
             end
         end
@@ -1918,7 +2012,7 @@ local function execute_patch_batch(args, helper_bundle)
                     patch_index = plan.patch_index,
                     status = "applied",
                     file = plan.file,
-                    selector = plan.selector,
+                    structural_path = plan.structural_path,
                     path = build_canonical_symbol_path(relocated),
                     signature = trim(relocated.signature or ""),
                     start_line = relocated.start_line,
@@ -1943,7 +2037,7 @@ local function execute_patch_batch(args, helper_bundle)
                 results_by_index[plan.patch_index] = build_rejected_result({
                     patch_index = plan.patch_index,
                     file = plan.file,
-                    selector = plan.selector,
+                    structural_path = plan.structural_path,
                 }, commit_error)
             end
         else
@@ -1954,7 +2048,7 @@ local function execute_patch_batch(args, helper_bundle)
                     patch_index = plan.patch_index,
                     status = "applied",
                     file = plan.file,
-                    selector = plan.selector,
+                    structural_path = plan.structural_path,
                     path = build_canonical_symbol_path(relocated),
                     signature = trim(relocated.signature or ""),
                     start_line = relocated.start_line,
@@ -1987,7 +2081,7 @@ return function(args)
     if args and args.__codekit_helper_probe == "__never__" then
         return {
             validate_file_argument = validate_file_argument,
-            validate_selector_argument = validate_selector_argument,
+            validate_structural_path_argument = validate_structural_path_argument,
             collect_ast_for_file = collect_ast_for_file,
             find_matching_patch_targets = find_matching_patch_targets,
             build_candidate_descriptor = build_candidate_descriptor,

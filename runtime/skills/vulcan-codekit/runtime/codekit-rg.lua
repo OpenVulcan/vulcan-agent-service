@@ -366,6 +366,30 @@ local function validate_rg_pattern_argument(value)
     return trim(value), nil
 end
 
+-- Validate the regex engine argument and keep Rust regex as the stable default.
+-- 校验 regex_engine 参数，并保持 Rust regex 作为稳定默认值。
+local function validate_regex_engine_argument(value)
+    if value == nil then
+        return "rust", nil
+    end
+    if type(value) ~= "string" then
+        return nil, {
+            error = "invalid_regex_engine_argument",
+            message = "regex_engine must be either rust or pcre2",
+            actual_type = type(value),
+        }
+    end
+    local normalized = trim(value):lower()
+    if normalized == "rust" or normalized == "pcre2" then
+        return normalized, nil
+    end
+    return nil, {
+        error = "invalid_regex_engine_argument",
+        message = "regex_engine must be either rust or pcre2",
+        regex_engine = tostring(value),
+    }
+end
+
 --[[
 显式拒绝 `export_md_path` 参数，避免调用方误以为 `codekit-rg` 仍支持导出到指定目录。
 Explicitly reject the `export_md_path` argument so callers do not assume `codekit-rg` still supports exporting to a chosen path.
@@ -568,8 +592,11 @@ local function quote_argument(value)
     return '"' .. tostring(value or ""):gsub('"', '\\"') .. '"'
 end
 
-local function build_rg_arguments(target_directory, extension_filter, rg_pattern, ignore_enabled)
+local function build_rg_arguments(target_directory, extension_filter, rg_pattern, ignore_enabled, regex_engine)
     local arguments = { "--json", "--line-number", "--color=never", "-e", rg_pattern, target_directory }
+    if regex_engine == "pcre2" then
+        table.insert(arguments, 1, "--pcre2")
+    end
     if ignore_enabled == false then
         table.insert(arguments, "--hidden")
         table.insert(arguments, "--no-ignore")
@@ -1157,7 +1184,12 @@ return function(args)
         return render_codekit_error_markdown("CodeKit RG Error", pattern_error)
     end
 
-    local extension_filter, extension_error = helper_bundle.validate_extension_argument(args and args.ext)
+    local regex_engine, regex_engine_error = validate_regex_engine_argument(args and args.regex_engine)
+    if regex_engine_error then
+        return render_codekit_error_markdown("CodeKit RG Error", regex_engine_error)
+    end
+
+    local extension_filter, extension_error = helper_bundle.validate_extension_argument(args and args.extensions)
     if extension_error then
         return render_codekit_error_markdown("CodeKit RG Error", extension_error)
     end
@@ -1177,7 +1209,7 @@ return function(args)
         return render_codekit_error_markdown("CodeKit RG Error", rg_binary_error)
     end
 
-    local rg_arguments = build_rg_arguments(target_directory, extension_filter, rg_pattern, ignore_enabled)
+    local rg_arguments = build_rg_arguments(target_directory, extension_filter, rg_pattern, ignore_enabled, regex_engine)
     local rg_stdout, rg_stderr, rg_error = run_rg_command(rg_binary_path, rg_arguments)
     if rg_error then
         return render_codekit_error_markdown("CodeKit RG Error", rg_error)

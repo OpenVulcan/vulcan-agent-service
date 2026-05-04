@@ -18,4 +18,4 @@ Output defaults:
 - unknown flags are ignored
 - `include_headers=true` remains supported as a compatibility switch for response headers
 
-Switch to `vulcan-curl-request` when the request shape stops fitting the structured POST schema.
+Switch to `vulcan-curl-request` when the request shape needs supported curl-style flags beyond the structured POST schema.

@@ -41,6 +41,8 @@ phase: check
 tool_hint: cargo
 ```
 
+运行模式与只分析日志模式互斥。需要真实执行验证命令时提供 `program`，需要压缩已有输出时提供 `log`，不要同时提供两者。
+
 返回的 Markdown 报告通常包含：
 
 - `Status`
@@ -60,9 +62,10 @@ TestKit 有意限制为验证场景。它允许验证导向的命令形态，并
 
 - Rust：`cargo check`、`cargo test`、`cargo clippy`、`cargo build`
 - Go：`go test`、`go vet`、`go build`
-- Python：`python -m pytest`、`python -m unittest`、`python -m mypy`、`python -m ruff`
+- Python：`python -m pytest`、`python -m unittest`、`python -m mypy`、`python -m ruff`、直接 `pytest`、直接 `mypy`、直接 `ruff check`、直接 `ruff format --check`
 - Node：`node --check <file>`、`node --test ...`
 - TypeScript：`tsc --noEmit ...`
+- JavaScript 测试运行器：`vitest run`、`vitest --run`、`jest`
 - 包管理器：受约束的 `npm`、`pnpm`、`yarn` 验证脚本
 - 已有日志分析：通过 detector 与 adapter 启发式路由
 

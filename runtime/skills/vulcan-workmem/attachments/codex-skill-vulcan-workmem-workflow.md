@@ -6,9 +6,9 @@ This attachment mirrors the intended Codex workflow skill so other IDEs, plugins
 
 Use WorkMem when:
 
-- Project instructions contain `VULCAN_WORKMEM_ID`.
+- Project instructions contain `LUASKILL_SID`.
 - The user asks to use WorkMem.
-- A task is being resumed from a known WorkMem ID.
+- A task is being resumed from a known LuaSkills managed identity.
 - Handoff or checkpoint behavior is requested.
 - The host or user indicates that context compression is about to happen.
 
@@ -16,15 +16,15 @@ Do not trigger WorkMem only because a task is complex, multi-file, or long. MCP 
 
 ## Start
 
-1. If a saved `VULCAN_WORKMEM_ID` exists, call `vulcan-workmem-task-create` with that `workmem_id`, a stable `task_name`, and a concise `detail`.
-2. If WorkMem is enabled but no ID exists, call `vulcan-workmem-task-create` without `workmem_id`.
-3. After every successful create call, visibly tell the user the active `VULCAN_WORKMEM_ID` and mark it strongly so it survives context compression.
-4. When a new ID is generated, ask whether to save it in `AGENTS.md` or `CLAUDE.md`.
+1. If a saved `LUASKILL_SID` exists, call `vulcan-workmem-task-create` with that `LUASKILL_SID`, a stable `task_name`, and a concise `detail`.
+2. If WorkMem is enabled but no identity exists, call `vulcan-workmem-task-create` without `LUASKILL_SID`.
+3. After every successful create call with a public identity, visibly tell the user the active `LUASKILL_SID` and mark it strongly so it survives context compression.
+4. When a new public identity is generated, ask whether to save it in `AGENTS.md` or `CLAUDE.md`. In host-managed mode, do not ask for, print, or persist the raw `LUASKILL_SID`.
 5. If the tool is unavailable, continue normally and do not invent memory calls.
 
 ## Save
 
-After a WorkMem task has been explicitly started, call `set` for durable checkpoints:
+After a WorkMem task has been explicitly started, call `vulcan-workmem-set` for durable checkpoints:
 
 - Root cause findings.
 - Decisions and implementation direction.
@@ -45,4 +45,4 @@ Prefer one `vulcan-workmem-set` call per meaningful phase. Use `delete_tags` to 
 
 ## Close
 
-Call `vulcan-workmem-task-close` only when the task is genuinely complete. Closing a task does not invalidate the saved `VULCAN_WORKMEM_ID`.
+Call `vulcan-workmem-task-close` only when the task is genuinely complete. Closing the last task may clean the internal empty identity row, but it does not invalidate the saved `LUASKILL_SID`.

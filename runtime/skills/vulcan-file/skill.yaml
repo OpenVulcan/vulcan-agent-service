@@ -1,6 +1,6 @@
 name: vulcan-file
-version: 0.1.1
-debug: true
+version: 0.1.2
+debug: false
 help:
   main:
     description: Help agents decide when to use vulcan-file instead of CodeKit, rg, or shell snippets.
@@ -17,7 +17,7 @@ help:
       file: help/edit.md
 entries:
   - name: read
-    description: "[AI FILE READ] Use when you already know the target file and line area and need exact source text. Pass lines_rule as start,count; use one line per segment for multiple ranges. Do not use this to search; use codekit-rg first."
+    description: "[AI FILE READ] Use when you already know the target file and line area and need exact source text. Pass lines_rule as start,count; separate multiple ranges with a real LF newline (\\n) inside the JSON string. Do not use this to search; use codekit-rg first."
     lua_entry: runtime/vulcan-file-read.lua
     lua_module: vulcan_file_read
     help: read
@@ -28,11 +28,11 @@ entries:
         required: true
       - name: lines_rule
         type: string
-        description: "Use when you need specific lines. Format: start,count. For multiple snippets, put one rule per line, for example: 5,10 newline 25,30. Omit only when the beginning of the file is enough."
+        description: 'Use when you need specific lines. Format: start,count. For multiple snippets, separate segments with LF newline (\n) inside the JSON string, for example "5,10\n25,30"; do not type the literal word "newline". Omit only when the beginning of the file-read budget is enough; default fallback is 200 lines.'
         required: false
       - name: numbered
         type: boolean
-        description: "Keep true when you will cite or edit by line number. Set false only when raw text without line prefixes is more useful."
+        description: "Keep true when you will cite or edit by line number. Set false only when raw text lines without L<number>: prefixes are more useful; the metadata header and multi-segment separators still remain."
         required: false
   - name: list
     description: "[AI FILE LIST] Use before reading when you need to find candidate files cheaply. Prefer this over shell directory loops for a compact ignored-aware file map. Use codekit tools instead when you need AST structure."
@@ -46,7 +46,7 @@ entries:
         required: false
       - name: pattern
         type: string
-        description: "Use a file-name glob when the extension or file name shape is known, such as *.rs, *.lua, or Cargo.*. Defaults to all file names."
+        description: "Use a basename-only file-name glob when the extension or file name shape is known, such as *.rs, *.lua, or Cargo.*. Do not include path separators such as src/*.lua or **/*.md; narrow directories with path instead. Defaults to all file names."
         required: false
       - name: recursive
         type: boolean
@@ -54,11 +54,11 @@ entries:
         required: false
       - name: noignore
         type: boolean
-        description: "Use only when ignored/generated directories are intentionally needed. Defaults to respecting .gitignore, .ignore, and high-noise built-ins."
+        description: "Use only when ignored/generated directories are intentionally needed. Defaults to a common .gitignore/.ignore subset plus high-noise built-ins; true disables both file-based and built-in ignores."
         required: false
       - name: limit
         type: number
-        description: "Use to cap broad scans. Raise it only when the result is truncated and more candidate file names are still needed."
+        description: "Use to cap broad scans. Defaults to 1000 and must be a positive integer up to 100000. Raise it only when the result is truncated and more candidate file names are still needed."
         required: false
   - name: edit
     description: "[AI FILE EDIT] Use for small text edits after you have read the target lines. It previews by default; pass apply=true only after the preview matches the intended change."
@@ -72,23 +72,23 @@ entries:
         required: true
       - name: mode
         type: string
-        description: "Choose overwrite for full file replacement, append for file-end additions, replace_range for known line ranges, or insert_before/insert_after for anchored inserts."
+        description: "Choose overwrite to replace or create a file, append for new-line file-end additions, replace_range for existing 1-based closed line ranges, or insert_before/insert_after for anchored inserts on existing lines."
         required: true
       - name: content
         type: string
-        description: "Use the complete replacement or insertion text for the selected mode."
+        description: "Use the complete replacement or insertion text for the selected mode. Empty content is allowed only for overwrite or replace_range, where it clears the file or deletes the selected range."
         required: true
       - name: start_line
         type: number
-        description: "Use only with replace_range; this is the first 1-based line to replace."
+        description: "Use only with replace_range; this is the first existing 1-based line to replace."
         required: false
       - name: end_line
         type: number
-        description: "Use only with replace_range; this is the last 1-based line to replace."
+        description: "Use only with replace_range; this is the last existing 1-based line to replace."
         required: false
       - name: line
         type: number
-        description: "Use only with insert_before or insert_after; this is the existing 1-based anchor line."
+        description: "Use only with insert_before or insert_after; this must point to an existing 1-based anchor line. Out-of-range values return line_out_of_bounds instead of appending."
         required: false
       - name: apply
         type: boolean

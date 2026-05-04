@@ -16,6 +16,10 @@ COMMAND_MODE="${1:-}"
 # COMMAND_VARIANT 用于承接可选的第二个参数，例如 run 后面的 release。
 COMMAND_VARIANT="${2:-}"
 
+# COMMAND_REST captures trailing arguments, such as skill ids after update-skills.
+# COMMAND_REST 用于承接后续参数，例如 update-skills 后面的技能标识。
+COMMAND_REST=("${@:2}")
+
 # BUILD_SCRIPT_PATH points at the dedicated shell build script so packaging logic stays centralized.
 # BUILD_SCRIPT_PATH 用于指向专用的 shell 构建脚本，保证打包逻辑集中维护。
 BUILD_SCRIPT_PATH="${SCRIPT_DIR}/scripts/build.sh"
@@ -27,6 +31,10 @@ HOST_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_host_deps.sh"
 # LUA_DEPS_SCRIPT_PATH points at the dedicated shell Lua dependency bootstrap script.
 # LUA_DEPS_SCRIPT_PATH 用于指向专用的 shell Lua 依赖初始化脚本。
 LUA_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_lua_deps.sh"
+
+# UPDATE_SKILLS_SCRIPT_PATH points at the dedicated shell LuaSkills update script.
+# UPDATE_SKILLS_SCRIPT_PATH 用于指向专用的 shell LuaSkills 更新脚本。
+UPDATE_SKILLS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/update_skills.sh"
 
 # DEFAULT_BIN_PATH points at the debug artifact location used by the default run flow.
 # DEFAULT_BIN_PATH 用于指向默认运行流程使用的 debug 产物位置。
@@ -126,6 +134,17 @@ invoke_dependency_install() {
     bash "${script_path}"
 }
 
+# invoke_update_skills delegates managed LuaSkills updates to the dedicated shell script.
+# invoke_update_skills 用于把受管 LuaSkills 更新委托给专用的 shell 脚本。
+invoke_update_skills() {
+    if [ ! -f "${UPDATE_SKILLS_SCRIPT_PATH}" ]; then
+        echo "Missing update skills script: ${UPDATE_SKILLS_SCRIPT_PATH}" >&2
+        exit 1
+    fi
+
+    bash "${UPDATE_SKILLS_SCRIPT_PATH}" "$@"
+}
+
 # show_usage prints the supported command forms so invalid input is easy to correct.
 # show_usage 用于输出支持的命令形式，便于快速纠正无效输入。
 show_usage() {
@@ -139,6 +158,7 @@ Usage:
   ./make.sh deps        # install host + official LuaSkills runtime dependencies
   ./make.sh deps host   # install host native dependencies only
   ./make.sh deps lua    # install host + official LuaSkills runtime dependencies
+  ./make.sh update-skills [skill-id...] # update output skills and sync them into runtime
 EOF
 }
 
@@ -188,6 +208,9 @@ case "${NORMALIZED_MODE}" in
                 exit 1
                 ;;
         esac
+        ;;
+    update-skills)
+        invoke_update_skills "${COMMAND_REST[@]}"
         ;;
     *)
         echo "Unsupported command: '${COMMAND_MODE}'" >&2

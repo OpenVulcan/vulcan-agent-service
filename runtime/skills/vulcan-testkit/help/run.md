@@ -18,12 +18,11 @@ Analyze-only mode:
 - `phase`: `check`
 - `tool_hint`: `cargo`
 
-Local debug note:
+Mode selection:
 
-- With `--call-tools`, prefer `program` + `args` for real validation fixtures.
-- Inline `log` is useful, but shell quoting can mutate diagnostics that contain quotes or newlines.
-- When testing a newly added source skill before syncing `output/skills`, call with `--runtime-root runtime`.
-- Run local `--call-tools` fixture checks sequentially when they share the same runtime root.
+- Use run mode when the tool should execute validation now: provide `program` and optional `args`.
+- Use analyze-only mode when validation already ran elsewhere: provide `log` and omit `program`.
+- Do not provide both `program` and `log`; the tool rejects that ambiguous input before execution.
 
 Returned Markdown sections:
 
@@ -39,7 +38,7 @@ Returned Markdown sections:
 Design rules:
 
 - Prefer `program` + `args`; this MVP does not accept arbitrary shell text.
-- `program` must be a bare executable name such as `cargo`, `npm`, `node`, or `tsc`; path-like program values are rejected.
+- `program` must be a bare executable name such as `cargo`, `go`, `python`, `pytest`, `ruff`, `node`, `tsc`, `vitest`, `jest`, `npm`, `pnpm`, or `yarn`; path-like program values are rejected.
 - Custom `env` is rejected because environment variables can alter validation tool execution semantics.
 - Shell-like programs such as `powershell`, `cmd`, `bash`, and `sh` are blocked; call validation tools directly.
 - App/runtime profiles such as `cargo run`, `go run`, `node app.js`, `npm start`, dev servers, and watchers are blocked even when hidden behind global options, workspaces, filters, or `--` passthrough args.
@@ -54,9 +53,10 @@ Allowed profile shape:
 
 - Rust: `cargo check`, `cargo test`, `cargo clippy`, or `cargo build`; `run`, `bench`, `install`, `clean`, `new`, `update`, `--config`, and `--fix` are blocked.
 - Go: `go test`, `go vet`, or `go build`; `run`, `install`, `generate`, `env`, `mod`, benchmark, fuzz, output-binary, and external executor modes are blocked.
-- Python: `python -m pytest`, `python -m unittest`, `python -m mypy`, or `python -m ruff`; `-c`, `-i`, bytecode-writing modules such as `py_compile` and `compileall`, unknown modules, pytest debug/watch/coverage/report modes, mypy install-types, and ruff mutation modes are blocked.
+- Python: direct `pytest`, direct `mypy`, direct `ruff check`, direct `ruff format --check`, or `python -m pytest|unittest|mypy|ruff`; `-c`, `-i`, bytecode-writing modules such as `py_compile` and `compileall`, unknown modules, pytest debug/watch/coverage/report modes, mypy install-types, and ruff mutation modes are blocked.
 - Node: `node --check <file>` or `node --test ...`; direct script execution, eval, inspect, run-script, reporter destination, snapshot update, and watch modes are blocked.
 - TypeScript: `tsc --noEmit ...` or version checks; explicit noEmit false values, init, build, watch, and trace-output modes are blocked.
+- JS test runners: `vitest run`, `vitest --run`, or `jest`; watch, snapshot update, coverage output, browser-opening, benchmark, and interactive modes are blocked.
 - JS package managers: `npm|pnpm|yarn test`, allowlisted `run` scripts (`build`, `check`, `lint`, `test`, `typecheck`, `type-check`, `test:unit`), and constrained `exec` tools (`tsc --noEmit`, `vitest run`, `jest`, `eslint`); install, dev/start/serve/preview/watch, snapshot update, coverage/output-file, eslint init/cache/output-file, fix/write/open, and unknown exec tools are blocked.
 
 Adapter extension:

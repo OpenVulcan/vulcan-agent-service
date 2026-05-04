@@ -63,7 +63,7 @@ local load_shared_length_helpers
 local AST_GREP_FFI_CLIENT = nil
 local AST_GREP_FFI_CDEF_REGISTERED = false
 local AST_GREP_FFI_DEPENDENCY_NAME = "ast-grep-ffi"
-local AST_GREP_FFI_VERSION = "0.1.0"
+local AST_GREP_FFI_VERSION = "0.1.2"
 local DEFAULT_SOURCE_LANGUAGES = {
     bash = true,
     c = true,
@@ -1012,11 +1012,11 @@ local function run_language_scan(scanner_client, executable_name, language_key, 
 end
 
 --[[
-将扩展名过滤统一解析为集合；未传 `ext` 时自动回退到默认代码语言集合，避免把 HTML/CSS/JSON/YAML 等非核心代码文件扫入结果。
-Normalize the extension filter into a lookup set. When `ext` is omitted, fall back to the default source-language set so HTML/CSS/JSON/YAML-style files are excluded by default.
+Normalize the public extensions filter into a lookup set. When omitted, fall back to the default source-language set so HTML/CSS/JSON/YAML-style files are excluded by default.
+将公开的 extensions 过滤参数统一解析为集合；未传时自动回退到默认代码语言集合，避免把 HTML/CSS/JSON/YAML 等非核心代码文件扫入结果。
 
 参数 / Parameters:
-- value(any): 用户传入的 `ext` 参数 / User-provided `ext` argument.
+- value(any): 用户传入的 `extensions` 参数 / User-provided `extensions` argument.
 
 返回 / Returns:
 - table: 规范化后的扩展名集合；未提供或为空时返回默认代码扩展集合。
@@ -1070,8 +1070,8 @@ local function validate_extension_argument(value)
         local ok = append_extension_item(value)
         if not ok then
             return nil, {
-                error = "invalid_ext_argument",
-                message = "ext must be a comma-separated string or string array of file extensions or language names when provided",
+                error = "invalid_extensions_argument",
+                message = "extensions must be a comma-separated string or string array of file extensions or language names when provided",
                 actual_type = type(value),
             }
         end
@@ -1080,16 +1080,16 @@ local function validate_extension_argument(value)
             local ok, actual_type = append_extension_item(item)
             if not ok then
                 return nil, {
-                    error = "invalid_ext_argument",
-                    message = "ext array items must be strings representing file extensions or language names",
+                    error = "invalid_extensions_argument",
+                    message = "extensions array items must be strings representing file extensions or language names",
                     actual_type = actual_type,
                 }
             end
         end
     else
         return nil, {
-            error = "invalid_ext_argument",
-            message = "ext must be a comma-separated string or string array of file extensions or language names when provided",
+            error = "invalid_extensions_argument",
+            message = "extensions must be a comma-separated string or string array of file extensions or language names when provided",
             actual_type = type(value),
         }
     end
@@ -2583,7 +2583,7 @@ return function(args)
         validate_path_argument(args.path)
         validate_recursive_argument(args.recursive)
         validate_noignore_argument(args.noignore)
-        validate_extension_argument(args.ext)
+        validate_extension_argument(args.extensions)
         local _keep_inline_rule_scanner = run_inline_rule_scan
         if _keep_inline_rule_scanner == "__never__" then
             return ""

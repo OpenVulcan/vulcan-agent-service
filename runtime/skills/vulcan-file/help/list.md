@@ -17,10 +17,10 @@
 参数选择：
 
 - `path`：尽量传最小可能目录；不传表示从当前目录做项目级扫描；支持 `${env:NAME}` 环境变量占位符。
-- `pattern`：知道扩展名或文件名形状时传 glob，例如 `*.rs`、`*.lua`、`Cargo.*`。
+- `pattern`：知道扩展名或文件名形状时传 basename-only glob，例如 `*.rs`、`*.lua`、`Cargo.*`；它只匹配文件名本身，不匹配相对路径，不能传 `src/*.lua` 或 `**/*.md`，需要缩小目录时使用 `path`。
 - `recursive`：默认递归；只想看当前目录直接子项时设为 `false`。
-- `noignore`：只有确实需要看生成物或被忽略目录时才设为 `true`。
-- `limit`：结果被截断且仍需要更多候选文件时再调大。
+- `noignore`：只有确实需要看生成物或被忽略目录时才设为 `true`；设为 `true` 会同时关闭 `.gitignore` / `.ignore` 文件规则和内建高噪声目录忽略。
+- `limit`：结果被截断且仍需要更多候选文件时再调大；默认 1000，最大 100000。
 
 输出按目录分组，并在每组中按文件名排序：
 
@@ -29,4 +29,4 @@ src/ config.rs main.rs server.rs
 src/discover/ mod.rs provider.rs registry.rs report.rs
 ```
 
-默认会读取每层目录下的 `.gitignore` 与 `.ignore`，并跳过 `.git`、`target`、`node_modules`、`output`、`dist`、`build` 等内建高噪声目录。
+默认会读取每层目录下的 `.gitignore` 与 `.ignore` 常见规则子集，并跳过 `.git`、`target`、`node_modules`、`output`、`dist`、`build` 等内建高噪声目录。它不是完整 Git ignore 引擎；复杂转义和部分高级否定场景不保证与 Git 完全一致。

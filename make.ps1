@@ -8,7 +8,11 @@ param(
     [Parameter(Position = 0)]
     [string]$CommandMode = "",
     [Parameter(Position = 1)]
-    [string]$CommandVariant = ""
+    [string]$CommandVariant = "",
+    # RemainingArgs captures trailing command arguments, such as skill ids after update-skills.
+    # RemainingArgs 用于承接后续命令参数，例如 update-skills 后面的技能标识。
+    [Parameter(Position = 2, ValueFromRemainingArguments = $true)]
+    [string[]]$RemainingArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +36,10 @@ $HostDepsScriptPath = Join-Path $ScriptDir "scripts\install_host_deps.ps1"
 # LuaDepsScriptPath points at the dedicated PowerShell Lua dependency bootstrap script.
 # LuaDepsScriptPath 用于指向专用的 PowerShell Lua 依赖初始化脚本。
 $LuaDepsScriptPath = Join-Path $ScriptDir "scripts\install_lua_deps.ps1"
+
+# UpdateSkillsScriptPath points at the dedicated PowerShell LuaSkills update script.
+# UpdateSkillsScriptPath 用于指向专用的 PowerShell LuaSkills 更新脚本。
+$UpdateSkillsScriptPath = Join-Path $ScriptDir "scripts\update_skills.ps1"
 
 # Normalize-Command converts nullable command text into a trimmed lower-case token so dispatch rules remain predictable.
 # Normalize-Command 用于把可空命令文本转换成去空白的小写标记，确保分发规则稳定可预测。
@@ -126,6 +134,29 @@ function Invoke-DependencyInstall {
     exit $LASTEXITCODE
 }
 
+# Invoke-UpdateSkills delegates managed LuaSkills updates to the dedicated PowerShell script.
+# Invoke-UpdateSkills 用于把受管 LuaSkills 更新委托给专用的 PowerShell 脚本。
+# SkillIds optionally limits the update to specific skill identifiers.
+# SkillIds 用于可选地把更新范围限制到指定技能标识。
+function Invoke-UpdateSkills {
+    param(
+        [string[]]$SkillIds
+    )
+
+    if (-not (Test-Path -LiteralPath $UpdateSkillsScriptPath)) {
+        throw "Missing update skills script: $UpdateSkillsScriptPath"
+    }
+
+    if ($SkillIds -and $SkillIds.Count -gt 0) {
+        & $UpdateSkillsScriptPath -SkillId $SkillIds
+    }
+    else {
+        & $UpdateSkillsScriptPath
+    }
+
+    exit $LASTEXITCODE
+}
+
 # Show-Usage prints the supported command forms so contributors can quickly recover from invalid input.
 # Show-Usage 用于输出支持的命令形式，方便贡献者在输入无效参数后快速恢复。
 function Show-Usage {
@@ -138,6 +169,7 @@ function Show-Usage {
     Write-Host "  ./make deps        # install host + official LuaSkills runtime dependencies"
     Write-Host "  ./make deps host   # install host native dependencies only"
     Write-Host "  ./make deps lua    # install host + official LuaSkills runtime dependencies"
+    Write-Host "  ./make update-skills [skill-id...] # update output skills and sync them into runtime"
 }
 
 # NormalizedMode stores the canonical top-level command token used by the dispatcher below.
@@ -181,6 +213,16 @@ switch ($NormalizedMode) {
                 exit 1
             }
         }
+    }
+    "update-skills" {
+        # SkillIds collects explicit update targets from all trailing command tokens.
+        # SkillIds 用于从所有后续命令标记中收集显式更新目标。
+        $SkillIds = @()
+        if (-not [string]::IsNullOrWhiteSpace($CommandVariant)) {
+            $SkillIds += $CommandVariant
+        }
+        $SkillIds += $RemainingArgs
+        Invoke-UpdateSkills -SkillIds $SkillIds
     }
     default {
         Write-Error "Unsupported command: '$CommandMode'"

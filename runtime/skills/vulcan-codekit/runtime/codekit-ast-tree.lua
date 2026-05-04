@@ -159,14 +159,14 @@ local function load_ast_runtime_helpers()
 end
 
 --[[
-把 `paths` 参数规范化为单个目录路径；虽然参数名为复数，但当前协议只允许一个目录值。
-Normalize the `paths` argument into a single directory path; although the parameter name is plural, the current contract allows exactly one directory value.
+Normalize the `dir` argument into a single directory path.
+将 `dir` 参数规范化为单个目录路径。
 ]]
-local function validate_paths_argument(value)
+local function validate_dir_argument(value)
     if type(value) ~= "string" then
         return nil, {
-            error = "invalid_paths_argument",
-            message = "paths must be a non-empty string containing exactly one directory path",
+            error = "invalid_dir_argument",
+            message = "dir must be a non-empty string containing exactly one directory path",
             actual_type = type(value),
         }
     end
@@ -182,15 +182,15 @@ local function validate_paths_argument(value)
 
     if #normalized_paths == 0 then
         return nil, {
-            error = "invalid_paths_argument",
-            message = "paths must contain exactly one non-empty directory path",
+            error = "invalid_dir_argument",
+            message = "dir must contain exactly one non-empty directory path",
             actual_type = "string",
         }
     end
     if #normalized_paths > 1 then
         return nil, {
             error = "multiple_directories_not_supported",
-            message = "codekit-ast-tree accepts exactly one directory path; multiple directories are not supported",
+            message = "codekit-ast-tree accepts exactly one dir path; multiple directories are not supported",
             provided_paths = #normalized_paths,
         }
     end
@@ -649,9 +649,9 @@ return function(args)
         return render_codekit_error_markdown("CodeKit AST Tree Error", helpers_error)
     end
 
-    local target_paths, paths_error = validate_paths_argument(args and args.paths)
-    if paths_error then
-        return render_codekit_error_markdown("CodeKit AST Tree Error", paths_error)
+    local target_paths, dir_error = validate_dir_argument(args and args.dir)
+    if dir_error then
+        return render_codekit_error_markdown("CodeKit AST Tree Error", dir_error)
     end
 
     local comment_error = validate_comment_absence(args and args.comment)
@@ -659,7 +659,7 @@ return function(args)
         return render_codekit_error_markdown("CodeKit AST Tree Error", comment_error)
     end
 
-    local extension_filter, extension_error = helpers.validate_extension_argument(args and args.ext)
+    local extension_filter, extension_error = helpers.validate_extension_argument(args and args.extensions)
     if extension_error then
         return render_codekit_error_markdown("CodeKit AST Tree Error", extension_error)
     end

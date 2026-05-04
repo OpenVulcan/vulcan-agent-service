@@ -34,6 +34,7 @@ local PARAMETER_ERROR_CODES = {
     invalid_end_line_argument = true,
     invalid_line_argument = true,
     invalid_line = true,
+    line_out_of_bounds = true,
     invalid_range = true,
 }
 
@@ -253,14 +254,21 @@ end
 -- 校验插入操作使用的 1-based 行号。
 local function validate_insert_line(value, line_count)
     if line_count < 1 then
-        return nil, render_error("invalid_line", "insert_before and insert_after require an existing line; use append or overwrite for empty files")
+        return nil, render_error("line_out_of_bounds", "insert_before and insert_after require an existing anchor line; use append or overwrite for empty files", {
+            total_lines = tostring(line_count),
+            allowed_range = "none",
+        })
     end
     local line, line_argument_error = parse_integer_argument(value, "line")
     if line_argument_error then
         return nil, line_argument_error
     end
     if line == nil or line < 1 or line > line_count then
-        return nil, render_error("invalid_line", "line must point to an existing 1-based line")
+        return nil, render_error("line_out_of_bounds", "line must point to an existing 1-based anchor line", {
+            line = tostring(line),
+            total_lines = tostring(line_count),
+            allowed_range = "1-" .. tostring(line_count),
+        })
     end
     return line, nil
 end

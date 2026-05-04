@@ -208,6 +208,22 @@ impl HostRuntime {
         })
     }
 
+    /// Return whether VMM-dependent host features may run.
+    /// 返回依赖 VMM 的宿主功能是否可以运行。
+    pub(crate) fn is_vmm_backend_enabled(&self) -> bool {
+        self.vmm.is_some()
+    }
+
+    /// Return a stable human-readable VMM backend status string.
+    /// 返回稳定的人类可读 VMM 后端状态文本。
+    pub(crate) fn vmm_backend_status_message(&self) -> &'static str {
+        if self.is_vmm_backend_enabled() {
+            "VMM backend is enabled."
+        } else {
+            "VMM backend is not configured. Start vulcan-host with vmm_enable=true and a VMM endpoint."
+        }
+    }
+
     /// Resolve the default Lua engine together with the effective default skill-root chain.
     /// 解析默认 Lua 引擎及其对应的默认技能根目录链。
     pub(crate) fn resolve_lua_runtime_target(

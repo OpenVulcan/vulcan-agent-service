@@ -36,7 +36,6 @@ local VALID_PHASES = {
     check = true,
     lint = true,
     typecheck = true,
-    install = true,
 }
 
 -- Known adapter keys are the only parser modules that may be loaded from disk.
@@ -430,7 +429,7 @@ end
 local function normalize_phase(value)
     local phase = is_blank_string(value) and "auto" or lower_text(value)
     if not VALID_PHASES[phase] then
-        return nil, "`phase` must be build, test, check, lint, typecheck, install, or auto"
+        return nil, "`phase` must be build, test, check, lint, typecheck, or auto"
     end
     return phase, nil
 end
@@ -796,7 +795,7 @@ local function validate_request(input)
     end
     if has_program and BLOCKED_PROGRAMS[program_basename(input.program)] then
         return nil,
-            "`program` must be a validation executable, not a shell. Use direct tools such as cargo, npm, pnpm, pytest, go, tsc, mvn, or gradle."
+            "`program` must be a validation executable, not a shell. Use direct tools such as cargo, go, python, pytest, mypy, ruff, node, tsc, vitest, jest, npm, pnpm, or yarn."
     end
 
     local args, args_error = normalize_args_array(input.args)
