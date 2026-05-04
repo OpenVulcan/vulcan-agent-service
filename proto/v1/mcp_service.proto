@@ -87,6 +87,30 @@ service LuaSkillsService {
   rpc ReloadRuntimeConfigs(LuaSkillReloadRuntimeConfigsRequest) returns (LuaSkillTextResponse);
 }
 
+// HostAdapterService exposes host adapter relay planning helpers over gRPC.
+// HostAdapterService 通过 gRPC 暴露宿主适配器中转规划辅助能力。
+service HostAdapterService {
+  // GetHostAdapterProfile returns one normalized host adapter descriptor and capability profile.
+  // GetHostAdapterProfile 返回一个归一化宿主适配器描述与能力画像。
+  rpc GetHostAdapterProfile(HostAdapterProfileRequest) returns (HostAdapterProfileResponse);
+
+  // BuildHostAdapterRuntime normalizes session/workmem context for one host adapter call.
+  // BuildHostAdapterRuntime 为单次宿主适配器调用归一化 session/workmem 上下文。
+  rpc BuildHostAdapterRuntime(HostAdapterRuntimeRequest) returns (HostAdapterRuntimeResponse);
+
+  // DiffToolRegistry compares two host-visible tool registry snapshots.
+  // DiffToolRegistry 对比两份宿主可见 tool 注册表快照。
+  rpc DiffToolRegistry(HostAdapterDiffToolRegistryRequest) returns (HostAdapterDiffToolRegistryResponse);
+
+  // BuildToolRefreshNotice turns tool registry changes into model/user-facing refresh guidance.
+  // BuildToolRefreshNotice 将 tool 注册表变化转换为面向模型和用户的刷新提示。
+  rpc BuildToolRefreshNotice(HostAdapterToolRefreshNoticeRequest) returns (HostAdapterToolRefreshNoticeResponse);
+
+  // ListVmmMemoryTools returns host-facing descriptors for the stable VMM memory tools.
+  // ListVmmMemoryTools 返回稳定 VMM 记忆工具的宿主可见描述。
+  rpc ListVmmMemoryTools(HostAdapterListVmmMemoryToolsRequest) returns (HostAdapterListVmmMemoryToolsResponse);
+}
+
 // ============================================================
 // Health check
 // ============================================================
@@ -458,4 +482,281 @@ message LuaSkillReloadRuntimeConfigsRequest {
   // Trusted client context for this request.
   // 本次请求的受信任客户端上下文。
   LuaSkillClientContext context = 1;
+}
+
+// ============================================================
+// Host adapter relay service
+// ============================================================
+
+// HostAdapterClientContext carries trusted client identity for adapter relay diagnostics.
+// HostAdapterClientContext 承载适配器中转诊断使用的受信任客户端身份。
+message HostAdapterClientContext {
+  // Trusted gRPC client name.
+  // 受信任 gRPC 客户端名称。
+  string client_name = 1;
+  // Optional client version used for diagnostics.
+  // 用于诊断的可选客户端版本。
+  string client_version = 2;
+  // Optional request correlation id.
+  // 可选请求关联标识。
+  string request_id = 3;
+}
+
+// HostAdapterProfileRequest selects one host profile by host kind or alias.
+// HostAdapterProfileRequest 按宿主类型或别名选择一个宿主画像。
+message HostAdapterProfileRequest {
+  // Trusted client context for diagnostics.
+  // 用于诊断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+  // Host kind or alias, such as opencode, generic-mcp, or claude.
+  // 宿主类型或别名，例如 opencode、generic-mcp 或 claude。
+  string host_kind = 2;
+}
+
+// HostAdapterProfileResponse returns the adapter descriptor and capability profile.
+// HostAdapterProfileResponse 返回适配器描述与能力画像。
+message HostAdapterProfileResponse {
+  // JSON-encoded HostAdapterDescriptor.
+  // JSON 编码的 HostAdapterDescriptor。
+  string adapter_json = 1;
+  // JSON-encoded HostCapabilityProfile.
+  // JSON 编码的 HostCapabilityProfile。
+  string profile_json = 2;
+  // Normalized host kind.
+  // 归一化宿主类型。
+  string host_kind = 3;
+  // Host display name.
+  // 宿主展示名称。
+  string display_name = 4;
+  // Selected refresh mode.
+  // 选中的刷新模式。
+  string refresh_mode = 5;
+  // Selected identity mode.
+  // 选中的身份模式。
+  string identity_mode = 6;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 7;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 8;
+}
+
+// HostAdapterRuntimeRequest asks the host to normalize runtime context for one adapter call.
+// HostAdapterRuntimeRequest 请求宿主为单次适配器调用归一化运行时上下文。
+message HostAdapterRuntimeRequest {
+  // Trusted client context for diagnostics.
+  // 用于诊断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+  // Host kind or alias.
+  // 宿主类型或别名。
+  string host_kind = 2;
+  // Optional host kind override.
+  // 可选宿主类型覆盖。
+  string adapter_host_kind = 3;
+  // Native host session id when available.
+  // 可用时的原生宿主 session id。
+  string session_id = 4;
+  // Explicit WorkMem id for degraded callers.
+  // 降级调用方使用的显式 WorkMem id。
+  string workmem_id = 5;
+  // Host turn id or message id.
+  // 宿主 turn id 或 message id。
+  string turn_id = 6;
+  // Workspace path or project key.
+  // 工作区路径或项目键。
+  string workspace = 7;
+  // Current user message for diagnostics or prompt planning.
+  // 用于诊断或提示词规划的当前用户消息。
+  string user_message = 8;
+  // Conversation id for hosts that do not call it session id.
+  // 不把会话标识称为 session id 的宿主使用的 conversation id。
+  string conversation_id = 9;
+  // Root session id for forked or nested sessions.
+  // fork 或嵌套会话使用的 root session id。
+  string root_session_id = 10;
+}
+
+// HostAdapterRuntimeResponse returns normalized runtime context and readiness flags.
+// HostAdapterRuntimeResponse 返回归一化运行时上下文和就绪标记。
+message HostAdapterRuntimeResponse {
+  // JSON-encoded HostAdapterRuntime.
+  // JSON 编码的 HostAdapterRuntime。
+  string runtime_json = 1;
+  // Normalized host kind.
+  // 归一化宿主类型。
+  string host_kind = 2;
+  // Normalized session id when available.
+  // 可用时的归一化 session id。
+  string session_id = 3;
+  // Effective WorkMem id when available.
+  // 可用时的有效 WorkMem id。
+  string workmem_id = 4;
+  // WorkMem id source.
+  // WorkMem id 来源。
+  string workmem_source = 5;
+  // Whether the adapter identity strategy is ready.
+  // 适配器身份策略是否就绪。
+  bool identity_ready = 6;
+  // Degradation reasons detected by the host.
+  // 宿主检测到的降级原因。
+  repeated string degraded_reasons = 7;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 8;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 9;
+}
+
+// HostAdapterDiffToolRegistryRequest asks the host to diff two tool registry snapshots.
+// HostAdapterDiffToolRegistryRequest 请求宿主对比两份 tool 注册表快照。
+message HostAdapterDiffToolRegistryRequest {
+  // Trusted client context for diagnostics.
+  // 用于诊断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+  // JSON-encoded previous ToolRegistrySnapshot.
+  // JSON 编码的旧 ToolRegistrySnapshot。
+  string previous_snapshot_json = 2;
+  // JSON-encoded next ToolRegistrySnapshot.
+  // JSON 编码的新 ToolRegistrySnapshot。
+  string next_snapshot_json = 3;
+  // Optional explicit refresh mode.
+  // 可选显式刷新模式。
+  string refresh_mode = 4;
+  // Optional dynamic refresh support flag.
+  // 可选动态刷新支持标记。
+  bool dynamic_tool_refresh_supported = 5;
+  // Whether dynamic_tool_refresh_supported was explicitly provided.
+  // dynamic_tool_refresh_supported 是否由调用方显式提供。
+  bool has_dynamic_tool_refresh_supported = 6;
+  // Whether the host lifecycle operation explicitly requires restart.
+  // 宿主生命周期操作是否显式要求重启。
+  bool host_restart_required = 7;
+}
+
+// HostAdapterDiffToolRegistryResponse returns diff buckets and restart guidance.
+// HostAdapterDiffToolRegistryResponse 返回差异分组和重启提示。
+message HostAdapterDiffToolRegistryResponse {
+  // JSON-encoded ToolRegistryDiff.
+  // JSON 编码的 ToolRegistryDiff。
+  string diff_json = 1;
+  // All changed tool ids.
+  // 所有变化的 tool id。
+  repeated string changed_tool_ids = 2;
+  // Added tool ids.
+  // 新增 tool id。
+  repeated string added_tool_ids = 3;
+  // Removed tool ids.
+  // 删除 tool id。
+  repeated string removed_tool_ids = 4;
+  // Updated tool ids.
+  // 更新 tool id。
+  repeated string updated_tool_ids = 5;
+  // Whether restart or reconnect is required.
+  // 是否需要重启或重连。
+  bool restart_required = 6;
+  // Compact diff summary.
+  // 紧凑差异摘要。
+  string summary = 7;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 8;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 9;
+}
+
+// HostAdapterToolRefreshNoticeRequest asks the host to build refresh guidance from snapshots.
+// HostAdapterToolRefreshNoticeRequest 请求宿主根据快照构建刷新提示。
+message HostAdapterToolRefreshNoticeRequest {
+  // Trusted client context for diagnostics.
+  // 用于诊断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+  // Host kind or alias.
+  // 宿主类型或别名。
+  string host_kind = 2;
+  // JSON-encoded previous ToolRegistrySnapshot.
+  // JSON 编码的旧 ToolRegistrySnapshot。
+  string previous_snapshot_json = 3;
+  // JSON-encoded next ToolRegistrySnapshot.
+  // JSON 编码的新 ToolRegistrySnapshot。
+  string next_snapshot_json = 4;
+}
+
+// HostAdapterToolRefreshNoticeResponse returns structured refresh guidance.
+// HostAdapterToolRefreshNoticeResponse 返回结构化刷新提示。
+message HostAdapterToolRefreshNoticeResponse {
+  // JSON-encoded ToolRefreshNotice.
+  // JSON 编码的 ToolRefreshNotice。
+  string notice_json = 1;
+  // Whether any tool changed.
+  // 是否有任何 tool 变化。
+  bool changed = 2;
+  // Selected refresh mode.
+  // 选中的刷新模式。
+  string refresh_mode = 3;
+  // Notice severity.
+  // 提示严重级别。
+  string severity = 4;
+  // Whether restart or reconnect is required.
+  // 是否需要重启或重连。
+  bool restart_required = 5;
+  // Changed tool ids.
+  // 变化的 tool id。
+  repeated string changed_tool_ids = 6;
+  // Model-facing message.
+  // 模型可见消息。
+  string model_message = 7;
+  // User-facing message.
+  // 用户可见消息。
+  string user_message = 8;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 9;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 10;
+}
+
+// HostAdapterToolDescriptor describes one stable host-visible tool.
+// HostAdapterToolDescriptor 描述一个稳定的宿主可见工具。
+message HostAdapterToolDescriptor {
+  // Canonical tool name exposed by the host plugin.
+  // 宿主插件暴露的标准工具名称。
+  string name = 1;
+  // Model-facing tool description, including important argument guidance.
+  // 面向模型的工具描述，包含重要参数指导。
+  string description = 2;
+  // JSON-encoded input schema for the tool arguments.
+  // JSON 编码的工具入参 schema。
+  string input_schema_json = 3;
+  // JSON-encoded tool annotations and diagnostics.
+  // JSON 编码的工具注解和诊断信息。
+  string annotations_json = 4;
+  // Metadata authority or source identifier.
+  // 元信息权威来源或来源标识。
+  string source = 5;
+}
+
+// HostAdapterListVmmMemoryToolsRequest asks for VMM memory tool metadata.
+// HostAdapterListVmmMemoryToolsRequest 请求 VMM 记忆工具元信息。
+message HostAdapterListVmmMemoryToolsRequest {
+  // Trusted client context for diagnostics.
+  // 用于诊断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+}
+
+// HostAdapterListVmmMemoryToolsResponse returns VMM memory tool descriptors.
+// HostAdapterListVmmMemoryToolsResponse 返回 VMM 记忆工具描述。
+message HostAdapterListVmmMemoryToolsResponse {
+  // Stable host-visible VMM memory tool descriptors.
+  // 稳定的宿主可见 VMM 记忆工具描述列表。
+  repeated HostAdapterToolDescriptor tools = 1;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 2;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 3;
 }

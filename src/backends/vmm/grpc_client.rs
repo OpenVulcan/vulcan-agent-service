@@ -5,10 +5,14 @@ use tonic::transport::Channel;
 
 use crate::pb_vmm::{
     ApplyProfileInstructionRequest, ChatCompactRequest, DeleteProjectRequest, DeleteUserRequest,
-    EnsureProjectRequest, GetProfileBundleRequest, GetProfileNodesRequest, GetTurnDetailsRequest,
-    MigrateProjectRequest, PostActionRequest, PostActionTimelineItem, PreCheckRequest,
-    ResolveProjectRequest, ResolveUserRequest, SearchMemoryEventsRequest, WriteMemoriesRequest,
-    WriteMemoryItem, vmm_service_client::VmmServiceClient,
+    EnsureProjectRequest, EnsureProjectResponse, GetProfileBundleRequest, GetProfileBundleResponse,
+    GetProfileNodesRequest, GetProfileNodesResponse, GetTurnDetailsRequest, GetTurnDetailsResponse,
+    HealthzResponse, ListProjectsResponse, ListUsersResponse, MigrateProjectRequest,
+    MigrateProjectResponse, PostActionRequest, PostActionResponse, PostActionTimelineItem,
+    PreCheckRequest, PreCheckResponse, ResolveProjectRequest, ResolveProjectResponse,
+    ResolveUserRequest, ResolveUserResponse, SearchMemoryEventsRequest, SearchMemoryEventsResponse,
+    WriteMemoriesRequest, WriteMemoriesResponse, WriteMemoryItem,
+    vmm_service_client::VmmServiceClient,
 };
 
 /// VulcanMemoryMesh gRPC client wrapper that serializes access to the underlying tonic client.
@@ -30,6 +34,213 @@ impl VmmClient {
             client: Arc::new(Mutex::new(client)),
             endpoint: endpoint.to_string(),
         })
+    }
+
+    /// Forward one VMM Healthz request and return the original protobuf response.
+    /// 转发一条 VMM Healthz 请求，并返回原始 protobuf 响应。
+    pub async fn forward_healthz(&self) -> Result<HealthzResponse, tonic::Status> {
+        let req = tonic::Request::new(());
+        let mut client = self.client.lock().await;
+        let resp = client.healthz(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM ListProjects request and return the original protobuf response.
+    /// 转发一条 VMM ListProjects 请求，并返回原始 protobuf 响应。
+    pub async fn forward_list_projects(&self) -> Result<ListProjectsResponse, tonic::Status> {
+        let req = tonic::Request::new(());
+        let mut client = self.client.lock().await;
+        let resp = client.list_projects(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM ResolveProject request and return the original protobuf response.
+    /// 转发一条 VMM ResolveProject 请求，并返回原始 protobuf 响应。
+    pub async fn forward_resolve_project(
+        &self,
+        request: ResolveProjectRequest,
+    ) -> Result<ResolveProjectResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.resolve_project(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM EnsureProject request and return the original protobuf response.
+    /// 转发一条 VMM EnsureProject 请求，并返回原始 protobuf 响应。
+    pub async fn forward_ensure_project(
+        &self,
+        request: EnsureProjectRequest,
+    ) -> Result<EnsureProjectResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.ensure_project(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM DeleteProject request and return the original protobuf response.
+    /// 转发一条 VMM DeleteProject 请求，并返回原始 protobuf 响应。
+    pub async fn forward_delete_project(
+        &self,
+        request: DeleteProjectRequest,
+    ) -> Result<crate::pb_vmm::DeleteProjectResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.delete_project(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM MigrateProject request and return the original protobuf response.
+    /// 转发一条 VMM MigrateProject 请求，并返回原始 protobuf 响应。
+    pub async fn forward_migrate_project(
+        &self,
+        request: MigrateProjectRequest,
+    ) -> Result<MigrateProjectResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.migrate_project(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM ResolveUser request and return the original protobuf response.
+    /// 转发一条 VMM ResolveUser 请求，并返回原始 protobuf 响应。
+    pub async fn forward_resolve_user(
+        &self,
+        request: ResolveUserRequest,
+    ) -> Result<ResolveUserResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.resolve_user(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM ListUsers request and return the original protobuf response.
+    /// 转发一条 VMM ListUsers 请求，并返回原始 protobuf 响应。
+    pub async fn forward_list_users(&self) -> Result<ListUsersResponse, tonic::Status> {
+        let req = tonic::Request::new(());
+        let mut client = self.client.lock().await;
+        let resp = client.list_users(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM DeleteUser request and return the original protobuf response.
+    /// 转发一条 VMM DeleteUser 请求，并返回原始 protobuf 响应。
+    pub async fn forward_delete_user(
+        &self,
+        request: DeleteUserRequest,
+    ) -> Result<crate::pb_vmm::DeleteUserResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.delete_user(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM GetProfileNodes request and return the original protobuf response.
+    /// 转发一条 VMM GetProfileNodes 请求，并返回原始 protobuf 响应。
+    pub async fn forward_get_profile_nodes(
+        &self,
+        request: GetProfileNodesRequest,
+    ) -> Result<GetProfileNodesResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.get_profile_nodes(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM GetProfileBundle request and return the original protobuf response.
+    /// 转发一条 VMM GetProfileBundle 请求，并返回原始 protobuf 响应。
+    pub async fn forward_get_profile_bundle(
+        &self,
+        request: GetProfileBundleRequest,
+    ) -> Result<GetProfileBundleResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.get_profile_bundle(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM ApplyProfileInstruction request and return the original protobuf response.
+    /// 转发一条 VMM ApplyProfileInstruction 请求，并返回原始 protobuf 响应。
+    pub async fn forward_apply_profile_instruction(
+        &self,
+        request: ApplyProfileInstructionRequest,
+    ) -> Result<crate::pb_vmm::ApplyProfileInstructionResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.apply_profile_instruction(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM SearchMemoryEvents request and return the original protobuf response.
+    /// 转发一条 VMM SearchMemoryEvents 请求，并返回原始 protobuf 响应。
+    pub async fn forward_search_memory_events(
+        &self,
+        request: SearchMemoryEventsRequest,
+    ) -> Result<SearchMemoryEventsResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.search_memory_events(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM GetTurnDetails request and return the original protobuf response.
+    /// 转发一条 VMM GetTurnDetails 请求，并返回原始 protobuf 响应。
+    pub async fn forward_get_turn_details(
+        &self,
+        request: GetTurnDetailsRequest,
+    ) -> Result<GetTurnDetailsResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.get_turn_details(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM WriteMemories request and return the original protobuf response.
+    /// 转发一条 VMM WriteMemories 请求，并返回原始 protobuf 响应。
+    pub async fn forward_write_memories(
+        &self,
+        request: WriteMemoriesRequest,
+    ) -> Result<WriteMemoriesResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.write_memories(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM ChatCompact request and return the original protobuf response.
+    /// 转发一条 VMM ChatCompact 请求，并返回原始 protobuf 响应。
+    pub async fn forward_chat_compact(
+        &self,
+        request: ChatCompactRequest,
+    ) -> Result<crate::pb_vmm::ChatCompactResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.chat_compact(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM PreCheck request and return the original protobuf response.
+    /// 转发一条 VMM PreCheck 请求，并返回原始 protobuf 响应。
+    pub async fn forward_pre_check(
+        &self,
+        request: PreCheckRequest,
+    ) -> Result<PreCheckResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.pre_check(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM PostAction request and return the original protobuf response.
+    /// 转发一条 VMM PostAction 请求，并返回原始 protobuf 响应。
+    pub async fn forward_post_action(
+        &self,
+        request: PostActionRequest,
+    ) -> Result<PostActionResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.post_action(req).await?;
+        Ok(resp.into_inner())
     }
 
     /// Execute the VMM health check and return a brief status string.

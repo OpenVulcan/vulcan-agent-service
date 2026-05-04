@@ -1,3 +1,4 @@
+pub mod host_adapter;
 pub(crate) mod host_tools;
 pub(crate) mod lifecycle;
 pub(crate) mod luaskills_api;

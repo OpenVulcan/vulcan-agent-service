@@ -24,8 +24,8 @@ defaults:
       lines:
         default: -1
 
-# 中文：gRPC 专用精确客户端预算。key 必须等于协议中的 client_name，不支持通配、环境变量或 header 覆盖。
-# English: Exact gRPC-only client budgets. Keys must equal the protocol client_name; wildcards, env overrides, and header overrides are not supported.
+# 中文：gRPC 专用精确客户端预算覆盖。key 必须等于协议中的 client_name；未命中时会回落到下方统一 clients pattern，不读取环境变量或 header 覆盖。
+# English: Exact gRPC-only client budget overrides. Keys must equal the protocol client_name; misses fall back to the shared clients patterns below without env/header overrides.
 grpc_clients: {}
 
 clients:

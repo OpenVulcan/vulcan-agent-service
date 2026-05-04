@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let proto_dir = "proto";
 
-    // VMM proto — client stub only.
+    // VMM proto — client and server stubs for backend relay mode.
     let vmm_protos = ["proto/v1/vmm.proto"];
     for p in &vmm_protos {
         println!("cargo:rerun-if-changed={}", p);
@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_prost_build::configure()
         .build_client(true)
-        .build_server(false)
+        .build_server(true)
         .compile_protos(&vmm_protos, &[proto_dir])?;
 
     // MCP service proto — server only.  We do NOT need a client stub for this

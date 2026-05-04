@@ -57,8 +57,8 @@ pub struct ClientBudgetRule {
     pub budgets: BudgetScopesConfig,
 }
 
-/// Exact gRPC client-budget rule activated only by a trusted `client_name` equality lookup.
-/// gRPC 精确客户端预算规则，仅通过受信任的 `client_name` 等值查找生效。
+/// Exact gRPC client-budget override activated before shared client-name pattern rules.
+/// gRPC 精确客户端预算覆盖规则，会在统一客户端名称 pattern 规则前优先生效。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ExactClientBudgetRule {
     #[serde(default)]

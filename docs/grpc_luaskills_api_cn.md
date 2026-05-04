@@ -23,8 +23,22 @@ LuaSkills 的 gRPC 对外面遵循以下规则：
 - LuaSkills gRPC 调用不使用 `session_id` 表达上下文；工具调用本身是请求级上下文。
 - 每个 `LuaSkillsService` 请求都必须携带 `context.client_name`。
 - `client_name` 是 gRPC 专用的可信客户端名，用于精确解析 bytes 预算。
-- gRPC 不走 `VULCAN_CLIENT_MATCH_NAME` 环境变量、`Vulcan-Client-Match-Name` 请求头覆盖，也不走通配 match。
+- gRPC 不走 `VULCAN_CLIENT_MATCH_NAME` 环境变量、`Vulcan-Client-Match-Name` 请求头覆盖，但会在未命中 `grpc_clients` 精确配置时回落到统一 `clients` 通配 match。
 - `request_id` 只作为可选请求关联标识，不是会话标识，也不表达对话状态。
+
+## 托管身份字段
+
+LuaSkills gRPC 服务本身不把 `context.request_id` 当作会话，也不会自动把 gRPC 连接状态转换成 LuaSkill 参数。因此，直接使用 `LuaSkillsService.ListTools` / `CallTool` 的普通 gRPC 客户端默认处于非托管模式。
+
+LuaSkills 生态保留 `LUASKILL_SID` 作为通用托管身份字段。该字段是文档级契约，不是 LuaSkills 运行时内置特殊字段。动态工具如果在 `input_schema_json` 中暴露 `LUASKILL_SID`，表示该工具需要稳定会话、任务或上下文身份。
+
+gRPC 对接方应按自身能力选择处理模式：
+
+1. 非托管模式：保持 `input_schema_json` 不变，`CallTool.arguments_json` 由模型、用户或调用方显式提供 `LUASKILL_SID`。如果工具的 create/start/bootstrap 入口支持缺省生成 ID，可以不传该字段并让 LuaSkill 生成。
+2. 托管模式：客户端在自己的工具暴露层隐藏 `LUASKILL_SID`，并在调用 `CallTool` 前把稳定身份值写入 `arguments_json`。该隐藏和注入发生在 gRPC 客户端侧，不由 `LuaSkillsService` 自动完成。
+3. Host Adapter 模式：宿主插件如果需要统一计算稳定身份，应先调用 `HostAdapterService.BuildHostAdapterRuntime` 或自身上下文归一化逻辑，再把归一化出的 `LUASKILL_SID` 注入动态工具参数。
+
+托管模式下，对接方还应对模型可见 help 增加说明：该身份字段由宿主注入，模型不应询问、打印或保存原始值。如果工具响应带回被注入的原始身份值，对接方应在二次暴露层脱敏或改写为托管状态说明。非托管模式下，对接方应保留原始 help，让工具自己的 create 说明指导模型显式回显和保存公开 ID。
 
 ## McpService
 
@@ -107,10 +121,11 @@ grpc_clients:
 解析规则：
 
 - `grpc_clients` 的 key 必须与请求中的 `context.client_name` 完全一致。
-- 不支持通配符、正则或包含匹配。
+- `grpc_clients` 仅作为精确覆盖层，不支持通配符、正则或包含匹配。
+- 如果没有命中 `grpc_clients`，会使用同一个 `context.client_name` 继续匹配通用 `clients` pattern。
 - 不读取 `VULCAN_CLIENT_MATCH_NAME` 环境变量。
 - 不读取 HTTP / SSE 的 `Vulcan-Client-Match-Name` 请求头。
-- 如果没有命中 `grpc_clients`，会回退到默认预算。
+- 如果 `grpc_clients` 和 `clients` pattern 都没有命中，才会回退到默认预算。
 
 ## 动态工具发现
 
@@ -126,6 +141,8 @@ grpc_clients:
 | `entry_name` | package 内本地 entry 名称。 |
 | `root_name` | 提供该工具的 runtime root 名称。 |
 | `skill_dir` | 具体 skill 目录路径。 |
+
+如果 `input_schema_json.properties` 中包含 `LUASKILL_SID`，客户端需要决定是否托管该字段。托管客户端向模型二次暴露工具时应移除该字段；非托管客户端应保持原样。
 
 示例：
 
@@ -147,6 +164,8 @@ grpcurl -plaintext \
 | `context` | 是 | `LuaSkillClientContext`。 |
 | `tool_name` | 是 | `ListTools` 或 `GetTool` 返回的标准工具名。 |
 | `arguments_json` | 否 | JSON 编码的工具参数；为空时按 `{}` 处理。 |
+
+托管客户端调用 `CallTool` 前必须把隐藏的 `LUASKILL_SID` 补入 `arguments_json`。非托管客户端不做补入；如果调用的是支持缺省生成身份的 create/start/bootstrap 入口，可以允许省略 `LUASKILL_SID`，由工具生成并返回公开 ID。
 
 示例：
 

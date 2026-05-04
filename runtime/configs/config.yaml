@@ -17,8 +17,8 @@ grpc: "127.0.0.1:19202"
 # 中文：vmm 仅保存端点；只有 vmm_enable=true 时才会连接，并自动跳过由 VMM 替代的 AI 记忆 skill。
 # English: `vmm` only stores the endpoint; the host connects only when `vmm_enable=true` and then skips the AI memory skill replaced by VMM.
 # 示例 / Example:
-# vmm_enable: false
-# vmm: "http://127.0.0.1:50053"
+vmm_enable: true
+vmm: "http://127.0.0.1:17625"
 
 # 中文：默认环境使用的正式技能层级，仅支持 ROOT、PROJECT、USER，运行时固定按 ROOT -> PROJECT -> USER 解析。
 # English: Formal skill layers for the default environment; only ROOT, PROJECT, and USER are supported, and runtime resolution is fixed as ROOT -> PROJECT -> USER.

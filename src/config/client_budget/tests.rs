@@ -582,10 +582,10 @@ clients:
     cleanup_isolated_client_budget_runtime_root(&root);
 }
 
-/// gRPC budget resolution should use only exact grpc_clients entries and ignore generic overrides.
-/// gRPC 预算解析应仅使用精确 grpc_clients 配置，并忽略通用覆盖来源。
+/// gRPC budget resolution should prefer exact grpc_clients entries before shared pattern rules.
+/// gRPC 预算解析应优先使用精确 grpc_clients 配置，再回落到统一 pattern 规则。
 #[test]
-fn resolve_grpc_client_budget_snapshot_uses_exact_client_name_only() {
+fn resolve_grpc_client_budget_snapshot_prefers_exact_grpc_client_rule() {
     let _environment_guard = environment_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -663,10 +663,10 @@ clients:
     cleanup_isolated_client_budget_runtime_root(&root);
 }
 
-/// gRPC budget resolution should not activate generic wildcard client rules.
-/// gRPC 预算解析不应激活通用通配客户端规则。
+/// gRPC budget resolution should fall back to shared wildcard client rules when no exact override exists.
+/// gRPC 预算解析在没有精确覆盖时应回落到统一通配客户端规则。
 #[test]
-fn resolve_grpc_client_budget_snapshot_does_not_use_wildcard_rules() {
+fn resolve_grpc_client_budget_snapshot_falls_back_to_wildcard_rules() {
     let _runtime_root_guard = runtime_root_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -692,8 +692,8 @@ clients:
 
     let snapshot = resolve_grpc_client_budget_snapshot("qwen-grpc", None, None);
     assert_eq!(snapshot.client_name.as_deref(), Some("qwen-grpc"));
-    assert_eq!(snapshot.matched_client_pattern, None);
-    assert_eq!(snapshot.tool_result.bytes, 9_500);
+    assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
+    assert_eq!(snapshot.tool_result.bytes, 23_750);
 
     cleanup_isolated_client_budget_runtime_root(&root);
 }

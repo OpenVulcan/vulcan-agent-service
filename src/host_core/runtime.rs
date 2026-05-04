@@ -197,6 +197,17 @@ impl HostRuntime {
         })
     }
 
+    /// Resolve the configured VMM backend client for gRPC relay calls.
+    /// 为 gRPC 中转调用解析已配置的 VMM 后端客户端。
+    pub(crate) fn resolve_vmm_backend(&self) -> Result<VmmClient, (i64, String)> {
+        self.vmm.clone().ok_or_else(|| {
+            (
+                -32603,
+                "VMM backend is not configured. Start vulcan-host with vmm_enable=true and a VMM endpoint.".to_string(),
+            )
+        })
+    }
+
     /// Resolve the default Lua engine together with the effective default skill-root chain.
     /// 解析默认 Lua 引擎及其对应的默认技能根目录链。
     pub(crate) fn resolve_lua_runtime_target(

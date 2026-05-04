@@ -145,8 +145,8 @@ pub fn resolve_client_budget_snapshot(
     )
 }
 
-/// Resolve a gRPC client-budget snapshot by exact `client_name` without environment or pattern matching.
-/// 通过精确 `client_name` 解析 gRPC 客户端预算快照，不读取环境变量，也不执行 pattern 匹配。
+/// Resolve a gRPC client-budget snapshot by trusted `client_name`, preferring exact overrides before shared pattern rules.
+/// 通过受信任的 `client_name` 解析 gRPC 客户端预算快照，优先精确覆盖，再回落到统一 pattern 规则。
 pub fn resolve_grpc_client_budget_snapshot(
     client_name: &str,
     tool_name: Option<&str>,
@@ -162,13 +162,27 @@ pub fn resolve_grpc_client_budget_snapshot(
     let matched_grpc_rule = client_name
         .as_ref()
         .and_then(|name| config.grpc_clients.get_key_value(name));
+    let normalized_pattern_name = client_name.as_ref().map(|name| name.to_lowercase());
+    let matched_client_rule = if matched_grpc_rule.is_some() {
+        None
+    } else {
+        normalized_pattern_name
+            .as_ref()
+            .and_then(|name| match_client_budget_rule(&config.clients, name))
+    };
 
     build_client_budget_snapshot(
         &config,
         client_name,
-        matched_grpc_rule.map(|(name, _)| name.clone()),
-        matched_grpc_rule.map(|(_, rule)| &rule.estimation),
-        matched_grpc_rule.map(|(_, rule)| &rule.budgets),
+        matched_grpc_rule
+            .map(|(name, _)| name.clone())
+            .or_else(|| matched_client_rule.map(|rule| rule.pattern.clone())),
+        matched_grpc_rule
+            .map(|(_, rule)| &rule.estimation)
+            .or_else(|| matched_client_rule.map(|rule| &rule.estimation)),
+        matched_grpc_rule
+            .map(|(_, rule)| &rule.budgets)
+            .or_else(|| matched_client_rule.map(|rule| &rule.budgets)),
         tool_name,
         skill_name,
     )
