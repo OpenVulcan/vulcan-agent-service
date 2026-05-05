@@ -8,7 +8,9 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use crate::backends::vmm::grpc_client::VmmClient;
-use crate::backends::vmm::tool_metadata::vmm_memory_tool_descriptors;
+use crate::backends::vmm::tool_metadata::{
+    vmm_binding_tool_descriptors, vmm_memory_tool_descriptors,
+};
 use crate::host_core::HostRuntime;
 use crate::host_core::host_adapter::{
     HostAdapterIdentityMode, HostAdapterRuntimeInput, ToolRefreshMode, ToolRefreshNoticeSeverity,
@@ -37,6 +39,7 @@ use pb::mcp_service_server::{McpService, McpServiceServer};
 use pb::{
     ConnectEvent, ConnectRequest, HealthzResponse, HeartbeatEvent,
     HostAdapterDiffToolRegistryRequest, HostAdapterDiffToolRegistryResponse,
+    HostAdapterListVmmBindingToolsRequest, HostAdapterListVmmBindingToolsResponse,
     HostAdapterListVmmMemoryToolsRequest, HostAdapterListVmmMemoryToolsResponse,
     HostAdapterProfileRequest, HostAdapterProfileResponse, HostAdapterRuntimeRequest,
     HostAdapterRuntimeResponse, HostAdapterToolDescriptor, HostAdapterToolRefreshNoticeRequest,
@@ -894,6 +897,40 @@ impl HostAdapterService for McpServiceImpl {
             .collect();
 
         Ok(Response::new(HostAdapterListVmmMemoryToolsResponse {
+            tools,
+            is_error: false,
+            message: String::new(),
+            vmm_enabled,
+            vmm_status,
+        }))
+    }
+
+    /// Return stable VMM binding/admin tool metadata for host plugin registration.
+    /// 返回宿主插件注册绑定与管理工具时使用的稳定 VMM 元信息。
+    async fn list_vmm_binding_tools(
+        &self,
+        request: Request<HostAdapterListVmmBindingToolsRequest>,
+    ) -> Result<Response<HostAdapterListVmmBindingToolsResponse>, Status> {
+        let _req = request.into_inner();
+        let vmm_enabled = self.runtime.is_vmm_backend_enabled();
+        let vmm_status = self.runtime.vmm_backend_status_message().to_string();
+
+        // Binding/admin descriptors stay visible even before VMM is healthy so hosts can
+        // keep one stable manifest and inspect setup guidance through the same tool ids.
+        // 绑定与管理工具描述即使在 VMM 尚未健康时也保持可见，
+        // 这样宿主仍能维持稳定 manifest，并通过同一组工具标识查看初始化指导。
+        let tools = vmm_binding_tool_descriptors()
+            .into_iter()
+            .map(|descriptor| HostAdapterToolDescriptor {
+                name: descriptor.name,
+                description: descriptor.description,
+                input_schema_json: descriptor.input_schema_json,
+                annotations_json: descriptor.annotations_json,
+                source: descriptor.source,
+            })
+            .collect();
+
+        Ok(Response::new(HostAdapterListVmmBindingToolsResponse {
             tools,
             is_error: false,
             message: String::new(),

@@ -113,6 +113,10 @@ service HostAdapterService {
   // ListVmmMemoryTools returns host-facing descriptors for the stable VMM memory tools.
   // ListVmmMemoryTools 返回稳定 VMM 记忆工具的宿主可见描述。
   rpc ListVmmMemoryTools(HostAdapterListVmmMemoryToolsRequest) returns (HostAdapterListVmmMemoryToolsResponse);
+
+  // ListVmmBindingTools returns host-facing descriptors for stable VMM binding and admin helper tools.
+  // ListVmmBindingTools 返回稳定 VMM 绑定与管理辅助工具的宿主可见描述。
+  rpc ListVmmBindingTools(HostAdapterListVmmBindingToolsRequest) returns (HostAdapterListVmmBindingToolsResponse);
 }
 
 // ============================================================
@@ -793,6 +797,34 @@ message HostAdapterListVmmMemoryToolsRequest {
 message HostAdapterListVmmMemoryToolsResponse {
   // Stable host-visible VMM memory tool descriptors.
   // 稳定的宿主可见 VMM 记忆工具描述列表。
+  repeated HostAdapterToolDescriptor tools = 1;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 2;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 3;
+  // Whether the VMM backend is enabled in the current host runtime.
+  // 当前宿主运行时是否启用了 VMM 后端。
+  bool vmm_enabled = 4;
+  // Human-readable VMM backend status.
+  // 人类可读的 VMM 后端状态。
+  string vmm_status = 5;
+}
+
+// HostAdapterListVmmBindingToolsRequest asks for VMM binding/admin tool metadata.
+// HostAdapterListVmmBindingToolsRequest 请求 VMM 绑定与管理工具元信息。
+message HostAdapterListVmmBindingToolsRequest {
+  // Trusted client context for diagnostics.
+  // 用于诊断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+}
+
+// HostAdapterListVmmBindingToolsResponse returns VMM binding/admin tool descriptors.
+// HostAdapterListVmmBindingToolsResponse 返回 VMM 绑定与管理工具描述。
+message HostAdapterListVmmBindingToolsResponse {
+  // Stable host-visible VMM binding/admin tool descriptors.
+  // 稳定的宿主可见 VMM 绑定与管理工具描述列表。
   repeated HostAdapterToolDescriptor tools = 1;
   // Whether the request failed at service level.
   // 请求是否在服务层失败。
