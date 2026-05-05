@@ -117,6 +117,10 @@ service HostAdapterService {
   // ListVmmBindingTools returns host-facing descriptors for stable VMM binding and admin helper tools.
   // ListVmmBindingTools 返回稳定 VMM 绑定与管理辅助工具的宿主可见描述。
   rpc ListVmmBindingTools(HostAdapterListVmmBindingToolsRequest) returns (HostAdapterListVmmBindingToolsResponse);
+
+  // ListVmmProfileTools returns host-facing descriptors for optional VMM profile-adjust tools.
+  // ListVmmProfileTools 返回可选 VMM 画像调整工具的宿主可见描述。
+  rpc ListVmmProfileTools(HostAdapterListVmmProfileToolsRequest) returns (HostAdapterListVmmProfileToolsResponse);
 }
 
 // ============================================================
@@ -220,6 +224,17 @@ message LuaSkillClientContext {
   string request_id = 3;
 }
 
+// LuaSkillProjectionContext declares whether the caller can hide and host-manage LUASKILL_SID.
+// LuaSkillProjectionContext 声明调用方是否可以隐藏并由宿主托管 LUASKILL_SID。
+message LuaSkillProjectionContext {
+  // Whether this host can safely hide LUASKILL_SID from model-facing schemas.
+  // 当前宿主是否可以安全地从面向模型的 schema 中隐藏 LUASKILL_SID。
+  bool supports_managed_luaskill_sid = 1;
+  // Stable session identity automatically injected into LUASKILL_SID during tool calls.
+  // 工具调用阶段自动注入到 LUASKILL_SID 的稳定会话身份。
+  string session_id = 2;
+}
+
 // LuaSkillDescriptor describes one loaded LuaSkill package and its exposed tool names.
 // LuaSkillDescriptor 描述一个已加载 LuaSkill 包及其暴露的工具名。
 message LuaSkillDescriptor {
@@ -302,6 +317,9 @@ message LuaSkillListToolsRequest {
   // Trusted client context for this request.
   // 本次请求的受信任客户端上下文。
   LuaSkillClientContext context = 1;
+  // Optional projection policy used to hide host-managed LUASKILL_SID from AI-visible schemas.
+  // 可选投影策略，用于从 AI 可见 schema 中隐藏宿主管理的 LUASKILL_SID。
+  LuaSkillProjectionContext projection = 2;
 }
 
 // LuaSkillListToolsResponse returns dynamic LuaSkills tool descriptors.
@@ -321,6 +339,9 @@ message LuaSkillGetToolRequest {
   // Canonical dynamic tool name to read.
   // 要读取的标准动态工具名称。
   string tool_name = 2;
+  // Optional projection policy used to hide host-managed LUASKILL_SID from AI-visible schemas.
+  // 可选投影策略，用于从 AI 可见 schema 中隐藏宿主管理的 LUASKILL_SID。
+  LuaSkillProjectionContext projection = 3;
 }
 
 // LuaSkillGetToolResponse returns one dynamic LuaSkills tool descriptor.
@@ -343,6 +364,9 @@ message LuaSkillCallToolRequest {
   // JSON-encoded tool arguments.
   // JSON 编码的工具参数。
   string arguments_json = 3;
+  // Optional projection policy used to inject host-managed LUASKILL_SID.
+  // 可选投影策略，用于自动注入宿主管理的 LUASKILL_SID。
+  LuaSkillProjectionContext projection = 4;
 }
 
 // LuaSkillCallToolResponse returns the rendered MCP-compatible tool result.
@@ -825,6 +849,34 @@ message HostAdapterListVmmBindingToolsRequest {
 message HostAdapterListVmmBindingToolsResponse {
   // Stable host-visible VMM binding/admin tool descriptors.
   // 稳定的宿主可见 VMM 绑定与管理工具描述列表。
+  repeated HostAdapterToolDescriptor tools = 1;
+  // Whether the request failed at service level.
+  // 请求是否在服务层失败。
+  bool is_error = 2;
+  // Error summary or diagnostics.
+  // 错误摘要或诊断信息。
+  string message = 3;
+  // Whether the VMM backend is enabled in the current host runtime.
+  // 当前宿主运行时是否启用了 VMM 后端。
+  bool vmm_enabled = 4;
+  // Human-readable VMM backend status.
+  // 人类可读的 VMM 后端状态。
+  string vmm_status = 5;
+}
+
+// HostAdapterListVmmProfileToolsRequest asks for VMM profile-adjust tool metadata.
+// HostAdapterListVmmProfileToolsRequest 请求 VMM 画像调整工具元信息。
+message HostAdapterListVmmProfileToolsRequest {
+  // Trusted client context for diagnostics.
+  // 用于诊断的受信任客户端上下文。
+  HostAdapterClientContext context = 1;
+}
+
+// HostAdapterListVmmProfileToolsResponse returns VMM profile-adjust tool descriptors.
+// HostAdapterListVmmProfileToolsResponse 返回 VMM 画像调整工具描述。
+message HostAdapterListVmmProfileToolsResponse {
+  // Stable host-visible VMM profile-adjust tool descriptors.
+  // 稳定的宿主可见 VMM 画像调整工具描述列表。
   repeated HostAdapterToolDescriptor tools = 1;
   // Whether the request failed at service level.
   // 请求是否在服务层失败。

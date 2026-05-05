@@ -19,6 +19,10 @@ pub use runtime_paths::{
     validate_unique_skill_root_spaces,
 };
 pub use tool_mapping::map_runtime_entry_to_mcp_tool;
+pub(crate) use tool_mapping::{
+    LuaSkillToolProjectionOptions, inject_managed_luaskill_sid_argument,
+    project_runtime_tool_descriptor,
+};
 
 #[cfg(test)]
 use engine_options::{resolve_space_controller_options, space_controller_executable_file_name};

@@ -8,9 +8,21 @@ use crate::host_core::{
 use crate::transport::mcp::protocol::{ClientInfo, RequestContext};
 
 use super::pb::{
-    LuaSkillCallToolResponse, LuaSkillClientContext, LuaSkillDescriptor, LuaSkillTextResponse,
-    LuaSkillToolDescriptor, McpCallRequest,
+    LuaSkillCallToolResponse, LuaSkillClientContext, LuaSkillDescriptor, LuaSkillProjectionContext,
+    LuaSkillTextResponse, LuaSkillToolDescriptor, McpCallRequest,
 };
+
+/// Normalized LuaSkills projection policy resolved from one gRPC request.
+/// 从一条 gRPC 请求解析出的归一化 LuaSkills 投影策略。
+#[derive(Debug, Clone, Default)]
+pub(super) struct NormalizedLuaSkillProjectionContext {
+    /// Whether the caller can hide LUASKILL_SID from AI-facing schemas and let the host inject it later.
+    /// 调用方是否可以从 AI 可见 schema 中隐藏 LUASKILL_SID，并在后续由宿主自动注入。
+    pub supports_managed_luaskill_sid: bool,
+    /// Stable session identity provided by the host for managed LUASKILL_SID injection.
+    /// 宿主提供、用于托管 LUASKILL_SID 自动注入的稳定会话身份。
+    pub session_id: Option<String>,
+}
 
 /// Build the request context used by the legacy generic gRPC `Call` method.
 /// 构造旧版通用 gRPC `Call` 方法使用的请求上下文。
@@ -47,6 +59,20 @@ pub(super) fn require_luaskill_context(
         client_version: optional_string(context.client_version).unwrap_or_default(),
         request_id: optional_string(context.request_id).unwrap_or_default(),
     })
+}
+
+/// Normalize an optional LuaSkills projection payload into one internal policy object.
+/// 把可选 LuaSkills 投影载荷归一化为内部策略对象。
+pub(super) fn normalize_luaskill_projection(
+    projection: Option<&LuaSkillProjectionContext>,
+) -> NormalizedLuaSkillProjectionContext {
+    let Some(projection) = projection else {
+        return NormalizedLuaSkillProjectionContext::default();
+    };
+    NormalizedLuaSkillProjectionContext {
+        supports_managed_luaskill_sid: projection.supports_managed_luaskill_sid,
+        session_id: optional_string(projection.session_id.clone()),
+    }
 }
 
 /// Parse one JSON argument string for a dynamic LuaSkills tool call.

@@ -1,5 +1,5 @@
-//! Stable host-facing metadata for VMM memory and binding tools.
-//! VMM 记忆工具与绑定工具的稳定宿主可见元信息。
+//! Stable host-facing metadata for VMM memory, binding, and profile tools.
+//! VMM 记忆、绑定与画像工具的稳定宿主可见元信息。
 //!
 //! This module belongs to the VMM backend adapter layer. Host plugins use the
 //! gRPC HostAdapterService to fetch these descriptors before registering their
@@ -77,6 +77,10 @@ const VMM_TOOL_OPTIONAL_CONTEXT_AGENT: &str = "agent";
 /// 返回给宿主插件用于 VMM 绑定与管理工具的元信息权威来源字符串。
 const VMM_BINDING_TOOL_METADATA_SOURCE: &str = "vmm.host-binding-contract";
 
+/// Metadata authority string returned for host-visible VMM profile-adjust tools.
+/// 返回给宿主插件用于 VMM 画像调整工具的元信息权威来源字符串。
+const VMM_PROFILE_TOOL_METADATA_SOURCE: &str = "vmm.host-profile-contract";
+
 /// Registration-surface annotation key used by stable VMM binding descriptors.
 /// 稳定 VMM 绑定描述使用的注册面注解键。
 const VMM_BINDING_REGISTRATION_SURFACE: &str = "registration_surface";
@@ -88,6 +92,18 @@ const VMM_BINDING_SURFACE_CONSOLIDATED: &str = "host-binding-consolidated";
 /// Legacy binding surface used by hosts that still materialize one tool per binding action.
 /// 仍按单动作拆分绑定工具的宿主使用的旧式注册面取值。
 const VMM_BINDING_SURFACE_LEGACY: &str = "host-binding-legacy";
+
+/// Registration-surface annotation key used by stable VMM profile descriptors.
+/// 稳定 VMM 画像描述使用的注册面注解键。
+const VMM_PROFILE_REGISTRATION_SURFACE: &str = "registration_surface";
+
+/// Consolidated profile-adjust surface used by hosts that want one natural-language profile correction tool.
+/// 希望使用单一自然语言画像纠偏工具的宿主使用的聚合画像注册面取值。
+const VMM_PROFILE_SURFACE_CONSOLIDATED: &str = "host-profile-adjust";
+
+/// Optional visibility marks tools that are implemented and supported but should not be part of the default model-facing surface.
+/// optional 可见性表示工具已实现且受支持，但不应进入默认面向模型的工具面。
+const VMM_TOOL_VISIBILITY_OPTIONAL: &str = "optional";
 
 /// Scope-level explanation aligned with the VMM gRPC integration contract.
 /// 与 VMM gRPC 集成契约对齐的 scope_level 说明。
@@ -284,6 +300,12 @@ pub fn vmm_binding_tool_descriptors() -> Vec<VmmMemoryToolDescriptor> {
         vmm_bind_agent_project_descriptor(),
         vmm_clear_agent_project_descriptor(),
     ]
+}
+
+/// Build all stable VMM profile-adjust descriptors used by hosts that want one optional AI-facing correction tool.
+/// 构建供希望使用可选 AI 画像纠偏工具的宿主使用的全部稳定 VMM 画像调整描述。
+pub fn vmm_profile_tool_descriptors() -> Vec<VmmMemoryToolDescriptor> {
+    vec![vulcan_profile_adjust_descriptor()]
 }
 
 /// Build the memory-search descriptor used by host plugins.
@@ -495,6 +517,37 @@ fn build_binding_descriptor(
         input_schema,
         annotations,
         VMM_BINDING_TOOL_METADATA_SOURCE,
+    )
+}
+
+/// Build one profile-adjust descriptor with explicit execution mode and optional trusted-context hints.
+/// 构建一条带显式执行模式与可选受信任上下文提示的画像调整工具描述。
+fn build_profile_descriptor(
+    name: &str,
+    description: &str,
+    input_schema: Value,
+    execution_mode: &str,
+    registration_surface: &str,
+    optional_context: Option<&[&str]>,
+) -> VmmMemoryToolDescriptor {
+    let mut annotations = json!({
+        "source": VMM_PROFILE_TOOL_METADATA_SOURCE,
+        "stable": true,
+        "schema_version": 1,
+        "tool_group": "vmm-profile",
+        "execution_mode": execution_mode,
+        VMM_PROFILE_REGISTRATION_SURFACE: registration_surface,
+        VMM_TOOL_VISIBILITY_ANNOTATION: VMM_TOOL_VISIBILITY_OPTIONAL,
+    });
+    if let Some(context_items) = optional_context {
+        annotations[VMM_TOOL_OPTIONAL_CONTEXT_ANNOTATION] = json!(context_items);
+    }
+    build_descriptor_with_annotations(
+        name,
+        description,
+        input_schema,
+        annotations,
+        VMM_PROFILE_TOOL_METADATA_SOURCE,
     )
 }
 
@@ -727,6 +780,37 @@ fn vmm_clear_agent_project_descriptor() -> VmmMemoryToolDescriptor {
     )
 }
 
+/// Build the optional natural-language profile-adjust descriptor used by hosts that want AI-driven profile correction without a full management center.
+/// 构建供希望使用 AI 驱动画像纠偏、但不引入完整管理中心的宿主使用的可选自然语言画像调整描述。
+fn vulcan_profile_adjust_descriptor() -> VmmMemoryToolDescriptor {
+    let schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "instruction"],
+        "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["user", "project", "team", "space"],
+                "description": "Profile scope to adjust. user and project target the current bound identities directly; team and space reuse the current project binding lineage."
+            },
+            "instruction": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Explicit natural-language correction or addition for the selected long-lived profile. Use this only when the user clearly asks to correct, reinforce, remove, or add durable profile information."
+            }
+        }
+    });
+    let description = "Adjust one durable VMM profile with an explicit natural-language instruction. The system already performs automatic profile extraction and refresh, so use this tool only when the user clearly asks to correct, reinforce, remove, or add long-lived profile information. Do not use it for ordinary temporary context, one-off status updates, or guesses.\\n\\nInput parameters:\\n- scope: user | project | team | space.\\n- instruction: Explicit natural-language profile adjustment for the selected scope.";
+    build_profile_descriptor(
+        "vulcan_profile_adjust",
+        description,
+        schema,
+        "remote",
+        VMM_PROFILE_SURFACE_CONSOLIDATED,
+        Some(&[VMM_TOOL_OPTIONAL_CONTEXT_AGENT]),
+    )
+}
+
 /// Serialize one JSON value for transport, falling back to an empty object.
 /// 序列化一段传输用 JSON，失败时回退为空对象。
 fn compact_json_string(value: &Value) -> String {
@@ -893,5 +977,31 @@ mod tests {
             Some("host-binding-legacy")
         );
         assert_eq!(annotations["optional_context"][0].as_str(), Some("agent"));
+    }
+
+    /// Verify profile-adjust metadata keeps one stable tool id plus the expected profile annotations.
+    /// 验证画像调整元信息保持稳定工具标识以及预期画像注解。
+    #[test]
+    fn vmm_profile_tool_metadata_lists_stable_tools() {
+        let tools = vmm_profile_tool_descriptors();
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        let descriptor = tools
+            .iter()
+            .find(|tool| tool.name == "vulcan_profile_adjust")
+            .expect("profile adjust descriptor should exist");
+        let annotations: Value = serde_json::from_str(&descriptor.annotations_json)
+            .expect("profile annotations should be valid JSON");
+
+        assert_eq!(names, vec!["vulcan_profile_adjust"]);
+        assert_eq!(annotations["tool_group"].as_str(), Some("vmm-profile"));
+        assert_eq!(annotations["execution_mode"].as_str(), Some("remote"));
+        assert_eq!(annotations["visibility"].as_str(), Some("optional"));
+        assert_eq!(
+            annotations["registration_surface"].as_str(),
+            Some("host-profile-adjust")
+        );
     }
 }

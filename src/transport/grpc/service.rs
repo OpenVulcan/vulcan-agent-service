@@ -9,12 +9,16 @@ use tonic::{Request, Response, Status};
 
 use crate::backends::vmm::grpc_client::VmmClient;
 use crate::backends::vmm::tool_metadata::{
-    vmm_binding_tool_descriptors, vmm_memory_tool_descriptors,
+    vmm_binding_tool_descriptors, vmm_memory_tool_descriptors, vmm_profile_tool_descriptors,
 };
 use crate::host_core::HostRuntime;
 use crate::host_core::host_adapter::{
     HostAdapterIdentityMode, HostAdapterRuntimeInput, ToolRefreshMode, ToolRefreshNoticeSeverity,
     ToolRegistryDiffOptions, ToolRegistrySnapshot, WorkmemIdSource, diff_tool_registry_snapshots,
+};
+use crate::luaskills_adapter::{
+    LuaSkillToolProjectionOptions, inject_managed_luaskill_sid_argument,
+    project_runtime_tool_descriptor,
 };
 use crate::pb_vmm as vmm_pb;
 use crate::transport::mcp::McpDispatcher;
@@ -29,9 +33,9 @@ mod helpers;
 
 use helpers::{
     build_mcp_call_request_context, lua_skill_package_to_pb, lua_skill_tool_to_pb,
-    mcp_error_to_status, optional_str, optional_string, parse_json_arguments,
-    require_luaskill_context, text_response, tool_call_result_to_call_response,
-    tool_call_result_to_text_response,
+    mcp_error_to_status, normalize_luaskill_projection, optional_str, optional_string,
+    parse_json_arguments, require_luaskill_context, text_response,
+    tool_call_result_to_call_response, tool_call_result_to_text_response,
 };
 use pb::host_adapter_service_server::{HostAdapterService, HostAdapterServiceServer};
 use pb::lua_skills_service_server::{LuaSkillsService, LuaSkillsServiceServer};
@@ -41,6 +45,7 @@ use pb::{
     HostAdapterDiffToolRegistryRequest, HostAdapterDiffToolRegistryResponse,
     HostAdapterListVmmBindingToolsRequest, HostAdapterListVmmBindingToolsResponse,
     HostAdapterListVmmMemoryToolsRequest, HostAdapterListVmmMemoryToolsResponse,
+    HostAdapterListVmmProfileToolsRequest, HostAdapterListVmmProfileToolsResponse,
     HostAdapterProfileRequest, HostAdapterProfileResponse, HostAdapterRuntimeRequest,
     HostAdapterRuntimeResponse, HostAdapterToolDescriptor, HostAdapterToolRefreshNoticeRequest,
     HostAdapterToolRefreshNoticeResponse, HostAdapterVmmStatusRequest,
@@ -501,13 +506,24 @@ impl LuaSkillsService for McpServiceImpl {
     ) -> Result<Response<LuaSkillListToolsResponse>, Status> {
         let req = request.into_inner();
         let _context = require_luaskill_context(req.context.as_ref())?;
+        let projection = normalize_luaskill_projection(req.projection.as_ref());
         let tools = self
             .runtime
             .list_luaskill_tools()
             .await
             .map_err(mcp_error_to_status)?
             .iter()
-            .map(lua_skill_tool_to_pb)
+            .map(|descriptor| {
+                let projected_tool = project_runtime_tool_descriptor(
+                    &descriptor.tool,
+                    &LuaSkillToolProjectionOptions {
+                        hide_managed_luaskill_sid: projection.supports_managed_luaskill_sid,
+                    },
+                );
+                let mut projected = descriptor.clone();
+                projected.tool = projected_tool;
+                lua_skill_tool_to_pb(&projected)
+            })
             .collect();
         Ok(Response::new(LuaSkillListToolsResponse { tools }))
     }
@@ -518,11 +534,18 @@ impl LuaSkillsService for McpServiceImpl {
     ) -> Result<Response<LuaSkillGetToolResponse>, Status> {
         let req = request.into_inner();
         let _context = require_luaskill_context(req.context.as_ref())?;
-        let tool = self
+        let projection = normalize_luaskill_projection(req.projection.as_ref());
+        let mut tool = self
             .runtime
             .get_luaskill_tool(&req.tool_name)
             .await
             .map_err(mcp_error_to_status)?;
+        tool.tool = project_runtime_tool_descriptor(
+            &tool.tool,
+            &LuaSkillToolProjectionOptions {
+                hide_managed_luaskill_sid: projection.supports_managed_luaskill_sid,
+            },
+        );
         Ok(Response::new(LuaSkillGetToolResponse {
             tool: Some(lua_skill_tool_to_pb(&tool)),
         }))
@@ -534,7 +557,24 @@ impl LuaSkillsService for McpServiceImpl {
     ) -> Result<Response<LuaSkillCallToolResponse>, Status> {
         let req = request.into_inner();
         let context = require_luaskill_context(req.context.as_ref())?;
+        let projection = normalize_luaskill_projection(req.projection.as_ref());
         let arguments = parse_json_arguments(&req.arguments_json)?;
+        let arguments = if projection.supports_managed_luaskill_sid {
+            let tool = self
+                .runtime
+                .get_luaskill_tool(&req.tool_name)
+                .await
+                .map_err(mcp_error_to_status)?;
+            inject_managed_luaskill_sid_argument(
+                &tool.tool,
+                arguments,
+                &context.client_name,
+                projection.session_id.as_deref(),
+            )
+            .map_err(mcp_error_to_status)?
+        } else {
+            arguments
+        };
         let result = self
             .runtime
             .call_luaskill_tool(
@@ -931,6 +971,50 @@ impl HostAdapterService for McpServiceImpl {
             .collect();
 
         Ok(Response::new(HostAdapterListVmmBindingToolsResponse {
+            tools,
+            is_error: false,
+            message: String::new(),
+            vmm_enabled,
+            vmm_status,
+        }))
+    }
+
+    /// Return stable VMM profile-adjust tool metadata for host plugin registration.
+    /// 返回宿主插件注册画像调整工具时使用的稳定 VMM 元信息。
+    async fn list_vmm_profile_tools(
+        &self,
+        request: Request<HostAdapterListVmmProfileToolsRequest>,
+    ) -> Result<Response<HostAdapterListVmmProfileToolsResponse>, Status> {
+        let _req = request.into_inner();
+        let vmm_enabled = self.runtime.is_vmm_backend_enabled();
+        let vmm_status = self.runtime.vmm_backend_status_message().to_string();
+
+        // Profile-adjust descriptors depend on the VMM backend because they update reviewed
+        // durable profile state rather than merely helping hosts inspect local bindings.
+        // 画像调整描述依赖 VMM 后端，因为它们会更新经评审的长期画像状态，
+        // 而不是像本地绑定查看那样只帮助宿主检查自身配置。
+        if !vmm_enabled {
+            return Ok(Response::new(HostAdapterListVmmProfileToolsResponse {
+                tools: Vec::new(),
+                is_error: false,
+                message: vmm_status.clone(),
+                vmm_enabled,
+                vmm_status,
+            }));
+        }
+
+        let tools = vmm_profile_tool_descriptors()
+            .into_iter()
+            .map(|descriptor| HostAdapterToolDescriptor {
+                name: descriptor.name,
+                description: descriptor.description,
+                input_schema_json: descriptor.input_schema_json,
+                annotations_json: descriptor.annotations_json,
+                source: descriptor.source,
+            })
+            .collect();
+
+        Ok(Response::new(HostAdapterListVmmProfileToolsResponse {
             tools,
             is_error: false,
             message: String::new(),

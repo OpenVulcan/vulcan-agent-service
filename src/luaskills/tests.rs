@@ -1,3 +1,8 @@
+use super::tool_mapping::{
+    HOST_MANAGED_LUASKILL_SID_FIELD, HOST_MANAGED_LUASKILL_SID_PREFIX,
+    LuaSkillToolProjectionOptions, inject_managed_luaskill_sid_argument,
+    project_runtime_tool_descriptor, runtime_tool_uses_managed_luaskill_sid,
+};
 use super::*;
 use crate::config::{
     Config, SkillRootConfigEntry, SpaceControllerConfig, SpaceControllerProcessModeConfig,
@@ -8,6 +13,7 @@ use luaskills::{
     LuaRuntimeDatabaseCallbackMode, LuaRuntimeDatabaseProviderMode,
     LuaRuntimeSpaceControllerProcessMode, LuaVmPoolConfig, RuntimeEntryDescriptor, ToolCacheConfig,
 };
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -785,6 +791,206 @@ fn map_runtime_entry_to_mcp_tool_omits_environment_id_parameter() {
         .expect("schema object");
 
     assert!(!schema.contains_key("environment_id"));
+}
+
+/// Session-capable hosts should receive LuaSkills schemas without the managed LUASKILL_SID parameter.
+/// 支持会话托管的宿主应收到移除了托管 LUASKILL_SID 参数的 LuaSkills schema。
+#[test]
+fn project_runtime_tool_descriptor_hides_managed_luaskill_sid() {
+    let entry = RuntimeEntryDescriptor {
+        parameters: vec![
+            luaskills::RuntimeEntryParameterDescriptor {
+                name: HOST_MANAGED_LUASKILL_SID_FIELD.to_string(),
+                description: "Managed session identity.".to_string(),
+                param_type: "string".to_string(),
+                required: true,
+            },
+            luaskills::RuntimeEntryParameterDescriptor {
+                name: "task_name".to_string(),
+                description: "Target task.".to_string(),
+                param_type: "string".to_string(),
+                required: true,
+            },
+        ],
+        ..sample_runtime_entry_descriptor()
+    };
+    let raw = map_runtime_entry_to_mcp_tool(&entry);
+    let projected = project_runtime_tool_descriptor(
+        &raw,
+        &LuaSkillToolProjectionOptions {
+            hide_managed_luaskill_sid: true,
+        },
+    );
+    let schema = projected
+        .input_schema
+        .properties
+        .as_ref()
+        .and_then(|value| value.as_object())
+        .expect("schema object");
+
+    assert!(runtime_tool_uses_managed_luaskill_sid(&raw));
+    assert!(!schema.contains_key(HOST_MANAGED_LUASKILL_SID_FIELD));
+    assert_eq!(
+        projected.input_schema.required,
+        Some(vec!["task_name".to_string()])
+    );
+    assert!(
+        projected
+            .description
+            .as_deref()
+            .is_some_and(|value| !value.contains(HOST_MANAGED_LUASKILL_SID_FIELD))
+    );
+}
+
+/// Managed LuaSkills calls should inject the trusted session identity instead of trusting model-supplied sid values.
+/// 托管 LuaSkills 调用应注入受信任会话身份，而不是信任模型提供的 sid 值。
+#[test]
+fn inject_managed_luaskill_sid_argument_overrides_untrusted_sid() {
+    let entry = RuntimeEntryDescriptor {
+        parameters: vec![luaskills::RuntimeEntryParameterDescriptor {
+            name: HOST_MANAGED_LUASKILL_SID_FIELD.to_string(),
+            description: "Managed session identity.".to_string(),
+            param_type: "string".to_string(),
+            required: true,
+        }],
+        ..sample_runtime_entry_descriptor()
+    };
+    let tool = map_runtime_entry_to_mcp_tool(&entry);
+    let injected = inject_managed_luaskill_sid_argument(
+        &tool,
+        serde_json::json!({
+            HOST_MANAGED_LUASKILL_SID_FIELD: "spoofed",
+            "task_name": "demo"
+        }),
+        "opencode",
+        Some("session-123"),
+    )
+    .expect("managed sid injection should succeed");
+    let mut hasher = Sha256::new();
+    hasher.update(b"opencode");
+    hasher.update(b"\0");
+    hasher.update(b"session-123");
+    let digest_hex = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let expected_managed_sid = format!("{HOST_MANAGED_LUASKILL_SID_PREFIX}{}", &digest_hex[..48]);
+
+    assert_eq!(
+        injected
+            .get(HOST_MANAGED_LUASKILL_SID_FIELD)
+            .and_then(|value| value.as_str()),
+        Some(expected_managed_sid.as_str())
+    );
+}
+
+/// Different host namespaces should derive different managed sid values even when the raw session id matches.
+/// 即使原始 session id 相同，不同宿主命名空间也应派生出不同的托管 sid。
+#[test]
+fn inject_managed_luaskill_sid_argument_namespaces_host_identity() {
+    let entry = RuntimeEntryDescriptor {
+        parameters: vec![luaskills::RuntimeEntryParameterDescriptor {
+            name: HOST_MANAGED_LUASKILL_SID_FIELD.to_string(),
+            description: "Managed session identity.".to_string(),
+            param_type: "string".to_string(),
+            required: true,
+        }],
+        ..sample_runtime_entry_descriptor()
+    };
+    let tool = map_runtime_entry_to_mcp_tool(&entry);
+    let opencode_sid = inject_managed_luaskill_sid_argument(
+        &tool,
+        serde_json::json!({}),
+        "opencode",
+        Some("shared-session"),
+    )
+    .expect("opencode managed sid injection should succeed");
+    let openclaw_sid = inject_managed_luaskill_sid_argument(
+        &tool,
+        serde_json::json!({}),
+        "openclaw",
+        Some("shared-session"),
+    )
+    .expect("openclaw managed sid injection should succeed");
+
+    assert_ne!(
+        opencode_sid
+            .get(HOST_MANAGED_LUASKILL_SID_FIELD)
+            .and_then(|value| value.as_str()),
+        openclaw_sid
+            .get(HOST_MANAGED_LUASKILL_SID_FIELD)
+            .and_then(|value| value.as_str())
+    );
+}
+
+/// Pre-prefixed host-managed sid inputs should still be normalized by MCP instead of passing through unchanged.
+/// 即使输入已带宿主管理前缀，MCP 也应重新规范化，而不是原样透传。
+#[test]
+fn inject_managed_luaskill_sid_argument_rewrites_prefixed_sid_inputs() {
+    let entry = RuntimeEntryDescriptor {
+        parameters: vec![luaskills::RuntimeEntryParameterDescriptor {
+            name: HOST_MANAGED_LUASKILL_SID_FIELD.to_string(),
+            description: "Managed session identity.".to_string(),
+            param_type: "string".to_string(),
+            required: true,
+        }],
+        ..sample_runtime_entry_descriptor()
+    };
+    let tool = map_runtime_entry_to_mcp_tool(&entry);
+    let raw_prefixed_sid = format!("{HOST_MANAGED_LUASKILL_SID_PREFIX}caller-provided-value");
+    let injected = inject_managed_luaskill_sid_argument(
+        &tool,
+        serde_json::json!({}),
+        "opencode",
+        Some(raw_prefixed_sid.as_str()),
+    )
+    .expect("prefixed sid input should still be normalized");
+    let mut hasher = Sha256::new();
+    hasher.update(b"opencode");
+    hasher.update(b"\0");
+    hasher.update(raw_prefixed_sid.as_bytes());
+    let digest_hex = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let expected_managed_sid = format!("{HOST_MANAGED_LUASKILL_SID_PREFIX}{}", &digest_hex[..48]);
+
+    assert_eq!(
+        injected
+            .get(HOST_MANAGED_LUASKILL_SID_FIELD)
+            .and_then(|value| value.as_str()),
+        Some(expected_managed_sid.as_str())
+    );
+    assert_ne!(
+        injected
+            .get(HOST_MANAGED_LUASKILL_SID_FIELD)
+            .and_then(|value| value.as_str()),
+        Some(raw_prefixed_sid.as_str())
+    );
+}
+
+/// Managed LuaSkills calls should fail clearly when the host promised sid injection but omitted the actual session id.
+/// 当宿主承诺会注入 sid 却遗漏实际 session id 时，托管 LuaSkills 调用应明确失败。
+#[test]
+fn inject_managed_luaskill_sid_argument_requires_session_id() {
+    let entry = RuntimeEntryDescriptor {
+        parameters: vec![luaskills::RuntimeEntryParameterDescriptor {
+            name: HOST_MANAGED_LUASKILL_SID_FIELD.to_string(),
+            description: "Managed session identity.".to_string(),
+            param_type: "string".to_string(),
+            required: true,
+        }],
+        ..sample_runtime_entry_descriptor()
+    };
+    let tool = map_runtime_entry_to_mcp_tool(&entry);
+    let error =
+        inject_managed_luaskill_sid_argument(&tool, serde_json::json!({}), "opencode", None)
+            .expect_err("managed sid injection should require a session id");
+
+    assert_eq!(error.0, -32602);
+    assert!(error.1.contains("projection.session_id"));
 }
 
 /// Reserved host tool names should not expose the IDE-only environment management bridge.
