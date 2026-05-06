@@ -1,6 +1,6 @@
 # LuaSkills 模型能力宿主接口说明
 
-本文档说明 `vulcan-mcp` 侧为 LuaSkills 提供的简化模型能力。当前已基于 `luaskills 0.2.4` 接入专用 `vulcan.models.*` 宿主回调，并由宿主配置决定是否注册 embedding / LLM 能力。
+本文档说明 `vulcan-agent-service` 统一服务中枢中，面向 LuaSkills 提供的简化模型能力子集。当前已基于 `luaskills 0.3.1` 接入专用 `vulcan.models.*` 宿主回调，并由宿主配置决定是否注册 embedding / LLM 能力。
 
 ## 设计边界
 
@@ -141,7 +141,7 @@ embedding 与 llm 的 `base_url/api_key` 必须分别配置在各自能力块下
 
 ## 回调注册策略
 
-`vulcan-mcp` 在启动预载和 `reload_vulcan_mcp_configs` 后都会根据 `model_config.yaml` 重新注册回调：
+`vulcan-agent-service` 在启动预载和 `reload_vulcan_mcp_configs` 后都会根据 `model_config.yaml` 重新注册回调：
 
 - `embedding.enabled=true` 且 embedding 专属 provider 配置完整时注册 `vulcan.models.embed`
 - `llm.enabled=true` 且 llm 专属 provider 配置完整时注册 `vulcan.models.llm`

@@ -36,7 +36,7 @@ fn acquire_environment_lock() -> MutexGuard<'static, ()> {
 /// 为单个测试用例构建唯一的临时目录路径。
 fn unique_test_dir(name: &str) -> PathBuf {
     let unique = format!(
-        "vulcan-mcp-{}-{}-{}",
+        "vulcan-agent-service-{}-{}-{}",
         name,
         std::process::id(),
         std::time::SystemTime::now()
@@ -763,7 +763,7 @@ fn resolve_runtime_root_rejects_missing_or_non_directory_paths() {
 fn resolve_implicit_runtime_root_rejects_file_shaped_repository_runtime_path() {
     let _guard = acquire_environment_lock();
     let base_dir = unique_test_dir("implicit-runtime-file");
-    let fake_exe = base_dir.join("bin").join("vulcan-mcp.exe");
+    let fake_exe = base_dir.join("bin").join("vulcan-agent-service.exe");
     let runtime_file = base_dir.join("runtime");
     std::fs::create_dir_all(fake_exe.parent().expect("fake exe parent should exist"))
         .expect("failed to create fake exe parent");

@@ -101,27 +101,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(async_main(cfg))
+            // Keep one owner of the prepared host runtime outside async teardown paths so
+            // transport-start failures do not drop LuaSkills controller bridges inside Tokio.
+            // 在异步清理路径之外保留一份已准备宿主运行时的所有权，避免传输层启动失败时在 Tokio 内部析构 LuaSkills 控制器桥。
+            let server = runtime.block_on(async_build_stdio_server(cfg.clone()))?;
+            let result = runtime.block_on(async {
+                spawn_cross_day_cleanup_task();
+                run_network_transports(server.clone(), &cfg).await
+            });
+            drop(server);
+            result
         }
     }
-}
-
-/// Async main flow that decides between starting network services and entering direct tool-debug mode.
-/// 异步主流程，根据运行模式决定是启动网络服务还是直接进入 tools 调试。
-async fn async_main(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
-    install_luaskills_log_callback();
-    initialize_runtime_temp_root_from_config(&cfg)?;
-
-    maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
-    preload_runtime_mcp_configs(&cfg)?;
-
-    let server = build_server(&cfg).await?;
-
-    spawn_cross_day_cleanup_task();
-
-    run_network_transports(server, &cfg).await?;
-
-    Ok(())
 }
 
 /// Async stdio bootstrap flow that prepares one initialized server without starting network transports.

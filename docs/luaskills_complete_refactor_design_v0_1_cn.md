@@ -2,12 +2,12 @@
 
 ## 1. 文档目标
 
-本文用于收敛当前 `vulcan-mcp` / `LuaSkills` 体系的完整改造方向。
+本文用于收敛当前 `vulcan-agent-service` / `LuaSkills` 体系的完整改造方向。
 
 本文希望回答以下问题：
 
 - LuaSkills 的真实核心模型应该是什么
-- `luaskills`、`vulcan-mcp`、未来 `vulcan-grpc` 如何分层
+- `luaskills`、`vulcan-agent-service`、未来 `vulcan-grpc` 如何分层
 - skill 包格式应该如何调整
 - `vulcan.` 运行时 API 应如何标准化
 - system tools、skill tools、help、provider、状态与生命周期应如何设计
@@ -41,7 +41,8 @@
 
 - `luaskills` 仓库内的 `lua_engine.rs` 更像 runtime
 - `luaskills` 仓库内历史上的 `skill_dependency.rs` 更像依赖管理
-- 当前主仓库中的 `main.rs / server.rs / http_server.rs / grpc_server.rs` 更像 host / adapter
+- 当前主仓库中的 `main.rs / bootstrap/ / host_core/ / transport/ / config/` 更像 host / adapter
+- 更早阶段集中在 `server.rs / http_server.rs / grpc_server.rs` 的职责，当前已经拆分到了上述目录
 
 但这三层目前仍在同一产品边界下混合存在。
 
@@ -108,13 +109,13 @@ LuaSkills Core 应只关心：
 
 依赖下载、安装、升级、卸载，不属于 runtime。
 
-### 3.3 `vulcan-mcp` 是接入层，不是 skill 真相来源
+### 3.3 `vulcan-agent-service` 是统一服务中枢与接入层，不是 skill 真相来源
 
 未来推荐关系应为：
 
 - `luaskills`：runtime
-- `vulcan-mcp`：adapter / host
-- `vulcan-grpc`：adapter / host
+- `vulcan-agent-service`：统一服务中枢 / host-adapter
+- `vulcan-grpc`：专用 gRPC host-adapter
 
 ### 3.4 Skill 格式先收敛，再拆 lib
 
@@ -166,7 +167,7 @@ LuaSkills Core 应只关心：
 
 包括：
 
-- `vulcan-mcp`
+- `vulcan-agent-service`
 - `vulcan-grpc`
 - 未来任意嵌入式宿主
 
@@ -374,9 +375,9 @@ LuaSkills 只负责发出结构化变化，不负责决定宿主如何展示这�
 
 孤立 shared 依赖才允许被清理。
 
-### 5.8 MCP 宿主包装的 system tools
+### 5.8 服务中枢包装的 system tools
 
-当前 `vulcan-mcp` 宿主应包装一组面向普通 skill 管理面的 system tools：
+当前 `vulcan-agent-service` 作为统一服务中枢，应包装一组面向普通 skill 管理面的 system tools：
 
 - `vulcan-skill-enable`
 - `vulcan-skill-disable`
@@ -387,7 +388,7 @@ LuaSkills 只负责发出结构化变化，不负责决定宿主如何展示这�
 
 - 调用 `luaskills` 的技能管理入口
 - 让 runtime 自身完成状态计算与 delta 生成
-- 宿主根据 runtime delta 自动调整自身已注册的 MCP tools
+- 宿主根据 runtime delta 自动调整自身已注册的 MCP tools、gRPC 投影或其他对外 tool 暴露面
 
 保护技能仍然不应通过这组普通 tools 处理，而应保留给宿主自己的 system plane。
 
@@ -447,7 +448,7 @@ help 的组织方式应改为：
 
 例如：
 
-- `vulcan-mcp` 作为当前宿主，只能把相关超限产物放到自己控制的运行目录体系中
+- `vulcan-agent-service` 作为当前宿主，只能把相关超限产物放到自己控制的运行目录体系中
 - IDE 宿主则可以把相关超限产物放到项目目录下，例如 `.vscode/` 等宿主管理目录
 
 因此未来更合理的模型应是：
@@ -765,16 +766,16 @@ skill tools 是 skill 自己对外公开的 entry。
 
 ### 13.2 后续阶段
 
-在 `luaskills` 与 `vulcan-mcp` 接近正式发布的最后阶段，再独立出去更合适。
+在 `luaskills` 与 `vulcan-agent-service` 接近正式发布的最后阶段，再独立出去更合适。
 
 ### 13.3 独立后的定位
 
 README 中应明确：
 
-- 最快、最佳体验方式是 `vulcan-mcp`
+- 最快、最佳体验方式是 `vulcan-agent-service`
 - 同时支持所有实现 `luaskills` 的宿主
 
-### 13.4 `vulcan-codekit` 在 `vulcan-mcp` 中的角色
+### 13.4 `vulcan-codekit` 在 `vulcan-agent-service` 中的角色
 
 它可以继续作为：
 
@@ -787,7 +788,7 @@ README 中应明确：
 
 ## 14. 安装分层方向
 
-未来 `vulcan-mcp` 应尽量瘦身。
+未来 `vulcan-agent-service` 应尽量瘦身。
 
 建议：
 
@@ -831,7 +832,7 @@ README 中应明确：
 在新格式稳定、官方 skill 验证充分后，再拆出：
 
 - `luaskills`
-- `vulcan-mcp`
+- `vulcan-agent-service`
 - 未来 `vulcan-grpc`
 
 ### 15.5 第五阶段：补 package manager
@@ -856,4 +857,4 @@ README 中应明确：
 
 ## 17. 一句话总结
 
-**本次改造的核心不是继续给 `vulcan-mcp` 加功能，而是把 LuaSkills 从 MCP 附属机制，提升为以 `luaskills` 为中心、以 skill 包格式为核心、以 `vulcan.` 标准 API 和 `vulcan.runtime.*` system tools 为骨架的独立运行时体系。**
+**本次改造的核心不是继续给 `vulcan-agent-service` 加功能，而是把 LuaSkills 从 MCP 附属机制，提升为以 `luaskills` 为中心、以 skill 包格式为核心、以 `vulcan.` 标准 API 和 `vulcan.runtime.*` system tools 为骨架的独立运行时体系。**

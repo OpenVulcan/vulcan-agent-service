@@ -37,7 +37,7 @@ fn callback_lock() -> &'static Mutex<()> {
 /// 为模型供应商测试用例构建唯一临时目录路径。
 fn unique_test_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "vulcan-mcp-model-provider-{}-{}-{}",
+        "vulcan-agent-service-model-provider-{}-{}-{}",
         name,
         std::process::id(),
         std::time::SystemTime::now()

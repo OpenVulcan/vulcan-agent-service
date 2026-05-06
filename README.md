@@ -1,14 +1,16 @@
-# vulcan-mcp
+# vulcan-agent-service
 
-`vulcan-mcp` 是 Vulcan 生态中的 **MCP 宿主与协议适配层**。  
+`vulcan-agent-service` 是 Vulcan 生态中的 **Agent 服务中枢与协议适配层**。  
 它基于 [`luaskills`](https://github.com/LuaSkills/luaskills) 提供：
 
-- MCP 协议接入
+- 面向 Trae / VSCode / CodeBuddy 等客户端的 MCP 接入
+- 面向 openclaw / opencode / qwencode / Hermes 等执行端的 gRPC 接入
+- 与 `vulcan-memory-mesh` 的统一交互
 - HTTP / gRPC / stdio 服务与本地调试模式
 - 宿主配置读取与策略注入
 - MCP 结果渲染、分页与截断处理
 - system tools 的宿主包装
-- LuaSkills 的统一 MCP 暴露
+- LuaSkills 与宿主能力的统一对外暴露
 
 ## 当前定位
 
@@ -17,13 +19,13 @@
 - `luaskills`
   - LuaSkills 核运行时库
   - 负责 skill 加载、调用、help 树、`vulcan.*` / `vulcan.runtime.*` 注入
-- `vulcan-mcp`
-  - 宿主层
-  - 负责 MCP 协议映射、客户端预算、工具配置、结果分页/截断、spill 文件落盘
+- `vulcan-agent-service`
+  - 宿主与服务中枢层
+  - 负责 MCP / gRPC 协议映射、客户端预算、工具配置、结果分页/截断、spill 文件落盘，以及与 `vulcan-memory-mesh` 的协同
 
 一句话说：
 
-**`luaskills` 负责运行，`vulcan-mcp` 负责对外说话。**
+**`luaskills` 负责运行，`vulcan-agent-service` 负责对外接入、协调与转发。**
 
 ## 主要能力
 
@@ -36,7 +38,7 @@
 - 提供宿主封装的 strict help 工具与统一 `luaskill-config` 配置工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
 - 支持宿主级 `client_budgets.yaml`、`tool_configs.yaml`、`model_config.yaml` 与统一 Skill 运行时配置
-- 提供 LuaSkills 专用 gRPC 服务面，稳定能力走显式 RPC，动态 entry 走 `CallTool`
+- 提供统一 gRPC 服务面：兼容型能力走 `McpService`，LuaSkills 稳定能力走显式 RPC，动态 entry 走 `CallTool`，Host Adapter / VMM 走独立 service
 
 接口文档：
 
@@ -45,15 +47,15 @@
 
 ## 数据库访问模型
 
-`vulcan-mcp` 采用 **controller-only** 产品形态：
+`vulcan-agent-service` 采用 **controller-only** 产品形态：
 
 - SQLite 只通过 `vldb-controller` 访问
 - LanceDB 只通过 `vldb-controller` 访问
-- MCP 宿主固定使用控制器模式，不暴露数据库 provider 模式切换
+- 服务中枢固定使用控制器模式，不暴露数据库 provider 模式切换
 
 这样做的原因很直接：
 
-- MCP 宿主可能被多开
+- `vulcan-agent-service` 可能被多开，且不同 MCP / gRPC / IDE 入口可能并发落到同一运行根
 - 多实例可能同时访问同一 workspace / user space 数据库
 - 只有把数据库 ownership 收口到独立 controller 进程，才能真正避免直连数据库导致的文件锁冲突
 
@@ -90,11 +92,18 @@ space_controller:
 - 如果 `endpoint` 指向远端 controller，则必须改为 `auto_spawn=false`，并由外部保证 controller 已经启动
 - `output/bin/vldb-controller(.exe)` 应尽量通过 `make deps + make build` 生成；如果手工替换二进制，必须确保它与当前仓库锁定的 `vldb-controller-client` 使用同一 release tag，避免静默版本漂移
 
-## 当前公开方式
+## 当前对外服务面
+
+`vulcan-agent-service` 当前同时维护三类对外服务面：
+
+- MCP / IDE 适配面：面向 Trae / VSCode / CodeBuddy 等客户端，支持 stdio、HTTP / SSE。
+- 统一 gRPC 服务面：面向 openclaw / opencode / qwencode / Hermes-agent 等执行端，同一端口挂载 `McpService`、`LuaSkillsService`、`HostAdapterService` 与 `vmm.v1.VmmService`。
+- 宿主包装能力面：把 LuaSkills、help、skill config、分页/截断与宿主级 system tools 统一投影成可消费接口。
 
 ### 1. LuaSkills
 
-LuaSkills 是当前 MCP 对外暴露的主能力面。  
+LuaSkills 是当前对外的核心能力面。  
+在 MCP 面上它表现为 tools，在 gRPC 面上则由 `LuaSkillsService` 的显式 RPC 与 `CallTool` 动态入口共同暴露。  
 官方 skill 目前包括：
 
 - `vulcan-lua`
@@ -121,7 +130,7 @@ runtime/skills/<skill>/
 
 ### 2. Help 工具
 
-当 Lua engine 成功加载了运行期 skill 后，help 会由宿主包装为：
+当 Lua engine 成功加载了运行期 skill 后，help 会由服务中枢包装为：
 
 - `vulcan-help-list`
 - `vulcan-help-detail`
@@ -135,7 +144,7 @@ runtime/skills/<skill>/
 
 ### 3. Luaskill Config 工具
 
-统一 Skill 配置文件会由宿主额外包装为：
+统一 Skill 配置文件会由服务中枢额外包装为：
 
 - `luaskill-config`
 
@@ -161,9 +170,9 @@ runtime/skills/<skill>/
 ### 4. RunLua 暴露策略
 
 `runlua` 的 system 能力保留在 `luaskills` 内部与 `vulcan.runtime.lua.exec` 链路中，  
-`vulcan-mcp` 通过 `vulcan-lua` skill 对外提供对应执行能力。
+`vulcan-agent-service` 通过 `vulcan-lua` skill 对外提供对应执行能力。
 
-MCP 侧推荐通过 `vulcan-lua` skill 使用：
+在对外 tool 暴露面上，推荐通过 `vulcan-lua` skill 使用：
 
 - `vulcan-lua-run`
 
@@ -197,16 +206,19 @@ MCP 侧推荐通过 `vulcan-lua` skill 使用：
 
 ```text
 src/
-├─ main.rs                # 入口：配置、宿主构建、运行模式
-├─ server.rs              # MCP server：协议处理、tool 注册、宿主包装
-├─ luaskills_host.rs      # 宿主到 luaskills 的接线与上下文映射
-├─ tool_result_format.rs  # 宿主层结果渲染、分页与截断
-├─ client_budget.rs       # MCP 客户端预算配置与解析
-├─ tool_config.rs         # MCP 工具配置解析
-├─ grpc_client.rs         # gRPC 客户端
-├─ http_server.rs         # HTTP transport
-├─ protocol.rs            # MCP 协议模型
-└─ session.rs             # HTTP session
+├─ main.rs                # 入口：配置装配、服务启动与运行模式选择
+├─ bootstrap/             # CLI、运行根初始化、预载与启动流程
+├─ config/                # 宿主配置、预算、模型与工具配置解析
+├─ luaskills/             # luaskills 接线、tool 映射、上下文与运行时路径
+├─ host_core/             # 服务中枢核心：runtime、host tools、skill 管理、投影与调度
+├─ transport/             # 对外协议层
+│  ├─ mcp/                # MCP 协议、dispatcher、视图与 tool 暴露
+│  ├─ grpc/               # McpService / LuaSkillsService / HostAdapterService / VMM relay
+│  ├─ http/               # HTTP / SSE 入口
+│  └─ stdio/              # stdio 入口
+├─ backends/              # VMM 等外部后端适配
+├─ model_provider/        # 模型能力桥接与回调注册
+└─ support/               # 结果格式化、日志、运行时上下文与临时文件维护
 
 runtime/
 ├─ configs/               # 仓库内配置模板
@@ -232,7 +244,7 @@ output/
 
 ### 配置文件
 
-`vulcan-mcp` 仍然使用宿主配置文件，例如：
+`vulcan-agent-service` 仍然使用宿主配置文件，例如：
 
 - CLI 入口已收敛为 `--runtime-root` 或标准运行目录自动发现，不再支持 `--config`
 
@@ -244,7 +256,7 @@ output/
 其中：
 
 - `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml`
-  - 属于宿主层配置，由 `vulcan-mcp` 自己读取
+  - 属于宿主层配置，由 `vulcan-agent-service` 自己读取
 - `skill_config.json`
   - 由宿主随 `runtime_root` 统一推导并传给 `luaskills`
   - 当前产品不再提供单独文件路径覆盖，避免与运行根参数产生冲突
@@ -324,7 +336,7 @@ cargo run -- --stdio --runtime-root output
 如果直接执行构建产物，则继续使用运行目录自动发现：
 
 ```bash
-./output/bin/vulcan-mcp --stdio
+./output/bin/vulcan-agent-service --stdio
 ```
 
 ### ROOT Skill 管理命令
@@ -340,13 +352,13 @@ cargo run -- --install-root-skill LuaSkills/vulcan-codekit --runtime-root output
 如果直接执行构建产物：
 
 ```bash
-./output/bin/vulcan-mcp --install-root-skill LuaSkills/vulcan-codekit --runtime-root output
+./output/bin/vulcan-agent-service --install-root-skill LuaSkills/vulcan-codekit --runtime-root output
 ```
 
 安装时也可以显式指定来源类型：
 
 ```bash
-./output/bin/vulcan-mcp --install-root-skill LuaSkills/vulcan-codekit --source-type github --runtime-root output
+./output/bin/vulcan-agent-service --install-root-skill LuaSkills/vulcan-codekit --source-type github --runtime-root output
 ```
 
 更新 ROOT 层全部受管 skill：
@@ -358,7 +370,7 @@ cargo run -- --update-root-skills --runtime-root output
 如果直接执行构建产物：
 
 ```bash
-./output/bin/vulcan-mcp --update-root-skills --runtime-root output
+./output/bin/vulcan-agent-service --update-root-skills --runtime-root output
 ```
 
 `--update-root-skills` 只会更新带受管安装记录的 ROOT skill；手工放入 ROOT 但没有安装记录的目录会被跳过。
@@ -368,7 +380,7 @@ cargo run -- --update-root-skills --runtime-root output
 当前仓库通过 Cargo 原生版本依赖引用：
 
 ```toml
-luaskills = "0.2.0"
+luaskills = "0.3.1"
 ```
 
 相关地址：
@@ -379,7 +391,7 @@ luaskills = "0.2.0"
 但职责边界不变：
 
 - `luaskills`：运行时库
-- `vulcan-mcp`：MCP 宿主
+- `vulcan-agent-service`：Agent 服务中枢与多协议宿主层
 
 ## 运行目录约定
 

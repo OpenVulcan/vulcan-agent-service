@@ -336,7 +336,7 @@ mod tests {
     fn preload_tool_configs_prefers_explicit_runtime_root() {
         let _guard = runtime_root_lock().lock().expect("lock should succeed");
         let root = std::env::temp_dir().join(format!(
-            "vulcan-mcp-tool-config-runtime-{}-{}",
+            "vulcan-agent-service-tool-config-runtime-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

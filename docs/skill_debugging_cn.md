@@ -18,7 +18,7 @@
 通用格式：
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools <tool_name> '<json_arguments>'
+.\output\debug\vulcan-agent-service.exe --call-tools <tool_name> '<json_arguments>'
 ```
 
 说明：
@@ -30,7 +30,7 @@
 如果 tool 无需参数，也可以省略第三段参数：
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools current_time
+.\output\debug\vulcan-agent-service.exe --call-tools current_time
 ```
 
 ### 2.1 调试隐藏 `luaexec` 入口
@@ -44,7 +44,7 @@
 推荐命令：
 
 ```powershell
-.\target\debug\vulcan-mcp.exe --internal-luaexec-request .\temp\internal_luaexec_request.json --runtime-root output
+.\target\debug\vulcan-agent-service.exe --internal-luaexec-request .\temp\internal_luaexec_request.json --runtime-root output
 ```
 
 其中请求文件内容是一个 JSON 对象，常用字段如下：
@@ -63,7 +63,7 @@
 约束规则：
 
 - `code` 与 `file` 必须且只能提供一个
-- 如果直接使用 `target\debug\vulcan-mcp.exe`，建议显式加上 `--runtime-root output`
+- 如果直接使用 `target\debug\vulcan-agent-service.exe`，建议显式加上 `--runtime-root output`
 - 该入口是内部调试能力，不属于面向最终用户的公开 MCP 参数
 
 最小示例：
@@ -77,7 +77,7 @@
 执行命令：
 
 ```powershell
-.\target\debug\vulcan-mcp.exe --internal-luaexec-request .\temp\internal_luaexec_request.json --runtime-root output
+.\target\debug\vulcan-agent-service.exe --internal-luaexec-request .\temp\internal_luaexec_request.json --runtime-root output
 ```
 
 带打印输出的示例：
@@ -104,25 +104,27 @@
 
 构建后会同步：
 
-- `output/debug/vulcan-mcp.exe`
+- `output/debug/vulcan-agent-service.exe`
 - `output/skills/`
 - `output/lua_packages/`
 - `output/configs/`
 
-`--call-tools` 推荐直接使用 `output/debug/vulcan-mcp.exe`。
+`--call-tools` 推荐直接使用 `output/debug/vulcan-agent-service.exe`。
 
 ### 3.2 执行 tool 调试
+
+以下示例假定当前工作目录就是仓库根目录。
 
 例如调试 `vmcp-rg`：
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 例如调试 `vmcp-ast`：
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-ast '{"path":".\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
 ```
 
 ## 4. 参数传递说明
@@ -132,7 +134,7 @@
 正确示例：
 
 ```powershell
-'{"path":"D:\\projects\\vulcan-mcp-client\\src","recursive":true,"ext":"rs"}'
+'{"path":".\\src","recursive":true,"ext":"rs"}'
 ```
 
 错误示例：
@@ -151,7 +153,7 @@
 PowerShell 下推荐：
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
 ```
 
 这样可以减少双引号转义混乱。
@@ -161,7 +163,7 @@ PowerShell 下推荐：
 ### 5.1 调试 `vmcp-rg` 的声明命中
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
 ```
 
 预期：
@@ -172,7 +174,7 @@ PowerShell 下推荐：
 ### 5.2 调试 `vmcp-rg` 的函数体内容命中
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 预期：
@@ -184,7 +186,7 @@ PowerShell 下推荐：
 ### 5.3 调试 `vmcp-ast` 的结构输出
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\src\\main.rs","comment":false}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-ast '{"path":".\\src\\main.rs","comment":false}'
 ```
 
 预期：
@@ -206,7 +208,7 @@ PowerShell 下推荐：
   "rg_matches": 3,
   "files": [
     {
-      "file": "D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua",
+      "file": "<repo_root>\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua",
       "lines": 2087,
       "content": "local function validate_extension_argument(value) ... L744-803"
     }
@@ -269,8 +271,8 @@ PowerShell 下推荐：
 
 建议区分：
 
-- `output/debug/vulcan-mcp.exe --call-tools ...`：本地功能调试
-- `output/bin/vulcan-mcp.exe`：正在运行的正式服务
+- `output/debug/vulcan-agent-service.exe --call-tools ...`：本地功能调试
+- `output/bin/vulcan-agent-service.exe`：正在运行的正式服务
 
 ### 7.4 为什么这个模式不启动 HTTP / gRPC？
 

@@ -46,7 +46,7 @@ runtime 应返回的是：
 
 Environment 与 Result 的设计应同时适用于：
 
-- `vulcan-mcp`
+- `vulcan-agent-service`
 - IDE 集成
 - gRPC 宿主
 - 其他嵌入式 host
@@ -88,7 +88,7 @@ Environment 与 Result 的设计应同时适用于：
 
 表示当前宿主名称，例如：
 
-- `vulcan-mcp`
+- `vulcan-agent-service`
 - `vscode-host`
 - `embedded-agent`
 

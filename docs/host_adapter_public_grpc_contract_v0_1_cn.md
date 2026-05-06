@@ -2,15 +2,15 @@
 
 ## 1. 文档目标
 
-本文档定义 vulcan-host 对外暴露的 Host Adapter gRPC 契约。该契约用于连接 OpenCode、OpenClaw、Claude Code、Qwen Code、Hermes、Generic MCP 等宿主插件，使插件可以通过统一中转层获取宿主能力画像、运行时上下文归一化、工具注册表差异和工具刷新提示。
+本文档定义 `vulcan-agent-service` 对外暴露的 Host Adapter gRPC 契约。该契约用于连接 OpenCode、OpenClaw、Claude Code、Qwen Code、Hermes、Generic MCP 等 Agent 插件或桥接端，使这些接入方可以通过统一服务中转层获取宿主能力画像、运行时上下文归一化、工具注册表差异和工具刷新提示。
 
 ## 2. 设计原则
 
-1. Host Adapter 是独立服务面，不混入 `McpService` 或 `LuaSkillsService`。
+1. Host Adapter 是 `vulcan-agent-service` 统一 gRPC 服务面中的独立 service，不混入 `McpService` 或 `LuaSkillsService`。
 2. 公开 gRPC 层只负责 DTO 传输与调用 `host_core`，不承载业务判断。
 3. 复杂内部 DTO 以 JSON 字符串形式传输，降低多语言客户端接入成本。
 4. 响应保留关键快捷字段，避免客户端为了常用判断必须解析完整 JSON。
-5. 插件端必须保留本地 fallback，不能假设 vulcan-host 一定已经升级到该协议版本。
+5. 插件端必须保留本地 fallback，不能假设 `vulcan-agent-service` 一定已经升级到该协议版本。
 
 ## 2.1 LuaSkills 托管身份字段
 
@@ -162,7 +162,7 @@ service HostAdapterService {
 
 插件端调用 HostAdapterService 失败时必须回退到本地能力矩阵和本地 refresh notice 逻辑。常见 fallback 场景包括：
 
-1. vulcan-host 版本过旧，没有 `HostAdapterService`。
+1. `vulcan-agent-service` 版本过旧，没有 `HostAdapterService`。
 2. gRPC endpoint 未配置或不可连接。
 3. 请求超时。
 4. 响应 JSON 无法解析。

@@ -18,7 +18,7 @@
 
 - 先调整 LuaSkills / MCP Skill 格式
 - 再拆分 `luaskills`
-- `vulcan-mcp` 最终是 `luaskills` 的接入层之一
+- `vulcan-agent-service` 最终是 `luaskills` 的接入层之一
 
 ## 2. 设计目标
 
@@ -26,7 +26,7 @@
 
 - Lua runtime 是否应该自己处理依赖下载与安装
 - MCP 是否应该继续承担 skill 真相来源
-- `vulcan-mcp`、未来的 `vulcan-grpc`、以及嵌入式宿主如何共享同一套 skill runtime
+- `vulcan-agent-service`、未来的 `vulcan-grpc`、以及嵌入式宿主如何共享同一套 skill runtime
 - skill 生命周期、安装策略、宿主 UI 与策略控制应该落在哪一层
 
 ## 3. 三层模型总览
@@ -81,7 +81,7 @@
 
 示例：
 
-- `vulcan-mcp`
+- `vulcan-agent-service`
 - 未来 `vulcan-grpc`
 - 任何嵌入 `luaskills` 的 Agent 宿主
 
@@ -203,7 +203,9 @@ Host 是接入层，不是 LuaSkills Core 真相来源。
 未来推荐关系应为：
 
 - `luaskills` 是 runtime
-- `vulcan-mcp` 是 adapter / host
+- `vulcan-agent-service` 是统一服务中枢 / host-adapter
+
+当前仓库中的 `vulcan-agent-service` 不只是一层 MCP 壳，还承担 gRPC 暴露、VMM 协调与宿主能力投影。
 
 MCP 中的：
 
@@ -310,10 +312,10 @@ host 最终面对用户时，可以把两者组合为：
 ### 10.3 更接近 Host / Adapter 的模块
 
 - `src/main.rs`
-- `src/server.rs`
-- `src/http_server.rs`
-- `src/grpc_server.rs`
-- `src/config.rs`
+- `src/bootstrap/`
+- `src/host_core/`
+- `src/transport/`
+- `src/config/`
 
 这些模块主要承担：
 
@@ -323,6 +325,7 @@ host 最终面对用户时，可以把两者组合为：
 - 配置读取
 
 更接近 host / adapter。
+旧阶段文档中提到的 `src/server.rs / src/http_server.rs / src/grpc_server.rs`，在当前仓库里已经分别拆分并收口到了上述目录。
 
 ## 11. 为什么现在更适合先改格式，再拆 Runtime
 
@@ -337,7 +340,7 @@ host 最终面对用户时，可以把两者组合为：
 因此推荐顺序是：
 
 1. 先调整 skill 格式
-2. 在现有 `vulcan-mcp` 中验证新格式
+2. 在现有 `vulcan-agent-service` 中验证新格式
 3. 再拆分 `luaskills`
 
 ## 12. 推荐分阶段路线
@@ -364,7 +367,7 @@ host 最终面对用户时，可以把两者组合为：
 再正式拆分：
 
 - `luaskills`
-- `vulcan-mcp`
+- `vulcan-agent-service`
 - 未来 `vulcan-grpc`
 
 ### 12.4 第四阶段

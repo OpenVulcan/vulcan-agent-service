@@ -92,7 +92,7 @@ def parse_args() -> argparse.Namespace:
     """
 
     repo_root = Path(__file__).resolve().parent.parent
-    default_binary = repo_root / "output" / "bin" / ("vulcan-mcp.exe" if sys.platform.startswith("win") else "vulcan-mcp")
+    default_binary = repo_root / "output" / "bin" / ("vulcan-agent-service.exe" if sys.platform.startswith("win") else "vulcan-agent-service")
     default_config = repo_root / "output" / "configs" / "config.yaml"
     parser = argparse.ArgumentParser(description="Verify codekit-ast comment summary extraction across fixtures.")
     parser.add_argument("--repo-root", type=Path, default=repo_root)

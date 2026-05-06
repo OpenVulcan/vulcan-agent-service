@@ -32,7 +32,7 @@ fn normalize_cli_config_path_anchors_relative_paths_to_cwd() {
 #[test]
 fn reject_legacy_config_flag_reports_runtime_root_only_model() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--config".to_string(),
         "runtime/configs/config.yaml".to_string(),
     ];
@@ -49,7 +49,7 @@ fn reject_legacy_config_flag_reports_runtime_root_only_model() {
 #[test]
 fn reject_legacy_config_flag_rejects_inline_equals_form() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--config=runtime/configs/config.yaml".to_string(),
     ];
     let error =
@@ -65,7 +65,7 @@ fn reject_legacy_config_flag_rejects_inline_equals_form() {
 #[test]
 fn parse_cli_path_flag_rejects_missing_runtime_root_value() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--runtime-root".to_string(),
         "--stdio".to_string(),
     ];
@@ -84,7 +84,7 @@ fn parse_cli_path_flag_rejects_missing_runtime_root_value() {
 #[test]
 fn parse_cli_path_flag_accepts_inline_runtime_root_value() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--runtime-root=output".to_string(),
     ];
     let runtime_root = parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
@@ -96,7 +96,7 @@ fn parse_cli_path_flag_accepts_inline_runtime_root_value() {
 /// 内联 `--runtime-root=` 在取值为空时也应尽早失败。
 #[test]
 fn parse_cli_path_flag_rejects_empty_inline_runtime_root_value() {
-    let args = vec!["vulcan-mcp.exe".to_string(), "--runtime-root=".to_string()];
+    let args = vec!["vulcan-agent-service.exe".to_string(), "--runtime-root=".to_string()];
     let error = parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
         .expect_err("empty inline runtime-root should fail");
     assert!(

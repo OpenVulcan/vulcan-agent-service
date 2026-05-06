@@ -14,7 +14,7 @@ use std::collections::HashSet;
 /// 为 server 模块单个测试用例构建唯一的临时目录路径。
 fn unique_test_dir(name: &str) -> PathBuf {
     let unique = format!(
-        "vulcan-mcp-server-{}-{}-{}",
+        "vulcan-agent-service-server-{}-{}-{}",
         name,
         std::process::id(),
         std::time::SystemTime::now()

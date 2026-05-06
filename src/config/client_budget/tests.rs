@@ -246,7 +246,7 @@ fn client_budget_yaml_parses_expected_rules() {
 #[test]
 fn read_metric_from_source_reads_nested_json_fields() {
     let root = std::env::temp_dir().join(format!(
-        "vulcan-mcp-client-budget-json-source-{}-{}",
+        "vulcan-agent-service-budget-json-source-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -333,7 +333,7 @@ fn preload_client_budget_config_prefers_explicit_runtime_root() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let root = std::env::temp_dir().join(format!(
-        "vulcan-mcp-client-budget-runtime-{}-{}",
+        "vulcan-agent-service-budget-runtime-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -366,7 +366,7 @@ fn prepare_isolated_client_budget_runtime_root_with_yaml(
     client_budget_yaml: &str,
 ) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "vulcan-mcp-client-budget-match-runtime-{}-{}",
+        "vulcan-agent-service-budget-match-runtime-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

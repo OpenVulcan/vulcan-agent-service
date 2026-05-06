@@ -104,6 +104,7 @@ pub fn build_luaskills_engine_options(
         ignored_skill_ids: resolve_ignored_skill_ids(config),
         capabilities: LuaRuntimeCapabilityOptions {
             enable_skill_management_bridge: false,
+            enable_managed_io_compat: true,
         },
         ..LuaRuntimeHostOptions::default()
     };

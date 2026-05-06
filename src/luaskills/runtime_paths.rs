@@ -444,8 +444,8 @@ fn home_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Return the default USER layer skill root derived from the current home directory.
-/// 返回基于当前用户主目录推导出的默认 USER 层技能根目录。
+/// Return the default USER layer skill root derived from the current home directory using the fixed agent-service path.
+/// 返回基于当前用户主目录推导出的默认 USER 层技能根目录，固定使用 agent-service 路径。
 pub fn default_user_skill_root() -> Option<std::path::PathBuf> {
-    home_dir().map(|home| home.join(".vulcan").join("vulcan-mcp").join("skills"))
+    Some(home_dir()?.join(".vulcan").join("agent-service").join("skills"))
 }

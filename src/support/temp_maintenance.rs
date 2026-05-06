@@ -173,7 +173,7 @@ mod tests {
     /// 显式运行根目录应接管 temp 目录位置，以保证所有运行时产物都位于统一根目录之下。
     #[test]
     fn derive_runtime_temp_dir_prefers_explicit_runtime_root() {
-        let root = std::env::temp_dir().join("vulcan-mcp-temp-maintenance-test-root");
+        let root = std::env::temp_dir().join("vulcan-agent-service-temp-maintenance-test-root");
         let derived = derive_runtime_temp_dir(Some(&root)).expect("temp dir should derive");
         assert_eq!(derived, root.join("temp"));
     }

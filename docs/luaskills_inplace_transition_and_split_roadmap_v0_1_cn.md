@@ -4,7 +4,7 @@
 
 本文用于回答一个当前阶段最关键的问题：
 
-**为什么 `vulcan-mcp-client` 不应该立刻拆出 `luaskills`，而应该先在当前仓库中把运行时、skill 格式与宿主边界改造成目标形态，再进行拆分。**
+**为什么 `vulcan-agent-service` 不应该立刻拆出 `luaskills`，而应该先在当前仓库中把运行时、skill 格式与宿主边界改造成目标形态，再进行拆分。**
 
 本文关注的是“先在当前项目内完成目标式改造，再拆分 runtime/lib”的完整流程，而不是最终协议的逐字段细节。
 
@@ -22,7 +22,7 @@
   - 运行时上下文与返回协议调整
 - **架构层改造**
   - 抽出 `luaskills`
-  - 将 `vulcan-mcp` 明确降级为 host/adapter
+  - 将 `vulcan-agent-service` 明确收口为统一服务中枢 / host-adapter 层
   - 后续支持 `grpc/lib/ide` 等宿主
 
 如果现在先拆库，就会出现一个很难调试的问题：
@@ -45,8 +45,10 @@
   - 当前直接承担分页、截断、模板选择、宿主指针页渲染
 - `src/client_budget.rs` 与 `src/tool_config.rs`
   - 当前由宿主链路直接读取配置文件
-- `src/server.rs`
-  - 当前直接承接 runtime 输出并进行渲染，与 host/render 层仍未彻底解耦
+- `src/host_core/runtime.rs`
+  - 当前直接承接 runtime 输出并进行调度，与 `support/tool_result_format.rs` 一起完成宿主渲染链路
+- `src/transport/`
+  - 当前承接 MCP / gRPC / HTTP / stdio 的外层协议适配；旧阶段集中在 `src/server.rs` 的职责已拆入该目录与 `host_core/`
 
 其中第一类问题已经随着 runtime 迁移到 `luaskills` 新仓库而被拆出主仓；当前主仓仍需持续收口的，是宿主渲染与宿主配置真相。
 
@@ -103,7 +105,7 @@
 
 - `yaml` 更适合后续扩展多级配置
 - 更适合表达 help、workflow、capability、status、degradation 等结构
-- 可以让未来 runtime/lib 与 host/adapter 统一围绕同一格式演进
+- 可以让未来 runtime/lib 与统一服务中枢 / host-adapter 统一围绕同一格式演进
 
 ### 4.3 取消 `prompt / template / resources` 作为 LuaSkills Core 真相
 
@@ -290,7 +292,7 @@ bytes 限制不应只是 MCP 私有概念，而应成为 runtime 与 skill 都�
 
 例如：
 
-- `vulcan-mcp`
+- `vulcan-agent-service`
   - 当前受自身宿主形态限制，通常只能把超限中间文件放到 MCP 运行目录或其管理目录
 - IDE 宿主
   - 则完全可以把超限文件放到项目目录下，例如 `.vscode/`、`.idea/` 或宿主自定义目录
@@ -315,7 +317,7 @@ bytes 限制不应只是 MCP 私有概念，而应成为 runtime 与 skill 都�
 - `client_name`
   - 例如 IDE 名称、设备名称、接入端名称
 - `host_name`
-  - 例如 `vulcan-mcp`
+  - 例如 `vulcan-agent-service`
 - `host_instance`
   - 可选，实例名/设备标识
 
@@ -540,7 +542,7 @@ skill 改造后建议统一暴露：
 只有在前述阶段稳定后，再进入真正拆分：
 
 - 抽出 `luaskills`
-- 将 `vulcan-mcp` 改为 host/adapter
+- 将 `vulcan-agent-service` 收口为统一服务中枢 / host-adapter
 - 后续再扩展 `grpc/lib/ide`
 
 ## 8. 未来拆分后的结构建议
@@ -549,10 +551,10 @@ skill 改造后建议统一暴露：
 
 - `luaskills`
   - runtime 核心
-- `vulcan-mcp`
-  - host/adapter
+- `vulcan-agent-service`
+  - 统一服务中枢 / host-adapter
 - `vulcan-grpc`
-  - host/adapter
+  - 专用 gRPC host-adapter
 - `luaskills-pm`
   - package/dependency manager
 
@@ -567,7 +569,7 @@ skill 改造后建议统一暴露：
 
 当前项目最合理的路线不是“现在马上拆 lib”，而是：
 
-**先在 `vulcan-mcp-client` 内部，把 skill 结构、运行时环境、返回中间层、模板/分页职责、bytes 限制与客户端上下文全部改造成独立 runtime 目标形态；待这些真相稳定后，再顺势拆出 `luaskills`。**
+**先在 `vulcan-agent-service` 内部，把 skill 结构、运行时环境、返回中间层、模板/分页职责、bytes 限制与客户端上下文全部改造成独立 runtime 目标形态；待这些真相稳定后，再顺势拆出 `luaskills`。**
 
 这条路线的最大优势不是“保守”，而是：
 

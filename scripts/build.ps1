@@ -1,4 +1,4 @@
-# Build script for vulcan-mcp (PowerShell)
+# Build script for vulcan-agent-service (PowerShell)
 # Usage:
 #   .\build.ps1           # debug build
 #   .\build.ps1 release   # release build
@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path $PSScriptRoot -Parent
 Set-Location $ProjectDir
 
-$BinName = "vulcan-mcp"
+$BinName = "vulcan-agent-service"
 
 if ($Release -or ($args.Count -gt 0 -and $args[0] -eq "release")) {
     $OutDir = "output\bin"
@@ -153,6 +153,10 @@ Copy-Item -Force $BinExe "$OutDir\$BinName.exe"
 Write-Host "==> Binary copied to $OutDir\"
 
 # Sync official LuaSkills runtime package exports to output/.
+# Build packaging treats third_party/luaskills_runtime as a caller-managed asset root and copies it as-is.
+# 构建打包会把 third_party/luaskills_runtime 视为调用方自管的资产根目录，并按现状直接同步。
+# Cross-platform validation is intentionally omitted because forks may replace lua_packages/runtime payloads with custom layouts.
+# 这里有意不做跨平台校验，因为 fork 方可能会用自定义布局替换 lua_packages/runtime 载荷。
 if (Test-Path -LiteralPath $LuaSkillsRuntimeRoot) {
     $RuntimeSyncs = @(
         @{ source = Join-Path $LuaSkillsRuntimeRoot "lua_packages"; destination = $PkgOut; name = "lua_packages" },

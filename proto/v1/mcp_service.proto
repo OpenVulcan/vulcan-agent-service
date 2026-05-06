@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package vulcan.mcp.v1;
 
-option go_package = "github.com/openvulcan/vulcan-mcp/proto/v1;mcpv1";
+option go_package = "github.com/openvulcan/vulcan-agent-service/proto/v1;mcpv1";
 
 import "google/protobuf/empty.proto";
 

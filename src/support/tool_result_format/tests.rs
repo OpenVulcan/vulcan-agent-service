@@ -23,7 +23,7 @@ fn template_runtime_lock() -> &'static Mutex<()> {
 /// 为单个测试用例构建唯一的临时目录路径。
 fn unique_test_dir(name: &str) -> PathBuf {
     let unique = format!(
-        "vulcan-mcp-tool-result-{}-{}-{}",
+        "vulcan-agent-service-tool-result-{}-{}-{}",
         name,
         std::process::id(),
         std::time::SystemTime::now()
@@ -248,7 +248,7 @@ fn render_tool_result_prefers_per_call_template_roots_for_project_environment() 
 fn implicit_template_roots_reject_file_shaped_skills_and_resources_paths() {
     let root = unique_test_dir("template-runtime-file-shaped");
     let exe_dir = root.join("output").join("bin");
-    let fake_exe = exe_dir.join("vulcan-mcp.exe");
+    let fake_exe = exe_dir.join("vulcan-agent-service.exe");
     std::fs::create_dir_all(&exe_dir).expect("failed to create fake exe directory");
     std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
     std::fs::create_dir_all(root.join("output")).expect("failed to create hosted root parent");

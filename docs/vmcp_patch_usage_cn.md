@@ -22,19 +22,23 @@
 也就是说，下面这种才是合法输入：
 
 ```rust
-pub async fn with_vmm(self, endpoint: &str) -> Result<Self, String> {
-    let client = endpoint.to_uppercase();
-    eprintln!("patched {}", client);
-    Ok(Self { id: self.id + 1 })
+pub(crate) fn vmm_backend_status_message(&self) -> &'static str {
+    if self.is_vmm_backend_enabled() {
+        "VMM backend is enabled."
+    } else {
+        "VMM backend is not configured. Configure vulcan-agent-service with vmm_enable=true and a VMM endpoint."
+    }
 }
 ```
 
 下面这种会被拒绝：
 
 ```rust
-let client = endpoint.to_uppercase();
-eprintln!("patched {}", client);
-Ok(Self { id: self.id + 1 })
+if self.is_vmm_backend_enabled() {
+    "VMM backend is enabled."
+} else {
+    "VMM backend is not configured."
+}
 ```
 
 这样做的原因很简单：
@@ -79,11 +83,11 @@ Ok(Self { id: self.id + 1 })
 
 支持宽松表达，例如：
 
-- `with_vmm`
-- `McpServer/with_vmm`
-- `impl McpServer/with_vmm`
-- `fn with_vmm`
-- `pub async fn with_vmm`
+- `vmm_backend_status_message`
+- `HostRuntime/vmm_backend_status_message`
+- `impl HostRuntime/vmm_backend_status_message`
+- `fn vmm_backend_status_message`
+- `pub(crate) fn vmm_backend_status_message`
 
 匹配原则是：
 
@@ -115,24 +119,24 @@ Ok(Self { id: self.id + 1 })
 示例思路：
 
 - `vmcp-rg` 找到：
-  - `impl McpServer`
-  - `pub async fn with_vmm`
+  - `impl HostRuntime`
+  - `pub(crate) fn vmm_backend_status_message`
 
 那么可以先尝试：
 
-- `McpServer/with_vmm`
+- `HostRuntime/vmm_backend_status_message`
 
 如果歧义，再升级成：
 
-- `impl McpServer/pub async fn with_vmm`
+- `impl HostRuntime/pub(crate) fn vmm_backend_status_message`
 
 ## 五、调用示例
 
 ```json
 {
-  "file": "D:\\projects\\vulcan-mcp-client\\src\\server.rs",
-  "selector": "McpServer/with_vmm",
-  "replacement": "pub async fn with_vmm(self, endpoint: &str) -> Result<Self, Box<dyn std::error::Error>> {\\n    let client = VmmClient::connect(endpoint).await?;\\n    eprintln!(\"[MCP] VMM client connected: {}\", endpoint);\\n    Ok(Self { vmm: Some(client), ..self })\\n}"
+  "file": "<repo_root>\\src\\host_core\\runtime.rs",
+  "selector": "HostRuntime/vmm_backend_status_message",
+  "replacement": "pub(crate) fn vmm_backend_status_message(&self) -> &'static str {\\n    if self.is_vmm_backend_enabled() {\\n        \\\"VMM backend is enabled.\\\"\\n    } else {\\n        \\\"VMM backend is not configured. Configure vulcan-agent-service with vmm_enable=true and a VMM endpoint.\\\"\\n    }\\n}"
 }
 ```
 

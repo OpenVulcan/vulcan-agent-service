@@ -141,7 +141,7 @@ python scripts/verify_vmcp_ast_comment_notes.py
 `codekit-patch` 这类“结构重定位替换”的工具，建议遵循以下规则：
 
 - 只允许 patch function / method 这类完整代码节点
-- selector 优先采用宽松的结构路径，例如 `with_vmm`、`McpServer/with_vmm`、`impl McpServer/with_vmm`
+- selector 优先采用宽松的结构路径，例如 `vmm_backend_status_message`、`HostRuntime/vmm_backend_status_message`、`impl HostRuntime/vmm_backend_status_message`
 - 唯一命中时直接替换；多命中时返回更完整的候选结构路径，让调用方重试
 - `replacement` 必须是完整函数源码，且必须从声明行开始传入
 - 不做 `body/auto` 兼容推断；不符合规则时应直接返回结构化错误
@@ -647,7 +647,7 @@ dependencies:
 
 - 宿主提供工具目录固定为运行根下的 `bin/tools/`（正式构建默认即 `output/bin/tools/`），托管下载依赖仍进入运行根下的 `dependencies/`
 - `bin/tools/` 仅表示宿主提供的共享命令行工具目录，不是数据库 controller 目录；`vldb-controller(.exe)` 固定放在 `output/bin/`
-- 当前 `vulcan-mcp-client` 产品固定采用 controller-only 数据库访问模型，skill 应假设数据库能力由宿主通过 controller 统一提供
+- 当前 `vulcan-agent-service` 产品固定采用 controller-only 数据库访问模型，skill 应假设数据库能力由宿主通过 controller 统一提供
 - 会先检查 `install_as` 对应文件是否已存在，存在则直接跳过
 - 支持 `asset_name`、`install_as`、`archive_path` 中使用 `{tag}` 与 `{version}` 占位符
 - 当前支持直接文件、`.zip`、`.tar.gz` / `.tgz` 安装
@@ -667,7 +667,7 @@ dependencies:
 
 源码变化时输出日志：
 ```
-[LuaSkill] Hot reload codekit-ast-detail: D:\projects\vulcan-mcp-client\output\skills\vulcan-codekit\runtime\codekit-ast-detail.lua
+[LuaSkill] Hot reload codekit-ast-detail: <repo_root>\output\skills\vulcan-codekit\runtime\codekit-ast-detail.lua
 ```
 
 ## Skill 模板

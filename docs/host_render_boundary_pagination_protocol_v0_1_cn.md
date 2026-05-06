@@ -76,9 +76,9 @@ runtime 可以建议：
 
 因为不同宿主的交互模式差异很大。
 
-### 4.1 MCP 宿主
+### 4.1 `vulcan-agent-service` 的 MCP / 通用适配面
 
-MCP 宿主通常需要：
+在 `vulcan-agent-service` 中，MCP / 通用协议适配面通常需要：
 
 - 文本型结果
 - 分页指针块
@@ -110,7 +110,7 @@ runtime 不应负责：
 
 典型例子：
 
-- `vulcan-mcp`
+- `vulcan-agent-service`
   - 当前通常只能将超限产物放到自己的运行目录体系或托管目录中
 - IDE 宿主
   - 则可以将超限产物放到项目目录，例如 `.vscode/` 等宿主管理目录

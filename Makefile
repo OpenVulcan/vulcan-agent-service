@@ -32,7 +32,7 @@ endif
 host:
 	@bash ./make.sh deps host
 
-# lua maps to the Lua dependency bootstrap flow, which also coordinates host deps.
-# lua 用于映射 Lua 依赖初始化流程，并会协调宿主依赖初始化。
+# lua maps to the Lua runtime dependency bootstrap flow only.
+# lua 用于映射仅包含 Lua runtime 的依赖初始化流程。
 lua:
 	@bash ./make.sh deps lua

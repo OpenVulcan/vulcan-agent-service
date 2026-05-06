@@ -21,7 +21,7 @@
 
 LuaSkills 应拥有稳定的包结构，以便：
 
-- `vulcan-mcp` 易于加载
+- `vulcan-agent-service` 易于加载
 - 未来 `luaskills` 易于独立
 - IDE / gRPC / embed 宿主可复用相同格式
 
@@ -297,7 +297,7 @@ entry 在 skill 包内部应优先声明局部名，而不是完整前缀名。
 也就是说：
 
 - runtime 内部维护 canonical name
-- host/adapter 决定最终对外暴露名
+- 服务中枢 / host-adapter 决定最终对外暴露名
 
 ### 6.5 目录名与标识符规则
 

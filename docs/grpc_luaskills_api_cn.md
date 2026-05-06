@@ -1,18 +1,22 @@
 # LuaSkills gRPC 接口说明
 
-本文说明 `vulcan-mcp` 通过 gRPC 暴露 LuaSkills 能力的接口边界、请求上下文、预算解析规则和主要 RPC 用法。本文只覆盖 LuaSkills 服务面；VMM 相关 gRPC 对接不在本文范围内。
+本文说明 `vulcan-agent-service` 在统一 gRPC 入口上暴露 LuaSkills 能力的接口边界、请求上下文、预算解析规则和主要 RPC 用法。同一个 gRPC 端点还会同时挂载兼容型 `McpService`、`HostAdapterService` 与 `vmm.v1.VmmService`；本文只聚焦 `LuaSkillsService` 这部分契约。
 
 ## 接口文件
 
-- Proto 定义：`proto/v1/mcp_service.proto`
-- Package：`vulcan.mcp.v1`
+- LuaSkills / MCP / Host Adapter Proto：`proto/v1/mcp_service.proto`
+- LuaSkills / MCP / Host Adapter Package：`vulcan.mcp.v1`
+- VMM Relay Proto：`proto/v1/vmm.proto`
+- VMM Relay Package：`vmm.v1`
 - 默认监听地址：`127.0.0.1:19202`
 - 监听配置：`runtime/configs/config.yaml` 的 `grpc` 字段
 
-服务启动后会同时注册两个 gRPC service：
+服务启动后，同一个 gRPC 端点当前会同时挂载以下 service：
 
 - `vulcan.mcp.v1.McpService`
 - `vulcan.mcp.v1.LuaSkillsService`
+- `vulcan.mcp.v1.HostAdapterService`
+- `vmm.v1.VmmService`
 
 ## 设计原则
 
@@ -42,7 +46,7 @@ gRPC 对接方应按自身能力选择处理模式：
 
 ## McpService
 
-`McpService` 是兼容型 MCP gRPC 服务面，保留基础健康检查、通用调用和长连接能力。
+`McpService` 是兼容型 MCP gRPC 服务面，主要用于旧调用链兼容、基础健康检查、通用调用和长连接能力保留。
 
 | RPC | 请求 | 响应 | 说明 |
 | --- | --- | --- | --- |

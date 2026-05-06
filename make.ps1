@@ -78,7 +78,9 @@ function Invoke-Build {
         & $BuildScriptPath
     }
 
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
 
 # Invoke-Run forwards the current mode to scripts/run.ps1 so Ctrl+C no longer traverses a cmd batch wrapper.
@@ -131,7 +133,9 @@ function Invoke-DependencyInstall {
     else {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath
     }
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
 
 # Invoke-UpdateSkills delegates managed LuaSkills updates to the dedicated PowerShell script.
@@ -168,7 +172,7 @@ function Show-Usage {
     Write-Host "  ./make run release # run release build"
     Write-Host "  ./make deps        # install host + official LuaSkills runtime dependencies"
     Write-Host "  ./make deps host   # install host native dependencies only"
-    Write-Host "  ./make deps lua    # install host + official LuaSkills runtime dependencies"
+    Write-Host "  ./make deps lua    # install official LuaSkills runtime dependencies only"
     Write-Host "  ./make update-skills [skill-id...] # update output skills and sync them into runtime"
 }
 
@@ -196,9 +200,11 @@ switch ($NormalizedMode) {
     "deps" {
         switch ($NormalizedVariant) {
             "" {
+                Invoke-DependencyInstall -DependencyKind "host"
                 Invoke-DependencyInstall -DependencyKind "lua"
             }
             "all" {
+                Invoke-DependencyInstall -DependencyKind "host"
                 Invoke-DependencyInstall -DependencyKind "lua"
             }
             "host" {

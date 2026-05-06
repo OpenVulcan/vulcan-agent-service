@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build script for vulcan-mcp
+# Build script for vulcan-agent-service
 # Usage:
 #   ./build.sh          # debug build
 #   ./build.sh release  # release build
@@ -9,7 +9,7 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
-BIN_NAME="vulcan-mcp"
+BIN_NAME="vulcan-agent-service"
 BUILD_MODE="${1:-debug}"
 
 if [ "$BUILD_MODE" = "release" ]; then
@@ -81,6 +81,10 @@ enable_output_model_config_for_local_testing() {
 }
 
 # Sync official LuaSkills runtime package exports to output/.
+# Build packaging treats third_party/luaskills_runtime as a caller-managed asset root and copies it as-is.
+# 构建打包会把 third_party/luaskills_runtime 视为调用方自管的资产根目录，并按现状直接同步。
+# Cross-platform validation is intentionally omitted because forks may replace lua_packages/runtime payloads with custom layouts.
+# 这里有意不做跨平台校验，因为 fork 方可能会用自定义布局替换 lua_packages/runtime 载荷。
 mkdir -p output/libs
 LUASKILLS_RUNTIME_ROOT="third_party/luaskills_runtime"
 if [ -d "$LUASKILLS_RUNTIME_ROOT" ]; then

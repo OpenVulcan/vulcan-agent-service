@@ -12,7 +12,7 @@ fn environment_lock() -> &'static Mutex<()> {
 /// 为 main 模块单个测试用例构建唯一临时目录路径。
 fn unique_test_dir(name: &str) -> std::path::PathBuf {
     let unique = format!(
-        "vulcan-mcp-main-{}-{}-{}",
+        "vulcan-agent-service-main-{}-{}-{}",
         name,
         std::process::id(),
         std::time::SystemTime::now()
@@ -70,7 +70,7 @@ fn write_root_install_record(runtime_root: &std::path::Path, skill_id: &str) {
 #[test]
 fn parse_runtime_mode_allows_runtime_root_in_call_tools_mode() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--call-tools".to_string(),
         "demo-tool".to_string(),
         "--runtime-root".to_string(),
@@ -102,7 +102,7 @@ fn parse_runtime_mode_allows_runtime_root_in_call_tools_mode() {
 /// stdio 模式应可被直接选中，以便 MCP 通过标准输入输出运行而无需打开端口。
 #[test]
 fn parse_runtime_mode_accepts_stdio_mode() {
-    let args = vec!["vulcan-mcp.exe".to_string(), "--stdio".to_string()];
+    let args = vec!["vulcan-agent-service.exe".to_string(), "--stdio".to_string()];
     let mode = parse_runtime_mode_from_args(&args).expect("stdio mode should parse");
     match mode {
         RuntimeMode::Stdio => {}
@@ -121,7 +121,7 @@ fn parse_runtime_mode_accepts_stdio_mode() {
 #[test]
 fn parse_runtime_mode_accepts_root_install_mode() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--install-root-skill".to_string(),
         "LuaSkills/vulcan-codekit".to_string(),
         "--source-type".to_string(),
@@ -153,7 +153,7 @@ fn parse_runtime_mode_accepts_root_install_mode() {
 #[test]
 fn parse_runtime_mode_accepts_root_update_mode() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--update-root-skills".to_string(),
         "--runtime-root=output".to_string(),
     ];
@@ -175,7 +175,7 @@ fn parse_runtime_mode_accepts_root_update_mode() {
 #[test]
 fn parse_runtime_mode_rejects_missing_runtime_root_value_in_call_tools_mode() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--call-tools".to_string(),
         "demo-tool".to_string(),
         "--runtime-root".to_string(),
@@ -198,7 +198,7 @@ fn parse_runtime_mode_rejects_missing_runtime_root_value_in_call_tools_mode() {
 #[test]
 fn parse_runtime_mode_rejects_legacy_config_flag_in_call_tools_mode() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--call-tools".to_string(),
         "demo-tool".to_string(),
         "--config".to_string(),
@@ -219,7 +219,7 @@ fn parse_runtime_mode_rejects_legacy_config_flag_in_call_tools_mode() {
 #[test]
 fn parse_runtime_mode_rejects_inline_legacy_config_flag_in_call_tools_mode() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--call-tools".to_string(),
         "demo-tool".to_string(),
         "--config=runtime/configs/config.yaml".to_string(),
@@ -239,7 +239,7 @@ fn parse_runtime_mode_rejects_inline_legacy_config_flag_in_call_tools_mode() {
 #[test]
 fn parse_runtime_mode_allows_inline_runtime_root_in_call_tools_mode() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--call-tools".to_string(),
         "demo-tool".to_string(),
         "--runtime-root=output".to_string(),
@@ -264,7 +264,7 @@ fn parse_runtime_mode_allows_inline_runtime_root_in_call_tools_mode() {
 #[test]
 fn parse_runtime_mode_rejects_empty_inline_runtime_root_value() {
     let args = vec![
-        "vulcan-mcp.exe".to_string(),
+        "vulcan-agent-service.exe".to_string(),
         "--call-tools".to_string(),
         "demo-tool".to_string(),
         "--runtime-root=".to_string(),

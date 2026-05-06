@@ -51,12 +51,12 @@ pub(super) fn initialize_value(
         protocol_version: negotiated.to_string(),
         capabilities,
         server_info: ServerInfo {
-            name: "vulcan-mcp-client".to_string(),
+            name: "vulcan-agent-service".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
         instructions: Some(
-            "Vulcan MCP server supporting 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05. \
-             This adapter currently exposes tools. \
+            "Vulcan agent service MCP adapter supporting 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05. \
+             This runtime currently exposes tools. \
              Prompts, resources, resource templates, roots, sampling, elicitation, logging, \
              progress, completions, and multi-modal content blocks are not advertised."
                 .to_string(),

@@ -38,11 +38,11 @@ UPDATE_SKILLS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/update_skills.sh"
 
 # DEFAULT_BIN_PATH points at the debug artifact location used by the default run flow.
 # DEFAULT_BIN_PATH 用于指向默认运行流程使用的 debug 产物位置。
-DEFAULT_BIN_PATH="${SCRIPT_DIR}/output/debug/vulcan-mcp"
+DEFAULT_BIN_PATH="${SCRIPT_DIR}/output/debug/vulcan-agent-service"
 
 # RELEASE_BIN_PATH points at the release artifact location used by the release run flow.
 # RELEASE_BIN_PATH 用于指向 release 运行流程使用的产物位置。
-RELEASE_BIN_PATH="${SCRIPT_DIR}/output/bin/vulcan-mcp"
+RELEASE_BIN_PATH="${SCRIPT_DIR}/output/bin/vulcan-agent-service"
 
 # normalize_command converts raw input into a trimmed lower-case token so command dispatch stays stable.
 # normalize_command 用于把原始输入转换为去空白的小写标记，确保命令分发保持稳定。
@@ -102,7 +102,7 @@ invoke_run() {
         binary_path="$(resolve_binary_path "${base_path}")"
     fi
 
-    echo "==> Running vulcan-mcp (${binary_path})..."
+    echo "==> Running vulcan-agent-service (${binary_path})..."
     echo
     "${binary_path}"
 }
@@ -157,7 +157,7 @@ Usage:
   ./make.sh run release # run release build
   ./make.sh deps        # install host + official LuaSkills runtime dependencies
   ./make.sh deps host   # install host native dependencies only
-  ./make.sh deps lua    # install host + official LuaSkills runtime dependencies
+  ./make.sh deps lua    # install official LuaSkills runtime dependencies only
   ./make.sh update-skills [skill-id...] # update output skills and sync them into runtime
 EOF
 }
@@ -194,6 +194,7 @@ case "${NORMALIZED_MODE}" in
     deps)
         case "${NORMALIZED_VARIANT}" in
             ""|all)
+                invoke_dependency_install "host"
                 invoke_dependency_install "lua"
                 ;;
             host)

@@ -1,4 +1,4 @@
-# Run vulcan-mcp binary (PowerShell)
+# Run vulcan-agent-service binary (PowerShell)
 # Usage:
 #   .\run.ps1           # run debug build
 #   .\run.ps1 release   # run release build
@@ -12,9 +12,9 @@ $ProjectDir = Split-Path $PSScriptRoot -Parent
 Set-Location $ProjectDir
 
 if ($Release -or ($args.Count -gt 0 -and $args[0] -eq "release")) {
-    $BinPath = "output\bin\vulcan-mcp.exe"
+    $BinPath = "output\bin\vulcan-agent-service.exe"
 } else {
-    $BinPath = "output\debug\vulcan-mcp.exe"
+    $BinPath = "output\debug\vulcan-agent-service.exe"
 }
 
 if (-not (Test-Path $BinPath)) {
@@ -23,7 +23,7 @@ if (-not (Test-Path $BinPath)) {
     exit 1
 }
 
-Write-Host "==> Running vulcan-mcp ($BinPath)..."
+Write-Host "==> Running vulcan-agent-service ($BinPath)..."
 Write-Host ""
 
 & $BinPath

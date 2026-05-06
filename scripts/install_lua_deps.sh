@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# install_lua_deps.sh downloads the official LuaSkills runtime dependency package.
-# install_lua_deps.sh 用于下载 LuaSkills 官方运行期依赖包。
-# Developer/build use only. The script does not compile Lua, LuaRocks, or C dependencies.
-# 仅供开发与构建使用；该脚本不会编译 Lua、LuaRocks 或 C 依赖。
+# install_lua_deps.sh downloads the official LuaSkills runtime package payload into third_party.
+# install_lua_deps.sh 用于下载官方 LuaSkills runtime package 载荷到 third_party。
+# Developer/build use only. This script only syncs luaskills-packages runtime assets and metadata.
+# 仅供开发与构建使用；该脚本只同步 luaskills-packages 的 runtime 资产与元数据。
 # Usage: bash scripts/install_lua_deps.sh
 
 set -euo pipefail
@@ -19,21 +19,29 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # THIRD_PARTY 保存源码目录外的下载依赖载荷。
 THIRD_PARTY="$PROJECT_DIR/third_party"
 
-# RUNTIME_INSTALL_ROOT stores the extracted official LuaSkills runtime package.
-# RUNTIME_INSTALL_ROOT 保存解压后的 LuaSkills 官方运行期包。
+# RUNTIME_INSTALL_ROOT stores the extracted official LuaSkills runtime payloads.
+# RUNTIME_INSTALL_ROOT 保存解压后的官方 LuaSkills 运行时载荷。
 RUNTIME_INSTALL_ROOT="$THIRD_PARTY/luaskills_runtime"
 
 # DOWNLOAD_CACHE stores verified archives and sidecar checksums.
 # DOWNLOAD_CACHE 保存已校验的压缩包与旁路校验文件。
 DOWNLOAD_CACHE="$THIRD_PARTY/downloads"
 
-# RUNTIME_REPO stores the official LuaSkills repository that publishes runtime packages.
-# RUNTIME_REPO 保存发布运行期包的 LuaSkills 官方仓库。
-RUNTIME_REPO="${LUA_RUNTIME_REPO:-LuaSkills/luaskills}"
+# LUA_RUNTIME_REPO stores the GitHub repository for runtime package assets.
+# LUA_RUNTIME_REPO 保存 runtime package 资产所在的 GitHub 仓库。
+LUA_RUNTIME_REPO="${LUA_RUNTIME_REPO:-LuaSkills/luaskills-packages}"
 
-# HOST_DEPS_SCRIPT_PATH points at the host-native dependency downloader.
-# HOST_DEPS_SCRIPT_PATH 指向宿主原生依赖下载脚本。
-HOST_DEPS_SCRIPT_PATH="$SCRIPT_DIR/install_host_deps.sh"
+# LUA_RUNTIME_SERIES stores the compatible major.minor series for runtime package assets.
+# LUA_RUNTIME_SERIES 保存 runtime package 资产的兼容 major.minor 协议线。
+LUA_RUNTIME_SERIES="${LUA_RUNTIME_SERIES:-0.1}"
+
+# LUA_RUNTIME_PACKAGES_VERSION stores one optional exact luaskills-packages GitHub Release tag override.
+# LUA_RUNTIME_PACKAGES_VERSION 保存 luaskills-packages GitHub Release 标签的可选精确覆盖值。
+LUA_RUNTIME_PACKAGES_VERSION="${LUA_RUNTIME_PACKAGES_VERSION:-}"
+
+# LUA_RUNTIME_VERSION preserves the legacy environment contract where callers often pass the luaskills crate version.
+# LUA_RUNTIME_VERSION 保留旧环境变量契约；历史调用方通常会在这里传入 luaskills crate 版本号。
+LUA_RUNTIME_VERSION="${LUA_RUNTIME_VERSION:-}"
 
 ensure_dir() {
     # Create one directory when it does not already exist.
@@ -41,46 +49,135 @@ ensure_dir() {
     mkdir -p "$1"
 }
 
-luaskills_version_tag() {
-    # Resolve the LuaSkills release tag from the environment or Cargo dependency.
-    # 从环境变量或 Cargo 依赖解析 LuaSkills 发布标签。
-    if [ -n "${LUA_RUNTIME_VERSION:-}" ]; then
-        case "$LUA_RUNTIME_VERSION" in
-            v*) printf '%s\n' "$LUA_RUNTIME_VERSION" ;;
-            *) printf 'v%s\n' "$LUA_RUNTIME_VERSION" ;;
-        esac
-        return 0
-    fi
-
-    if [ -f "$PROJECT_DIR/Cargo.toml" ]; then
-        local version
-        version="$(sed -nE 's/^[[:space:]]*luaskills[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$PROJECT_DIR/Cargo.toml" | head -1)"
-        if [ -n "$version" ]; then
-            printf 'v%s\n' "$version"
-            return 0
-        fi
-    fi
-
-    printf 'v0.2.2\n'
+normalize_release_tag() {
+    # Normalize one version token into a Git-style release tag.
+    # 将一个版本标记规范化为 Git 风格的 release 标签。
+    local value="${1:-}"
+    [ -n "$value" ] || {
+        echo "Release tag value cannot be empty." >&2
+        return 1
+    }
+    case "$value" in
+        v*) printf '%s\n' "$value" ;;
+        *) printf 'v%s\n' "$value" ;;
+    esac
 }
 
-current_platform_key() {
-    # Resolve the official LuaSkills runtime package platform key.
-    # 解析 LuaSkills 官方运行期包的平台标识。
+platform_key() {
+    # Resolve the current LuaSkills runtime asset platform key.
+    # 解析当前 LuaSkills 运行时资产平台标识。
     local os_key arch_key
     case "$(uname -s)" in
         Linux) os_key="linux" ;;
         Darwin) os_key="macos" ;;
-        *) echo "Unsupported operating system for LuaSkills runtime package: $(uname -s)" >&2; return 1 ;;
+        *) echo "Unsupported operating system for LuaSkills runtime assets: $(uname -s)" >&2; return 1 ;;
     esac
 
     case "$(uname -m)" in
         x86_64|amd64) arch_key="x64" ;;
         aarch64|arm64) arch_key="arm64" ;;
-        *) echo "Unsupported architecture for LuaSkills runtime package: $(uname -m)" >&2; return 1 ;;
+        *) echo "Unsupported architecture for LuaSkills runtime assets: $(uname -m)" >&2; return 1 ;;
     esac
 
     printf '%s-%s\n' "$os_key" "$arch_key"
+}
+
+convert_tag_to_semver() {
+    # Convert one Git tag such as v0.1.6 into a semantic-version tuple.
+    # 将形如 v0.1.6 的 Git 标签转换为语义化版本元组。
+    python3 - "$1" <<'PY'
+import re
+import sys
+
+tag = sys.argv[1]
+normalized = tag[1:] if tag.startswith("v") else tag
+if not re.fullmatch(r"\d+\.\d+\.\d+", normalized):
+    raise SystemExit(f"Unsupported semantic version tag: {tag}")
+print(normalized)
+PY
+}
+
+resolve_release_tag_for_series() {
+    # Resolve the newest published GitHub release tag inside one major.minor series.
+    # 解析一个 major.minor 协议线内最新的已发布 GitHub release 标签。
+    local repo="$1"
+    local series="$2"
+    curl -fsSL "https://api.github.com/repos/${repo}/releases?per_page=100" | python3 -c '
+import json
+import re
+import sys
+
+series = sys.argv[1]
+repo = sys.argv[2]
+if not re.fullmatch(r"\d+\.\d+", series):
+    raise SystemExit(f"unsupported packages series: {series}")
+
+matches = []
+for release in json.load(sys.stdin):
+    if release.get("draft") or release.get("prerelease"):
+        continue
+    tag = str(release.get("tag_name", ""))
+    normalized = tag[1:] if tag.startswith("v") else tag
+    if not re.fullmatch(r"\d+\.\d+\.\d+", normalized):
+        continue
+    major, minor, patch = (int(part) for part in normalized.split("."))
+    if f"{major}.{minor}" != series:
+        continue
+    matches.append(((major, minor, patch), tag))
+
+if not matches:
+    raise SystemExit(f"no published release found for {repo} series {series}")
+
+matches.sort(key=lambda item: item[0], reverse=True)
+print(matches[0][1])
+' "$series" "$repo"
+}
+
+resolve_lua_runtime_packages_tag() {
+    # Resolve the effective luaskills-packages release tag from exact overrides, legacy inputs, and the compatible series.
+    # 基于精确覆盖、旧输入语义与兼容协议线解析最终 luaskills-packages 发布标签。
+    local repo="$1"
+    local series="$2"
+    local packages_version="${3:-}"
+    local legacy_runtime_version="${4:-}"
+
+    if [ -n "$packages_version" ]; then
+        normalize_release_tag "$packages_version"
+        return 0
+    fi
+
+    if [ -z "$legacy_runtime_version" ]; then
+        resolve_release_tag_for_series "$repo" "$series"
+        return 0
+    fi
+
+    local legacy_tag legacy_series
+    legacy_tag="$(normalize_release_tag "$legacy_runtime_version")"
+    # Fail fast on malformed legacy version input so Bash matches PowerShell semantics.
+    # 对格式错误的旧版本输入立即失败，确保 Bash 与 PowerShell 语义一致。
+    if ! legacy_series="$(python3 - "$legacy_tag" <<'PY'
+import re
+import sys
+
+tag = sys.argv[1]
+normalized = tag[1:] if tag.startswith("v") else tag
+if not re.fullmatch(r"\d+\.\d+\.\d+", normalized):
+    raise SystemExit(1)
+major, minor, _patch = normalized.split(".")
+print(f"{major}.{minor}")
+PY
+)"; then
+        echo "Unsupported LUA_RUNTIME_VERSION value '${legacy_runtime_version}'. Use a semantic version such as 0.3.1, or set LUA_RUNTIME_PACKAGES_VERSION for an exact luaskills-packages tag." >&2
+        return 1
+    fi
+
+    if [ "$legacy_series" = "$series" ]; then
+        printf '%s\n' "$legacy_tag"
+        return 0
+    fi
+
+    echo "==> LUA_RUNTIME_VERSION=${legacy_runtime_version} detected as legacy luaskills crate version; resolving compatible luaskills-packages tag from series ${series}." >&2
+    resolve_release_tag_for_series "$repo" "$series"
 }
 
 release_asset_url() {
@@ -119,31 +216,36 @@ archive_matches_sha256() {
     [ "$actual_sha256" = "$expected_sha256" ]
 }
 
-save_official_lua_runtime_archive() {
-    # Download and verify the official LuaSkills runtime package archive.
-    # 下载并校验 LuaSkills 官方运行期包。
+save_release_asset_with_sha256() {
+    # Download one GitHub Release asset and verify its .sha256 sidecar.
+    # 下载单个 GitHub Release 资产并校验其 .sha256 旁路文件。
     local repo="$1"
     local tag="$2"
     local asset_name="$3"
+    local sha_asset_name="${4:-}"
     ensure_dir "$DOWNLOAD_CACHE"
+
+    if [ -z "$sha_asset_name" ]; then
+        sha_asset_name="${asset_name}.sha256"
+    fi
 
     local archive_path="$DOWNLOAD_CACHE/$asset_name"
     local sha_path="$archive_path.sha256"
     local archive_url sha_url expected_sha256 actual_sha256
     archive_url="$(release_asset_url "$repo" "$tag" "$asset_name")"
-    sha_url="$(release_asset_url "$repo" "$tag" "$asset_name.sha256")"
+    sha_url="$(release_asset_url "$repo" "$tag" "$sha_asset_name")"
 
     echo "==> Downloading checksum: $sha_url" >&2
     curl -fSL "$sha_url" -o "$sha_path"
     expected_sha256="$(awk '{print tolower($1)}' "$sha_path")"
 
     if archive_matches_sha256 "$archive_path" "$expected_sha256"; then
-        echo "==> Reusing verified LuaSkills runtime archive: $archive_path" >&2
+        echo "==> Reusing verified archive: $archive_path" >&2
         printf '%s\n' "$archive_path"
         return 0
     fi
 
-    echo "==> Downloading LuaSkills runtime package: $archive_url" >&2
+    echo "==> Downloading asset: $archive_url" >&2
     curl -fSL "$archive_url" -o "$archive_path"
     actual_sha256="$(sha256_file "$archive_path")"
     if [ "$actual_sha256" != "$expected_sha256" ]; then
@@ -155,8 +257,8 @@ save_official_lua_runtime_archive() {
 }
 
 clear_runtime_install_root() {
-    # Clear the extracted official runtime package directory inside third_party.
-    # 清理 third_party 内已解压的官方运行期包目录。
+    # Clear the extracted runtime install directory inside third_party.
+    # 清理 third_party 内的运行时安装目录。
     ensure_dir "$THIRD_PARTY"
     case "$RUNTIME_INSTALL_ROOT" in
         "$THIRD_PARTY"/*) rm -rf "$RUNTIME_INSTALL_ROOT" ;;
@@ -166,76 +268,176 @@ clear_runtime_install_root() {
 }
 
 copy_directory_contents() {
-    # Copy direct directory contents while preserving the official package layout.
-    # 复制目录直属内容并保持官方包布局。
+    # Copy direct directory contents while preserving package layout.
+    # 复制目录直属内容并保持包布局。
     local source_dir="$1"
     local destination_dir="$2"
     if [ ! -d "$source_dir" ]; then
-        echo "Required LuaSkills runtime directory is missing from package: $source_dir" >&2
+        echo "Required runtime directory is missing from package: $source_dir" >&2
         return 1
     fi
     ensure_dir "$destination_dir"
     cp -a "$source_dir"/. "$destination_dir"/
 }
 
-install_official_lua_runtime_package() {
-    # Extract the official LuaSkills runtime archive into third_party/luaskills_runtime.
-    # 将 LuaSkills 官方运行期压缩包解压到 third_party/luaskills_runtime。
-    local archive_path="$1"
-    local tag="$2"
-    local platform="$3"
-    local marker="$RUNTIME_INSTALL_ROOT/.installed-${tag}-${platform}"
-    local manifest="$RUNTIME_INSTALL_ROOT/resources/lua-runtime-manifest.json"
+resolve_bundle_extract_root() {
+    # Resolve the extracted bundle directory that contains lua_packages metadata files.
+    # 解析包含 lua_packages 元数据文件的 bundle 解压目录。
+    local extract_root="$1"
+    local compat_file=""
+    compat_file="$(find "$extract_root" -type f -name 'lua_packages.txt' | head -1)"
+    [ -n "$compat_file" ] || {
+        echo "LuaSkills packages bundle does not contain lua_packages.txt." >&2
+        return 1
+    }
+    dirname "$compat_file"
+}
 
-    if [ -f "$marker" ] && [ -f "$manifest" ]; then
-        echo "==> LuaSkills runtime package already installed ($tag, $platform)."
+normalize_bundle_license_index_paths() {
+    # Rewrite bundle license-index paths so they match the runtime layout.
+    # 重写 bundle 授权索引路径，使其匹配运行时布局。
+    local index_path="$1"
+    [ -f "$index_path" ] || {
+        echo "LuaSkills packages license index is missing: $index_path" >&2
+        return 1
+    }
+    python3 - "$index_path" <<'PY'
+from pathlib import Path
+import sys
+
+index_path = Path(sys.argv[1])
+content = index_path.read_text(encoding="utf-8")
+content = content.replace('"dist/licenses/', '"licenses/luaskills-packages/')
+index_path.write_text(content, encoding="utf-8")
+PY
+}
+
+runtime_install_ready() {
+    # Check whether the extracted runtime root already satisfies the packaged runtime layout.
+    # 检查已解压的运行根目录是否已经满足 packaged runtime 布局要求。
+    local marker_file="$1"
+    [ -f "$marker_file" ] &&
+        [ -f "$RUNTIME_INSTALL_ROOT/resources/lua-runtime-manifest.json" ] &&
+        [ -f "$RUNTIME_INSTALL_ROOT/resources/luaskills-packages-manifest.json" ] &&
+        [ -f "$RUNTIME_INSTALL_ROOT/resources/luaskills-packages/THIRD_PARTY_LICENSES.json" ] &&
+        [ -f "$RUNTIME_INSTALL_ROOT/resources/luaskills-packages/THIRD_PARTY_NOTICES.md" ] &&
+        [ -f "$RUNTIME_INSTALL_ROOT/licenses/luaskills-packages/index.json" ]
+}
+
+install_runtime_payloads() {
+    # Extract and install the runtime package plus the luaskills-packages bundle metadata into third_party.
+    # 解压并安装 runtime package 与 luaskills-packages bundle 元数据到 third_party。
+    local runtime_archive_path="$1"
+    local bundle_archive_path="$2"
+    local runtime_tag="$3"
+    local platform="$4"
+    local marker="$RUNTIME_INSTALL_ROOT/.installed-${runtime_tag}-${platform}"
+
+    if runtime_install_ready "$marker"; then
+        echo "==> LuaSkills runtime payloads already installed ($runtime_tag, $platform)."
         return 0
     fi
 
-    local temp_dir
-    temp_dir="$(mktemp -d)"
-    tar -xzf "$archive_path" -C "$temp_dir"
+    local runtime_temp_dir bundle_temp_dir bundle_root
+    runtime_temp_dir="$(mktemp -d)"
+    bundle_temp_dir="$(mktemp -d)"
+    trap 'rm -rf "$runtime_temp_dir" "$bundle_temp_dir"' RETURN
+
+    tar -xzf "$runtime_archive_path" -C "$runtime_temp_dir"
+    python3 - "$bundle_archive_path" "$bundle_temp_dir" <<'PY'
+import sys
+import zipfile
+
+archive_path, destination = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(archive_path) as archive:
+    archive.extractall(destination)
+PY
+
+    bundle_root="$(resolve_bundle_extract_root "$bundle_temp_dir")"
+
     clear_runtime_install_root
 
     local dir_name
     for dir_name in lua_packages libs resources licenses; do
-        copy_directory_contents "$temp_dir/$dir_name" "$RUNTIME_INSTALL_ROOT/$dir_name"
+        copy_directory_contents "$runtime_temp_dir/$dir_name" "$RUNTIME_INSTALL_ROOT/$dir_name"
     done
 
-    : > "$marker"
-    rm -rf "$temp_dir"
-    echo "==> LuaSkills official runtime installed to $RUNTIME_INSTALL_ROOT"
-}
+    local packages_resources_root="$RUNTIME_INSTALL_ROOT/resources/luaskills-packages"
+    local packages_licenses_root="$RUNTIME_INSTALL_ROOT/licenses/luaskills-packages"
+    ensure_dir "$packages_resources_root"
+    ensure_dir "$packages_licenses_root"
 
-invoke_host_dependency_install() {
-    # Download host-native dependencies that are not part of the LuaSkills runtime package.
-    # 下载不属于 LuaSkills runtime 包的宿主原生依赖。
-    if [ ! -f "$HOST_DEPS_SCRIPT_PATH" ]; then
-        echo "Missing host dependency script: $HOST_DEPS_SCRIPT_PATH" >&2
-        return 1
+    local file_name
+    for file_name in \
+        THIRD_PARTY_LICENSES.json \
+        THIRD_PARTY_NOTICES.md \
+        install-manifest.json \
+        lua_packages.txt \
+        platform-support.json \
+        platform-support.md; do
+        if [ -f "$bundle_root/$file_name" ]; then
+            cp -f "$bundle_root/$file_name" "$packages_resources_root/$file_name"
+        fi
+    done
+
+    if [ -d "$bundle_root/help" ]; then
+        copy_directory_contents "$bundle_root/help" "$packages_resources_root/help"
     fi
-    bash "$HOST_DEPS_SCRIPT_PATH"
+    if [ -d "$bundle_root/licenses" ]; then
+        copy_directory_contents "$bundle_root/licenses" "$packages_licenses_root"
+    fi
+
+    normalize_bundle_license_index_paths "$packages_licenses_root/index.json"
+
+    [ -f "$RUNTIME_INSTALL_ROOT/resources/lua-runtime-manifest.json" ] || {
+        echo "Lua runtime manifest was not found after installing runtime packages." >&2
+        return 1
+    }
+    [ -f "$RUNTIME_INSTALL_ROOT/resources/luaskills-packages-manifest.json" ] || {
+        echo "LuaSkills packages manifest was not found after installing runtime packages." >&2
+        return 1
+    }
+    [ -f "$packages_resources_root/THIRD_PARTY_LICENSES.json" ] || {
+        echo "LuaSkills packages third-party licenses file was not found after installing runtime packages." >&2
+        return 1
+    }
+    [ -f "$packages_resources_root/THIRD_PARTY_NOTICES.md" ] || {
+        echo "LuaSkills packages third-party notices file was not found after installing runtime packages." >&2
+        return 1
+    }
+    [ -f "$packages_licenses_root/index.json" ] || {
+        echo "LuaSkills packages license index was not found after installing runtime packages." >&2
+        return 1
+    }
+
+    find "$RUNTIME_INSTALL_ROOT" -maxdepth 1 -type f -name '.installed-*' -delete
+    : > "$marker"
+    echo "==> LuaSkills runtime payloads installed to $RUNTIME_INSTALL_ROOT"
 }
 
-RUNTIME_VERSION="$(luaskills_version_tag)"
-PLATFORM="$(current_platform_key)"
-ASSET_NAME="lua-runtime-${PLATFORM}.tar.gz"
+RESOLVED_LUA_RUNTIME_TAG="$(resolve_lua_runtime_packages_tag "$LUA_RUNTIME_REPO" "$LUA_RUNTIME_SERIES" "$LUA_RUNTIME_PACKAGES_VERSION" "$LUA_RUNTIME_VERSION")"
+PLATFORM="$(platform_key)"
+RUNTIME_ASSET_NAME="lua-runtime-packages-${PLATFORM}.tar.gz"
+BUNDLE_ASSET_NAME="luaskills-packages-bundle-${RESOLVED_LUA_RUNTIME_TAG}.zip"
 
 echo ""
-echo "=== LuaSkills Official Dependencies ==="
-echo "==> Repository: $RUNTIME_REPO"
-echo "==> Version:    $RUNTIME_VERSION"
-echo "==> Platform:   $PLATFORM"
-echo "==> This flow downloads official packages only; no LuaRocks, vcpkg, or source compilation is performed."
+echo "=== LuaSkills Runtime Packages ==="
+echo "==> Runtime repo:    $LUA_RUNTIME_REPO"
+echo "==> Runtime version: $RESOLVED_LUA_RUNTIME_TAG"
+echo "==> Platform:        $PLATFORM"
+echo "==> This flow downloads only luaskills-packages runtime assets and bundle metadata."
 
 echo ""
-echo "=== Step 1: Host Dependencies ==="
-invoke_host_dependency_install
+echo "=== Step 1: Runtime Package ==="
+RUNTIME_ARCHIVE_PATH="$(save_release_asset_with_sha256 "$LUA_RUNTIME_REPO" "$RESOLVED_LUA_RUNTIME_TAG" "$RUNTIME_ASSET_NAME")"
 
 echo ""
-echo "=== Step 2: LuaSkills Runtime Package ==="
-ARCHIVE_PATH="$(save_official_lua_runtime_archive "$RUNTIME_REPO" "$RUNTIME_VERSION" "$ASSET_NAME")"
-install_official_lua_runtime_package "$ARCHIVE_PATH" "$RUNTIME_VERSION" "$PLATFORM"
+echo "=== Step 2: Runtime Metadata Bundle ==="
+BUNDLE_ARCHIVE_PATH="$(save_release_asset_with_sha256 "$LUA_RUNTIME_REPO" "$RESOLVED_LUA_RUNTIME_TAG" "$BUNDLE_ASSET_NAME" "luaskills-packages-bundle-${RESOLVED_LUA_RUNTIME_TAG}.sha256")"
 
 echo ""
-echo "==> Dependencies ready."
+echo "=== Step 3: Install Runtime Payloads ==="
+install_runtime_payloads "$RUNTIME_ARCHIVE_PATH" "$BUNDLE_ARCHIVE_PATH" "$RESOLVED_LUA_RUNTIME_TAG" "$PLATFORM"
+
+echo ""
+echo "==> Lua runtime dependencies ready."

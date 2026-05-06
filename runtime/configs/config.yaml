@@ -1,15 +1,15 @@
 # ============================================================
-# Vulcan MCP Runtime Config Template
+# Vulcan Agent Service Runtime Config Template
 # 中文：仓库中的配置模板文件。构建后会同步到 output/configs/config.yaml。
 # English: Repository config template. It will be synced to output/configs/config.yaml during build.
 # ============================================================
 
-# 中文：HTTP MCP 服务监听地址。默认值为 127.0.0.1:19201。
-# English: HTTP MCP service listen address. Default is 127.0.0.1:19201.
+# 中文：HTTP MCP / IDE 适配服务监听地址。默认值为 127.0.0.1:19201。
+# English: HTTP MCP/IDE adapter listen address. Default is 127.0.0.1:19201.
 http: "127.0.0.1:19201"
 
-# 中文：gRPC 管理服务监听地址。默认值为 127.0.0.1:19202。
-# English: gRPC management service listen address. Default is 127.0.0.1:19202.
+# 中文：统一 gRPC 服务监听地址。默认值为 127.0.0.1:19202，同一端口承载 McpService、LuaSkillsService、HostAdapterService 与 VMM relay。
+# English: Unified gRPC listen address. Default is 127.0.0.1:19202; the same endpoint carries McpService, LuaSkillsService, HostAdapterService, and the VMM relay surface.
 grpc: "127.0.0.1:19202"
 
 # 中文：VulcanMemoryMesh (VMM) gRPC 服务地址。启用画像、记忆等能力时使用。
@@ -28,14 +28,14 @@ vmm: "http://127.0.0.1:17625"
 # English: Named entries are recommended; path-only entries are mapped as ROOT, PROJECT, USER in order, with at most three entries.
 # skill_roots:
 #   - name: "ROOT"
-#     path: "D:/projects/vulcan-mcp-client/output/skills"
+#     path: "D:/projects/vulcan-agent-service/output/skills"
 #   - name: "USER"
-#     path: "C:/Users/yourname/.vulcan/vulcan-mcp/skills"
+#     path: "C:/Users/yourname/.vulcan/agent-service/skills"
 
 # 中文：可选的统一运行根目录。设置后，configs、skills、dependencies、databases、temp、libs、lua_packages 等目录都会从该根目录派生。
 # English: Optional unified runtime root. When set, configs, skills, dependencies, databases, temp, libs, and lua_packages are all derived from this root.
 # Windows 示例 / Windows example:
-# runtime_root: "D:/projects/vulcan-mcp-client/output"
+# runtime_root: "D:/projects/vulcan-agent-service/output"
 # Linux/macOS 示例 / Linux/macOS example:
 # runtime_root: "/opt/vulcan/output"
 # 中文：当前产品默认把 `skill_config.json`、`client_budgets.yaml`、`tool_configs.yaml` 等运行期文件统一收敛在这个运行根下。
@@ -55,10 +55,10 @@ vmm: "http://127.0.0.1:17625"
 # English: Database directory name. It is always created as a sibling of the skills root; only the directory name is configurable.
 # database_dir_name: "databases"
 
-# 中文：MCP 宿主固定通过 space_controller 访问 SQLite 与 LanceDB，以避免多实例并发访问同一数据库时的文件锁冲突。
-# English: The MCP host always accesses SQLite and LanceDB through space_controller so concurrent MCP instances avoid direct file-lock conflicts.
-# 中文：当前产品固定通过 controller-only 方式访问数据库，不提供数据库模式切换项。
-# English: The current MCP product uses a controller-only database access model and does not expose database mode switches.
+# 中文：vulcan-agent-service 固定通过 space_controller 访问 SQLite 与 LanceDB，以避免多个服务入口并发访问同一数据库时的文件锁冲突。
+# English: vulcan-agent-service always accesses SQLite and LanceDB through space_controller so concurrent service entries avoid direct file-lock conflicts.
+# 中文：当前 agent-service 产品固定通过 controller-only 方式访问数据库，不提供数据库模式切换项。
+# English: The current agent-service product uses a controller-only database access model and does not expose database mode switches.
 # 中文：space_controller 配置用于指定共享端点、自动拉起策略和本地复制后的可执行文件路径。
 # English: space_controller settings define the shared endpoint, auto-spawn policy, and copied local executable path.
 # 中文：如果需要修改 controller 默认端口，直接改 endpoint 里的端口号即可，例如改成 20333。
@@ -72,7 +72,7 @@ space_controller:
   auto_spawn: true
   # 中文：默认可省略；执行 make deps + make build 后会自动从 output/bin/vldb-controller.exe 发现。
   # English: Optional by default; after make deps + make build the host auto-discovers output/bin/vldb-controller.exe.
-  # executable_path: "D:/projects/vulcan-mcp-client/output/bin/vldb-controller.exe"
+  # executable_path: "D:/projects/vulcan-agent-service/output/bin/vldb-controller.exe"
   process_mode: "managed"
   minimum_uptime_secs: 300
   idle_timeout_secs: 900

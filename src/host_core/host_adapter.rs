@@ -1657,7 +1657,7 @@ fn hermes_agent_profile() -> HostCapabilityProfile {
             ),
         ]),
         notes: vec![
-            "Hermes should use the same vulcan-host relay contract as TypeScript hosts."
+            "Hermes should use the same vulcan-agent-service relay contract as TypeScript hosts."
                 .to_string(),
             "Python runtime differences argue for gRPC adapter contracts.".to_string(),
         ],

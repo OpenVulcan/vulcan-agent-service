@@ -203,7 +203,7 @@ impl HostRuntime {
         self.vmm.clone().ok_or_else(|| {
             (
                 -32603,
-                "VMM backend is not configured. Start vulcan-host with vmm_enable=true and a VMM endpoint.".to_string(),
+                "VMM backend is not configured. Configure vulcan-agent-service with vmm_enable=true and a VMM endpoint.".to_string(),
             )
         })
     }
@@ -220,7 +220,7 @@ impl HostRuntime {
         if self.is_vmm_backend_enabled() {
             "VMM backend is enabled."
         } else {
-            "VMM backend is not configured. Start vulcan-host with vmm_enable=true and a VMM endpoint."
+            "VMM backend is not configured. Configure vulcan-agent-service with vmm_enable=true and a VMM endpoint."
         }
     }
 

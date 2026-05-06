@@ -187,7 +187,7 @@ src/
 
 1. `luaskills` 目录结构已完成分层
 2. 现有 `cargo check` / `cargo test --lib` 仍然通过
-3. `vulcan-mcp-client` 作为宿主仍然能成功依赖并编译
+3. `vulcan-agent-service` 作为宿主仍然能成功依赖并编译
 4. `dependency` 与 `download` 已经有可继续扩展的骨架
 
 ## 八、执行变更总结

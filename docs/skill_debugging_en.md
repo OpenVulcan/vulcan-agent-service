@@ -18,7 +18,7 @@ It is **not** a replacement for full MCP integration testing. If you need to val
 General format:
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools <tool_name> '<json_arguments>'
+.\output\debug\vulcan-agent-service.exe --call-tools <tool_name> '<json_arguments>'
 ```
 
 Meaning:
@@ -30,7 +30,7 @@ Meaning:
 If the tool takes no arguments, the third segment can be omitted:
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools current_time
+.\output\debug\vulcan-agent-service.exe --call-tools current_time
 ```
 
 ## 3. Recommended Workflow
@@ -43,25 +43,27 @@ If the tool takes no arguments, the third segment can be omitted:
 
 This syncs:
 
-- `output/debug/vulcan-mcp.exe`
+- `output/debug/vulcan-agent-service.exe`
 - `output/skills/`
 - `output/lua_packages/`
 - `output/configs/`
 
-For local tool debugging, use `output/debug/vulcan-mcp.exe`.
+For local tool debugging, use `output/debug/vulcan-agent-service.exe`.
 
 ### 3.2 Run the tool directly
 
 Example for `vmcp-rg`:
 
+These examples assume the current working directory is the repository root.
+
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 Example for `vmcp-ast`:
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-ast '{"path":".\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
 ```
 
 ## 4. Argument Format
@@ -71,7 +73,7 @@ Example for `vmcp-ast`:
 Correct:
 
 ```powershell
-'{"path":"D:\\projects\\vulcan-mcp-client\\src","recursive":true,"ext":"rs"}'
+'{"path":".\\src","recursive":true,"ext":"rs"}'
 ```
 
 Incorrect:
@@ -90,7 +92,7 @@ Why incorrect:
 Recommended PowerShell form:
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
 ```
 
 This reduces escaping problems.
@@ -100,7 +102,7 @@ This reduces escaping problems.
 ### 5.1 Debug a declaration hit in `vmcp-rg`
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\src","ext":"rs","rg_pattern":"struct ExecRequest"}'
 ```
 
 Expected behavior:
@@ -111,7 +113,7 @@ Expected behavior:
 ### 5.2 Debug a function-body hit in `vmcp-rg`
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-rg '{"dir":"D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 Expected behavior:
@@ -123,7 +125,7 @@ Expected behavior:
 ### 5.3 Debug structural output in `vmcp-ast`
 
 ```powershell
-.\output\debug\vulcan-mcp.exe --call-tools vmcp-ast '{"path":"D:\\projects\\vulcan-mcp-client\\src\\main.rs","comment":false}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-ast '{"path":".\\src\\main.rs","comment":false}'
 ```
 
 Expected behavior:
@@ -145,7 +147,7 @@ Example `vmcp-rg` result:
   "rg_matches": 3,
   "files": [
     {
-      "file": "D:\\projects\\vulcan-mcp-client\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua",
+      "file": "<repo_root>\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua",
       "lines": 2087,
       "content": "local function validate_extension_argument(value) ... L744-803"
     }
@@ -208,8 +210,8 @@ If the skill being debugged touches SQLite or LanceDB, also verify that:
 
 Recommended distinction:
 
-- `output/debug/vulcan-mcp.exe --call-tools ...`: local functional debugging
-- `output/bin/vulcan-mcp.exe`: the running service instance
+- `output/debug/vulcan-agent-service.exe --call-tools ...`: local functional debugging
+- `output/bin/vulcan-agent-service.exe`: the running service instance
 
 ### 7.4 Why does this mode avoid HTTP and gRPC startup?
 
