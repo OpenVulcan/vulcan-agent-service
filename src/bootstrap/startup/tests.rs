@@ -92,6 +92,7 @@ fn parse_runtime_mode_allows_runtime_root_in_call_tools_mode() {
         RuntimeMode::Serve
         | RuntimeMode::RootSkillInstall { .. }
         | RuntimeMode::RootSkillsUpdate
+        | RuntimeMode::Service(..)
         | RuntimeMode::InternalLuaexecRequest { .. } => {
             panic!("expected call-tools runtime mode");
         }
@@ -102,7 +103,10 @@ fn parse_runtime_mode_allows_runtime_root_in_call_tools_mode() {
 /// stdio 模式应可被直接选中，以便 MCP 通过标准输入输出运行而无需打开端口。
 #[test]
 fn parse_runtime_mode_accepts_stdio_mode() {
-    let args = vec!["vulcan-agent-service.exe".to_string(), "--stdio".to_string()];
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "--stdio".to_string(),
+    ];
     let mode = parse_runtime_mode_from_args(&args).expect("stdio mode should parse");
     match mode {
         RuntimeMode::Stdio => {}
@@ -110,9 +114,62 @@ fn parse_runtime_mode_accepts_stdio_mode() {
         | RuntimeMode::CallTool { .. }
         | RuntimeMode::RootSkillInstall { .. }
         | RuntimeMode::RootSkillsUpdate
+        | RuntimeMode::Service(..)
         | RuntimeMode::InternalLuaexecRequest { .. } => {
             panic!("expected stdio runtime mode");
         }
+    }
+}
+
+/// Service install mode should parse into the dedicated cross-platform service command instead of falling through to normal serve mode.
+/// service install 模式应解析为专用的跨平台服务命令，而不是落回普通服务模式。
+#[test]
+fn parse_runtime_mode_accepts_service_install_mode() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "service".to_string(),
+        "install".to_string(),
+        "--runtime-root".to_string(),
+        "output".to_string(),
+        "--service-name".to_string(),
+        "vas-demo".to_string(),
+        "--scope".to_string(),
+        "user".to_string(),
+        "--startup".to_string(),
+        "manual".to_string(),
+        "--start".to_string(),
+    ];
+    let mode = parse_runtime_mode_from_args(&args).expect("service install mode should parse");
+    match mode {
+        RuntimeMode::Service(crate::service::ServiceCommand::Install(options)) => {
+            assert_eq!(options.runtime_root, std::path::PathBuf::from("output"));
+            assert_eq!(options.service_name, "vas-demo");
+            assert_eq!(options.scope.as_str(), "user");
+            assert_eq!(options.startup.as_str(), "manual");
+            assert!(options.start_immediately);
+        }
+        _ => panic!("expected service install runtime mode"),
+    }
+}
+
+/// Service run mode should parse the explicit runtime root and service name needed by installed platform managers.
+/// service run 模式应解析出已安装平台管理器所需的显式运行根与服务名称。
+#[test]
+fn parse_runtime_mode_accepts_service_run_mode() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "service".to_string(),
+        "run".to_string(),
+        "--runtime-root=output".to_string(),
+        "--service-name=vas-demo".to_string(),
+    ];
+    let mode = parse_runtime_mode_from_args(&args).expect("service run mode should parse");
+    match mode {
+        RuntimeMode::Service(crate::service::ServiceCommand::Run(options)) => {
+            assert_eq!(options.runtime_root, std::path::PathBuf::from("output"));
+            assert_eq!(options.service_name, "vas-demo");
+        }
+        _ => panic!("expected service run runtime mode"),
     }
 }
 
@@ -142,6 +199,7 @@ fn parse_runtime_mode_accepts_root_install_mode() {
         | RuntimeMode::Stdio
         | RuntimeMode::CallTool { .. }
         | RuntimeMode::RootSkillsUpdate
+        | RuntimeMode::Service(..)
         | RuntimeMode::InternalLuaexecRequest { .. } => {
             panic!("expected root skill install runtime mode");
         }
@@ -164,6 +222,7 @@ fn parse_runtime_mode_accepts_root_update_mode() {
         | RuntimeMode::Stdio
         | RuntimeMode::CallTool { .. }
         | RuntimeMode::RootSkillInstall { .. }
+        | RuntimeMode::Service(..)
         | RuntimeMode::InternalLuaexecRequest { .. } => {
             panic!("expected root skills update runtime mode");
         }
@@ -253,6 +312,7 @@ fn parse_runtime_mode_allows_inline_runtime_root_in_call_tools_mode() {
         | RuntimeMode::Stdio
         | RuntimeMode::RootSkillInstall { .. }
         | RuntimeMode::RootSkillsUpdate
+        | RuntimeMode::Service(..)
         | RuntimeMode::InternalLuaexecRequest { .. } => {
             panic!("expected call-tools runtime mode");
         }

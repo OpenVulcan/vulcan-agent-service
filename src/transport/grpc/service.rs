@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_stream::StreamExt;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -1196,6 +1196,17 @@ mod host_adapter_grpc_tests {
 // ============================================================
 
 pub async fn run_grpc(server: HostRuntime, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    run_grpc_with_shutdown(server, addr, shutdown_rx).await
+}
+
+/// Run the gRPC transport until the supplied shutdown receiver is triggered.
+/// 运行 gRPC 传输层，直到提供的关闭接收器被触发。
+pub async fn run_grpc_with_shutdown(
+    server: HostRuntime,
+    addr: &str,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = addr.parse()?;
     let manager = ConnectionManager::new();
     let service = McpServiceImpl::new(server, manager);
@@ -1212,7 +1223,9 @@ pub async fn run_grpc(server: HostRuntime, addr: &str) -> Result<(), Box<dyn std
         .add_service(LuaSkillsServiceServer::new(service.clone()))
         .add_service(HostAdapterServiceServer::new(service.clone()))
         .add_service(VmmServiceServer::new(service))
-        .serve(addr)
+        .serve_with_shutdown(addr, async move {
+            let _ = shutdown_rx.changed().await;
+        })
         .await?;
 
     Ok(())

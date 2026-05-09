@@ -96,7 +96,10 @@ fn parse_cli_path_flag_accepts_inline_runtime_root_value() {
 /// 内联 `--runtime-root=` 在取值为空时也应尽早失败。
 #[test]
 fn parse_cli_path_flag_rejects_empty_inline_runtime_root_value() {
-    let args = vec!["vulcan-agent-service.exe".to_string(), "--runtime-root=".to_string()];
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "--runtime-root=".to_string(),
+    ];
     let error = parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])
         .expect_err("empty inline runtime-root should fail");
     assert!(

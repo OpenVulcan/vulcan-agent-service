@@ -5,6 +5,7 @@ mod host_core;
 #[path = "luaskills/mod.rs"]
 mod luaskills_adapter;
 mod model_provider;
+mod service;
 mod support;
 mod transport;
 

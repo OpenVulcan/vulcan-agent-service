@@ -100,6 +100,57 @@ space_controller:
 - 统一 gRPC 服务面：面向 openclaw / opencode / qwencode / Hermes-agent 等执行端，同一端口挂载 `McpService`、`LuaSkillsService`、`HostAdapterService` 与 `vmm.v1.VmmService`。
 - 宿主包装能力面：把 LuaSkills、help、skill config、分页/截断与宿主级 system tools 统一投影成可消费接口。
 
+## 服务模式
+
+`vulcan-agent-service` 现在已经提供统一的跨平台 `service` 命令面，用于把当前宿主注册为平台原生长期托管服务。
+
+当前首版支持矩阵：
+
+- Windows：`SCM`
+- Linux：`systemd`
+- macOS：`launchd`
+
+统一命令面如下：
+
+```text
+vulcan-agent-service service install --runtime-root <abs_path>
+vulcan-agent-service service uninstall --service-name <name>
+vulcan-agent-service service start --service-name <name>
+vulcan-agent-service service stop --service-name <name>
+vulcan-agent-service service restart --service-name <name>
+vulcan-agent-service service status --service-name <name>
+vulcan-agent-service service print-definition --runtime-root <abs_path>
+```
+
+服务管理器实际拉起的是内部宿主入口：
+
+```text
+vulcan-agent-service service run --runtime-root <abs_path> --service-name <name>
+```
+
+有两条约束需要特别注意：
+
+1. 服务模式必须显式传入 `--runtime-root`，不要依赖当前工作目录或 `<exe_parent>` 回退。
+2. 服务模式强烈建议显式配置 `skill_roots`；否则默认 `USER` 技能目录会跟随服务账户变化，而不是跟随当前登录开发者用户变化。
+
+推荐安装示例：
+
+```text
+vulcan-agent-service service install --runtime-root D:\vulcan\agent-service\output --service-name vulcan-agent-service --startup auto --start
+```
+
+Linux 用户级安装示例：
+
+```text
+vulcan-agent-service service install --runtime-root /opt/vulcan-agent-service/output --service-name vulcan-agent-service --scope user --startup manual
+```
+
+macOS 预览当前定义而不安装：
+
+```text
+vulcan-agent-service service print-definition --runtime-root /Applications/VulcanAgentService/output
+```
+
 ### 1. LuaSkills
 
 LuaSkills 是当前对外的核心能力面。  

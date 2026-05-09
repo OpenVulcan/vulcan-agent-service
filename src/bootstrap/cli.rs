@@ -1,3 +1,7 @@
+use crate::service::{
+    DEFAULT_SERVICE_NAME, ServiceCommand, ServiceInstallOptions, ServiceRunOptions, ServiceScope,
+    ServiceStartup, ServiceTargetOptions,
+};
 use luaskills::SkillInstallSourceType;
 use serde_json::{Value, json};
 /// Command-line runtime mode.
@@ -9,6 +13,9 @@ pub(super) enum RuntimeMode {
     /// Start the regular HTTP/gRPC services.
     /// 正常启动 HTTP/gRPC 服务。
     Serve,
+    /// Run one cross-platform service management command.
+    /// 运行一条跨平台服务管理命令。
+    Service(ServiceCommand),
     /// Initialize the tool runtime only and directly invoke a single tool for local debugging.
     /// 仅初始化工具运行环境，并直接调用单个 tool 做本地调试。
     /// This mode simulates a fixed client context, does not read `config.yaml`, and does not open any ports.
@@ -85,6 +92,9 @@ pub(super) fn parse_runtime_mode_from_args(
                 .clone();
             return Ok(RuntimeMode::InternalLuaexecRequest { request_file });
         }
+    }
+    if args.get(1).map(String::as_str) == Some("service") {
+        return Ok(RuntimeMode::Service(parse_service_command_from_args(args)?));
     }
     for argument in args {
         if argument == "--stdio" {
@@ -288,4 +298,309 @@ fn parse_skill_install_source_type(
         )
         .into()),
     }
+}
+
+/// Parse one `service ...` subcommand family from the explicit argv slice.
+/// 从显式 argv 切片解析一组 `service ...` 子命令。
+fn parse_service_command_from_args(
+    args: &[String],
+) -> Result<ServiceCommand, Box<dyn std::error::Error>> {
+    let subcommand = args
+        .get(2)
+        .map(String::as_str)
+        .ok_or("service requires a subcommand")?;
+    match subcommand {
+        "install" => Ok(ServiceCommand::Install(parse_service_install_options(
+            args, 3,
+        )?)),
+        "uninstall" => Ok(ServiceCommand::Uninstall(parse_service_target_options(
+            args, 3,
+        )?)),
+        "start" => Ok(ServiceCommand::Start(parse_service_target_options(
+            args, 3,
+        )?)),
+        "stop" => Ok(ServiceCommand::Stop(parse_service_target_options(args, 3)?)),
+        "restart" => Ok(ServiceCommand::Restart(parse_service_target_options(
+            args, 3,
+        )?)),
+        "status" => Ok(ServiceCommand::Status(parse_service_target_options(
+            args, 3,
+        )?)),
+        "run" => Ok(ServiceCommand::Run(parse_service_run_options(args, 3)?)),
+        "print-definition" => Ok(ServiceCommand::PrintDefinition(
+            parse_service_install_options(args, 3)?,
+        )),
+        _ => Err(format!("unsupported service subcommand '{}'", subcommand).into()),
+    }
+}
+
+/// Parse shared install-style options from `service install` and `service print-definition`.
+/// 从 `service install` 与 `service print-definition` 解析共享安装类选项。
+fn parse_service_install_options(
+    args: &[String],
+    start_index: usize,
+) -> Result<ServiceInstallOptions, Box<dyn std::error::Error>> {
+    let mut runtime_root = None;
+    let mut service_name = DEFAULT_SERVICE_NAME.to_string();
+    let mut display_name = None;
+    let mut description = None;
+    let mut scope = ServiceScope::System;
+    let mut startup = ServiceStartup::Auto;
+    let mut start_immediately = false;
+    let mut force = false;
+    let mut cursor = start_index;
+    while cursor < args.len() {
+        let current = args[cursor].as_str();
+        if let Some(value) = current.strip_prefix("--runtime-root=") {
+            runtime_root = Some(non_empty_inline_flag_value("--runtime-root", value)?);
+            cursor += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--service-name=") {
+            service_name = non_empty_inline_flag_value("--service-name", value)?;
+            cursor += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--display-name=") {
+            display_name = Some(non_empty_inline_flag_value("--display-name", value)?);
+            cursor += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--description=") {
+            description = Some(non_empty_inline_flag_value("--description", value)?);
+            cursor += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--scope=") {
+            scope = parse_service_scope(value)?;
+            cursor += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--startup=") {
+            startup = parse_service_startup(value)?;
+            cursor += 1;
+            continue;
+        }
+        match current {
+            "--runtime-root" => {
+                runtime_root = Some(require_following_flag_value(
+                    args,
+                    cursor,
+                    "--runtime-root",
+                )?);
+                cursor += 2;
+            }
+            "--service-name" => {
+                service_name = require_following_flag_value(args, cursor, "--service-name")?;
+                cursor += 2;
+            }
+            "--display-name" => {
+                display_name = Some(require_following_flag_value(
+                    args,
+                    cursor,
+                    "--display-name",
+                )?);
+                cursor += 2;
+            }
+            "--description" => {
+                description = Some(require_following_flag_value(args, cursor, "--description")?);
+                cursor += 2;
+            }
+            "--scope" => {
+                scope =
+                    parse_service_scope(&require_following_flag_value(args, cursor, "--scope")?)?;
+                cursor += 2;
+            }
+            "--startup" => {
+                startup = parse_service_startup(&require_following_flag_value(
+                    args,
+                    cursor,
+                    "--startup",
+                )?)?;
+                cursor += 2;
+            }
+            "--start" => {
+                start_immediately = true;
+                cursor += 1;
+            }
+            "--force" => {
+                force = true;
+                cursor += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown service install flag: {}", value).into());
+            }
+            value => {
+                return Err(format!("unexpected service install argument: {}", value).into());
+            }
+        }
+    }
+    let runtime_root = runtime_root.ok_or("service install requires --runtime-root <path>")?;
+    Ok(ServiceInstallOptions {
+        runtime_root: std::path::PathBuf::from(runtime_root),
+        service_name,
+        display_name,
+        description,
+        scope,
+        startup,
+        start_immediately,
+        force,
+    })
+}
+
+/// Parse target-only lifecycle options from `service start/stop/restart/status/uninstall`.
+/// 从 `service start/stop/restart/status/uninstall` 解析目标类生命周期选项。
+fn parse_service_target_options(
+    args: &[String],
+    start_index: usize,
+) -> Result<ServiceTargetOptions, Box<dyn std::error::Error>> {
+    let mut service_name = DEFAULT_SERVICE_NAME.to_string();
+    let mut scope = ServiceScope::System;
+    let mut force = false;
+    let mut cursor = start_index;
+    while cursor < args.len() {
+        let current = args[cursor].as_str();
+        if let Some(value) = current.strip_prefix("--service-name=") {
+            service_name = non_empty_inline_flag_value("--service-name", value)?;
+            cursor += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--scope=") {
+            scope = parse_service_scope(value)?;
+            cursor += 1;
+            continue;
+        }
+        match current {
+            "--service-name" => {
+                service_name = require_following_flag_value(args, cursor, "--service-name")?;
+                cursor += 2;
+            }
+            "--scope" => {
+                scope =
+                    parse_service_scope(&require_following_flag_value(args, cursor, "--scope")?)?;
+                cursor += 2;
+            }
+            "--force" => {
+                force = true;
+                cursor += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown service lifecycle flag: {}", value).into());
+            }
+            value => {
+                return Err(format!("unexpected service lifecycle argument: {}", value).into());
+            }
+        }
+    }
+    Ok(ServiceTargetOptions {
+        service_name,
+        scope,
+        force,
+    })
+}
+
+/// Parse the internal service host run options.
+/// 解析内部服务宿主运行选项。
+fn parse_service_run_options(
+    args: &[String],
+    start_index: usize,
+) -> Result<ServiceRunOptions, Box<dyn std::error::Error>> {
+    let mut runtime_root = None;
+    let mut service_name = DEFAULT_SERVICE_NAME.to_string();
+    let mut cursor = start_index;
+    while cursor < args.len() {
+        let current = args[cursor].as_str();
+        if let Some(value) = current.strip_prefix("--runtime-root=") {
+            runtime_root = Some(non_empty_inline_flag_value("--runtime-root", value)?);
+            cursor += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--service-name=") {
+            service_name = non_empty_inline_flag_value("--service-name", value)?;
+            cursor += 1;
+            continue;
+        }
+        match current {
+            "--runtime-root" => {
+                runtime_root = Some(require_following_flag_value(
+                    args,
+                    cursor,
+                    "--runtime-root",
+                )?);
+                cursor += 2;
+            }
+            "--service-name" => {
+                service_name = require_following_flag_value(args, cursor, "--service-name")?;
+                cursor += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown service run flag: {}", value).into());
+            }
+            value => {
+                return Err(format!("unexpected service run argument: {}", value).into());
+            }
+        }
+    }
+    let runtime_root = runtime_root.ok_or("service run requires --runtime-root <path>")?;
+    Ok(ServiceRunOptions {
+        runtime_root: std::path::PathBuf::from(runtime_root),
+        service_name,
+    })
+}
+
+/// Parse one service scope token into the stable cross-platform enum.
+/// 将单个服务作用域片段解析为稳定的跨平台枚举。
+fn parse_service_scope(value: &str) -> Result<ServiceScope, Box<dyn std::error::Error>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "system" => Ok(ServiceScope::System),
+        "user" => Ok(ServiceScope::User),
+        _ => Err(format!(
+            "unsupported service scope '{}'; expected system or user",
+            value
+        )
+        .into()),
+    }
+}
+
+/// Parse one service startup token into the stable cross-platform enum.
+/// 将单个服务启动策略片段解析为稳定的跨平台枚举。
+fn parse_service_startup(value: &str) -> Result<ServiceStartup, Box<dyn std::error::Error>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(ServiceStartup::Auto),
+        "manual" => Ok(ServiceStartup::Manual),
+        _ => Err(format!(
+            "unsupported service startup '{}'; expected auto or manual",
+            value
+        )
+        .into()),
+    }
+}
+
+/// Require one following non-flag value for a service CLI flag.
+/// 要求某个服务 CLI 标志后跟随一个非标志值。
+fn require_following_flag_value(
+    args: &[String],
+    index: usize,
+    flag: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let value = args
+        .get(index + 1)
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    if value.starts_with('-') {
+        return Err(format!("{flag} requires a value").into());
+    }
+    Ok(value.clone())
+}
+
+/// Reject empty inline `--flag=value` payloads and return the normalized string.
+/// 拒绝空的内联 `--flag=value` 载荷，并返回规范化字符串。
+fn non_empty_inline_flag_value(
+    flag: &str,
+    value: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{flag} requires a value").into());
+    }
+    Ok(trimmed.to_string())
 }

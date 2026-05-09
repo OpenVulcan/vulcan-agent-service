@@ -4,6 +4,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use std::net::SocketAddr;
+use tokio::sync::watch;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::host_core::HostRuntime;
@@ -42,6 +43,17 @@ pub struct AppState {
 // ============================================================
 
 pub async fn run_http(server: HostRuntime, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    run_http_with_shutdown(server, addr, shutdown_rx).await
+}
+
+/// Run the HTTP transport until the supplied shutdown receiver is triggered.
+/// 运行 HTTP 传输层，直到提供的关闭接收器被触发。
+pub async fn run_http_with_shutdown(
+    server: HostRuntime,
+    addr: &str,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Build the MCP dispatcher once so HTTP handlers depend on the transport adapter boundary.
     // 只构建一次 MCP dispatcher，使 HTTP 处理器依赖传输适配边界。
     let dispatcher = McpDispatcher::new(server);
@@ -79,6 +91,10 @@ pub async fn run_http(server: HostRuntime, addr: &str) -> Result<(), Box<dyn std
     eprintln!("[MCP]   GET    /health    (Health check)");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
+        .await?;
     Ok(())
 }

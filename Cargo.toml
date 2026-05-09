@@ -36,6 +36,9 @@ base64 = "0.22"
 luaskills = "0.3.1"
 sha2 = "0.10"
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+
 [build-dependencies]
 tonic-prost-build = "0.14"
 protoc-bin-vendored = "3.2"
