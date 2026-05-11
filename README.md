@@ -431,7 +431,7 @@ cargo run -- --update-root-skills --runtime-root output
 当前仓库通过 Cargo 原生版本依赖引用：
 
 ```toml
-luaskills = "0.4.1"
+luaskills = "0.4.2"
 ```
 
 相关地址：
@@ -440,7 +440,7 @@ luaskills = "0.4.1"
 - Cargo：<https://crates.io/crates/luaskills>
 - Runtime packages：<https://github.com/LuaSkills/luaskills-packages>
 
-当前 `0.4.1` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
+当前 `0.4.2` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
 Lua runtime packages 与原生依赖包已经独立到 `luaskills-packages` 发布，
 本仓库里的依赖拉取脚本也按这个拆分后的发布模型工作。
 
