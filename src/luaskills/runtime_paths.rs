@@ -410,6 +410,21 @@ pub(super) fn resolve_host_ffi_root(
     Ok(None)
 }
 
+/// Resolve the fixed host-owned `system_lua_lib` directory used by LuaSkills `system_lua_lib` runtime leases.
+/// 解析 LuaSkills `system_lua_lib` 运行时租约使用的固定宿主自有 `system_lua_lib` 目录。
+pub(super) fn resolve_system_lua_lib_dir(
+    runtime_root: &std::path::Path,
+) -> Result<Option<PathBuf>, String> {
+    let system_lua_lib_dir = runtime_root.join("system_lua_lib");
+    if system_lua_lib_dir.exists() && !system_lua_lib_dir.is_dir() {
+        return Err(format!(
+            "runtime system_lua_lib path is not a directory: {}",
+            system_lua_lib_dir.display()
+        ));
+    }
+    Ok(Some(system_lua_lib_dir))
+}
+
 /// Resolve the host-managed lua_packages directory according to runtime output first and repository output second.
 /// 先按运行时输出目录、再按仓库输出目录解析宿主管理的 lua_packages 目录。
 pub(super) fn resolve_lua_packages_dir(

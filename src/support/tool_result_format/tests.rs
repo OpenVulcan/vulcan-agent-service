@@ -76,6 +76,7 @@ fn truncate_mode_returns_notice_when_overflowed() {
             "line1\nline2\nline3".to_string(),
             Some(ToolOverflowMode::Truncate),
             None,
+            None,
         ),
         Some("vulcan-codekit"),
         Some(&sample_budget()),
@@ -92,6 +93,7 @@ fn page_mode_returns_pointer_block_when_overflowed() {
         &RuntimeInvocationResult::from_content_parts(
             "line1\nline2\nline3\nline4".to_string(),
             Some(ToolOverflowMode::Page),
+            None,
             None,
         ),
         Some("vulcan-codekit"),
@@ -118,6 +120,7 @@ fn page_tool_returns_error_when_single_line_exceeds_file_read_limit() {
         &RuntimeInvocationResult::from_content_parts(
             "this-line-is-too-long".to_string(),
             Some(ToolOverflowMode::Page),
+            None,
             None,
         ),
         Some("vulcan-codekit"),
@@ -174,6 +177,7 @@ fn render_tool_result_prefers_initialized_skill_root_templates() {
             "line1\nline2\nline3".to_string(),
             Some(ToolOverflowMode::Truncate),
             None,
+            None,
         ),
         Some("vulcan-codekit"),
         Some(&sample_budget()),
@@ -224,6 +228,7 @@ fn render_tool_result_prefers_per_call_template_roots_for_project_environment() 
         &RuntimeInvocationResult::from_content_parts(
             "line1\nline2\nline3".to_string(),
             Some(ToolOverflowMode::Truncate),
+            None,
             None,
         ),
         Some("vulcan-codekit"),

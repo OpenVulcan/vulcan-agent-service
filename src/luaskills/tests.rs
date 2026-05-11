@@ -435,6 +435,78 @@ fn build_engine_options_maps_space_controller_configuration() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Engine options should pin the fixed `system_lua_lib` directory so 0.4.1 runtime lease fallbacks never guess from the first skill root.
+/// 引擎选项应固定 `system_lua_lib` 目录，避免 0.4.1 运行时租约从第一个技能根目录进行隐式猜测回退。
+#[test]
+fn build_engine_options_sets_fixed_system_lua_lib_dir() {
+    let _guard = acquire_environment_lock();
+    let root = unique_test_dir("engine-options-system-lua-lib");
+    create_runtime_root_for_test(&root);
+    let copied_executable = root
+        .join("bin")
+        .join(space_controller_executable_file_name());
+    std::fs::write(&copied_executable, b"test-controller")
+        .expect("failed to create copied controller executable");
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+    let options = build_luaskills_engine_options(
+        &config,
+        LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        },
+        ToolCacheConfig::default(),
+    )
+    .expect("failed to build luaskills engine options");
+
+    assert_eq!(
+        options.host_options.system_lua_lib_dir.as_ref(),
+        Some(&root.join("system_lua_lib"))
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// File-shaped `system_lua_lib` paths should fail fast instead of silently becoming one runtime-lease fallback target.
+/// 文件形态的 `system_lua_lib` 路径应尽早失败，而不是静默成为运行时租约的回退目标。
+#[test]
+fn build_engine_options_rejects_file_shaped_system_lua_lib_dir() {
+    let _guard = acquire_environment_lock();
+    let root = unique_test_dir("engine-options-system-lua-lib-file");
+    create_runtime_root_for_test(&root);
+    let copied_executable = root
+        .join("bin")
+        .join(space_controller_executable_file_name());
+    std::fs::write(&copied_executable, b"test-controller")
+        .expect("failed to create copied controller executable");
+    std::fs::write(root.join("system_lua_lib"), b"not-a-directory")
+        .expect("failed to create file-shaped system_lua_lib path");
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+    let error = build_luaskills_engine_options(
+        &config,
+        LuaVmPoolConfig {
+            min_size: 1,
+            max_size: 2,
+            idle_ttl_secs: 60,
+        },
+        ToolCacheConfig::default(),
+    )
+    .expect_err("file-shaped system_lua_lib should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("runtime system_lua_lib path is not a directory"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Missing runlua pool config should leave the dedicated isolated pool unset so LuaSkills can apply its own upstream defaults.
 /// 缺失 runlua 池配置时应保持专用隔离池未显式设置，从而让 LuaSkills 采用其上游默认值。
 #[test]

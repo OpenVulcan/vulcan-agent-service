@@ -148,15 +148,10 @@ pub(super) async fn handle_streamable_get(
         return plain_response(StatusCode::NOT_FOUND, "Session not found.");
     };
 
-    // Prime the stream with an empty event so strict clients can confirm the stream is live.
-    // 先发送一个空事件，帮助严格客户端确认 SSE 流已成功建立。
-    let priming_stream = stream::once(async move {
-        Ok::<_, Infallible>(
-            Event::default()
-                .id(uuid::Uuid::new_v4().to_string())
-                .data(""),
-        )
-    });
+    // Send a comment-only prelude so the stream flushes without emitting an empty default `message` event.
+    // 发送仅注释的前导帧，在刷新流的同时避免产出空的默认 `message` 事件。
+    let priming_stream =
+        stream::once(async move { Ok::<_, Infallible>(Event::default().comment("stream-ready")) });
 
     let message_stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|value| {
         let data = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());

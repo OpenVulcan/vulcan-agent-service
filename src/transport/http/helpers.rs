@@ -170,10 +170,12 @@ pub(super) fn sse_event_stream(
         .event("endpoint")
         .data(format!("/message?sessionId={}", session_id));
 
+    // Keep the legacy named ping event for backwards compatibility, but avoid an empty `data:` field.
+    // 为兼容旧客户端保留具名 ping 事件，同时避免发送空的 `data:` 字段。
     let ping_stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
         std::time::Duration::from_secs(30),
     ))
-    .map(|_| Ok::<_, Infallible>(Event::default().event("ping").data("")));
+    .map(|_| Ok::<_, Infallible>(Event::default().event("ping")));
 
     let message_stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|val| {
         let data = serde_json::to_string(&val).unwrap_or_default();

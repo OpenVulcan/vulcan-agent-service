@@ -15,7 +15,7 @@ use std::sync::Arc;
 use super::runtime_paths::{
     resolve_host_ffi_root, resolve_host_provided_tool_root, resolve_lua_packages_dir,
     resolve_runtime_resources_dir, resolve_runtime_root_from_config,
-    resolve_skill_config_file_path,
+    resolve_skill_config_file_path, resolve_system_lua_lib_dir,
 };
 
 /// Built-in AI memory skill that is superseded when a VMM gRPC endpoint is configured.
@@ -58,6 +58,8 @@ pub fn build_luaskills_engine_options(
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         host_provided_lua_root: lua_packages_dir,
         host_provided_ffi_root: resolve_host_ffi_root(&runtime_root)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+        system_lua_lib_dir: resolve_system_lua_lib_dir(&runtime_root)
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         download_cache_root,
         dependency_dir_name: config

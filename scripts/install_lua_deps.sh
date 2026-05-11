@@ -167,7 +167,7 @@ major, minor, _patch = normalized.split(".")
 print(f"{major}.{minor}")
 PY
 )"; then
-        echo "Unsupported LUA_RUNTIME_VERSION value '${legacy_runtime_version}'. Use a semantic version such as 0.3.1, or set LUA_RUNTIME_PACKAGES_VERSION for an exact luaskills-packages tag." >&2
+        echo "Unsupported LUA_RUNTIME_VERSION value '${legacy_runtime_version}'. Use a semantic version such as 0.4.1, or set LUA_RUNTIME_PACKAGES_VERSION for an exact luaskills-packages tag." >&2
         return 1
     fi
 
