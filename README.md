@@ -431,7 +431,7 @@ cargo run -- --update-root-skills --runtime-root output
 当前仓库通过 Cargo 原生版本依赖引用：
 
 ```toml
-luaskills = "0.4.2"
+luaskills = "0.4.3"
 ```
 
 相关地址：
@@ -440,9 +440,14 @@ luaskills = "0.4.2"
 - Cargo：<https://crates.io/crates/luaskills>
 - Runtime packages：<https://github.com/LuaSkills/luaskills-packages>
 
-当前 `0.4.2` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
+当前 `0.4.3` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
 Lua runtime packages 与原生依赖包已经独立到 `luaskills-packages` 发布，
 本仓库里的依赖拉取脚本也按这个拆分后的发布模型工作。
+
+同时，`0.4.3` 已修复 LuaSkills 工具说明文本不够规范的问题；
+`vulcan-agent-service` 现在直接复用 `luaskills` 导出的 entry description、
+parameter description 与 final AI-facing `input_schema`，
+不再额外做宿主侧二次拼接或格式修正。
 
 但职责边界不变：
 

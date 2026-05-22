@@ -189,6 +189,9 @@ pub(super) fn build_skill_manager_for_root(
         allow_network_download: host_options.allow_network_download,
         github_base_url: host_options.github_base_url.clone(),
         github_api_base_url: host_options.github_api_base_url.clone(),
+        official_skill_hub_base_url: host_options.official_skill_hub_base_url.clone(),
+        enable_private_url_skill_install: host_options.enable_private_url_skill_install,
+        private_skill_source_allowlist: host_options.private_skill_source_allowlist.clone(),
     }))
 }
 
@@ -220,7 +223,9 @@ pub(super) fn render_skill_install_record(rendered: &mut String, record: &Instal
 fn render_skill_install_source_type(source_type: SkillInstallSourceType) -> &'static str {
     match source_type {
         SkillInstallSourceType::Github => "github",
+        SkillInstallSourceType::OfficialHub => "official_hub",
         SkillInstallSourceType::Url => "url",
+        SkillInstallSourceType::PrivateUrlManifest => "private_url_manifest",
     }
 }
 

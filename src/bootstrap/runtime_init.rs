@@ -362,6 +362,9 @@ pub(super) fn build_root_skill_manager_for_cli(
         allow_network_download: host_options.allow_network_download,
         github_base_url: host_options.github_base_url.clone(),
         github_api_base_url: host_options.github_api_base_url.clone(),
+        official_skill_hub_base_url: host_options.official_skill_hub_base_url.clone(),
+        enable_private_url_skill_install: host_options.enable_private_url_skill_install,
+        private_skill_source_allowlist: host_options.private_skill_source_allowlist.clone(),
     }))
 }
 

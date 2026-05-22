@@ -58,6 +58,7 @@ fn sample_runtime_entry_descriptor() -> RuntimeEntryDescriptor {
         skill_dir: "D:/runtime/skills/demo-skill".to_string(),
         description: "Search demo content.".to_string(),
         parameters: vec![],
+        input_schema: serde_json::Value::Null,
     }
 }
 
@@ -435,8 +436,8 @@ fn build_engine_options_maps_space_controller_configuration() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Engine options should pin the fixed `system_lua_lib` directory so 0.4.2 runtime lease fallbacks never guess from the first skill root.
-/// 引擎选项应固定 `system_lua_lib` 目录，避免 0.4.2 运行时租约从第一个技能根目录进行隐式猜测回退。
+/// Engine options should pin the fixed `system_lua_lib` directory so 0.4.3 runtime lease fallbacks never guess from the first skill root.
+/// 引擎选项应固定 `system_lua_lib` 目录，避免 0.4.3 运行时租约从第一个技能根目录进行隐式猜测回退。
 #[test]
 fn build_engine_options_sets_fixed_system_lua_lib_dir() {
     let _guard = acquire_environment_lock();
@@ -863,6 +864,49 @@ fn map_runtime_entry_to_mcp_tool_omits_environment_id_parameter() {
         .expect("schema object");
 
     assert!(!schema.contains_key("environment_id"));
+}
+
+/// MCP tool mapping should preserve the normalized tool and parameter descriptions exported by LuaSkills 0.4.3.
+/// MCP 工具映射应保留 LuaSkills 0.4.3 导出的规范化工具说明与参数说明文本。
+#[test]
+fn map_runtime_entry_to_mcp_tool_preserves_luaskills_normalized_descriptions() {
+    let entry = RuntimeEntryDescriptor {
+        description: "Normalized tool summary.".to_string(),
+        parameters: vec![luaskills::RuntimeEntryParameterDescriptor {
+            name: "query".to_string(),
+            description: "Legacy query description.".to_string(),
+            param_type: "string".to_string(),
+            required: true,
+        }],
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Normalized query description."
+                }
+            },
+            "required": ["query"]
+        }),
+        ..sample_runtime_entry_descriptor()
+    };
+    let tool = map_runtime_entry_to_mcp_tool(&entry);
+    let schema = tool
+        .input_schema
+        .properties
+        .as_ref()
+        .and_then(|value| value.as_object())
+        .expect("schema object");
+    let query_description = schema
+        .get("query")
+        .and_then(|value| value.get("description"))
+        .and_then(|value| value.as_str());
+
+    assert_eq!(
+        tool.description.as_deref(),
+        Some("Normalized tool summary.")
+    );
+    assert_eq!(query_description, Some("Normalized query description."));
 }
 
 /// Session-capable hosts should receive LuaSkills schemas without the managed LUASKILL_SID parameter.

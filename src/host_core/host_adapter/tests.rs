@@ -1,5 +1,5 @@
-use super::*;
 use super::tool_refresh::tool_ids;
+use super::*;
 use serde_json::json;
 
 /// Verify that common host aliases normalize to stable host kinds.

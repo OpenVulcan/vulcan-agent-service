@@ -224,6 +224,8 @@ fn append_root_skill_update_error(
 fn render_root_skill_install_source_type(source_type: SkillInstallSourceType) -> &'static str {
     match source_type {
         SkillInstallSourceType::Github => "github",
+        SkillInstallSourceType::OfficialHub => "official_hub",
         SkillInstallSourceType::Url => "url",
+        SkillInstallSourceType::PrivateUrlManifest => "private_url_manifest",
     }
 }

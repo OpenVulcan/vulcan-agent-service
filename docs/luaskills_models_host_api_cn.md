@@ -1,6 +1,6 @@
 # LuaSkills 模型能力宿主接口说明
 
-本文档说明 `vulcan-agent-service` 统一服务中枢中，面向 LuaSkills 提供的简化模型能力子集。当前已基于 `luaskills 0.4.2` 接入专用 `vulcan.models.*` 宿主回调，并由宿主配置决定是否注册 embedding / LLM 能力。
+本文档说明 `vulcan-agent-service` 统一服务中枢中，面向 LuaSkills 提供的简化模型能力子集。当前已基于 `luaskills 0.4.3` 接入专用 `vulcan.models.*` 宿主回调，并由宿主配置决定是否注册 embedding / LLM 能力。`0.4.3` 已修复工具说明文本规范化问题，宿主侧直接消费 `luaskills` 导出的 entry / parameter description 与 final AI-facing `input_schema`。
 
 ## 设计边界
 

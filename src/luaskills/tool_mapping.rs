@@ -1,4 +1,4 @@
-use crate::host_core::model::{RuntimeToolAnnotations, RuntimeToolDescriptor};
+use crate::host_core::model::{RuntimeInputSchema, RuntimeToolAnnotations, RuntimeToolDescriptor};
 use luaskills::RuntimeEntryDescriptor;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -32,6 +32,67 @@ pub fn map_runtime_entry_to_mcp_tool_with_projection(
     entry: &RuntimeEntryDescriptor,
     projection: &LuaSkillToolProjectionOptions,
 ) -> RuntimeToolDescriptor {
+    let input_schema = build_runtime_input_schema(entry, projection);
+
+    // Reuse the normalized entry description exported by LuaSkills instead of rebuilding tool copy inside the host.
+    // 直接复用 LuaSkills 导出的规范化入口说明，而不是在宿主侧重新拼装工具文案。
+    RuntimeToolDescriptor {
+        name: entry.canonical_name.clone(),
+        description: Some(entry.description.clone()),
+        input_schema,
+        annotations: Some(RuntimeToolAnnotations {
+            read_only_hint: Some(true),
+            destructive_hint: Some(false),
+            user_confirmation_required: Some(false),
+            idempotent_hint: Some(true),
+        }),
+    }
+}
+
+/// Build one host-neutral input schema by preferring the LuaSkills 0.4.3 exported AI-facing schema and falling back to legacy parameter synthesis when needed.
+/// 优先使用 LuaSkills 0.4.3 导出的 AI-facing schema 构建宿主中立输入 schema，并在缺失时回退到旧版参数合成路径。
+fn build_runtime_input_schema(
+    entry: &RuntimeEntryDescriptor,
+    projection: &LuaSkillToolProjectionOptions,
+) -> RuntimeInputSchema {
+    if let Some(schema_object) = entry.input_schema.as_object() {
+        let schema_type = schema_object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("object")
+            .to_string();
+        let properties = schema_object.get("properties").cloned();
+        let required = schema_object.get("required").and_then(|value| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+        });
+        if properties.is_some() || required.is_some() || schema_object.contains_key("type") {
+            let mut schema = RuntimeInputSchema {
+                schema_type,
+                properties,
+                required,
+            };
+            if projection.hide_managed_luaskill_sid {
+                remove_managed_luaskill_sid_from_schema(&mut schema);
+            }
+            return schema;
+        }
+    }
+
+    build_runtime_input_schema_from_parameters(entry, projection)
+}
+
+/// Build one compatibility input schema from legacy entry parameter descriptors when the exported AI-facing schema is absent.
+/// 当导出的 AI-facing schema 缺失时，根据旧版入口参数描述构建兼容输入 schema。
+fn build_runtime_input_schema_from_parameters(
+    entry: &RuntimeEntryDescriptor,
+    projection: &LuaSkillToolProjectionOptions,
+) -> RuntimeInputSchema {
     let mut props = Map::new();
     let mut required = Vec::new();
     for parameter in &entry.parameters {
@@ -41,6 +102,8 @@ pub fn map_runtime_entry_to_mcp_tool_with_projection(
         {
             continue;
         }
+        // Preserve LuaSkills-authored parameter descriptions verbatim so upstream normalization fixes flow through to host protocols unchanged.
+        // 原样保留 LuaSkills 产出的参数说明文本，让上游规范化修复可以无损传递到宿主协议层。
         props.insert(
             parameter.name.clone(),
             json!({
@@ -53,18 +116,25 @@ pub fn map_runtime_entry_to_mcp_tool_with_projection(
         }
     }
 
-    RuntimeToolDescriptor::with_annotations(
-        &entry.canonical_name,
-        &entry.description,
-        Value::Object(props),
-        required,
-        RuntimeToolAnnotations {
-            read_only_hint: Some(true),
-            destructive_hint: Some(false),
-            user_confirmation_required: Some(false),
-            idempotent_hint: Some(true),
-        },
-    )
+    RuntimeInputSchema {
+        schema_type: "object".to_string(),
+        properties: Some(Value::Object(props)),
+        required: Some(required),
+    }
+}
+
+/// Remove the managed LUASKILL_SID field from one host-neutral schema after host-side projection.
+/// 在宿主侧投影后，从宿主中立 schema 中移除受管 LUASKILL_SID 字段。
+fn remove_managed_luaskill_sid_from_schema(schema: &mut RuntimeInputSchema) {
+    if let Some(properties) = schema.properties.as_mut().and_then(Value::as_object_mut) {
+        properties.remove(HOST_MANAGED_LUASKILL_SID_FIELD);
+    }
+    if let Some(required) = schema.required.as_mut() {
+        required.retain(|name| name != HOST_MANAGED_LUASKILL_SID_FIELD);
+        if required.is_empty() {
+            schema.required = None;
+        }
+    }
 }
 
 /// Return true when one runtime tool schema still contains the host-managed LUASKILL_SID field.
