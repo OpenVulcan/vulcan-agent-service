@@ -4,26 +4,26 @@ AI-native HTTP request skill for Vulcan agents.
 
 Chinese version: [README.zh-CN.md](README.zh-CN.md)
 
-`vulcan-curl` provides an AI-friendly HTTP request layer for Vulcan agents. It offers simple structured `GET` and `POST` entries for common API calls, plus a lower-level supported curl-style argv entry for advanced request shapes, all without requiring agents to assemble platform-specific shell commands.
+`vulcan-curl` provides an AI-friendly HTTP request layer for Vulcan agents. It offers simple structured `GET` and `POST` entries for common API calls, webhook checks, and download diagnostics, plus a lower-level supported curl-style argv entry for advanced request shapes, all without requiring agents to assemble platform-specific shell commands.
 
 ## When To Use
 
-Use `vulcan-curl` when an agent needs to make one HTTP request with predictable inputs and readable Markdown output:
+Use `vulcan-curl` when an agent needs to make one API/debug HTTP request with predictable inputs and readable Markdown output:
 
-- Fetch JSON, text, or binary responses from an HTTP endpoint.
+- Inspect API responses, webhook deliveries, headers, auth behavior, or downloadable files from an HTTP endpoint.
 - Send structured query params and headers without hand-built URL strings.
 - Use Bearer or Basic Auth shortcuts.
 - Send JSON, form, multipart, or raw POST bodies.
 - Save response bodies or response headers to local files.
 - Use supported curl-style argv semantics for advanced request shapes while avoiding shell quoting problems.
 
-Use a browser tool for interactive page flows, JavaScript-rendered UI testing, or screenshots. Use a normal shell command only when raw terminal curl behavior is the actual thing being tested.
+Do not use `vulcan-curl` as a webpage-fetching or scraping tool when the real goal is to read rendered page content or convert HTML into Markdown. Use a browser tool for interactive page flows, JavaScript-rendered UI testing, screenshots, or webpage inspection. Use a normal shell command only when raw terminal curl behavior is the actual thing being tested.
 
 ## Tools
 
 ### `vulcan-curl-get`
 
-Use this entry for simple HTTP reads.
+Use this entry for simple API/debug HTTP reads.
 
 Common inputs include:
 
@@ -89,7 +89,7 @@ args:
 flags: response-header
 ```
 
-This entry is best for advanced TLS, proxy, multipart upload, retry, and unusual request combinations covered by the runtime parser. It still executes inside the Lua runtime layer rather than through a shell.
+This entry is best for advanced TLS, proxy, multipart upload, retry, and unusual API/debug request combinations covered by the runtime parser. It still executes inside the Lua runtime layer rather than through a shell.
 
 `args` is a supported curl-style subset parsed by the Lua runtime, not full curl CLI compatibility. Shell expansion, stdin/TTY interaction, interactive prompts, curl config files, and unsupported dash-prefixed curl options are not available; unknown curl options fail fast.
 
@@ -106,7 +106,7 @@ On Linux and macOS, libcurl uses the CA bundle or trust backend selected by the 
 - `request-header`: include request details
 - `response-header`: include response headers
 
-Unknown flags are ignored. Response bodies are shown inline unless `download_to` is used. Response headers can be saved with `save_headers_to`.
+Unknown flags are ignored. Response bodies are shown inline unless `download_to` is used, and the inline body is always the raw HTTP response rather than rendered webpage content or Markdown-converted page text. Response headers can be saved with `save_headers_to`.
 
 ## Runtime Requirements
 
@@ -130,6 +130,10 @@ vulcan-curl/
 │  ├─ vulcan-curl.lua
 │  ├─ vulcan-curl-get.lua
 │  └─ vulcan-curl-post.lua
+├─ schemas/
+│  ├─ get.input.schema.json
+│  ├─ post.input.schema.json
+│  └─ request.input.schema.json
 ├─ help/
 │  ├─ help.md
 │  ├─ get.md
@@ -173,7 +177,7 @@ Recommended local release steps:
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.1
+.\scripts\tag_release.ps1 0.1.6
 ```
 
 Or on Unix-like shells:
@@ -181,7 +185,7 @@ Or on Unix-like shells:
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.1
+./scripts/tag_release.sh 0.1.6
 ```
 
 ## Notes

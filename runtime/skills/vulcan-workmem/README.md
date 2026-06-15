@@ -42,7 +42,7 @@ Without WorkMem, agents tend to recover by re-reading files, re-running searches
 - It stores project-scoped task nodes in SQLite through the LuaSkills runtime.
 - It encourages compact facts instead of full logs or source dumps.
 - It makes recall selective by listing tags before reading content.
-- It separates task lifecycle from the long-lived `LUASKILL_SID`.
+- It separates task lifecycle from the long-lived working-memory identity.
 - It keeps memory use deliberate instead of automatic.
 
 ## When To Use
@@ -63,9 +63,9 @@ Do not trigger WorkMem only because a task is complex, long, or multi-file. MCP 
 
 Create or resume one project-scoped WorkMem task.
 
-Use this at the start of an explicitly remembered task. If an existing `LUASKILL_SID` is available, pass it through `LUASKILL_SID`; otherwise omit it only when a new public identity should be generated.
+Use this at the start of an explicitly remembered task. When the host exposes a `LUASKILL_SID` field, follow that field description. When the host hides it, the host-managed surface is responsible for injecting and protecting the identity automatically.
 
-After every successful create call with a public identity, the agent must visibly tell the user the active `LUASKILL_SID` and mark it strongly enough to survive context compression. In host-managed mode, the host may inject and redact `LUASKILL_SID`; agents should not ask for, print, or persist the raw managed identity.
+After every successful create call with a public identity, the agent must visibly tell the user the active `LUASKILL_SID` and mark it strongly enough to survive context compression. In host-managed mode, agents should not ask for, print, or persist the raw managed identity.
 
 ### `vulcan-workmem-set`
 
@@ -108,15 +108,15 @@ Delete selected stale tags from one task.
 
 ### `vulcan-workmem-task-list`
 
-List remembered task names under one `LUASKILL_SID`.
+List remembered task names.
 
-Use this when the ID is known but the task name is not.
+Use this when the current remembered scope already exists but the task name is not known.
 
 ### `vulcan-workmem-task-close`
 
 Close one task and remove task-scoped nodes.
 
-Closing a task may clean the internal empty identity row when no tasks remain, but it does not invalidate a saved long-lived `LUASKILL_SID`.
+Closing a task may clean the internal empty identity row when no tasks remain, but it does not invalidate a saved long-lived working-memory identity.
 
 ## Workflow
 
@@ -140,6 +140,7 @@ This repository is the standalone source repository for the `vulcan-workmem` Lua
 
 - `runtime/`: LuaSkill tool entries and shared WorkMem runtime logic
 - `help/`: strict help flow for AI-facing WorkMem workflow guidance
+- `schemas/`: strict AI-facing input schemas for entries that need structured arrays
 - `attachments/`: Codex skill workflow attachment for hosts that import agent instructions
 - `overflow_templates/`: reserved local overflow-template directory
 - `resources/`: reserved resource directory
@@ -188,7 +189,7 @@ Recommended local release steps:
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py --emit-source-yaml
-.\scripts\tag_release.ps1 0.1.1
+.\scripts\tag_release.ps1 0.1.4
 ```
 
 Unix-like shell:
@@ -196,7 +197,7 @@ Unix-like shell:
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py --emit-source-yaml
-./scripts/tag_release.sh 0.1.1
+./scripts/tag_release.sh 0.1.4
 ```
 
 ## One-Sentence Summary

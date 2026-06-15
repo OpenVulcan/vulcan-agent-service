@@ -1,36 +1,44 @@
 # `vulcan-file-edit`
 
-当你已经确认目标文件和目标行，需要做小范围文本编辑时，使用这个工具。
+Use this tool when the target file and target lines are already confirmed and you need one small text edit or a small batch of coordinated text edits.
 
-适合使用：
+Good fits:
 
-- 已经用 `vulcan-file-read` 看过目标上下文。
-- 只需要覆盖、追加、替换行范围或在某行前后插入文本。
-- 希望先得到预览，再决定是否写入。
-- `file` 路径需要引用环境变量时，可使用 `${env:NAME}` 占位符。
+- You already inspected the target context with `vulcan-file-read`.
+- You only need to overwrite, append, replace one line range, or insert before or after one existing line.
+- You want a preview before deciding whether to write.
+- The host should receive structured `change_set` edit records when supported.
+- The `file` path may use `${env:NAME}` placeholders.
+- Batch mode should edit at most 10 files in one call.
 
-不适合使用：
+Not a good fit:
 
-- 需要替换完整函数或方法时，优先使用 `vulcan-codekit-patch`。
-- 需要理解源码结构后再编辑时，先使用 `vulcan-codekit`。
-- 还没确认目标行时，不要直接编辑，先读取上下文。
+- Prefer `vulcan-file-create` when you need to create one file that does not exist yet.
+- Prefer `vulcan-codekit-patch` when whole-function or whole-method replacement is needed.
+- Use `vulcan-codekit` first when source structure must be understood before editing.
+- Do not edit yet if the target lines are still uncertain; read the context first.
 
-支持模式：
+Supported modes:
 
-- `overwrite`：覆盖整个文件；这是唯一允许在文件不存在时创建新文件的模式，`content=""` 会写成空文件。
-- `append`：追加到文件尾；如果原文件非空且末尾没有换行，会先补一个文件换行符，让追加内容从新行开始。
-- `replace_range`：替换指定既有 1-based 闭区间行范围；`content=""` 表示删除这段行。
-- `insert_before`：插入到指定既有行之前。
-- `insert_after`：插入到指定既有行之后。
+- `overwrite`: replace the whole file. For backward compatibility it still allows creation when the file does not exist, but `vulcan-file-create` is now the preferred entry for brand-new files; `content=""` creates or leaves an empty file.
+- `append`: append at the end of the file; when the original file is non-empty and lacks a final newline, one file newline is inserted first so appended content starts on a new line.
+- `replace_range`: replace one existing 1-based closed line range; `content=""` deletes that range.
+- `insert_before`: insert before one existing line.
+- `insert_after`: insert after one existing line.
 
-默认 `apply=false`，只返回预览 diff。只有显式传入 `apply=true` 时才会写入文件。
+Parameter choices:
 
-`append`、`insert_before`、`insert_after` 需要非空 `content`，避免无变化编辑被误判为已完成。
+- Single-file mode: send root-level `file`, `mode`, `content`, and any mode-specific line arguments.
+- Batch mode: send `files` as an array of edit objects. Each item can carry its own `mode`, `content`, `start_line`, `end_line`, or `line`.
+- Batch mode accepts at most 10 items.
+- Root-level `PWD` is optional. When it points to an existing directory, relative `file` values resolve from that root; otherwise every `file` must already be absolute.
+- `apply=false` by default, so the tool returns only a preview diff. The files are written only when `apply=true` is passed explicitly, and in batch mode that one flag applies to every item.
 
-边界行为：
+Boundary behavior:
 
-- 只有 `overwrite` 可以创建不存在的文件；其他模式遇到不存在文件会返回 `file_not_found`。
-- `insert_before` / `insert_after` 的 `line` 必须满足 `1 <= line <= 文件总行数`。
-- 空文件没有可锚定行，插入模式会返回 `line_out_of_bounds`；需要创建内容时使用 `overwrite`，需要文件尾新增时使用 `append`。
-- `insert_after` 允许 `line` 等于文件总行数，表示锚定最后一行之后插入；大于文件总行数仍返回 `line_out_of_bounds`，不会自动追加。
-- 预览最多展示 80 行变更上下文，超过时会在 diff 中标记 `preview truncated`。
+- Only `overwrite` still supports creating a missing file for backward compatibility; other modes return `file_not_found` when the file does not exist.
+- `append`, `insert_before`, and `insert_after` require non-empty `content` so no-op edits are not misreported as completed work.
+- `insert_before` and `insert_after` require `1 <= line <= total_lines`.
+- Empty files have no anchor lines, so insert modes return `line_out_of_bounds`; use `overwrite` to create content or `append` for file-end additions.
+- `insert_after` allows `line == total_lines`, which means insert after the last existing line; values beyond the total line count still return `line_out_of_bounds` and never append silently.
+- The preview shows at most 80 lines of changed context per file; larger previews are marked with `preview truncated`.

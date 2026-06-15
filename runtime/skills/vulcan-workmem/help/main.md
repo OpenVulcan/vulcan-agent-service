@@ -27,6 +27,8 @@ Parameters:
 - `task_name`: required stable task name.
 - `detail`: required concise task goal, boundary, known focus, and current starting point.
 
+If the host hides `LUASKILL_SID` from the visible tool schema, treat that as host-managed mode and let the host inject it automatically instead of reconstructing or asking for the raw identity yourself.
+
 After every successful create call, visibly tell the user the active ID in the conversation. Mark it strongly, for example:
 
 ```text
@@ -76,13 +78,13 @@ When `vulcan-workmem-get` omits `tags`, it returns a latest compact node preview
 
 Use `vulcan-workmem-get-all` only for full recovery, handoff, audit, or when the user explicitly asks for all memory.
 
-Use `vulcan-workmem-task-list` when you know a `LUASKILL_SID` but need to discover which task names exist under it.
+Use `vulcan-workmem-task-list` when the remembered scope already exists but the task name still needs to be discovered.
 
 ## Delete And Close
 
 Use `vulcan-workmem-delete` to remove selected stale tags from a task.
 
-Call `vulcan-workmem-task-close` only when the task is genuinely complete. Closing a task removes task-scoped nodes and may clean the internal empty identity row when no tasks remain, but it does not invalidate a saved long-lived `LUASKILL_SID`.
+Call `vulcan-workmem-task-close` only when the task is genuinely complete. Closing a task removes task-scoped nodes and may clean the internal empty identity row when no tasks remain, but it does not invalidate a saved long-lived remembered identity.
 
 ## Rule File Marker
 

@@ -340,6 +340,7 @@ This repository is the standalone source repository for the `vulcan-codekit` Lua
 
 - `runtime/`: LuaSkill tool entry points and shared runtime code
 - `rules/`: ast-grep structural matching rules split by language
+- `schemas/`: external JSON Schema files for complex AI-facing tool inputs
 - `help/`: strict help flows and per-tool documentation
 - `skills/`: Codex skill instructions and Agent usage guidance
 - `ast-grep-ffi/`: Rust-based ast-grep FFI dynamic library project
@@ -347,7 +348,7 @@ This repository is the standalone source repository for the `vulcan-codekit` Lua
 
 This repository is no longer maintained as a demo skill. It is the release source for `vulcan-codekit`. Releases produce two types of artifacts:
 
-- LuaSkill package: includes `runtime/`, `rules/`, `help/`, `skills/`, `dependencies.yaml`, and other runtime files
+- LuaSkill package: includes `runtime/`, `rules/`, `schemas/`, `help/`, `skills/`, `dependencies.yaml`, and other runtime files
 - FFI component package: includes the platform-specific `vulcan_codekit_ast_grep_ffi` dynamic library
 
 ## Dependencies and Release Artifacts

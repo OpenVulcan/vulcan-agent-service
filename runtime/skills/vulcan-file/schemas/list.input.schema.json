@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "PWD": {
+      "type": "string",
+      "description": "Optional project or workspace root used by the PWD convention. Accepts absolute POSIX, drive-letter, UNC, and translated Windows device paths such as /repo, D:\\work, D:/work, or //?/D:/work. Empty or non-directory values are treated as absent; when absent, path must already be absolute."
+    },
+    "path": {
+      "type": "string",
+      "description": "Use the narrowest directory that may contain the target files. Supports ${env:NAME} placeholders. When PWD resolves to an existing directory, relative path values are resolved from that root and omitting path scans from PWD; otherwise path must already be absolute."
+    },
+    "pattern": {
+      "type": "string",
+      "description": "Use a basename-only file-name glob when the extension or file name shape is known, such as *.rs, *.lua, or Cargo.*. Do not include path separators such as src/*.lua or **/*.md; narrow directories with path instead. Defaults to all file names."
+    },
+    "recursive": {
+      "type": "boolean",
+      "description": "Keep true when searching a project tree. Set false only when the target must be a direct child of path."
+    },
+    "noignore": {
+      "type": "boolean",
+      "description": "Use only when ignored/generated directories are intentionally needed. Defaults to a common .gitignore/.ignore subset plus high-noise built-ins; true disables both file-based and built-in ignores."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000,
+      "description": "Use to cap broad scans. Defaults to 1000 and must be a positive integer up to 100000. Raise it only when the result is truncated and more candidate file names are still needed."
+    }
+  }
+}

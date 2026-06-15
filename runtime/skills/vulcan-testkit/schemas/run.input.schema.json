@@ -1,0 +1,70 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "program": {
+      "type": "string",
+      "description": "Run-mode executable only. Must be a bare supported executable such as cargo, go, python, pytest, mypy, ruff, node, tsc, vitest, jest, npm, pnpm, or yarn. Omit when using analyze-only `log` mode. Shell-like/app-runtime programs and path-like values are blocked."
+    },
+    "args": {
+      "type": "array",
+      "description": "Run-mode argument array for a supported validation profile, for example cargo check, cargo test, go test -json ./..., python -m pytest, pytest, ruff check, node --check file.js, vitest run, jest, npm run test, or tsc --noEmit. Do not pass a shell command string. Values are converted to strings; hidden run/dev/watch/fix/write/install/debug modes are rejected before execution.",
+      "items": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ],
+        "description": "One scalar argument item. Non-scalar array items are rejected and accepted items are stringified before execution."
+      }
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Optional run-mode working directory. Defaults to the current runtime cwd and is only used when `program` is provided."
+    },
+    "stdin": {
+      "type": "string",
+      "description": "Optional run-mode stdin text. Omit for analyze-only `log` mode."
+    },
+    "log": {
+      "type": "string",
+      "description": "Analyze-only mode input. Provide an existing validation log instead of `program` to compress prior output without rerunning a command."
+    },
+    "phase": {
+      "type": "string",
+      "description": "Validation phase hint for root-cause ranking: build, test, check, lint, typecheck, or auto. Defaults to auto."
+    },
+    "tool_hint": {
+      "type": "string",
+      "description": "Known profile or adapter hint such as cargo, pytest, mypy, ruff, python, node, go, go-test, tsc, npm, pnpm, yarn, vitest, jest, js-test, or generic. Path-like or unknown names are rejected. Use only when output is mixed or auto-detection may be ambiguous."
+    },
+    "timeout_ms": {
+      "type": "number",
+      "description": "Optional run timeout in milliseconds. Defaults to 120000 and is capped at 600000."
+    },
+    "max_diagnostics": {
+      "type": "number",
+      "description": "Optional maximum root diagnostics to return. Defaults to 8 and is capped at 20."
+    },
+    "max_evidence_chars": {
+      "type": "number",
+      "description": "Optional maximum raw evidence characters per diagnostic. Defaults to 240 and is capped at 1000."
+    },
+    "include_warnings": {
+      "type": "boolean",
+      "description": "Whether warning diagnostics may be included when no errors are found. Defaults to true."
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "program"
+      ]
+    },
+    {
+      "required": [
+        "log"
+      ]
+    }
+  ]
+}

@@ -1,96 +1,54 @@
 name: vulcan-file
-version: 0.1.2
+version: 0.1.8
 debug: false
 help:
   main:
     description: Help agents decide when to use vulcan-file instead of CodeKit, rg, or shell snippets.
     file: help/help.md
   topics:
+    - name: create
+      description: Create one or more brand-new files with preview-first behavior.
+      file: help/create.md
     - name: read
-      description: Read one or more raw text snippets when the file path and approximate line area are known.
+      description: Read one or more raw text snippets, or batch multiple known file reads in one call.
       file: help/read.md
     - name: list
       description: Find candidate files cheaply before reading them.
       file: help/list.md
     - name: edit
-      description: Make small preview-first text edits after target lines have been inspected.
+      description: Make one or more small preview-first text edits after target lines have been inspected.
       file: help/edit.md
+    - name: delete
+      description: Preview and delete one or more regular files without supporting directory removal.
+      file: help/delete.md
 entries:
+  - name: create
+    description: "[AI FILE CREATE] Use when you want to create one brand-new file or up to 10 brand-new files with preview-first semantics. It errors when a target file already exists and returns a host change_set when supported."
+    lua_entry: runtime/vulcan-file-create.lua
+    lua_module: vulcan_file_create
+    help: create
+    input_schema_file: schemas/create.input.schema.json
   - name: read
-    description: "[AI FILE READ] Use when you already know the target file and line area and need exact source text. Pass lines_rule as start,count; separate multiple ranges with a real LF newline (\\n) inside the JSON string. Do not use this to search; use codekit-rg first."
+    description: "[AI FILE READ] Use when you already know the target file and line area and need exact source text. It supports single-file reads or up to 10 batch file reads. Prefer segments as an array of {start, count} objects; keep lines_rule only for legacy clients that cannot send arrays. Do not use this to search; use codekit-rg first."
     lua_entry: runtime/vulcan-file-read.lua
     lua_module: vulcan_file_read
     help: read
-    parameters:
-      - name: file
-        type: string
-        description: "Use the file path you already selected. Supports ${env:NAME} placeholders. Passing a directory is only for a quick direct-child Name listing; use vulcan-file-list for recursive discovery."
-        required: true
-      - name: lines_rule
-        type: string
-        description: 'Use when you need specific lines. Format: start,count. For multiple snippets, separate segments with LF newline (\n) inside the JSON string, for example "5,10\n25,30"; do not type the literal word "newline". Omit only when the beginning of the file-read budget is enough; default fallback is 200 lines.'
-        required: false
-      - name: numbered
-        type: boolean
-        description: "Keep true when you will cite or edit by line number. Set false only when raw text lines without L<number>: prefixes are more useful; the metadata header and multi-segment separators still remain."
-        required: false
+    input_schema_file: schemas/read.input.schema.json
   - name: list
     description: "[AI FILE LIST] Use before reading when you need to find candidate files cheaply. Prefer this over shell directory loops for a compact ignored-aware file map. Use codekit tools instead when you need AST structure."
     lua_entry: runtime/vulcan-file-list.lua
     lua_module: vulcan_file_list
     help: list
-    parameters:
-      - name: path
-        type: string
-        description: "Use the narrowest directory that may contain the target files. Supports ${env:NAME} placeholders. Omit only for a project-level map."
-        required: false
-      - name: pattern
-        type: string
-        description: "Use a basename-only file-name glob when the extension or file name shape is known, such as *.rs, *.lua, or Cargo.*. Do not include path separators such as src/*.lua or **/*.md; narrow directories with path instead. Defaults to all file names."
-        required: false
-      - name: recursive
-        type: boolean
-        description: "Keep true when searching a project tree. Set false only when the target must be a direct child of path."
-        required: false
-      - name: noignore
-        type: boolean
-        description: "Use only when ignored/generated directories are intentionally needed. Defaults to a common .gitignore/.ignore subset plus high-noise built-ins; true disables both file-based and built-in ignores."
-        required: false
-      - name: limit
-        type: number
-        description: "Use to cap broad scans. Defaults to 1000 and must be a positive integer up to 100000. Raise it only when the result is truncated and more candidate file names are still needed."
-        required: false
+    input_schema_file: schemas/list.input.schema.json
   - name: edit
-    description: "[AI FILE EDIT] Use for small text edits after you have read the target lines. It previews by default; pass apply=true only after the preview matches the intended change."
+    description: "[AI FILE EDIT] Use for small text edits after you have read the target lines. It supports single-file edits or up to 10 batch edits, previews by default, and should receive apply=true only after the preview matches the intended change."
     lua_entry: runtime/vulcan-file-edit.lua
     lua_module: vulcan_file_edit
     help: edit
-    parameters:
-      - name: file
-        type: string
-        description: "Use the exact file path to edit. Supports ${env:NAME} placeholders."
-        required: true
-      - name: mode
-        type: string
-        description: "Choose overwrite to replace or create a file, append for new-line file-end additions, replace_range for existing 1-based closed line ranges, or insert_before/insert_after for anchored inserts on existing lines."
-        required: true
-      - name: content
-        type: string
-        description: "Use the complete replacement or insertion text for the selected mode. Empty content is allowed only for overwrite or replace_range, where it clears the file or deletes the selected range."
-        required: true
-      - name: start_line
-        type: number
-        description: "Use only with replace_range; this is the first existing 1-based line to replace."
-        required: false
-      - name: end_line
-        type: number
-        description: "Use only with replace_range; this is the last existing 1-based line to replace."
-        required: false
-      - name: line
-        type: number
-        description: "Use only with insert_before or insert_after; this must point to an existing 1-based anchor line. Out-of-range values return line_out_of_bounds instead of appending."
-        required: false
-      - name: apply
-        type: boolean
-        description: "Leave false for preview. Set true only when the previewed edit is ready to write."
-        required: false
+    input_schema_file: schemas/edit.input.schema.json
+  - name: delete
+    description: "[AI FILE DELETE] Use to preview and delete one regular file or up to 10 regular files. It rejects directories explicitly, previews by default, and returns a host change_set when supported."
+    lua_entry: runtime/vulcan-file-delete.lua
+    lua_module: vulcan_file_delete
+    help: delete
+    input_schema_file: schemas/delete.input.schema.json

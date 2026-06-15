@@ -42,7 +42,7 @@ AI 编程智能体经常会在这些场景里丢失有用的工作状态：
 - 通过 LuaSkills 运行时把项目级任务节点保存到 SQLite。
 - 鼓励保存紧凑事实，而不是完整日志或源码倾倒。
 - 先列出 tag，再按需读取内容，避免一次性污染上下文。
-- 将任务生命周期和长期 `LUASKILL_SID` 分离。
+- 将任务生命周期和长期工作记忆身份分离。
 - 让记忆使用保持显式，而不是自动触发。
 
 ## 什么时候使用
@@ -63,9 +63,9 @@ AI 编程智能体经常会在这些场景里丢失有用的工作状态：
 
 创建或恢复一个项目级 WorkMem 任务。
 
-在明确需要记忆的任务开始时使用。如果已有 `LUASKILL_SID`，通过 `LUASKILL_SID` 传入；只有在确实需要生成新的公开身份时才省略它。
+在明确需要记忆的任务开始时使用。当宿主暴露 `LUASKILL_SID` 字段时，按该字段说明传递；当宿主隐藏它时，由宿主管理表面自动注入并保护该身份。
 
-使用公开身份的 create 成功后，智能体都必须在对话中显著告知用户当前 `LUASKILL_SID`，避免上下文压缩后丢失。宿主管理模式下，宿主可以注入并脱敏 `LUASKILL_SID`；智能体不应询问、打印或保存原始托管身份。
+使用公开身份的 create 成功后，智能体都必须在对话中显著告知用户当前 `LUASKILL_SID`，避免上下文压缩后丢失。宿主管理模式下，智能体不应询问、打印或保存原始托管身份。
 
 ### `vulcan-workmem-set`
 
@@ -108,15 +108,15 @@ AI 编程智能体经常会在这些场景里丢失有用的工作状态：
 
 ### `vulcan-workmem-task-list`
 
-列出一个 `LUASKILL_SID` 下已有的任务名。
+列出已有的任务名。
 
-适用于已知 ID 但不知道任务名的情况。
+适用于当前记忆范围已经存在、但还不知道任务名的情况。
 
 ### `vulcan-workmem-task-close`
 
 关闭一个任务并移除任务级节点。
 
-关闭最后一个任务时可能清理内部空身份行，但不会使已保存的长期 `LUASKILL_SID` 失效。
+关闭最后一个任务时可能清理内部空身份行，但不会使已保存的长期工作记忆身份失效。
 
 ## 工作流
 
@@ -140,6 +140,7 @@ flow=main
 
 - `runtime/`：LuaSkill 工具入口与共享 WorkMem 运行时逻辑
 - `help/`：面向 AI 的严格 help flow
+- `schemas/`：为需要结构化数组参数的入口提供严格的 AI-facing 输入 schema
 - `attachments/`：供宿主导入的 Codex skill 工作流附件
 - `overflow_templates/`：预留的本地 overflow 模板目录
 - `resources/`：预留资源目录
@@ -188,7 +189,7 @@ python .\scripts\package_skill.py --emit-source-yaml
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py --emit-source-yaml
-.\scripts\tag_release.ps1 0.1.1
+.\scripts\tag_release.ps1 0.1.4
 ```
 
 Unix-like shell：
@@ -196,7 +197,7 @@ Unix-like shell：
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py --emit-source-yaml
-./scripts/tag_release.sh 0.1.1
+./scripts/tag_release.sh 0.1.4
 ```
 
 ## 一句话总结

@@ -46,8 +46,15 @@ function Resolve-PythonCommand {
 
 # ProjectRoot points at the MCP repository root regardless of the caller location.
 # ProjectRoot 指向 MCP 仓库根目录，避免调用方当前位置影响路径解析。
-$ProjectRoot = Split-Path -Parent $PSScriptRoot
-Set-Location $ProjectRoot
+$ScriptRoot = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($ScriptRoot) -and -not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+    $ScriptRoot = Split-Path -Parent $PSCommandPath
+}
+if ([string]::IsNullOrWhiteSpace($ScriptRoot)) {
+    throw "Unable to resolve update_skills.ps1 script root."
+}
+$ProjectRoot = Split-Path -Parent $ScriptRoot
+Set-Location -LiteralPath $ProjectRoot
 
 $PythonCommand = @(Resolve-PythonCommand)
 $PythonArgs = @(
@@ -80,6 +87,14 @@ $PythonLauncherArgs = @()
 if ($PythonCommand.Length -gt 1) {
     $PythonLauncherArgs = $PythonCommand[1..($PythonCommand.Length - 1)]
 }
+$ProcessArgs = @($PythonLauncherArgs + $PythonArgs | Where-Object {
+    $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_)
+})
 
-& $PythonLauncher @($PythonLauncherArgs + $PythonArgs)
-exit $LASTEXITCODE
+$PythonProcess = Start-Process `
+    -FilePath $PythonLauncher `
+    -ArgumentList $ProcessArgs `
+    -NoNewWindow `
+    -Wait `
+    -PassThru
+exit $PythonProcess.ExitCode

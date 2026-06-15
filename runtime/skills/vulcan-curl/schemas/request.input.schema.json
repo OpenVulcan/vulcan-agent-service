@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "description": "Supported curl-style argv input for advanced API/debug HTTP requests. The tool returns raw HTTP response content and is not intended for webpage scraping, rendered page inspection, or HTML-to-Markdown conversion.",
+  "properties": {
+    "args": {
+      "type": "array",
+      "description": "Supported curl-style argv list excluding the leading executable. Parsed by the Lua runtime as a supported subset, not full curl CLI compatibility. Shell expansion, stdin/TTY interaction, interactive prompts, curl config files, and unsupported dash-prefixed curl options are not available. This entry is meant for advanced API/debug requests rather than webpage rendering or content extraction. Example: [\"-X\", \"POST\", \"https://example.com\", \"-H\", \"Authorization: Bearer ...\"]",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Optional working directory used to resolve relative file paths for -o, -F @file, <file, --cacert, --capath, --cert, --key, --proxy-cacert, --proxy-capath, --proxy-cert, --proxy-key and related inputs."
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "description": "Optional default timeout in milliseconds when curl args do not provide --max-time. Defaults to 60000.",
+      "minimum": 0
+    },
+    "flags": {
+      "type": "string",
+      "description": "Optional comma-separated render flags string outside args. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored. Inline body output is raw HTTP content, not webpage rendering or Markdown conversion."
+    }
+  },
+  "required": [
+    "args"
+  ]
+}

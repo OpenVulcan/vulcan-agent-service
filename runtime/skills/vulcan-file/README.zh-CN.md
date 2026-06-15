@@ -16,20 +16,28 @@
 
 - `vulcan-file-list`
 - `vulcan-file-read`
+- `vulcan-file-create`
 - `vulcan-file-edit`
+- `vulcan-file-delete`
 
 在部分 MCP 客户端或宿主绑定里，工具名可能会被转写成下划线形式，例如 `vulcan_file_read`。这只是暴露层命名差异，语义上仍对应同一组 File 入口。
 
 它更像一层专门给 Agent 和自动化工程流准备的“文本文件工作台”：
 
 - 先用低 token 文件地图缩小候选范围
-- 再用明确行号读取原文
-- 再基于已确认上下文预览编辑
-- 最后只在预览符合预期时写入
+- 文件已存在时，再用明确行号读取原文
+- 再基于已确认上下文预览创建或编辑
+- 在需要清理文件生命周期时，再用 `delete` 预览普通文件删除
+- 最后只在预览符合预期时执行
 
 一句话：
 
-**先定位文件，再读取证据；先看预览，再落盘修改。**
+**先定位文件，再读取证据；先看创建、编辑或删除预览，再显式执行。**
+
+路径公约：
+
+- 根级 `PWD` 用作相对 `file` 或 `path` 参数共享的项目/工作区根目录。
+- 当 `PWD` 未传、为空，或不是一个已存在目录时，File 不会再回退到运行时 `cwd`；这时必须直接传绝对路径。
 
 ## 这东西到底解决什么问题
 
@@ -94,6 +102,7 @@ Agent 场景里真正缺的不是更多原始能力，而是更稳定的操作�
 典型参数：
 
 - `path`：扫描根目录，应该尽量传最小可能目录；路径值可以包含 `${env:NAME}` 占位符
+- `PWD`：可选的共享项目/工作区根目录。只有当它指向已存在目录时，相对 `path` 才会基于它解析；否则 `path` 必须本身就是绝对路径。不传 `path` 时会直接从 `PWD` 开始扫描。
 - `pattern`：basename-only 文件名 glob，例如 `*.lua`、`*.md`、`Cargo.*`；只匹配文件名本身，不能传 `src/*.lua` 或 `**/*.md`，需要缩小目录时使用 `path`
 - `recursive`：默认递归；只看直接子项时设为 `false`
 - `noignore`：只有确实需要看生成物或被忽略目录时才设为 `true`；设为 `true` 会同时关闭 ignore 文件规则和内建高噪声目录忽略
@@ -107,25 +116,41 @@ ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定�
 
 当文件路径和大致行号已经明确后，用它读取精确原文。
 
-它的核心参数是 `lines_rule`，格式是 `start,count`：
+它支持一个根级单文件请求，也支持最多 10 个条目的 `files` 批量读取。批量模式下，根级 `numbered` 会作为所有条目的默认值，除非某个条目单独覆盖。
+
+如果客户端支持完整 JSON Schema，优先使用结构化 `segments` 数组：
+
+```json
+{
+  "PWD": "/workspace/project",
+  "file": "src/example.lua",
+  "segments": [
+    { "start": 5, "count": 10 },
+    { "start": 25, "count": 30 }
+  ]
+}
+```
+
+这表示从第 5 行读取 10 行，再从第 25 行读取 30 行。多段读取会按请求顺序输出，不会擅自合并重叠区间。
+
+`lines_rule` 仍保留为不能发送数组参数的客户端提供旧版兼容，格式是 `start,count`：
 
 ```text
 5,10
 25,30
 ```
 
-这表示从第 5 行读取 10 行，再从第 25 行读取 30 行。多段读取会按请求顺序输出，不会擅自合并重叠区间。
-
 在 JSON 参数中，多段规则必须使用字符串里的 `\n` 分隔：
 
 ```json
 {
+  "PWD": "/workspace/project",
   "file": "src/example.lua",
   "lines_rule": "5,10\n25,30"
 }
 ```
 
-这里的分隔符是真实换行符，不是字面字符串 `"newline"`。
+这里的分隔符是真实换行符，不是字面字符串 `"newline"`。`segments` 与 `lines_rule` 不能同时传；只要客户端支持数组 schema，就应优先使用 `segments`。
 
 它会返回：
 
@@ -136,36 +161,70 @@ ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定�
 - 当前展示范围
 - 片段数量
 - 是否因为超过文件尾部而截断
+- 多文件批量读取时的分隔区块
 
 默认会保留 `L12:` 这类稳定行号前缀，便于后续 review、引用或调用 `vulcan-file-edit`。如果只需要无行号前缀的正文行，可以把 `numbered` 设为 `false`；文件头和多段分隔线仍会保留。
 
 边界行为也很明确：
 
 - `start` 与 `count` 必须是正整数
+- `segments` 必须是非空数组，且每一项都要提供正整数 `start` 与 `count`
 - `start` 超过文件总行数时返回参数错误
 - `count` 超过文件尾部时自动截到 EOF，并在 header 中标记
 - 不传 `lines_rule` 时读取文件开头，行数来自宿主 `file_read` 预算；宿主未提供预算时默认 200 行
 - `lines_rule` 中出现字面字符串 `"newline"` 会返回 `invalid_lines_rule`，需要改为 JSON 字符串中的 `\n`
+- 同时传 `segments` 与 `lines_rule` 会返回 `conflicting_range_arguments`
+- 同时传根级单文件参数和 `files` 会返回 `conflicting_batch_arguments`
 - 目录路径只用于快速查看直接子项名称，递归找文件应使用 `vulcan-file-list`
 - 路径值可以包含 `${env:NAME}` 占位符，工具会在访问文件系统前用 Lua `os.getenv` 展开
 
 它不是“翻页猜文件”的工具。还不知道文本在哪里时，应先搜索或列候选文件。
 
+### `vulcan-file-create`
+
+当你需要创建一个原本不存在的文件，或者一小批全新文件，并且希望先看预览再决定是否写入时，使用这个工具。
+
+适合场景：
+
+- 目标文件当前还不存在
+- 已经知道最终文件路径和完整文件内容
+- 希望明确区分“创建新文件”和“修改旧文件”
+- 当宿主开启结构化结果时，希望返回 canonical `change_set` 创建记录
+
+典型参数：
+
+- `PWD`：可选的共享项目/工作区根目录。只有当它指向已存在目录时，相对 `file` 才会基于它解析；否则 `file` 必须本身就是绝对路径
+- `file`：精确目标文件路径；支持 `${env:NAME}` 占位符
+- `content`：新文件的完整内容；`""` 合法，可创建空文件
+- `files`：可选批量形式，最多 10 个 `{ file, content }` 对象；不能和根级 `file` / `content` 同时传
+- `apply`：默认保持 `false` 只预览，确认无误后再设为 `true`
+
+边界行为：
+
+- 目标已存在时返回 `file_already_exists`，不会静默覆盖
+- 父目录不存在时返回 `parent_directory_not_found`
+- 父路径存在但不是目录时返回 `parent_path_not_directory`
+- 预览会以仅包含新增行的 diff 形式展示，最多展示 80 行
+- 批量模式最多接受 10 个条目，且整批共用一个 `apply` 标记
+
 ### `vulcan-file-edit`
 
 当目标文件和目标行已经确认后，用它做小范围文本编辑。
 
+它支持一个根级单文件编辑请求，也支持最多 10 个条目的 `files` 批量编辑。批量模式适合在已确认上下文后，对多个已知文件做协同的小范围文本修改。
+
 它默认只预览，不写入。只有显式传入 `apply=true` 时才会落盘。
 
-`file` 路径可以包含 `${env:NAME}` 占位符，工具会在访问文件系统前用 Lua `os.getenv` 展开。
+根级 `PWD` 可以指向当前项目或工作区根目录。只有当 `PWD` 有效时，相对 `file` 才会基于它解析；否则 `file` 必须本身就是绝对路径。`${env:NAME}` 占位符仍会在访问文件系统前用 Lua `os.getenv` 展开。
 
 支持模式：
 
-- `overwrite`：覆盖整个文件；文件不存在时这是唯一允许创建新文件的模式，`content=""` 会写成空文件
+- `overwrite`：覆盖整个文件；为了兼容旧调用，它仍允许在文件不存在时创建新文件，但新建文件时现在优先使用 `vulcan-file-create`，`content=""` 会写成空文件
 - `append`：以新行形式追加到文件尾；如果原文件非空且末尾没有换行，会先补一个文件换行符
 - `replace_range`：替换指定既有 1-based 闭区间行范围；`content=""` 表示删除这段行
 - `insert_before`：插入到指定既有 1-based 锚点行之前
 - `insert_after`：插入到指定既有 1-based 锚点行之后
+- `files`：可选批量形式，最多 10 个逐文件编辑对象；不能和根级单文件编辑参数同时传
 
 `insert_before` 与 `insert_after` 要求 `1 <= line <= 文件总行数`。越界会返回 `line_out_of_bounds`，不会自动追加到文件末尾。空文件没有可锚定行，需要创建内容时使用 `overwrite`，需要文件尾新增时使用 `append`。
 
@@ -176,9 +235,29 @@ ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定�
 - 原始影响范围
 - 编辑后影响范围
 - 面向操作的 diff 预览
+- 当宿主开启结构化结果时返回 canonical `change_set`
 - 参数错误时的明确修正提示
 
 它刻意不做复杂结构判断。如果目标是完整函数或方法替换，应使用 `vulcan-codekit-patch`；如果需要先理解源码结构，应先使用 CodeKit。
+
+### `vulcan-file-delete`
+
+当你需要预览并删除一个普通文件，或者一小批普通文件，并且希望宿主在支持时收到 canonical 删除元数据时，使用这个工具。
+
+典型参数：
+
+- `file`：要删除的精确普通文件路径；支持 `${env:NAME}` 占位符
+- `PWD`：可选的共享项目/工作区根目录。只有当它指向已存在目录时，相对 `file` 才会基于它解析；否则 `file` 必须本身就是绝对路径
+- `files`：可选批量形式，最多 10 个 `{ file }` 对象；不能和根级 `file` 同时传
+- `apply`：默认保持 `false` 只预览，确认无误后再设为 `true`
+
+边界行为：
+
+- 目标不存在时返回 `file_not_found`
+- 不支持目录删除；目录路径会返回 `directory_delete_unsupported`
+- 文本类文件会返回按行删除预览和宿主删除内容
+- 宿主 `change_set` 删除记录遵循官方内容模式：不超过 500 行时返回 `content_mode=\"full\"` 和完整 `content`；超过 500 行时会主动切换为 `content_mode=\"truncated\"`，并返回 `total_line_count`、前 50 行 `content_head` 与后 50 行 `content_tail`
+- 二进制或非文本文件不会伪造真实行内容，而是使用稳定占位符 `Binary file`，并在预览层按 1 行删除处理
 
 ## 一套更适合 Agent 的文件工作流
 
@@ -192,9 +271,9 @@ ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定�
 而是：
 
 1. `list` 获取候选文件地图
-2. `read` 精确读取目标行段
-3. `edit` 生成预览
-4. 预览正确后再次 `edit apply=true`
+2. 文件已存在时，用 `read` 精确读取目标行段
+3. 新文件用 `create` 预览，小改动用 `edit` 预览，普通文件移除用 `delete` 预览
+4. 预览正确后再执行 `create apply=true`、`edit apply=true` 或 `delete apply=true`
 
 也就是：
 
@@ -228,10 +307,11 @@ ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定�
 - 行号格式能否直接引用
 - 编辑前有没有足够清晰的预览
 
-有 `Vulcan File` 时，这些问题被固定成三个稳定入口：
+有 `Vulcan File` 时，这些问题被固定成四个稳定入口：
 
 - 文件候选：`list`
 - 原文证据：`read`
+- 新文件创建：`create`
 - 小文本修改：`edit`
 
 这不是把 shell 能力简单换个名字，而是把常见文件动作整理成 Agent 更容易安全调用的协议。
@@ -248,6 +328,7 @@ ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定�
 
 - `vulcan-file-list`
 - `vulcan-file-read`
+- `vulcan-file-create`
 - `vulcan-file-edit`
 
 ## 独立仓库说明
@@ -255,6 +336,7 @@ ignore 处理不是完整 Git ignore 引擎；复杂转义和部分高级否定�
 当前仓库是 `vulcan-file` LuaSkill 的独立源码仓库，内容对应 LuaSkills 运行时中的正式 skill 包：
 
 - `runtime/`：LuaSkill 工具入口
+- `schemas/`：面向 AI 的输入 schema 文件
 - `help/`：严格帮助流与各工具说明
 - `overflow_templates/`：预留的本地超限模板目录
 - `resources/`：预留资源目录
@@ -300,7 +382,7 @@ python .\scripts\package_skill.py --emit-source-yaml
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.2
+.\scripts\tag_release.ps1 0.1.3
 ```
 
 Unix-like shell：
@@ -308,7 +390,7 @@ Unix-like shell：
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.2
+./scripts/tag_release.sh 0.1.3
 ```
 
 ## 一句话总结

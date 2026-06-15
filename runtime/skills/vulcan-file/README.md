@@ -18,20 +18,28 @@ The current LuaSkills naming model uses the canonical `skill_id-entry_name` form
 
 - `vulcan-file-list`
 - `vulcan-file-read`
+- `vulcan-file-create`
 - `vulcan-file-edit`
+- `vulcan-file-delete`
 
 Some MCP clients or host bindings may expose the same tools with underscores, such as `vulcan_file_read`. That is only a naming difference at the exposure layer; the semantics still map to the same File entries.
 
 It is closer to a small text-file workbench built for agents and automated engineering flows:
 
 - First shrink the candidate set with a low-token file map.
-- Then read raw text with explicit line numbers.
-- Then preview edits based on inspected context.
-- Finally write only when the preview matches the intended change.
+- Then read raw text with explicit line numbers when the file already exists.
+- Then preview new files with `create` or small changes with `edit`.
+- Then preview regular-file removals with `delete` when lifecycle cleanup is needed.
+- Finally apply only when the preview matches the intended change.
 
 In one sentence:
 
-**Find the file, read the evidence, preview the edit, then write.**
+**Find the file, read the evidence, preview the create, edit, or delete step, then apply.**
+
+Path convention:
+
+- Root-level `PWD` is the shared project or workspace root for relative `file` or `path` arguments.
+- When `PWD` is omitted, empty, or not an existing directory, File does not fall back to the runtime cwd; pass absolute paths instead.
 
 ## What Problem It Solves
 
@@ -96,6 +104,7 @@ Good fits:
 Typical parameters:
 
 - `path`: scan root; pass the narrowest plausible directory. Path values may include `${env:NAME}` placeholders.
+- `PWD`: optional shared project or workspace root. Relative `path` values are resolved from `PWD` when it points to an existing directory; otherwise `path` must already be absolute. If `path` is omitted, the scan starts from `PWD`.
 - `pattern`: basename-only filename glob, such as `*.lua`, `*.md`, or `Cargo.*`; use `path` instead of `src/*.lua` or `**/*.md` when narrowing directories.
 - `recursive`: recursive by default; set to `false` for direct children only.
 - `noignore`: set to `true` only when ignored or generated files are intentionally needed; this disables both ignore files and built-in high-noise directory skips.
@@ -109,25 +118,41 @@ Ignore handling is not a full Git ignore engine; complex escapes and some advanc
 
 Use this after the file path and approximate line area are already known.
 
-Its core argument is `lines_rule`, using `start,count` format:
+It supports one root-level file request or a `files` batch of up to 10 items. In batch mode, root `numbered` acts as the default for every item unless an item overrides it.
+
+Prefer the structured `segments` array when the client supports full JSON Schema:
+
+```json
+{
+  "PWD": "/workspace/project",
+  "file": "src/example.lua",
+  "segments": [
+    { "start": 5, "count": 10 },
+    { "start": 25, "count": 30 }
+  ]
+}
+```
+
+Each segment reads `count` lines starting from the 1-based `start` line. Multi-segment reads are rendered in request order, and overlapping ranges are not merged implicitly.
+
+`lines_rule` remains available as a legacy fallback for clients that cannot send arrays. It still uses `start,count` format:
 
 ```text
 5,10
 25,30
 ```
 
-This reads 10 lines starting at line 5, then 30 lines starting at line 25. Multi-segment reads are rendered in request order, and overlapping ranges are not merged implicitly.
-
 In JSON arguments, separate multiple segments with `\n` inside the string:
 
 ```json
 {
+  "PWD": "/workspace/project",
   "file": "src/example.lua",
   "lines_rule": "5,10\n25,30"
 }
 ```
 
-The separator is a real newline in the JSON string, not the literal word `"newline"`.
+The separator is a real newline in the JSON string, not the literal word `"newline"`. Do not send `segments` and `lines_rule` together; when the client supports array schemas, prefer `segments`.
 
 The result includes:
 
@@ -138,36 +163,70 @@ The result includes:
 - Displayed line ranges
 - Segment count
 - Whether the request was clipped at EOF
+- Batch separators when multiple file requests are executed in one call
 
 By default, it keeps stable prefixes such as `L12:` so later review comments, citations, or `vulcan-file-edit` calls can refer to exact lines. Set `numbered=false` when plain raw text lines are more useful; the metadata header and multi-segment separators still remain.
 
 Boundary behavior is explicit:
 
 - `start` and `count` must be positive integers.
+- `segments` must be a non-empty array and each item must contain positive-integer `start` and `count` fields.
 - A `start` beyond the total line count returns a parameter error.
 - A `count` that extends past EOF is clipped and marked in the header.
 - Omitting `lines_rule` reads the beginning of the file using the host `file_read` budget, with a 200-line fallback when the host provides no budget.
 - A literal `"newline"` token in `lines_rule` returns `invalid_lines_rule`; use `\n` in the JSON string instead.
+- Sending both `segments` and `lines_rule` returns `conflicting_range_arguments`.
+- Sending both root-level single-file arguments and `files` returns `conflicting_batch_arguments`.
 - Directory paths are only for a quick direct-child name listing; recursive discovery belongs in `vulcan-file-list`.
 - Path values may include `${env:NAME}` placeholders, which are expanded with Lua `os.getenv` before filesystem access.
 
 This is not a tool for guessing through pages. If the text location is unknown, search or list candidates first.
 
+### `vulcan-file-create`
+
+Use this when you need to create one brand-new file or a small batch of brand-new files and want preview-first behavior instead of writing immediately.
+
+Typical fits:
+
+- The target file does not exist yet.
+- The final file path and full file content are already known.
+- The workflow should distinguish clearly between creating a new file and editing an existing one.
+- The host should receive one canonical `change_set` create record when structured host results are enabled.
+
+Typical parameters:
+
+- `PWD`: optional shared project or workspace root. Relative `file` values are resolved from `PWD` when it points to an existing directory; otherwise `file` must already be absolute.
+- `file`: exact target file path; `${env:NAME}` placeholders are supported.
+- `content`: complete content of the new file; `""` is allowed and creates an empty file.
+- `files`: optional batch form with up to 10 `{ file, content }` objects; do not send it together with root `file`/`content`.
+- `apply`: leave false for preview, set true only when the preview is correct.
+
+Boundary behavior is explicit:
+
+- Existing targets return `file_already_exists`; they are never overwritten silently.
+- Missing parent directories return `parent_directory_not_found`.
+- Parent paths that exist but are not directories return `parent_path_not_directory`.
+- Preview output shows the creation as a plus-only diff block and is truncated after 80 preview lines.
+- Batch mode accepts at most 10 items, and one `apply` flag controls the whole batch.
+
 ### `vulcan-file-edit`
 
 Use this for small text edits after the target file and target lines have been confirmed.
 
+It supports one root-level edit request or a `files` batch of up to 10 items. Batch mode is useful when several known files need coordinated preview-first text changes in one call.
+
 It previews by default and does not write. A write only happens when `apply=true` is passed explicitly.
 
-The `file` path may include `${env:NAME}` placeholders, which are expanded with Lua `os.getenv` before filesystem access.
+The root `PWD` parameter may point to the current project or workspace root. When `PWD` is valid, relative `file` values resolve from it; otherwise `file` must already be absolute. `${env:NAME}` placeholders are still expanded with Lua `os.getenv` before filesystem access.
 
 Supported modes:
 
-- `overwrite`: replace the whole file, or create it when it does not exist; `content=""` creates or leaves an empty file.
+- `overwrite`: replace the whole file. For backward compatibility it still creates the file when it does not exist, but `vulcan-file-create` is now the preferred entry for brand-new files; `content=""` creates or leaves an empty file.
 - `append`: append at the end of the file as new lines; if the original file is non-empty and lacks a final newline, one is inserted before the appended content.
 - `replace_range`: replace an existing 1-based closed line range; `content=""` deletes that range.
 - `insert_before`: insert before an existing 1-based anchor line.
 - `insert_after`: insert after an existing 1-based anchor line.
+- `files`: optional batch form with up to 10 per-file edit objects; do not send it together with root single-file edit arguments.
 
 `insert_before` and `insert_after` require `1 <= line <= total_lines`. Out-of-range anchors return `line_out_of_bounds`; they do not silently append. For empty files, use `overwrite` to create content or `append` for file-end additions.
 
@@ -178,9 +237,29 @@ The result includes:
 - Original affected span
 - Edited affected span
 - Operation-oriented diff preview
+- A canonical host `change_set` when structured host results are enabled by the host
 - Clear correction hints for parameter errors
 
 It deliberately avoids complex structural reasoning. Use `vulcan-codekit-patch` for whole-function or whole-method replacement. Use CodeKit first when source structure must be understood before editing.
+
+### `vulcan-file-delete`
+
+Use this when you need to preview and remove one regular file or a small batch of regular files, and the host should receive canonical delete metadata when supported.
+
+Typical parameters:
+
+- `file`: exact regular-file path to remove; `${env:NAME}` placeholders are supported.
+- `PWD`: optional shared project or workspace root. Relative `file` values are resolved from `PWD` when it points to an existing directory; otherwise `file` must already be absolute.
+- `files`: optional batch form with up to 10 `{ file }` objects; do not send it together with root `file`.
+- `apply`: leave false for preview, set true only when the preview is correct.
+
+Boundary behavior is explicit:
+
+- Missing targets return `file_not_found`.
+- Directory removal is not supported; directory paths return `directory_delete_unsupported`.
+- Text-like files return line-oriented delete previews and host delete content.
+- Host `change_set` delete records follow the official content modes: up to 500 lines they return `content_mode="full"` with full `content`, and above 500 lines they proactively switch to `content_mode="truncated"` with `total_line_count`, `content_head`, and `content_tail` for the first and last 50 lines.
+- Binary or non-text files use the stable placeholder `Binary file` and report one removed line for preview purposes.
 
 ## A Better File Workflow For Agents
 
@@ -194,9 +273,9 @@ In `Vulcan File`, the recommended path is usually not:
 Instead:
 
 1. Use `list` to get a candidate file map.
-2. Use `read` to inspect exact target lines.
-3. Use `edit` to generate a preview.
-4. Use `edit apply=true` only after the preview is correct.
+2. Use `read` to inspect exact target lines when the file already exists.
+3. Use `create` to preview brand-new files, `edit` to preview small changes to existing files, or `delete` to preview regular-file removal.
+4. Use `create apply=true`, `edit apply=true`, or `delete apply=true` only after the preview is correct.
 
 In other words:
 
@@ -230,10 +309,11 @@ Those commands work, but each call requires a fresh decision:
 - Can the line format be cited directly?
 - Is there a clear enough preview before editing?
 
-With `Vulcan File`, these concerns are organized into three stable entries:
+With `Vulcan File`, these concerns are organized into four stable entries:
 
 - File candidates: `list`
 - Raw evidence: `read`
+- Brand-new files: `create`
 - Small text changes: `edit`
 
 This is not shell functionality with a different name. It is a small protocol that makes common file actions safer for agents to call.
@@ -250,6 +330,7 @@ This is not shell functionality with a different name. It is a small protocol th
 
 - `vulcan-file-list`
 - `vulcan-file-read`
+- `vulcan-file-create`
 - `vulcan-file-edit`
 
 ## Repository Notes
@@ -257,6 +338,7 @@ This is not shell functionality with a different name. It is a small protocol th
 This repository is the standalone source repository for the `vulcan-file` LuaSkill package. It maps to the published skill package used by the LuaSkills runtime:
 
 - `runtime/`: LuaSkill tool entries
+- `schemas/`: AI-facing input schema files
 - `help/`: strict help flows and per-tool guidance
 - `overflow_templates/`: reserved local overflow-template directory
 - `resources/`: reserved resource directory
@@ -302,7 +384,7 @@ Recommended local release steps:
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.2
+.\scripts\tag_release.ps1 0.1.3
 ```
 
 Unix-like shell:
@@ -310,7 +392,7 @@ Unix-like shell:
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.2
+./scripts/tag_release.sh 0.1.3
 ```
 
 ## One-Sentence Summary

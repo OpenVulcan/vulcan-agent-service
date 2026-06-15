@@ -1,180 +1,36 @@
 name: vulcan-curl
-version: 0.1.1
+version: 0.1.6
 debug: false
 help:
   main:
-    description: Help agents choose structured GET/POST entries or supported curl-style argv for one HTTP request.
+    description: Help agents choose structured GET/POST entries or supported curl-style argv for one API/debug HTTP request, not webpage scraping or HTML-to-Markdown fetching.
     file: help/help.md
   topics:
     - name: get
-      description: Simple GET request workflow.
+      description: Simple API/debug GET request workflow.
       file: help/get.md
     - name: post
-      description: Simple POST and multipart request workflow.
+      description: Simple API/debug POST and multipart request workflow.
       file: help/post.md
     - name: request
-      description: Supported curl-style argv request workflow.
+      description: Supported curl-style argv workflow for advanced API/debug HTTP requests.
       file: help/request.md
 entries:
   - name: get
-    description: "Execute one simple GET request with url, params, headers, and timeout only. Use the base request entry for supported curl-style flags or advanced TLS, proxy, multipart upload, and retry needs."
+    description: "Execute one simple GET request for API debugging, webhook checks, or file downloads with url, params, headers, and timeout only. This tool returns raw HTTP response content and does not convert webpages to Markdown; use a browser-oriented tool for webpage fetching or rendered page inspection."
     lua_entry: runtime/vulcan-curl-get.lua
     lua_module: vulcan_curl_get
     help: get
-    parameters:
-      - name: url
-        type: string
-        description: "Target request URL."
-        required: true
-      - name: params
-        type: object
-        description: "Optional query params object. Object values are URL-encoded and appended automatically."
-        required: false
-      - name: params_list
-        type: array
-        description: "Optional raw query fragment array such as [\"q=hello\", \"page=1\"]."
-        required: false
-      - name: headers
-        type: object
-        description: "Optional request headers as a simple object map."
-        required: false
-      - name: header_lines
-        type: array
-        description: "Optional raw header string array such as [\"Accept: application/json\"]."
-        required: false
-      - name: bearer
-        type: string
-        description: "Optional bearer token shortcut. Adds Authorization: Bearer <token> unless Authorization is already provided in headers."
-        required: false
-      - name: basic
-        type: object
-        description: "Optional basic auth shortcut object with username and password."
-        required: false
-      - name: basic_text
-        type: string
-        description: "Optional basic auth shortcut string in the form user:pass."
-        required: false
-      - name: timeout_ms
-        type: number
-        description: "Optional request timeout in milliseconds. Defaults to 60000."
-        required: false
-      - name: follow_location
-        type: boolean
-        description: "Optional redirect-follow flag for common 30x cases."
-        required: false
-      - name: download_to
-        type: string
-        description: "Optional local file path used to save the response body."
-        required: false
-      - name: save_headers_to
-        type: string
-        description: "Optional local file path used to save response headers."
-        required: false
-      - name: flags
-        type: string
-        description: "Optional comma-separated render flags string. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
-        required: false
+    input_schema_file: schemas/get.input.schema.json
   - name: post
-    description: "Execute one simple POST request with url, headers, and one body mode: json, form, or raw body. Use the base request entry for supported curl-style flags or advanced TLS, proxy, multipart upload, and retry needs."
+    description: "Execute one simple POST request for API debugging, webhook testing, or multipart upload checks with url, headers, and one body mode: json, form, or raw body. This tool returns raw HTTP response content and does not convert webpages to Markdown; use a browser-oriented tool for webpage fetching or rendered page inspection."
     lua_entry: runtime/vulcan-curl-post.lua
     lua_module: vulcan_curl_post
     help: post
-    parameters:
-      - name: url
-        type: string
-        description: "Target request URL."
-        required: true
-      - name: headers
-        type: object
-        description: "Optional request headers as a simple object map."
-        required: false
-      - name: header_lines
-        type: array
-        description: "Optional raw header string array such as [\"Accept: application/json\"]."
-        required: false
-      - name: bearer
-        type: string
-        description: "Optional bearer token shortcut. Adds Authorization: Bearer <token> unless Authorization is already provided in headers."
-        required: false
-      - name: basic
-        type: object
-        description: "Optional basic auth shortcut object with username and password."
-        required: false
-      - name: basic_text
-        type: string
-        description: "Optional basic auth shortcut string in the form user:pass."
-        required: false
-      - name: json
-        type: object
-        description: "Optional JSON payload object. Cannot be combined with form or body."
-        required: false
-      - name: form
-        type: object
-        description: "Optional simple form payload as an object map. Can be combined with files, but cannot be combined with json or body."
-        required: false
-      - name: form_lines
-        type: array
-        description: "Optional curl-style form string array such as [\"name=alice\"]. Can be combined with files."
-        required: false
-      - name: files
-        type: object
-        description: "Optional multipart file payload as an object of field->local file path. Can be combined with form, but cannot be combined with json or body."
-        required: false
-      - name: file_lines
-        type: array
-        description: "Optional curl-style multipart file string array such as [\"upload=@local.txt\"]. Can be combined with form."
-        required: false
-      - name: body
-        type: string
-        description: "Optional raw request body string. Cannot be combined with json, form, or files."
-        required: false
-      - name: params
-        type: object
-        description: "Optional query params object appended to the URL."
-        required: false
-      - name: params_list
-        type: array
-        description: "Optional raw query fragment array such as [\"page=1\", \"q=hello\"]."
-        required: false
-      - name: timeout_ms
-        type: number
-        description: "Optional request timeout in milliseconds. Defaults to 60000."
-        required: false
-      - name: follow_location
-        type: boolean
-        description: "Optional redirect-follow flag for common 30x cases."
-        required: false
-      - name: download_to
-        type: string
-        description: "Optional local file path used to save the response body."
-        required: false
-      - name: save_headers_to
-        type: string
-        description: "Optional local file path used to save response headers."
-        required: false
-      - name: flags
-        type: string
-        description: "Optional comma-separated render flags string. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
-        required: false
+    input_schema_file: schemas/post.input.schema.json
   - name: request
-    description: "Execute one HTTP request through lua-curl using a runtime-parsed subset of Linux curl-style argv semantics without depending on platform-specific shell syntax, including supported target TLS and HTTPS proxy TLS flags."
+    description: "Execute one advanced API/debug HTTP request through lua-curl using a runtime-parsed subset of Linux curl-style argv semantics without depending on platform-specific shell syntax, including supported target TLS and HTTPS proxy TLS flags. This tool is not intended for webpage scraping, JS-rendered page fetching, or HTML-to-Markdown conversion."
     lua_entry: runtime/vulcan-curl.lua
     lua_module: vulcan_curl
     help: request
-    parameters:
-      - name: args
-        type: array
-        description: "Supported curl-style argv list excluding the leading executable. Parsed by the Lua runtime as a supported subset, not full curl CLI compatibility. Shell expansion, stdin/TTY interaction, interactive prompts, curl config files, and unsupported dash-prefixed curl options are not available. Example: [\"-X\", \"POST\", \"https://example.com\", \"-H\", \"Authorization: Bearer ...\"]"
-        required: true
-      - name: cwd
-        type: string
-        description: "Optional working directory used to resolve relative file paths for -o, -F @file, <file, --cacert, --capath, --cert, --key, --proxy-cacert, --proxy-capath, --proxy-cert, --proxy-key and related inputs."
-        required: false
-      - name: timeout_ms
-        type: number
-        description: "Optional default timeout in milliseconds when curl args do not provide --max-time. Defaults to 60000."
-        required: false
-      - name: flags
-        type: string
-        description: "Optional comma-separated render flags string outside args. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored."
-        required: false
+    input_schema_file: schemas/request.input.schema.json

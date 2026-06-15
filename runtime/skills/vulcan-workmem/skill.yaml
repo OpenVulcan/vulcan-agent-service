@@ -1,5 +1,5 @@
 name: vulcan-workmem
-version: 0.1.1
+version: 0.1.4
 debug: false
 sqlite:
   enable: true
@@ -12,7 +12,7 @@ help:
     file: help/main.md
 entries:
   - name: task-create
-    description: "Create or resume one project-scoped WorkMem task. Use this at the start of a remembered task with an existing LUASKILL_SID, or omit LUASKILL_SID to generate a new public identity. After every create call, visibly tell the user the current LUASKILL_SID when it is not host-managed."
+    description: "Create or resume one project-scoped WorkMem task."
     lua_entry: runtime/vulcan-workmem-task-create.lua
     lua_module: vulcan_workmem_task_create
     help: main
@@ -34,6 +34,7 @@ entries:
     lua_entry: runtime/vulcan-workmem-set.lua
     lua_module: vulcan_workmem_set
     help: main
+    input_schema_file: schemas/set.input.schema.json
     parameters:
       - name: LUASKILL_SID
         type: string
@@ -78,6 +79,7 @@ entries:
     lua_entry: runtime/vulcan-workmem-get.lua
     lua_module: vulcan_workmem_get
     help: main
+    input_schema_file: schemas/get.input.schema.json
     parameters:
       - name: LUASKILL_SID
         type: string
@@ -110,6 +112,7 @@ entries:
     lua_entry: runtime/vulcan-workmem-delete.lua
     lua_module: vulcan_workmem_delete
     help: main
+    input_schema_file: schemas/delete.input.schema.json
     parameters:
       - name: LUASKILL_SID
         type: string
@@ -124,7 +127,7 @@ entries:
         description: "Tag string array to delete. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters, and must start and end with a letter or digit."
         required: true
   - name: task-list
-    description: "List all remembered WorkMem tasks under one LUASKILL_SID."
+    description: "List all remembered WorkMem tasks."
     lua_entry: runtime/vulcan-workmem-task-list.lua
     lua_module: vulcan_workmem_task_list
     help: main
@@ -134,7 +137,7 @@ entries:
         description: "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters."
         required: true
   - name: task-close
-    description: "Close one WorkMem task and remove its task-scoped nodes without invalidating the long-lived LUASKILL_SID."
+    description: "Close one WorkMem task and remove its task-scoped nodes."
     lua_entry: runtime/vulcan-workmem-task-close.lua
     lua_module: vulcan_workmem_task_close
     help: main

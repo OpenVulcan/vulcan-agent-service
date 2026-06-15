@@ -2,26 +2,26 @@
 
 面向 Vulcan Agent 的 AI 原生 HTTP 请求技能。
 
-`vulcan-curl` 为 Vulcan Agent 提供一层适合 AI 调用的 HTTP 请求能力。常见 API 调用可以使用结构化 `GET` 和 `POST` 入口，复杂请求则可以使用较底层的受支持 curl-style argv 入口，同时避免 Agent 自己拼接平台相关 shell 命令和引号转义。
+`vulcan-curl` 为 Vulcan Agent 提供一层适合 AI 调用的 HTTP 请求能力。常见 API 调试、Webhook 联调和下载排查可以使用结构化 `GET` 和 `POST` 入口，复杂请求则可以使用较底层的受支持 curl-style argv 入口，同时避免 Agent 自己拼接平台相关 shell 命令和引号转义。
 
 ## 什么时候使用
 
-当 Agent 需要发起一次输入可控、输出可读的 HTTP 请求时使用 `vulcan-curl`：
+当 Agent 需要发起一次偏 API 调试 / 接口验证场景、输入可控、输出可读的 HTTP 请求时使用 `vulcan-curl`：
 
-- 从 HTTP endpoint 获取 JSON、文本或二进制响应。
+- 检查 API 响应、Webhook 投递结果、请求头/响应头、鉴权行为或可下载文件。
 - 使用结构化 query params 和 headers，避免手写 URL 字符串。
 - 使用 Bearer 或 Basic Auth 快捷参数。
 - 发送 JSON、form、multipart 或 raw POST body。
 - 将响应体或响应头保存到本地文件。
 - 需要受支持的 curl-style argv 语义，但不想依赖 shell 引号规则。
 
-交互式网页流程、JS 渲染 UI 测试或截图应使用浏览器工具。只有在确实要测试原始终端 curl 行为时，才使用普通 shell。
+不要把 `vulcan-curl` 当成网页抓取工具来读取网页正文，也不要指望它把 HTML 自动转换成 Markdown。交互式网页流程、JS 渲染 UI 测试、截图或网页内容检查应使用浏览器工具。只有在确实要测试原始终端 curl 行为时，才使用普通 shell。
 
 ## 工具
 
 ### `vulcan-curl-get`
 
-用于简单 HTTP 读取。
+用于简单 API / 调试类 HTTP 读取。
 
 常用参数包括：
 
@@ -37,7 +37,7 @@
 
 ### `vulcan-curl-post`
 
-用于简单写入类请求，支持一种主要 payload 类型：
+用于简单 API 写入、Webhook 测试或上传类请求，支持一种主要 payload 类型：
 
 - `json`
 - `form` / `form_lines`
@@ -48,9 +48,9 @@
 
 ### `vulcan-curl-request`
 
-当需要受支持的 curl-style argv 语义，但不希望依赖平台相关 shell 引号规则时使用。
+当需要受支持的 curl-style argv 语义来处理更复杂的 API / HTTP 调试请求，但不希望依赖平台相关 shell 引号规则时使用。
 
-它适合运行时解析器已覆盖的高级 TLS、代理、multipart 上传、重试和不常见请求组合。请求仍在 Lua runtime 层执行，而不是通过 shell 执行。
+它适合运行时解析器已覆盖的高级 TLS、代理、multipart 上传、重试和不常见 API / HTTP 请求组合。请求仍在 Lua runtime 层执行，而不是通过 shell 执行。
 
 `args` 是 Lua runtime 解析的 curl-style 支持子集，不是完整 curl CLI。它不支持 shell 展开、stdin/TTY 交互、交互式提示、curl 配置文件或未实现的 `-` 开头 curl 选项；未知 curl 选项会直接报错。
 
@@ -67,7 +67,7 @@
 - `request-header`：展示请求细节
 - `response-header`：展示响应头
 
-未知 flag 会被忽略。响应体默认内联展示；使用 `download_to` 时会保存到文件。响应头可以通过 `save_headers_to` 保存。
+未知 flag 会被忽略。响应体默认内联展示；使用 `download_to` 时会保存到文件。内联内容始终是原始 HTTP 响应，不会做网页渲染或 Markdown 转换。响应头可以通过 `save_headers_to` 保存。
 
 ## 运行时要求
 

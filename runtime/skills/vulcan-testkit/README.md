@@ -45,6 +45,8 @@ tool_hint: cargo
 
 Run mode and analyze-only mode are mutually exclusive. Provide `program` for a real validation run or `log` for existing output, but not both.
 
+The entry now ships a full AI-facing schema in [schemas/run.input.schema.json](schemas/run.input.schema.json), including `args.items` and the mode exclusivity constraint between `program` and `log`.
+
 The returned Markdown report is designed for AI reading and usually includes:
 
 - `Status`
@@ -81,6 +83,8 @@ vulcan-testkit/
 ├─ dependencies.yaml
 ├─ README.md
 ├─ README.zh-CN.md
+├─ schemas/
+│  └─ run.input.schema.json
 ├─ runtime/
 │  ├─ vulcan-testkit-run.lua
 │  ├─ adapters/
@@ -127,7 +131,7 @@ Recommended local release steps:
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
-.\scripts\tag_release.ps1 0.1.1
+.\scripts\tag_release.ps1 0.1.2
 ```
 
 Or on Unix-like shells:
@@ -135,7 +139,7 @@ Or on Unix-like shells:
 ```bash
 python ./scripts/validate_skill.py
 python ./scripts/package_skill.py
-./scripts/tag_release.sh 0.1.1
+./scripts/tag_release.sh 0.1.2
 ```
 
 ## Notes

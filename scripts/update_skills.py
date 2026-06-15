@@ -288,6 +288,7 @@ def build_engine_options(runtime_root: Path) -> dict:
             "host_provided_tool_root": normalized_path(runtime_root / "bin" / "tools"),
             "host_provided_lua_root": normalized_path(runtime_root / "lua_packages"),
             "host_provided_ffi_root": normalized_path(runtime_root / "libs"),
+            "system_lua_lib_dir": normalized_path(runtime_root / "system_lua_lib"),
             "download_cache_root": normalized_path(runtime_root / "temp" / "downloads"),
             "dependency_dir_name": "dependencies",
             "state_dir_name": "state",
@@ -296,6 +297,10 @@ def build_engine_options(runtime_root: Path) -> dict:
             "allow_network_download": True,
             "github_base_url": None,
             "github_api_base_url": None,
+            "official_skill_hub_base_url": None,
+            "enable_private_url_skill_install": False,
+            "private_skill_source_allowlist": [],
+            "default_text_encoding": None,
             "sqlite_library_path": None,
             "sqlite_provider_mode": "dynamic_library",
             "sqlite_callback_mode": "standard",
@@ -321,6 +326,7 @@ def build_engine_options(runtime_root: Path) -> dict:
             "ignored_skill_ids": [],
             "capabilities": {
                 "enable_skill_management_bridge": False,
+                "enable_managed_io_compat": True,
             },
             "protection": {
                 "protected_skill_ids": [],

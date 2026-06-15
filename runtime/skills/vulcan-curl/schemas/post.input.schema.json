@@ -1,0 +1,255 @@
+{
+  "type": "object",
+  "description": "Structured POST-style request input for API debugging, webhook testing, or upload checks. The tool returns raw HTTP response content and does not render webpages or convert HTML to Markdown.",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "Target request URL.",
+      "minLength": 1
+    },
+    "headers": {
+      "type": "object",
+      "description": "Optional request headers as a simple object map.",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "header_lines": {
+      "type": "array",
+      "description": "Optional raw header string array such as [\"Accept: application/json\"].",
+      "items": {
+        "type": "string"
+      }
+    },
+    "bearer": {
+      "type": "string",
+      "description": "Optional bearer token shortcut. Adds Authorization: Bearer <token> unless Authorization is already provided in headers.",
+      "minLength": 1
+    },
+    "basic": {
+      "type": "object",
+      "description": "Optional basic auth shortcut object with username and password.",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Preferred Basic Auth username field."
+        },
+        "password": {
+          "type": "string",
+          "description": "Preferred Basic Auth password field."
+        },
+        "user": {
+          "type": "string",
+          "description": "Compatibility alias for username."
+        },
+        "pass": {
+          "type": "string",
+          "description": "Compatibility alias for password."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "username",
+            "password"
+          ]
+        },
+        {
+          "required": [
+            "username",
+            "pass"
+          ]
+        },
+        {
+          "required": [
+            "user",
+            "password"
+          ]
+        },
+        {
+          "required": [
+            "user",
+            "pass"
+          ]
+        }
+      ]
+    },
+    "basic_text": {
+      "type": "string",
+      "description": "Optional basic auth shortcut string in the form user:pass.",
+      "minLength": 1
+    },
+    "json": {
+      "type": "object",
+      "description": "Optional JSON payload object. Cannot be combined with form or body."
+    },
+    "form": {
+      "type": "object",
+      "description": "Optional simple form payload as an object map. Can be combined with files, but cannot be combined with json or body.",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "form_lines": {
+      "type": "array",
+      "description": "Optional curl-style form string array such as [\"name=alice\"]. Can be combined with files.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "files": {
+      "type": "object",
+      "description": "Optional multipart file payload as an object of field->local file path. Can be combined with form, but cannot be combined with json or body.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "file_lines": {
+      "type": "array",
+      "description": "Optional curl-style multipart file string array such as [\"upload=@local.txt\"]. Can be combined with form.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "body": {
+      "type": "string",
+      "description": "Optional raw request body string. Cannot be combined with json, form, or files."
+    },
+    "params": {
+      "type": "object",
+      "description": "Optional query params object appended to the URL.",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "params_list": {
+      "type": "array",
+      "description": "Optional raw query fragment array such as [\"page=1\", \"q=hello\"].",
+      "items": {
+        "type": "string"
+      }
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "description": "Optional request timeout in milliseconds. Defaults to 60000.",
+      "minimum": 0
+    },
+    "follow_location": {
+      "type": "boolean",
+      "description": "Optional redirect-follow flag for common 30x cases."
+    },
+    "download_to": {
+      "type": "string",
+      "description": "Optional local file path used to save the response body. Prefer this for binary payloads or file downloads instead of inline webpage-style reading."
+    },
+    "save_headers_to": {
+      "type": "string",
+      "description": "Optional local file path used to save response headers."
+    },
+    "include_headers": {
+      "type": "boolean",
+      "description": "Compatibility switch that includes response headers in the rendered output. Prefer flags=\"response-header\" for new callers."
+    },
+    "flags": {
+      "type": "string",
+      "description": "Optional comma-separated render flags string. Example: \"request-header,response-header\". Empty by default. Use request-header to include request details, response-header to include response headers. Unknown flags are ignored. Inline body output is raw HTTP content, not webpage rendering or Markdown conversion."
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "allOf": [
+    {
+      "not": {
+        "required": [
+          "basic",
+          "basic_text"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "json",
+          "body"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "json",
+          "form"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "json",
+          "form_lines"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "json",
+          "files"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "json",
+          "file_lines"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "body",
+          "form"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "body",
+          "form_lines"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "body",
+          "files"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "body",
+          "file_lines"
+        ]
+      }
+    }
+  ]
+}

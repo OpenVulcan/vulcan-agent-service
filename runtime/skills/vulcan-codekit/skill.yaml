@@ -1,5 +1,5 @@
 name: vulcan-codekit
-version: 0.1.2
+version: 0.1.5
 debug: false
 help:
   main:
@@ -88,15 +88,7 @@ entries:
     lua_entry: runtime/codekit-node-source.lua
     lua_module: codekit_node_source
     help: node-source
-    parameters:
-      - name: nodes
-        type: array
-        description: "Required node input. Each item must be an object with file and structural_path fields, for example [{\"file\":\"src/main.rs\",\"structural_path\":\"main\"}]. structural_path is a slash-separated structural path suffix, not a regex or glob; examples include main, UserService/get_user, impl MyType/new, and impl MyTrait for MyType/run. If a structural_path matches multiple functions or methods, the tool returns candidates instead of choosing automatically. For same-file batches repeat the same file or place newline-separated structural paths in that item's structural_path field."
-        required: true
-      - name: max_nodes
-        type: number
-        description: "Maximum node requests to process before marking the rest as skipped. Defaults to 20."
-        required: false
+    input_schema_file: schemas/node-source.input.schema.json
   - name: ast-tree
     description: "[DIRECTORY AST TREE] Pick candidate source files from exactly one directory before deep inspection. Returns a compact recursive Markdown tree grouped by subdirectory."
     lua_entry: runtime/codekit-ast-tree.lua
@@ -120,32 +112,4 @@ entries:
     lua_entry: runtime/codekit-patch.lua
     lua_module: codekit_patch
     help: patch
-    parameters:
-      - name: file
-        type: string
-        description: "Target file that contains the function or method to patch. Required only in single mode; omit it when patches[] is non-empty."
-        required: false
-      - name: structural_path
-        type: string
-        description: "Slash-separated structural path suffix for a function or method. It is not a regex or glob; examples include main, UserService/get_user, impl MyType/new, and impl MyTrait for MyType/run. If it matches no node the patch is rejected; if it matches multiple nodes the patch is rejected with candidate paths. Required only in single mode; omit it when patches[] is non-empty."
-        required: false
-      - name: replacement
-        type: string
-        description: "Replacement source text. It must be the complete function or method source, starting from the declaration line. Required only in single mode; omit it when patches[] is non-empty."
-        required: false
-      - name: precondition
-        type: object
-        description: "Optional stale-check object for single mode: {node_hash, file_hash, range}. node_hash must match the currently matched node source, file_hash must match the current whole file, and range must match the current node line range. Any mismatch rejects the patch with stale_* diagnostics. Omit top-level precondition when patches[] is non-empty; use per-item precondition instead."
-        required: false
-      - name: patches
-        type: array
-        description: "Optional batch input. Each item must include file, structural_path, and replacement. Each item may include precondition: {node_hash, file_hash, range}. Do not combine a non-empty patches[] with top-level file, structural_path, replacement, or precondition; mixed modes are rejected. Any missing, ambiguous, stale, invalid, or overlapping patch rejects the whole batch when atomic=true."
-        required: false
-      - name: atomic
-        type: boolean
-        description: "Whether the batch should be all-or-nothing. Defaults to true. Set false only when partial application is explicitly desired."
-        required: false
-      - name: max_patches
-        type: number
-        description: "Maximum patch requests to process in one call. Defaults to 20."
-        required: false
+    input_schema_file: schemas/patch.input.schema.json

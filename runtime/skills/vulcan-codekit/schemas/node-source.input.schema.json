@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "description": "Required node input. Each item must include file and structural_path. structural_path is one slash-separated structural path suffix, not a regex or glob. For same-file batches repeat the same file or use newline-separated structural_path values in one item.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Explicit source file path that owns the target function or method."
+          },
+          "structural_path": {
+            "type": "string",
+            "description": "Slash-separated structural path suffix such as main, UserService/get_user, impl MyType/new, or impl MyTrait for MyType/run."
+          }
+        },
+        "required": [
+          "file",
+          "structural_path"
+        ]
+      }
+    },
+    "max_nodes": {
+      "type": "integer",
+      "description": "Maximum node requests to process before marking the rest as skipped. Defaults to 20.",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "nodes"
+  ]
+}

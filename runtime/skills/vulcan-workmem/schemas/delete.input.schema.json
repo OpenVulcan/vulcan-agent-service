@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "LUASKILL_SID": {
+      "type": "string",
+      "description": "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters.",
+      "minLength": 20,
+      "maxLength": 128,
+      "pattern": "^[^\\r\\n]+$"
+    },
+    "task_name": {
+      "type": "string",
+      "description": "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit.",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$"
+    },
+    "tags": {
+      "type": "array",
+      "description": "Tag string array to delete. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters, and must start and end with a letter or digit.",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 96,
+        "pattern": "^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$"
+      }
+    }
+  },
+  "required": [
+    "LUASKILL_SID",
+    "task_name",
+    "tags"
+  ]
+}

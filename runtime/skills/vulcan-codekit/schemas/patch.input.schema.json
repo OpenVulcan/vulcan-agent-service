@@ -1,0 +1,157 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "description": "Patch accepts either single mode with file, structural_path, and replacement, or batch mode with patches[]. These modes are mutually exclusive. The schema keeps both property sets visible for AI/tool compatibility while descriptions explain the mode rules.",
+  "properties": {
+    "file": {
+      "type": "string",
+      "description": "Target file that contains the function or method to patch. Required only in single mode; omit it when patches[] is non-empty."
+    },
+    "structural_path": {
+      "type": "string",
+      "description": "Slash-separated structural path suffix for a function or method. It is not a regex or glob. Examples include main, UserService/get_user, impl MyType/new, and impl MyTrait for MyType/run."
+    },
+    "replacement": {
+      "type": "string",
+      "description": "Replacement source text. It must be the complete function or method source, starting from the declaration line."
+    },
+    "precondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional stale-check object for single mode. Omit top-level precondition when patches[] is non-empty; use per-item precondition instead.",
+      "properties": {
+        "node_hash": {
+          "type": "string",
+          "description": "Expected hash of the currently matched node source."
+        },
+        "file_hash": {
+          "type": "string",
+          "description": "Expected hash of the current whole file source."
+        },
+        "range": {
+          "description": "Expected current node line range. Accepts either a string such as L10-L42 or 10-42, or an object with start_line and end_line.",
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "Compact line range string such as L10-L42 or 10-42."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "start_line": {
+                  "type": "integer",
+                  "description": "Expected 1-based start line.",
+                  "minimum": 1
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Expected 1-based end line.",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "start_line",
+                "end_line"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "patches": {
+      "type": "array",
+      "description": "Optional batch input. Each item must include file, structural_path, and replacement. Do not combine a non-empty patches[] with top-level file, structural_path, replacement, or precondition.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Target file that contains the function or method to patch."
+          },
+          "structural_path": {
+            "type": "string",
+            "description": "Slash-separated structural path suffix for the target function or method."
+          },
+          "replacement": {
+            "type": "string",
+            "description": "Complete replacement function or method source."
+          },
+          "precondition": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Optional stale-check object for the current batch item.",
+            "properties": {
+              "node_hash": {
+                "type": "string",
+                "description": "Expected hash of the currently matched node source."
+              },
+              "file_hash": {
+                "type": "string",
+                "description": "Expected hash of the current whole file source."
+              },
+              "range": {
+                "description": "Expected current node line range. Accepts either a string such as L10-L42 or 10-42, or an object with start_line and end_line.",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "description": "Compact line range string such as L10-L42 or 10-42."
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "start_line": {
+                        "type": "integer",
+                        "description": "Expected 1-based start line.",
+                        "minimum": 1
+                      },
+                      "end_line": {
+                        "type": "integer",
+                        "description": "Expected 1-based end line.",
+                        "minimum": 1
+                      }
+                    },
+                    "required": [
+                      "start_line",
+                      "end_line"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "file",
+          "structural_path",
+          "replacement"
+        ]
+      }
+    },
+    "atomic": {
+      "type": "boolean",
+      "description": "Whether the batch should be all-or-nothing. Defaults to true. Set false only when partial application is explicitly desired."
+    },
+    "max_patches": {
+      "type": "integer",
+      "description": "Maximum patch requests to process in one call. Defaults to 20.",
+      "minimum": 1
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "file",
+        "structural_path",
+        "replacement"
+      ]
+    },
+    {
+      "required": [
+        "patches"
+      ]
+    }
+  ]
+}

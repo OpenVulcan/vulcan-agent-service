@@ -1,32 +1,33 @@
 # `vulcan-file-list`
 
-当你还不知道目标文件在哪，或者需要先缩小候选文件集合时，使用这个工具。
+Use this tool when you do not know where the target file is yet, or when you need to narrow the candidate file set first.
 
-适合使用：
+Good fits:
 
-- 进入陌生目录前，先看低 token 文件名地图。
-- 已知道文件扩展名或文件名形状，需要快速筛候选文件。
-- 想避免手写 shell 循环、排序、忽略规则处理。
+- You want one low-token file-name map before entering an unfamiliar directory.
+- You already know the extension or filename shape and want to filter candidates quickly.
+- You want to avoid ad hoc shell loops, sorting, or ignore-rule handling.
 
-不适合使用：
+Not a good fit:
 
-- 需要搜索文件内容时，使用 `vulcan-codekit-rg`。
-- 需要函数、类、Markdown 标题等结构信息时，使用 `vulcan-codekit`。
-- 已经知道具体文件和行号时，直接用 `vulcan-file-read`。
+- Use `vulcan-codekit-rg` when you need to search file contents.
+- Use `vulcan-codekit` when you need functions, classes, Markdown headings, or other structure.
+- Use `vulcan-file-read` directly when the exact file and line area are already known.
 
-参数选择：
+Parameter choices:
 
-- `path`：尽量传最小可能目录；不传表示从当前目录做项目级扫描；支持 `${env:NAME}` 环境变量占位符。
-- `pattern`：知道扩展名或文件名形状时传 basename-only glob，例如 `*.rs`、`*.lua`、`Cargo.*`；它只匹配文件名本身，不匹配相对路径，不能传 `src/*.lua` 或 `**/*.md`，需要缩小目录时使用 `path`。
-- `recursive`：默认递归；只想看当前目录直接子项时设为 `false`。
-- `noignore`：只有确实需要看生成物或被忽略目录时才设为 `true`；设为 `true` 会同时关闭 `.gitignore` / `.ignore` 文件规则和内建高噪声目录忽略。
-- `limit`：结果被截断且仍需要更多候选文件时再调大；默认 1000，最大 100000。
+- `PWD`: optional shared project or workspace root. When it points to an existing directory, relative `path` values resolve from that root and omitting `path` starts the scan from `PWD`.
+- `path`: pass the narrowest plausible directory; `${env:NAME}` placeholders are supported. Without a valid `PWD`, this path must already be absolute.
+- `pattern`: when the extension or filename shape is known, pass one basename-only glob such as `*.rs`, `*.lua`, or `Cargo.*`; it matches only the filename, not the relative path, so do not pass `src/*.lua` or `**/*.md`; use `path` to narrow directories.
+- `recursive`: recursive by default; set `false` when you only want direct children.
+- `noignore`: set `true` only when ignored or generated files are intentionally needed; it disables both `.gitignore` / `.ignore` file rules and built-in high-noise directory skips.
+- `limit`: raise it only when the result is truncated and you still need more candidates; the default is 1000 and the maximum is 100000.
 
-输出按目录分组，并在每组中按文件名排序：
+Output is grouped by directory and sorted by filename inside each group:
 
 ```text
 src/ config.rs main.rs server.rs
 src/discover/ mod.rs provider.rs registry.rs report.rs
 ```
 
-默认会读取每层目录下的 `.gitignore` 与 `.ignore` 常见规则子集，并跳过 `.git`、`target`、`node_modules`、`output`、`dist`、`build` 等内建高噪声目录。它不是完整 Git ignore 引擎；复杂转义和部分高级否定场景不保证与 Git 完全一致。
+By default, the tool reads a common subset of `.gitignore` and `.ignore` rules in each directory and skips built-in high-noise directories such as `.git`, `target`, `node_modules`, `output`, `dist`, and `build`. It is not a full Git ignore engine; complex escapes and some advanced negation cases are not guaranteed to match Git exactly.

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "LUASKILL_SID": {
+      "type": "string",
+      "description": "Standard LuaSkills managed identity field. Must be a single-line string from 20 to 128 characters.",
+      "minLength": 20,
+      "maxLength": 128,
+      "pattern": "^[^\\r\\n]+$"
+    },
+    "task_name": {
+      "type": "string",
+      "description": "Stable task name for task-scoped memory. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit.",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$"
+    },
+    "list": {
+      "type": "array",
+      "description": "Node array to write. Maximum 30 nodes. Each item must be an object with `tag` (max 96 chars, lowercase letters/digits/`_`/`-`, must start and end with a letter or digit), `type` (`note`, `file_summary`, `decision`, `todo`, `progress`, `risk`, `checkpoint`, or `tool_result`), `title` (max 160 chars), and `content` (max 2000 chars).",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tag": {
+            "type": "string",
+            "description": "Stable node tag. Maximum length: 96 characters. Use lowercase letters, digits, `_`, or `-`; must start and end with a letter or digit.",
+            "minLength": 1,
+            "maxLength": 96,
+            "pattern": "^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$"
+          },
+          "type": {
+            "type": "string",
+            "description": "Node type.",
+            "enum": [
+              "note",
+              "file_summary",
+              "decision",
+              "todo",
+              "progress",
+              "risk",
+              "checkpoint",
+              "tool_result"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "description": "Short single-line node title.",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[^\\r\\n]+$"
+          },
+          "content": {
+            "type": "string",
+            "description": "Compact node content. Store summaries, not full logs or source.",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "tag",
+          "type",
+          "title",
+          "content"
+        ]
+      }
+    },
+    "delete_tags": {
+      "type": "array",
+      "description": "Optional tag string array to delete before writing the new nodes. Each tag uses lowercase letters, digits, `_`, or `-`, maximum 96 characters, and must start and end with a letter or digit. Use this to replace stale progress nodes.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 96,
+        "pattern": "^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$"
+      }
+    }
+  },
+  "required": [
+    "LUASKILL_SID",
+    "task_name",
+    "list"
+  ]
+}

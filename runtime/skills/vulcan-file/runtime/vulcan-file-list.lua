@@ -16,6 +16,10 @@ local MAX_LINE_WIDTH = 96
 -- 单次工具调用接受的最大列表上限。
 local MAX_LIMIT = 100000
 
+-- Visible Markdown title used for list error payloads.
+-- 列表错误结果使用的可见 Markdown 标题。
+local ERROR_TITLE = "FILE LIST ERROR"
+
 -- Directory names ignored by default to keep the result useful and compact.
 -- 默认忽略的目录名，用于保持结果有用且紧凑。
 local DEFAULT_IGNORED_DIRS = {
@@ -34,6 +38,8 @@ local DEFAULT_IGNORED_DIRS = {
 -- 表示调用方传入无效工具参数的错误码集合。
 local PARAMETER_ERROR_CODES = {
     invalid_path = true,
+    invalid_pwd_argument = true,
+    relative_path_requires_pwd = true,
     path_not_found = true,
     path_not_directory = true,
     environment_variable_not_found = true,
@@ -56,12 +62,39 @@ local function starts_with(text, prefix)
     return tostring(text or ""):sub(1, #prefix) == prefix
 end
 
+-- Load the shared file helper module from the current entry directory.
+-- 从当前入口目录加载共享文件辅助模块。
+--
+-- Parameters:
+--     None.
+-- 参数：
+--     无。
+--
+-- Returns:
+--     table: Shared helper table used for path normalization helpers.
+-- 返回值：
+--     table：用于路径规范化辅助的共享 helper 表。
+local function load_shared_file_helpers()
+    local entry_dir = tostring(vulcan.context.entry_dir or ".")
+    local helper_path = vulcan.path.join(entry_dir, "shared_file.lua")
+    local chunk, load_error = loadfile(helper_path)
+    if not chunk then
+        error("Failed to load shared_file.lua: " .. tostring(load_error))
+    end
+
+    local ok, helpers = pcall(chunk)
+    if not ok or type(helpers) ~= "table" then
+        error("shared_file.lua did not return a helper table: " .. tostring(helpers))
+    end
+    return helpers
+end
+
 -- Render one stable Markdown error payload for list failures.
 -- 为列表失败渲染稳定的 Markdown 错误结果。
 local function render_error(error_code, message, details)
     local is_parameter_error = PARAMETER_ERROR_CODES[tostring(error_code or "")] == true
     local lines = {
-        "# FILE LIST ERROR",
+        "# " .. ERROR_TITLE,
         "",
         "- error: `" .. tostring(error_code or "unknown_error") .. "`",
         "- type: `" .. (is_parameter_error and "parameter_error" or "runtime_error") .. "`",
@@ -76,42 +109,36 @@ local function render_error(error_code, message, details)
     return table.concat(lines, "\n")
 end
 
--- Expand `${env:NAME}` placeholders in a caller-provided path before filesystem access.
--- 在访问文件系统之前展开调用方路径中的 `${env:NAME}` 占位符。
--- Parameters: path is the caller path text and field_name is the argument name rendered in errors; returns expanded path or Markdown error text.
--- 参数：path 为调用方路径文本，field_name 为错误中展示的参数名；返回展开后的路径或 Markdown 错误文本。
-local function expand_environment_path(path, field_name)
-    local source = tostring(path or "")
-    local unresolved_variable = nil
-    local expanded = source:gsub("%${env:([^}]+)}", function(variable_name)
-        local normalized_name = trim(variable_name)
-        if normalized_name == "" then
-            unresolved_variable = variable_name
-            return ""
-        end
-
-        local environment_value = os.getenv(normalized_name)
-        if environment_value == nil then
-            unresolved_variable = normalized_name
-            return ""
-        end
-        return environment_value
-    end)
-
-    if unresolved_variable ~= nil then
-        return nil, render_error("environment_variable_not_found", "environment variable referenced in path is not defined", {
-            field = tostring(field_name or "path"),
-            variable = tostring(unresolved_variable),
-            path = source,
-        })
-    end
-    if expanded:find("${env:", 1, true) ~= nil then
-        return nil, render_error("invalid_environment_variable_reference", "environment variable path placeholder must use ${env:NAME} syntax", {
-            field = tostring(field_name or "path"),
-            path = source,
-        })
-    end
-    return expanded, nil
+-- Resolve one caller path with `${env:NAME}` expansion plus the optional `PWD` convention root.
+-- 使用 `${env:NAME}` 展开与可选 `PWD` 公约根目录解析一个调用方路径。
+--
+-- Parameters:
+--     helpers: Shared helper table.
+--     path: Caller path text.
+--     field_name: Argument name rendered in errors.
+--     pwd_root: Valid absolute `PWD` directory root, or nil.
+-- 参数：
+--     helpers：共享辅助表。
+--     path：调用方路径文本。
+--     field_name：错误中展示的参数名。
+--     pwd_root：有效绝对 `PWD` 目录根路径，或 nil。
+--
+-- Returns:
+--     string|nil: Absolute resolved path on success.
+--     string|nil: Markdown error text on failure.
+-- 返回值：
+--     string|nil：成功时返回绝对解析路径。
+--     string|nil：失败时返回 Markdown 错误文本。
+local function expand_environment_path(helpers, path, field_name, pwd_root)
+    return helpers.resolve_input_path(
+        ERROR_TITLE,
+        PARAMETER_ERROR_CODES,
+        path,
+        field_name,
+        pwd_root,
+        "invalid_path",
+        "path must resolve to a non-empty directory path"
+    )
 end
 
 -- Normalize path separators to forward slashes for stable grouping.
@@ -150,12 +177,28 @@ end
 
 -- Validate that the requested root is an existing directory.
 -- 校验请求根路径是一个已存在目录。
-local function validate_root_path(value)
+--
+-- Parameters:
+--     helpers: Shared helper table.
+--     value: Caller-provided root directory path.
+--     pwd_root: Valid absolute `PWD` directory root, or nil.
+-- 参数：
+--     helpers：共享辅助表。
+--     value：调用方传入的根目录路径。
+--     pwd_root：有效绝对 `PWD` 目录根路径，或 nil。
+--
+-- Returns:
+--     string|nil: Existing resolved directory path on success.
+--     string|nil: Markdown error text on failure.
+-- 返回值：
+--     string|nil：成功时返回已存在的解析后目录路径。
+--     string|nil：失败时返回 Markdown 错误文本。
+local function validate_root_path(helpers, value, pwd_root)
     if type(value) ~= "string" or trim(value) == "" then
         return nil, render_error("invalid_path", "path must be a non-empty directory path")
     end
 
-    local root_path, environment_error = expand_environment_path(trim(value), "path")
+    local root_path, environment_error = expand_environment_path(helpers, trim(value), "path", pwd_root)
     if environment_error then
         return nil, environment_error
     end
@@ -622,7 +665,21 @@ end
 
 -- Parse and validate one list request.
 -- 解析并校验一次列表请求。
-local function parse_request(args)
+--
+-- Parameters:
+--     helpers: Shared helper table.
+--     args: Raw entry argument table from LuaSkills runtime.
+-- 参数：
+--     helpers：共享辅助表。
+--     args：LuaSkills 运行时传入的原始参数表。
+--
+-- Returns:
+--     table|nil: Normalized list request.
+--     string|nil: Markdown error text on failure.
+-- 返回值：
+--     table|nil：规范化后的列表请求。
+--     string|nil：失败时返回 Markdown 错误文本。
+local function parse_request(helpers, args)
     local input = type(args) == "table" and args or {}
     local pattern_error = validate_optional_string(input.pattern, "pattern")
     if pattern_error then
@@ -641,9 +698,26 @@ local function parse_request(args)
         return nil, limit_error
     end
 
-    local root_path, path_error = validate_root_path(input.path or input.file or ".")
-    if path_error then
-        return nil, path_error
+    local pwd_root, pwd_error = helpers.resolve_pwd_root(ERROR_TITLE, PARAMETER_ERROR_CODES, input.PWD)
+    if pwd_error then
+        return nil, pwd_error
+    end
+
+    local root_path = nil
+    local raw_root_value = input.path ~= nil and input.path or input.file
+    if raw_root_value == nil then
+        if pwd_root == nil then
+            return nil, render_error("relative_path_requires_pwd", "path must be absolute when PWD is omitted, empty, or not a directory", {
+                field = "path",
+            })
+        end
+        root_path = pwd_root
+    else
+        local path_error = nil
+        root_path, path_error = validate_root_path(helpers, raw_root_value, pwd_root)
+        if path_error then
+            return nil, path_error
+        end
     end
 
     local pattern = type(input.pattern) == "string" and trim(input.pattern) or "*"
@@ -674,7 +748,8 @@ end
 -- Tool entry point invoked by the LuaSkills runtime.
 -- LuaSkills 运行时调用的工具入口。
 return function(args)
-    local request, request_error = parse_request(args)
+    local helpers = load_shared_file_helpers()
+    local request, request_error = parse_request(helpers, args)
     if request_error then
         return request_error
     end

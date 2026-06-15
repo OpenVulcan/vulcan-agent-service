@@ -43,6 +43,8 @@ tool_hint: cargo
 
 运行模式与只分析日志模式互斥。需要真实执行验证命令时提供 `program`，需要压缩已有输出时提供 `log`，不要同时提供两者。
 
+当前入口已通过 [schemas/run.input.schema.json](schemas/run.input.schema.json) 提供完整的 AI 输入 schema，其中补齐了 `args.items` 以及 `program` / `log` 的互斥约束。
+
 返回的 Markdown 报告通常包含：
 
 - `Status`
@@ -76,6 +78,25 @@ TestKit 有意限制为验证场景。它允许验证导向的命令形态，并
 ```powershell
 python .\scripts\validate_skill.py
 python .\scripts\package_skill.py
+```
+
+## Skill 包结构
+
+```text
+vulcan-testkit/
+├─ skill.yaml
+├─ dependencies.yaml
+├─ README.md
+├─ README.zh-CN.md
+├─ schemas/
+│  └─ run.input.schema.json
+├─ runtime/
+├─ help/
+├─ overflow_templates/
+├─ resources/
+├─ licenses/
+├─ scripts/
+└─ .github/workflows/
 ```
 
 发布包会生成在 `dist/` 下：

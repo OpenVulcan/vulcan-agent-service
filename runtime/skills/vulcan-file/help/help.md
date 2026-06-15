@@ -1,16 +1,26 @@
 # Vulcan File
 
-当你需要直接处理原文文件，而不是理解代码结构或搜索文本时，使用 `vulcan-file`。
+Use `vulcan-file` when you need to work with raw file contents directly instead of understanding code structure or searching text.
 
-优先这样选择：
+Prefer these choices:
 
-- 已经知道文件路径和大致行号：使用 `vulcan-file-read`。
-- 还不知道目标文件在哪：先使用 `vulcan-file-list` 获取低 token 文件名地图。
-- 需要做小范围文本改动：使用 `vulcan-file-edit`，先预览，再 `apply=true`。
+- Need to create one brand-new file or a small batch of brand-new files: use `vulcan-file-create`, preview first, then set `apply=true`.
+- Already know the file path and approximate lines: use `vulcan-file-read`.
+- Do not know where the target file is yet: use `vulcan-file-list` first to get one low-token file map.
+- Need one small text change or a few coordinated text changes: use `vulcan-file-edit`, preview first, then set `apply=true`.
+- Need to remove regular files and the host should receive delete metadata: use `vulcan-file-delete`, preview first, then set `apply=true`.
+- If the host or caller provides root-level `PWD`, relative `file` or `path` values resolve from that directory. Without a valid `PWD`, pass absolute paths.
 
-不要这样选择：
+Batch limits:
 
-- 需要搜索文本或定位锚点时，不要用 `vulcan-file-read` 猜行号，先用 `vulcan-codekit-rg`。
-- 需要理解函数、类或源码结构时，优先使用 `vulcan-codekit`。
-- 需要替换完整函数或方法时，使用 `vulcan-codekit-patch`。
-- 需要大规模重构时，不要用文本级编辑硬改，应先读取结构上下文。
+- `create`, `read`, `edit`, and `delete` accept either one root-level file request or one `files` array.
+- Batch mode supports at most 10 items per call.
+- `apply` is shared by the whole batch.
+
+Avoid these choices:
+
+- Do not guess line numbers with `vulcan-file-read` when text search or anchor discovery is needed; use `vulcan-codekit-rg` first.
+- Prefer `vulcan-codekit` when you need functions, classes, or source structure.
+- Use `vulcan-codekit-patch` for whole-function or whole-method replacement.
+- Do not force large refactors through text-only edits before reading structural context.
+- `vulcan-file-delete` does not support directory removal; pass only regular files.

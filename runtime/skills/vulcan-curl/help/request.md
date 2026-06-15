@@ -1,6 +1,6 @@
 # `vulcan-curl-request`
 
-Use this workflow when you want supported Linux curl-style argv semantics without depending on the shell's quoting rules.
+Use this workflow when you want supported Linux curl-style argv semantics for advanced API/debug HTTP requests without depending on the shell's quoting rules.
 
 Best for:
 
@@ -9,12 +9,14 @@ Best for:
 - multipart form uploads
 - unusual request combinations
 - cases where `get` and `post` are too restrictive
+- API diagnostics that need closer curl-style control
 
 Argument support:
 
 - `args` is a runtime-parsed supported subset, not full curl CLI compatibility
 - shell expansion, stdin/TTY interaction, interactive prompts, and curl config files are not available
 - unsupported dash-prefixed curl options fail fast instead of being passed through to a system `curl`
+- this workflow returns raw HTTP responses and does not render webpages or convert HTML to Markdown
 
 Supported option families:
 
@@ -38,4 +40,4 @@ Output defaults:
 - unknown flags are ignored
 - `-i` and `--include` remain supported as compatibility switches for response headers
 
-You pass supported curl-style arguments, and execution happens inside the Lua runtime layer.
+You pass supported curl-style arguments, and execution happens inside the Lua runtime layer. Use a browser-oriented tool instead when the goal is webpage crawling, JS-rendered page inspection, or page-content extraction.
