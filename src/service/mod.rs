@@ -29,11 +29,7 @@ use manifest::{HostServiceManifest, remove_manifest_file, write_manifest_file};
 
 /// Default stable service name used when the caller does not override it.
 /// 当调用方未显式覆盖时使用的默认稳定服务名称。
-pub(crate) const DEFAULT_SERVICE_NAME: &str = "vulcan-agent-service";
-
-/// Default display name exposed to platform service managers.
-/// 暴露给平台服务管理器的默认展示名称。
-pub(crate) const DEFAULT_SERVICE_DISPLAY_NAME: &str = "Vulcan Agent Service";
+pub(crate) const DEFAULT_SERVICE_NAME: &str = "VulcanAgentService";
 
 /// Default service description exposed to platform service managers.
 /// 暴露给平台服务管理器的默认服务描述。
@@ -89,9 +85,9 @@ impl ServiceStartup {
 /// 安装与定义预览命令共享的安装选项。
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceInstallOptions {
-    /// Unified runtime root required by service mode.
-    /// 服务模式要求的统一运行根。
-    pub(crate) runtime_root: PathBuf,
+    /// Optional explicit runtime root override used by service installation flows.
+    /// 服务安装流程使用的可选显式运行根覆盖。
+    pub(crate) runtime_root: Option<PathBuf>,
     /// Stable service name used by the platform manager.
     /// 平台服务管理器使用的稳定服务名。
     pub(crate) service_name: String,
@@ -134,9 +130,9 @@ pub(crate) struct ServiceTargetOptions {
 /// 平台服务宿主入口使用的内部运行选项。
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceRunOptions {
-    /// Unified runtime root required by service mode.
-    /// 服务模式要求的统一运行根。
-    pub(crate) runtime_root: PathBuf,
+    /// Optional explicit runtime root override used by the internal service host entrypoint.
+    /// 内部服务宿主入口使用的可选显式运行根覆盖。
+    pub(crate) runtime_root: Option<PathBuf>,
     /// Stable service name used by the platform manager.
     /// 平台服务管理器使用的稳定服务名。
     pub(crate) service_name: String,
@@ -218,6 +214,96 @@ fn ensure_scope_supported(
     Ok(())
 }
 
+/// Resolve one explicit or implicit runtime root for service install and run flows.
+/// 为服务安装与运行流程解析一份显式或隐式运行根。
+pub(crate) fn resolve_service_runtime_root(
+    runtime_root: Option<&Path>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(runtime_root) = runtime_root {
+        return normalize_service_runtime_root_path(runtime_root);
+    }
+    let current_dir = std::env::current_dir()?;
+    let exe_path = std::env::current_exe()?;
+    let inferred_root = resolve_service_runtime_root_from_layout(&current_dir, &exe_path).ok_or(
+        "failed to resolve service runtime root from the current layout; run the command from <runtime_root> or <runtime_root>/bin, or pass --runtime-root explicitly",
+    )?;
+    normalize_service_runtime_root_path(&inferred_root)
+}
+
+/// Normalize one service runtime root path into a stable absolute directory path.
+/// 把一份服务运行根路径规范化为稳定的绝对目录路径。
+pub(crate) fn normalize_service_runtime_root_path(
+    path: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if !absolute_path.exists() {
+        return Err(format!("runtime_root does not exist: {}", absolute_path.display()).into());
+    }
+    if !absolute_path.is_dir() {
+        return Err(format!(
+            "runtime_root is not a directory: {}",
+            absolute_path.display()
+        )
+        .into());
+    }
+    Ok(absolute_path.canonicalize().unwrap_or(absolute_path))
+}
+
+/// Resolve one runtime root from the current directory and executable layout used by direct startup.
+/// 基于直接启动使用的当前目录与可执行文件布局解析一份运行根。
+fn resolve_service_runtime_root_from_layout(
+    current_dir: &Path,
+    exe_path: &Path,
+) -> Option<PathBuf> {
+    for candidate_root in current_runtime_layout_candidates(current_dir) {
+        if looks_like_service_runtime_root(&candidate_root) {
+            return Some(candidate_root);
+        }
+    }
+    let exe_dir = exe_path.parent()?;
+    executable_runtime_layout_candidates(exe_dir)
+        .into_iter()
+        .find(|candidate| looks_like_service_runtime_root(candidate))
+}
+
+/// Enumerate current-layout runtime-root candidates in stable preference order.
+/// 以稳定优先级顺序枚举当前布局下的运行根候选目录。
+fn current_runtime_layout_candidates(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    candidates.push(root.to_path_buf());
+    if root.file_name().is_some_and(|name| name == "bin") {
+        if let Some(parent_dir) = root.parent() {
+            candidates.push(parent_dir.to_path_buf());
+        }
+    }
+    candidates.push(root.join("output"));
+    candidates
+}
+
+/// Enumerate executable-side runtime-root candidates in stable preference order.
+/// 以稳定优先级顺序枚举可执行文件侧的运行根候选目录。
+fn executable_runtime_layout_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    candidates.push(exe_dir.to_path_buf());
+    if let Some(parent_dir) = exe_dir.parent() {
+        candidates.push(parent_dir.to_path_buf());
+    }
+    candidates.push(exe_dir.join("output"));
+    candidates
+}
+
+/// Return whether one directory looks like the hosted runtime root layout.
+/// 返回某个目录是否看起来像宿主运行根布局。
+fn looks_like_service_runtime_root(root: &Path) -> bool {
+    let has_configs = root.join("configs").is_dir();
+    let has_skills = root.join("skills").is_dir();
+    has_configs || has_skills
+}
+
 /// Ensure the parent directory of one file path exists before writing.
 /// 在写入之前确保某个文件路径的父目录存在。
 fn ensure_parent_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -237,6 +323,17 @@ fn now_local() -> DateTime<Local> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Build one unique temporary directory path for service-runtime layout tests.
+    /// 为服务运行根布局测试构建一个唯一临时目录路径。
+    fn unique_service_test_dir(name: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("vulcan-agent-service-service-{name}-{timestamp}"))
+    }
 
     /// `systemctl` inactive output should be treated as a normal textual status instead of an error.
     /// `systemctl` 的 inactive 输出应被视为正常文本状态，而不是错误。
@@ -261,5 +358,65 @@ mod tests {
             "Could not find service \"gui/501/com.openvulcan.vulcan-agent-service\" in domain for user gui/501"
         ));
         assert!(is_launchd_not_loaded_message("No such process"));
+    }
+
+    /// Service runtime-root inference should accept the current directory when it already looks like a hosted runtime root.
+    /// 服务运行根推导在当前目录本身已具备宿主运行根布局时应直接接受当前目录。
+    #[test]
+    fn resolve_service_runtime_root_from_layout_accepts_current_runtime_root() {
+        let runtime_root = unique_service_test_dir("current-root");
+        std::fs::create_dir_all(runtime_root.join("configs"))
+            .expect("runtime root configs directory should be created");
+        let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
+        let resolved = resolve_service_runtime_root_from_layout(&runtime_root, &fake_exe)
+            .expect("current runtime root should resolve");
+        assert_eq!(resolved, runtime_root);
+    }
+
+    /// Service runtime-root inference should accept a `bin/` working directory and return its hosted parent root.
+    /// 服务运行根推导在工作目录位于 `bin/` 时应返回其宿主父级运行根。
+    #[test]
+    fn resolve_service_runtime_root_from_layout_accepts_bin_working_directory() {
+        let runtime_root = unique_service_test_dir("bin-root");
+        std::fs::create_dir_all(runtime_root.join("configs"))
+            .expect("runtime root configs directory should be created");
+        let bin_dir = runtime_root.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin directory should be created");
+        let fake_exe = bin_dir.join("vulcan-agent-service.exe");
+        let resolved = resolve_service_runtime_root_from_layout(&bin_dir, &fake_exe)
+            .expect("bin working directory should resolve back to runtime root");
+        assert_eq!(resolved, runtime_root);
+    }
+
+    /// Service runtime-root inference should accept an executable under `debug/` and return the hosted parent root.
+    /// 服务运行根推导在可执行文件位于 `debug/` 子目录时应返回其宿主父级运行根。
+    #[test]
+    fn resolve_service_runtime_root_from_layout_accepts_debug_executable_directory() {
+        let runtime_root = unique_service_test_dir("debug-root");
+        std::fs::create_dir_all(runtime_root.join("configs"))
+            .expect("runtime root configs directory should be created");
+        let debug_dir = runtime_root.join("debug");
+        std::fs::create_dir_all(&debug_dir).expect("debug directory should be created");
+        let unrelated_dir = unique_service_test_dir("debug-unrelated");
+        std::fs::create_dir_all(&unrelated_dir).expect("unrelated directory should be created");
+        let fake_exe = debug_dir.join("vulcan-agent-service.exe");
+        let resolved = resolve_service_runtime_root_from_layout(&unrelated_dir, &fake_exe)
+            .expect("debug executable directory should resolve back to runtime root");
+        assert_eq!(resolved, runtime_root);
+    }
+
+    /// Service runtime-root inference should fall back to the executable-side hosted layout when the current directory is unrelated.
+    /// 服务运行根推导在当前目录无关时应回退到可执行文件侧的宿主布局。
+    #[test]
+    fn resolve_service_runtime_root_from_layout_prefers_executable_layout() {
+        let runtime_root = unique_service_test_dir("exe-root");
+        std::fs::create_dir_all(runtime_root.join("configs"))
+            .expect("runtime root configs directory should be created");
+        let unrelated_dir = unique_service_test_dir("unrelated");
+        std::fs::create_dir_all(&unrelated_dir).expect("unrelated directory should be created");
+        let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
+        let resolved = resolve_service_runtime_root_from_layout(&unrelated_dir, &fake_exe)
+            .expect("executable layout should resolve when current directory is unrelated");
+        assert_eq!(resolved, runtime_root);
     }
 }

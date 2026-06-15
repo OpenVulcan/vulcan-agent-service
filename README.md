@@ -113,42 +113,43 @@ space_controller:
 统一命令面如下：
 
 ```text
-vulcan-agent-service service install --runtime-root <abs_path>
-vulcan-agent-service service uninstall --service-name <name>
-vulcan-agent-service service start --service-name <name>
-vulcan-agent-service service stop --service-name <name>
-vulcan-agent-service service restart --service-name <name>
-vulcan-agent-service service status --service-name <name>
-vulcan-agent-service service print-definition --runtime-root <abs_path>
+vulcan-agent-service service install [--service-name <name>]
+vulcan-agent-service service uninstall [--service-name <name>]
+vulcan-agent-service service start [--service-name <name>]
+vulcan-agent-service service stop [--service-name <name>]
+vulcan-agent-service service restart [--service-name <name>]
+vulcan-agent-service service status [--service-name <name>]
+vulcan-agent-service service print-definition [--service-name <name>]
 ```
 
 服务管理器实际拉起的是内部宿主入口：
 
 ```text
-vulcan-agent-service service run --runtime-root <abs_path> --service-name <name>
+vulcan-agent-service service run [--service-name <name>]
 ```
 
 有两条约束需要特别注意：
 
-1. 服务模式必须显式传入 `--runtime-root`，不要依赖当前工作目录或 `<exe_parent>` 回退。
-2. 服务模式强烈建议显式配置 `skill_roots`；否则默认 `USER` 技能目录会跟随服务账户变化，而不是跟随当前登录开发者用户变化。
+1. `service install` / `service run` 默认按当前宿主布局解析运行根，优先接受 `<runtime_root>`、`<runtime_root>/bin`、`<cwd>/output` 这类标准目录；确有需要时也可以继续显式传入 `--runtime-root` 覆盖。
+2. 默认服务名为 `VulcanAgentService`；若传入 `--service-name`，则会以该名称注册，并且后续 `start/stop/status/uninstall` 也应使用同一名称。
+3. 服务模式强烈建议显式配置 `skill_roots`；否则默认 `USER` 技能目录会跟随服务账户变化，而不是跟随当前登录开发者用户变化。
 
 推荐安装示例：
 
 ```text
-vulcan-agent-service service install --runtime-root D:\vulcan\agent-service\output --service-name vulcan-agent-service --startup auto --start
+vulcan-agent-service service install --start
 ```
 
 Linux 用户级安装示例：
 
 ```text
-vulcan-agent-service service install --runtime-root /opt/vulcan-agent-service/output --service-name vulcan-agent-service --scope user --startup manual
+vulcan-agent-service service install --service-name vulcan-agent-service --scope user --startup manual
 ```
 
 macOS 预览当前定义而不安装：
 
 ```text
-vulcan-agent-service service print-definition --runtime-root /Applications/VulcanAgentService/output
+vulcan-agent-service service print-definition
 ```
 
 ### 1. LuaSkills

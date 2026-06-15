@@ -1,5 +1,5 @@
 use super::{
-    DEFAULT_SERVICE_DESCRIPTION, DEFAULT_SERVICE_DISPLAY_NAME, ServiceInstallOptions, ServiceScope,
+    DEFAULT_SERVICE_DESCRIPTION, DEFAULT_SERVICE_NAME, ServiceInstallOptions, ServiceScope,
     ServiceStartup,
 };
 use std::path::{Path, PathBuf};
@@ -155,21 +155,22 @@ pub(crate) fn build_install_artifact(
     let display_name = options
         .display_name
         .clone()
-        .unwrap_or_else(|| DEFAULT_SERVICE_DISPLAY_NAME.to_string());
+        .unwrap_or_else(|| options.service_name.clone());
     let description = Some(
         options
             .description
             .clone()
             .unwrap_or_else(|| DEFAULT_SERVICE_DESCRIPTION.to_string()),
     );
-    let arguments = vec![
-        "service".to_string(),
-        "run".to_string(),
-        "--runtime-root".to_string(),
-        runtime_root.to_string_lossy().to_string(),
-        "--service-name".to_string(),
-        options.service_name.clone(),
-    ];
+    let mut arguments = vec!["service".to_string(), "run".to_string()];
+    if options.runtime_root.is_some() {
+        arguments.push("--runtime-root".to_string());
+        arguments.push(runtime_root.to_string_lossy().to_string());
+    }
+    if options.service_name != DEFAULT_SERVICE_NAME {
+        arguments.push("--service-name".to_string());
+        arguments.push(options.service_name.clone());
+    }
     let manager = current_target_manager()?;
     let working_directory = runtime_root.clone();
     let logs_root = runtime_root.join("logs");
@@ -441,4 +442,104 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Build one unique temporary runtime-root path for service-definition tests.
+    /// 为服务定义测试构建一个唯一临时运行根路径。
+    fn unique_definition_test_dir(name: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "vulcan-agent-service-definition-{name}-{timestamp}"
+        ))
+    }
+
+    /// Default service installation should omit redundant runtime-root and service-name arguments so the hosted layout resolves like direct startup.
+    /// 默认服务安装应省略冗余的运行根与服务名参数，使宿主布局像直接启动一样自行解析。
+    #[test]
+    fn build_install_artifact_omits_default_runtime_arguments() {
+        let runtime_root = unique_definition_test_dir("default-args");
+        let options = ServiceInstallOptions {
+            runtime_root: None,
+            service_name: DEFAULT_SERVICE_NAME.to_string(),
+            display_name: None,
+            description: None,
+            scope: ServiceScope::System,
+            startup: ServiceStartup::Auto,
+            start_immediately: false,
+            force: false,
+        };
+        let artifact = build_install_artifact(&options, runtime_root.clone())
+            .expect("default artifact should build");
+        assert_eq!(artifact.runtime_root, runtime_root);
+        assert_eq!(artifact.display_name, DEFAULT_SERVICE_NAME);
+        assert_eq!(
+            artifact.arguments,
+            vec!["service".to_string(), "run".to_string()]
+        );
+    }
+
+    /// Custom service installation should still forward the explicit service name so SCM dispatch matches the registered service.
+    /// 自定义服务安装仍应转发显式服务名，以便 SCM 分发与已注册服务保持一致。
+    #[test]
+    fn build_install_artifact_preserves_custom_service_name_argument() {
+        let runtime_root = unique_definition_test_dir("custom-args");
+        let options = ServiceInstallOptions {
+            runtime_root: None,
+            service_name: "CustomAgentService".to_string(),
+            display_name: None,
+            description: None,
+            scope: ServiceScope::System,
+            startup: ServiceStartup::Auto,
+            start_immediately: false,
+            force: false,
+        };
+        let artifact =
+            build_install_artifact(&options, runtime_root).expect("custom artifact should build");
+        assert_eq!(artifact.display_name, "CustomAgentService");
+        assert_eq!(
+            artifact.arguments,
+            vec![
+                "service".to_string(),
+                "run".to_string(),
+                "--service-name".to_string(),
+                "CustomAgentService".to_string(),
+            ]
+        );
+    }
+
+    /// Explicit runtime-root overrides should be preserved in the generated service command so detached executable layouts keep pointing at the selected runtime.
+    /// 显式 runtime_root 覆盖应被保留在生成的服务命令中，从而让脱离运行根的可执行文件布局仍指向选定运行根。
+    #[test]
+    fn build_install_artifact_preserves_explicit_runtime_root_argument() {
+        let runtime_root = unique_definition_test_dir("explicit-runtime-root");
+        let options = ServiceInstallOptions {
+            runtime_root: Some(PathBuf::from("D:/custom/runtime-root")),
+            service_name: DEFAULT_SERVICE_NAME.to_string(),
+            display_name: None,
+            description: None,
+            scope: ServiceScope::System,
+            startup: ServiceStartup::Auto,
+            start_immediately: false,
+            force: false,
+        };
+        let artifact = build_install_artifact(&options, runtime_root.clone())
+            .expect("explicit runtime-root artifact should build");
+        assert_eq!(
+            artifact.arguments,
+            vec![
+                "service".to_string(),
+                "run".to_string(),
+                "--runtime-root".to_string(),
+                runtime_root.to_string_lossy().to_string(),
+            ]
+        );
+    }
 }

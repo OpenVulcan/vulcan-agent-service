@@ -97,6 +97,11 @@ fn enabled_capability_requires_resolved_api_key() {
     let error =
         validate_effective_model_config(&effective).expect_err("missing resolved key should fail");
     assert!(error.contains("api_key"));
+    assert!(error.contains("VULCAN_MISSING_MODEL_KEY"));
+    assert!(error.contains("current process environment"));
+    if cfg!(windows) {
+        assert!(error.contains("LocalSystem"));
+    }
 }
 
 /// Verify that an enabled embedding capability can use its own provider credentials without LLM credentials.

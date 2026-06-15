@@ -288,10 +288,11 @@ fn validate_effective_model_config(effective: &EffectiveModelConfig) -> Result<(
             );
         }
         if normalized_optional_text(effective.embedding_api_key.as_deref()).is_none() {
-            return Err(
-                "openai_compatible.embedding.api_key is required when embedding is enabled"
-                    .to_string(),
-            );
+            return Err(build_missing_api_key_error(
+                "openai_compatible.embedding.api_key",
+                "embedding",
+                provider.embedding.api_key.as_deref(),
+            ));
         }
         if normalized_optional_text(provider.embedding.model.as_deref()).is_none() {
             return Err(
@@ -307,15 +308,49 @@ fn validate_effective_model_config(effective: &EffectiveModelConfig) -> Result<(
             );
         }
         if normalized_optional_text(effective.llm_api_key.as_deref()).is_none() {
-            return Err(
-                "openai_compatible.llm.api_key is required when llm is enabled".to_string(),
-            );
+            return Err(build_missing_api_key_error(
+                "openai_compatible.llm.api_key",
+                "llm",
+                provider.llm.api_key.as_deref(),
+            ));
         }
         if normalized_optional_text(provider.llm.model.as_deref()).is_none() {
             return Err("openai_compatible.llm.model is required when llm is enabled".to_string());
         }
     }
     Ok(())
+}
+
+/// Build one actionable API-key validation error that explains the missing-secret source.
+/// 构建一条可执行的 API key 校验错误，并说明缺失密钥的来源。
+fn build_missing_api_key_error(
+    field_path: &str,
+    capability_name: &str,
+    configured_value: Option<&str>,
+) -> String {
+    let configured_value = normalized_optional_text(configured_value);
+    if let Some(env_name) = configured_value
+        .as_deref()
+        .and_then(parse_exact_env_reference)
+    {
+        return format!(
+            "{field_path} is required when {capability_name} is enabled; configured value references environment variable {env_name}, but that variable is missing or blank in the current process environment{}",
+            windows_service_environment_hint()
+        );
+    }
+    format!(
+        "{field_path} is required when {capability_name} is enabled; set a literal API key or use an exact ${{env:NAME}} reference"
+    )
+}
+
+/// Return one Windows-service-specific hint for env-backed secrets without affecting other platforms.
+/// 返回一条仅针对 Windows 服务的环境变量提示，同时不影响其他平台。
+fn windows_service_environment_hint() -> &'static str {
+    if cfg!(windows) {
+        "; on Windows services, LocalSystem cannot read user-level environment variables, so use a machine-level variable or run the service under an account that owns the variable"
+    } else {
+        ""
+    }
 }
 
 /// Resolve the effective embedding API base URL from the embedding capability configuration only.

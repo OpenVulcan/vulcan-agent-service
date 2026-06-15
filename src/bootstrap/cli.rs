@@ -435,9 +435,8 @@ fn parse_service_install_options(
             }
         }
     }
-    let runtime_root = runtime_root.ok_or("service install requires --runtime-root <path>")?;
     Ok(ServiceInstallOptions {
-        runtime_root: std::path::PathBuf::from(runtime_root),
+        runtime_root: runtime_root.map(std::path::PathBuf::from),
         service_name,
         display_name,
         description,
@@ -541,9 +540,8 @@ fn parse_service_run_options(
             }
         }
     }
-    let runtime_root = runtime_root.ok_or("service run requires --runtime-root <path>")?;
     Ok(ServiceRunOptions {
-        runtime_root: std::path::PathBuf::from(runtime_root),
+        runtime_root: runtime_root.map(std::path::PathBuf::from),
         service_name,
     })
 }

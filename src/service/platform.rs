@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn install_service(
     options: ServiceInstallOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let normalized_runtime_root = validate_runtime_root(&options.runtime_root)?;
+    let normalized_runtime_root = resolve_service_runtime_root(options.runtime_root.as_deref())?;
     let artifact = build_install_artifact(&options, normalized_runtime_root.clone())?;
     prepare_runtime_service_directories(&normalized_runtime_root)?;
     preflight_runtime_config(&normalized_runtime_root)?;
@@ -118,11 +118,11 @@ pub(super) fn print_service_status(
 pub(super) fn run_service_entrypoint(
     options: ServiceRunOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let normalized_runtime_root = validate_runtime_root(&options.runtime_root)?;
+    let normalized_runtime_root = resolve_service_runtime_root(options.runtime_root.as_deref())?;
     #[cfg(windows)]
     {
         if let Err(error) = windows::run_windows_service_dispatcher(ServiceRunOptions {
-            runtime_root: normalized_runtime_root.clone(),
+            runtime_root: Some(normalized_runtime_root.clone()),
             service_name: options.service_name.clone(),
         }) {
             return Err(error);
@@ -143,31 +143,10 @@ pub(super) fn run_service_entrypoint(
 pub(super) fn print_service_definition(
     options: ServiceInstallOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let normalized_runtime_root = validate_runtime_root(&options.runtime_root)?;
+    let normalized_runtime_root = resolve_service_runtime_root(options.runtime_root.as_deref())?;
     let artifact = build_install_artifact(&options, normalized_runtime_root)?;
     println!("{}", artifact.render_for_cli());
     Ok(())
-}
-
-/// Validate one runtime root and normalize it into a stable absolute path.
-/// 校验一个运行根，并将其规范化为稳定的绝对路径。
-fn validate_runtime_root(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let absolute_path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    if !absolute_path.exists() {
-        return Err(format!("runtime_root does not exist: {}", absolute_path.display()).into());
-    }
-    if !absolute_path.is_dir() {
-        return Err(format!(
-            "runtime_root is not a directory: {}",
-            absolute_path.display()
-        )
-        .into());
-    }
-    Ok(absolute_path.canonicalize().unwrap_or(absolute_path))
 }
 
 /// Prepare shared service state and log directories under the runtime root.
@@ -250,9 +229,12 @@ fn install_windows_service(
     let mut create_args = vec![
         OsString::from("create"),
         OsString::from(artifact.service_name.clone()),
-        OsString::from(format!("binPath= {}", artifact.windows_bin_path_argument())),
-        OsString::from(format!("start= {}", start_mode)),
-        OsString::from(format!("DisplayName= {}", artifact.display_name)),
+        OsString::from("binPath="),
+        OsString::from(artifact.windows_bin_path_argument()),
+        OsString::from("start="),
+        OsString::from(start_mode),
+        OsString::from("DisplayName="),
+        OsString::from(artifact.display_name.clone()),
     ];
     run_command_checked("sc.exe", &create_args)?;
     if let Some(description) = artifact.description.as_ref() {

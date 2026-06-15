@@ -142,7 +142,10 @@ fn parse_runtime_mode_accepts_service_install_mode() {
     let mode = parse_runtime_mode_from_args(&args).expect("service install mode should parse");
     match mode {
         RuntimeMode::Service(crate::service::ServiceCommand::Install(options)) => {
-            assert_eq!(options.runtime_root, std::path::PathBuf::from("output"));
+            assert_eq!(
+                options.runtime_root,
+                Some(std::path::PathBuf::from("output"))
+            );
             assert_eq!(options.service_name, "vas-demo");
             assert_eq!(options.scope.as_str(), "user");
             assert_eq!(options.startup.as_str(), "manual");
@@ -166,10 +169,87 @@ fn parse_runtime_mode_accepts_service_run_mode() {
     let mode = parse_runtime_mode_from_args(&args).expect("service run mode should parse");
     match mode {
         RuntimeMode::Service(crate::service::ServiceCommand::Run(options)) => {
-            assert_eq!(options.runtime_root, std::path::PathBuf::from("output"));
+            assert_eq!(
+                options.runtime_root,
+                Some(std::path::PathBuf::from("output"))
+            );
             assert_eq!(options.service_name, "vas-demo");
         }
         _ => panic!("expected service run runtime mode"),
+    }
+}
+
+/// Service install mode should default to the stable Windows-friendly service name when the caller omits it.
+/// service install 模式在调用方省略服务名时应默认回落到稳定的 Windows 友好服务名称。
+#[test]
+fn parse_runtime_mode_defaults_service_install_name() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "service".to_string(),
+        "install".to_string(),
+    ];
+    let mode = parse_runtime_mode_from_args(&args).expect("service install mode should parse");
+    match mode {
+        RuntimeMode::Service(crate::service::ServiceCommand::Install(options)) => {
+            assert!(options.runtime_root.is_none());
+            assert_eq!(options.service_name, crate::service::DEFAULT_SERVICE_NAME);
+        }
+        _ => panic!("expected service install runtime mode"),
+    }
+}
+
+/// Service run mode should allow the hosted layout to infer the runtime root and default service name.
+/// service run 模式应允许宿主布局自行推导运行根并回落到默认服务名。
+#[test]
+fn parse_runtime_mode_defaults_service_run_options() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "service".to_string(),
+        "run".to_string(),
+    ];
+    let mode = parse_runtime_mode_from_args(&args).expect("service run mode should parse");
+    match mode {
+        RuntimeMode::Service(crate::service::ServiceCommand::Run(options)) => {
+            assert!(options.runtime_root.is_none());
+            assert_eq!(options.service_name, crate::service::DEFAULT_SERVICE_NAME);
+        }
+        _ => panic!("expected service run runtime mode"),
+    }
+}
+
+/// Service status mode should target the stable default service name when the caller omits `--service-name`.
+/// service status 模式在调用方省略 `--service-name` 时应指向稳定的默认服务名。
+#[test]
+fn parse_runtime_mode_defaults_service_status_name() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "service".to_string(),
+        "status".to_string(),
+    ];
+    let mode = parse_runtime_mode_from_args(&args).expect("service status mode should parse");
+    match mode {
+        RuntimeMode::Service(crate::service::ServiceCommand::Status(options)) => {
+            assert_eq!(options.service_name, crate::service::DEFAULT_SERVICE_NAME);
+        }
+        _ => panic!("expected service status runtime mode"),
+    }
+}
+
+/// Service uninstall mode should target the stable default service name when the caller omits `--service-name`.
+/// service uninstall 模式在调用方省略 `--service-name` 时应指向稳定的默认服务名。
+#[test]
+fn parse_runtime_mode_defaults_service_uninstall_name() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "service".to_string(),
+        "uninstall".to_string(),
+    ];
+    let mode = parse_runtime_mode_from_args(&args).expect("service uninstall mode should parse");
+    match mode {
+        RuntimeMode::Service(crate::service::ServiceCommand::Uninstall(options)) => {
+            assert_eq!(options.service_name, crate::service::DEFAULT_SERVICE_NAME);
+        }
+        _ => panic!("expected service uninstall runtime mode"),
     }
 }
 
