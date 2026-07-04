@@ -59,8 +59,8 @@ $ThirdParty = Join-Path $ProjectDir "third_party"
 # RuntimeInstallRoot 保存解压后的 LuaSkills 官方运行期载荷。
 $RuntimeInstallRoot = Join-Path $ThirdParty "luaskills_runtime"
 
-# DownloadCache stores verified archives and sidecar checksums.
-# DownloadCache 保存已校验的压缩包与旁路校验文件。
+# DownloadCache stores verified runtime package archives.
+# DownloadCache 保存已校验的运行时包压缩文件。
 $DownloadCache = Join-Path $ThirdParty "downloads"
 
 function Ensure-Dir {
@@ -298,11 +298,11 @@ function Get-AvailableTarPath {
     throw "tar.exe is required to extract the LuaSkills runtime package."
 }
 
-function Get-ReleaseAssetUrl {
+function Get-ReleaseAssetInfo {
     <#
     .SYNOPSIS
-    Build the direct GitHub Release asset URL.
-    构造 GitHub Release 资产的直接下载地址。
+    Find one exact GitHub Release asset download URL and API digest.
+    查找一个精确 GitHub Release 资产下载地址与 API 摘要。
 
     .PARAMETER Repo
     GitHub repository in owner/name form.
@@ -322,56 +322,24 @@ function Get-ReleaseAssetUrl {
         [string]$AssetName
     )
 
-    return "https://github.com/$Repo/releases/download/$Tag/$AssetName"
-}
-
-function Get-ExpectedSha256 {
-    <#
-    .SYNOPSIS
-    Read the first checksum token from one .sha256 sidecar file.
-    从一个 .sha256 旁路文件读取首个校验值片段。
-
-    .PARAMETER ShaPath
-    Local .sha256 file path.
-    本地 .sha256 文件路径。
-    #>
-    param([string]$ShaPath)
-
-    return (((Get-Content -LiteralPath $ShaPath -Raw).Trim() -split "\s+")[0]).ToLowerInvariant()
-}
-
-function Test-ArchiveSha256 {
-    <#
-    .SYNOPSIS
-    Check whether one archive matches its expected SHA-256 digest.
-    检查压缩包是否匹配期望的 SHA-256 摘要。
-
-    .PARAMETER ArchivePath
-    Archive path to verify.
-    需要校验的压缩包路径。
-
-    .PARAMETER ExpectedSha256
-    Expected lower-case SHA-256 digest.
-    期望的小写 SHA-256 摘要。
-    #>
-    param(
-        [string]$ArchivePath,
-        [string]$ExpectedSha256
-    )
-
-    if (-not (Test-Path -LiteralPath $ArchivePath)) {
-        return $false
+    $ApiUrl = "https://api.github.com/repos/$Repo/releases/tags/$Tag"
+    $Release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
+    $Asset = $Release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+    if (-not $Asset) {
+        $Available = ($Release.assets | ForEach-Object { $_.name }) -join ", "
+        throw "Asset '$AssetName' not found in $Repo@$Tag. Available: $Available"
     }
-
-    $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArchivePath).Hash.ToLowerInvariant()
-    return $Actual -eq $ExpectedSha256
+    return [PSCustomObject]@{
+        Url = $Asset.browser_download_url
+        Digest = [string]$Asset.digest
+    }
 }
 
-function Save-ReleaseAssetWithSha256 {
+function Save-ReleaseAssetWithDigest {
     <#
     .SYNOPSIS
-    Download one GitHub Release asset and verify its .sha256 sidecar.
-    下载单个 GitHub Release 资产并校验其 .sha256 旁路文件。
+    Download one GitHub Release asset and verify its GitHub API digest.
+    下载单个 GitHub Release 资产并校验其 GitHub API 摘要。
 
     .PARAMETER Repo
     GitHub repository in owner/name form.
@@ -385,46 +353,80 @@ function Save-ReleaseAssetWithSha256 {
     Exact asset file name.
     精确资产文件名。
 
-    .PARAMETER ShaAssetName
-    Optional checksum asset file name when the sidecar does not follow the default .sha256 suffix pattern.
-    当校验文件不遵循默认 .sha256 后缀规则时，可选指定其精确文件名。
     #>
     param(
         [string]$Repo,
         [string]$Tag,
-        [string]$AssetName,
-        [string]$ShaAssetName = ""
+        [string]$AssetName
     )
 
     Ensure-Dir $DownloadCache
 
-    if ([string]::IsNullOrWhiteSpace($ShaAssetName)) {
-        $ShaAssetName = "$AssetName.sha256"
-    }
-
     $ArchivePath = Join-Path $DownloadCache $AssetName
-    $ShaPath = "$ArchivePath.sha256"
-    $ArchiveUrl = Get-ReleaseAssetUrl -Repo $Repo -Tag $Tag -AssetName $AssetName
-    $ShaUrl = Get-ReleaseAssetUrl -Repo $Repo -Tag $Tag -AssetName $ShaAssetName
+    $AssetInfo = Get-ReleaseAssetInfo -Repo $Repo -Tag $Tag -AssetName $AssetName
+    if ($AssetInfo.Digest -notlike "sha256:*") {
+        throw "GitHub API digest for $AssetName is missing or unsupported: $($AssetInfo.Digest)"
+    }
+    $Expected = $AssetInfo.Digest.Substring("sha256:".Length).ToLowerInvariant()
 
-    Write-Host "==> Downloading checksum: $ShaUrl"
-    Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaPath -UseBasicParsing
-    $Expected = Get-ExpectedSha256 -ShaPath $ShaPath
-
-    if (Test-ArchiveSha256 -ArchivePath $ArchivePath -ExpectedSha256 $Expected) {
+    if ((Test-Path -LiteralPath $ArchivePath) -and ((Get-FileSha256Hex -Path $ArchivePath) -eq $Expected)) {
         Write-Host "==> Reusing verified archive: $ArchivePath"
         return $ArchivePath
     }
 
-    Write-Host "==> Downloading asset: $ArchiveUrl"
-    Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ArchivePath -UseBasicParsing
+    Write-Host "==> Downloading asset: $($AssetInfo.Url)"
+    try {
+        Invoke-WebRequest -Uri $AssetInfo.Url -OutFile $ArchivePath -UseBasicParsing
+    } catch {
+        throw "Failed to download runtime asset '$AssetName' from $Repo@$Tag. Confirm that the LuaSkills runtime assets have been published for this tag. Original error: $($_.Exception.Message)"
+    }
 
-    if (-not (Test-ArchiveSha256 -ArchivePath $ArchivePath -ExpectedSha256 $Expected)) {
-        $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArchivePath).Hash.ToLowerInvariant()
+    $Actual = Get-FileSha256Hex -Path $ArchivePath
+    if ($Actual -ne $Expected) {
         throw "SHA-256 mismatch for $AssetName. Expected $Expected, got $Actual"
     }
 
     return $ArchivePath
+}
+
+function Get-FileSha256Hex {
+    <#
+    .SYNOPSIS
+    Resolve one file SHA-256 digest with a portable fallback for older Windows PowerShell hosts.
+    使用兼容旧版 Windows PowerShell 宿主的回退路径解析单个文件的 SHA-256 摘要。
+
+    .PARAMETER Path
+    File path whose SHA-256 digest should be returned as lowercase hexadecimal text.
+    需要以小写十六进制文本返回 SHA-256 摘要的文件路径。
+
+    .OUTPUTS
+    Lowercase hexadecimal SHA-256 digest of the target file.
+    目标文件的小写十六进制 SHA-256 摘要。
+    #>
+    param([string]$Path)
+
+    $GetFileHashCommand = Get-Command -Name "Get-FileHash" -ErrorAction SilentlyContinue
+    if ($GetFileHashCommand) {
+        return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    }
+
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $Stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $DigestBytes = $Sha256.ComputeHash($Stream)
+        } finally {
+            $Stream.Dispose()
+        }
+    } finally {
+        $Sha256.Dispose()
+    }
+
+    $Builder = New-Object -TypeName System.Text.StringBuilder
+    foreach ($Byte in $DigestBytes) {
+        [void]$Builder.AppendFormat("{0:x2}", $Byte)
+    }
+    return $Builder.ToString()
 }
 
 function Clear-RuntimeInstallRoot {
@@ -476,47 +478,6 @@ function Copy-DirectoryContents {
     }
 }
 
-function Resolve-BundleExtractRoot {
-    <#
-    .SYNOPSIS
-    Resolve the extracted bundle directory that contains lua_packages metadata files.
-    解析包含 lua_packages 元数据文件的 bundle 解压目录。
-
-    .PARAMETER ExtractRoot
-    Temporary extraction root for the release bundle zip.
-    release bundle zip 的临时解压根目录。
-    #>
-    param([string]$ExtractRoot)
-
-    $CompatFile = Get-ChildItem -LiteralPath $ExtractRoot -Recurse -File -Filter "lua_packages.txt" |
-        Select-Object -First 1
-    if (-not $CompatFile) {
-        throw "LuaSkills packages bundle does not contain lua_packages.txt."
-    }
-    return Split-Path -Parent $CompatFile.FullName
-}
-
-function Normalize-BundleLicenseIndexPaths {
-    <#
-    .SYNOPSIS
-    Rewrite bundle license-index paths so they match the runtime layout.
-    重写 bundle 授权索引路径，使其匹配运行时布局。
-
-    .PARAMETER IndexPath
-    Installed luaskills-packages license index path.
-    已安装的 luaskills-packages 授权索引路径。
-    #>
-    param([string]$IndexPath)
-
-    if (-not (Test-Path -LiteralPath $IndexPath)) {
-        throw "LuaSkills packages license index is missing: $IndexPath"
-    }
-
-    $Content = Get-Content -LiteralPath $IndexPath -Raw
-    $Content = $Content.Replace('"dist/licenses/', '"licenses/luaskills-packages/')
-    Set-Content -LiteralPath $IndexPath -Value $Content -Encoding UTF8
-}
-
 function Test-RuntimeInstallReady {
     <#
     .SYNOPSIS
@@ -531,30 +492,20 @@ function Test-RuntimeInstallReady {
 
     $RuntimeManifestPath = Join-Path $RuntimeInstallRoot "resources\lua-runtime-manifest.json"
     $PackagesManifestPath = Join-Path $RuntimeInstallRoot "resources\luaskills-packages-manifest.json"
-    $ThirdPartyLicensesPath = Join-Path $RuntimeInstallRoot "resources\luaskills-packages\THIRD_PARTY_LICENSES.json"
-    $ThirdPartyNoticesPath = Join-Path $RuntimeInstallRoot "resources\luaskills-packages\THIRD_PARTY_NOTICES.md"
-    $LicenseIndexPath = Join-Path $RuntimeInstallRoot "licenses\luaskills-packages\index.json"
     return (Test-Path -LiteralPath $MarkerFile) -and
         (Test-Path -LiteralPath $RuntimeManifestPath) -and
-        (Test-Path -LiteralPath $PackagesManifestPath) -and
-        (Test-Path -LiteralPath $ThirdPartyLicensesPath) -and
-        (Test-Path -LiteralPath $ThirdPartyNoticesPath) -and
-        (Test-Path -LiteralPath $LicenseIndexPath)
+        (Test-Path -LiteralPath $PackagesManifestPath)
 }
 
 function Install-LuaRuntimePayloads {
     <#
     .SYNOPSIS
-    Extract and install the runtime package plus the luaskills-packages bundle metadata into third_party.
-    解压并安装 runtime package 与 luaskills-packages bundle 元数据到 third_party。
+    Extract and install the official lua-runtime-packages archive into third_party.
+    解压并安装官方 lua-runtime-packages 压缩包到 third_party。
 
     .PARAMETER RuntimeArchivePath
     Verified runtime package archive path.
     已校验的 runtime package 压缩包路径。
-
-    .PARAMETER BundleArchivePath
-    Verified luaskills-packages bundle archive path.
-    已校验的 luaskills-packages bundle 压缩包路径。
 
     .PARAMETER RuntimeTag
     Runtime package release tag.
@@ -566,7 +517,6 @@ function Install-LuaRuntimePayloads {
     #>
     param(
         [string]$RuntimeArchivePath,
-        [string]$BundleArchivePath,
         [string]$RuntimeTag,
         [string]$Platform
     )
@@ -579,77 +529,36 @@ function Install-LuaRuntimePayloads {
 
     $TarPath = Get-AvailableTarPath
     $RuntimeTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcan_runtime_packages_{0}" -f $PID)
-    $BundleTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcan_luaskills_bundle_{0}" -f $PID)
 
-    foreach ($TempDir in @($RuntimeTempDir, $BundleTempDir)) {
-        if (Test-Path -LiteralPath $TempDir) {
-            Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        Ensure-Dir $TempDir
+    if (Test-Path -LiteralPath $RuntimeTempDir) {
+        Remove-Item -LiteralPath $RuntimeTempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    Ensure-Dir $RuntimeTempDir
 
     try {
         & $TarPath -xzf $RuntimeArchivePath -C $RuntimeTempDir
-        Expand-Archive -Path $BundleArchivePath -DestinationPath $BundleTempDir -Force
-
-        $BundleRoot = Resolve-BundleExtractRoot -ExtractRoot $BundleTempDir
 
         Clear-RuntimeInstallRoot
 
         foreach ($DirName in @("lua_packages", "libs", "resources", "licenses")) {
-            Copy-DirectoryContents -Source (Join-Path $RuntimeTempDir $DirName) -Destination (Join-Path $RuntimeInstallRoot $DirName)
-        }
-
-        $PackagesResourcesRoot = Join-Path $RuntimeInstallRoot "resources\luaskills-packages"
-        $PackagesLicensesRoot = Join-Path $RuntimeInstallRoot "licenses\luaskills-packages"
-        Ensure-Dir $PackagesResourcesRoot
-        Ensure-Dir $PackagesLicensesRoot
-
-        foreach ($FileName in @(
-            "THIRD_PARTY_LICENSES.json",
-            "THIRD_PARTY_NOTICES.md",
-            "install-manifest.json",
-            "lua_packages.txt",
-            "platform-support.json",
-            "platform-support.md"
-        )) {
-            $SourcePath = Join-Path $BundleRoot $FileName
+            $SourcePath = Join-Path $RuntimeTempDir $DirName
             if (Test-Path -LiteralPath $SourcePath) {
-                Copy-Item -Force -LiteralPath $SourcePath -Destination (Join-Path $PackagesResourcesRoot $FileName)
+                Copy-DirectoryContents -Source $SourcePath -Destination (Join-Path $RuntimeInstallRoot $DirName)
             }
         }
 
-        $HelpSource = Join-Path $BundleRoot "help"
-        if (Test-Path -LiteralPath $HelpSource) {
-            Copy-DirectoryContents -Source $HelpSource -Destination (Join-Path $PackagesResourcesRoot "help")
+        foreach ($DirName in @("bin", "skills", "dependencies", "state", "databases", "config", "temp", "system_lua_lib")) {
+            Ensure-Dir (Join-Path $RuntimeInstallRoot $DirName)
         }
-
-        $BundleLicensesSource = Join-Path $BundleRoot "licenses"
-        if (Test-Path -LiteralPath $BundleLicensesSource) {
-            Copy-DirectoryContents -Source $BundleLicensesSource -Destination $PackagesLicensesRoot
-        }
-
-        Normalize-BundleLicenseIndexPaths -IndexPath (Join-Path $PackagesLicensesRoot "index.json")
+        Ensure-Dir (Join-Path $RuntimeInstallRoot "temp\downloads")
 
         $RuntimeManifestPath = Join-Path $RuntimeInstallRoot "resources\lua-runtime-manifest.json"
         $PackagesManifestPath = Join-Path $RuntimeInstallRoot "resources\luaskills-packages-manifest.json"
-        $ThirdPartyLicensesPath = Join-Path $PackagesResourcesRoot "THIRD_PARTY_LICENSES.json"
-        $ThirdPartyNoticesPath = Join-Path $PackagesResourcesRoot "THIRD_PARTY_NOTICES.md"
-        $LicenseIndexPath = Join-Path $PackagesLicensesRoot "index.json"
         if (-not (Test-Path -LiteralPath $RuntimeManifestPath)) {
             throw "Lua runtime manifest was not found after installing runtime packages."
         }
         if (-not (Test-Path -LiteralPath $PackagesManifestPath)) {
             throw "LuaSkills packages manifest was not found after installing runtime packages."
-        }
-        if (-not (Test-Path -LiteralPath $ThirdPartyLicensesPath)) {
-            throw "LuaSkills packages third-party licenses file was not found after installing runtime packages."
-        }
-        if (-not (Test-Path -LiteralPath $ThirdPartyNoticesPath)) {
-            throw "LuaSkills packages third-party notices file was not found after installing runtime packages."
-        }
-        if (-not (Test-Path -LiteralPath $LicenseIndexPath)) {
-            throw "LuaSkills packages license index was not found after installing runtime packages."
         }
 
         Get-ChildItem -Path $RuntimeInstallRoot -Filter ".installed-*" -File -ErrorAction SilentlyContinue |
@@ -657,9 +566,7 @@ function Install-LuaRuntimePayloads {
         New-Item -ItemType File -Path $MarkerFile -Force | Out-Null
         Write-Host "==> LuaSkills runtime payloads installed to $RuntimeInstallRoot"
     } finally {
-        foreach ($TempDir in @($RuntimeTempDir, $BundleTempDir)) {
-            Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        Remove-Item -LiteralPath $RuntimeTempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -670,30 +577,21 @@ $ResolvedLuaRuntimeTag = Resolve-LuaRuntimePackagesTag `
     -LegacyRuntimeVersion $LuaRuntimeVersion
 $Platform = Get-CurrentPlatformKey
 $RuntimeAssetName = "lua-runtime-packages-$Platform.tar.gz"
-$BundleAssetName = "luaskills-packages-bundle-$ResolvedLuaRuntimeTag.zip"
 
 Write-Host ""
 Write-Host "=== LuaSkills Runtime Packages ==="
 Write-Host "==> Runtime repo:    $LuaRuntimeRepo"
 Write-Host "==> Runtime version: $ResolvedLuaRuntimeTag"
 Write-Host "==> Platform:        $Platform"
-Write-Host "==> This flow downloads only luaskills-packages runtime assets and bundle metadata."
+Write-Host "==> This flow downloads only lua-runtime-packages assets from luaskills-packages."
 
 Write-Host ""
 Write-Host "=== Step 1: Runtime Package ==="
-$RuntimeArchivePath = Save-ReleaseAssetWithSha256 -Repo $LuaRuntimeRepo -Tag $ResolvedLuaRuntimeTag -AssetName $RuntimeAssetName
+$RuntimeArchivePath = Save-ReleaseAssetWithDigest -Repo $LuaRuntimeRepo -Tag $ResolvedLuaRuntimeTag -AssetName $RuntimeAssetName
 
 Write-Host ""
-Write-Host "=== Step 2: Runtime Metadata Bundle ==="
-$BundleArchivePath = Save-ReleaseAssetWithSha256 `
-    -Repo $LuaRuntimeRepo `
-    -Tag $ResolvedLuaRuntimeTag `
-    -AssetName $BundleAssetName `
-    -ShaAssetName "luaskills-packages-bundle-$ResolvedLuaRuntimeTag.sha256"
-
-Write-Host ""
-Write-Host "=== Step 3: Install Runtime Payloads ==="
-Install-LuaRuntimePayloads -RuntimeArchivePath $RuntimeArchivePath -BundleArchivePath $BundleArchivePath -RuntimeTag $ResolvedLuaRuntimeTag -Platform $Platform
+Write-Host "=== Step 2: Install Runtime Payloads ==="
+Install-LuaRuntimePayloads -RuntimeArchivePath $RuntimeArchivePath -RuntimeTag $ResolvedLuaRuntimeTag -Platform $Platform
 
 Write-Host ""
 Write-Host "==> Lua runtime dependencies ready."

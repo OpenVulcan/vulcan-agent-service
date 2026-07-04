@@ -156,6 +156,16 @@ impl VmmService for McpServiceImpl {
         ))
     }
 
+    async fn delete_memories(
+        &self,
+        request: Request<vmm_pb::DeleteMemoriesRequest>,
+    ) -> Result<Response<vmm_pb::DeleteMemoriesResponse>, Status> {
+        let client = self.require_vmm_backend()?;
+        Ok(Response::new(
+            client.forward_delete_memories(request.into_inner()).await?,
+        ))
+    }
+
     async fn chat_compact(
         &self,
         request: Request<vmm_pb::ChatCompactRequest>,

@@ -150,46 +150,59 @@ foreach ($dir in @(
 
 # Copy binary
 Copy-Item -Force $BinExe "$OutDir\$BinName.exe"
-Write-Host "==> Binary copied to $OutDir\"
+Write-Host "==> Binary copied to $OutDir"
 
 # Sync official LuaSkills runtime package exports to output/.
 # Build packaging treats third_party/luaskills_runtime as a caller-managed asset root and copies it as-is.
 # 构建打包会把 third_party/luaskills_runtime 视为调用方自管的资产根目录，并按现状直接同步。
 # Cross-platform validation is intentionally omitted because forks may replace lua_packages/runtime payloads with custom layouts.
 # 这里有意不做跨平台校验，因为 fork 方可能会用自定义布局替换 lua_packages/runtime 载荷。
-if (Test-Path -LiteralPath $LuaSkillsRuntimeRoot) {
-    $RuntimeSyncs = @(
-        @{ source = Join-Path $LuaSkillsRuntimeRoot "lua_packages"; destination = $PkgOut; name = "lua_packages" },
-        @{ source = Join-Path $LuaSkillsRuntimeRoot "libs"; destination = $LibsOut; name = "libs" },
-        @{ source = Join-Path $LuaSkillsRuntimeRoot "resources"; destination = $ResourcesOut; name = "resources" },
-        @{ source = Join-Path $LuaSkillsRuntimeRoot "licenses"; destination = $LicensesOut; name = "licenses" }
-    )
-
-    foreach ($Sync in $RuntimeSyncs) {
-        if (Copy-DirectoryContents -Source $Sync.source -Destination $Sync.destination) {
-            Write-Host "==> LuaSkills runtime $($Sync.name) synced to $($Sync.destination)\"
+$ResolvedLuaSkillsRuntimeRoot = $null
+try {
+    $ResolvedLuaSkillsRuntimeRoot = (Resolve-Path -LiteralPath $LuaSkillsRuntimeRoot -ErrorAction Stop).Path
+} catch {
+    $ResolvedLuaSkillsRuntimeRoot = $null
+}
+if (-not [string]::IsNullOrWhiteSpace($ResolvedLuaSkillsRuntimeRoot)) {
+    foreach ($RuntimeDirName in @("lua_packages", "libs", "resources", "licenses")) {
+        $RuntimeSource = Join-Path $ResolvedLuaSkillsRuntimeRoot $RuntimeDirName
+        if ($RuntimeDirName -eq "lua_packages") {
+            $RuntimeDestination = $PkgOut
+        } elseif ($RuntimeDirName -eq "libs") {
+            $RuntimeDestination = $LibsOut
+        } elseif ($RuntimeDirName -eq "resources") {
+            $RuntimeDestination = $ResourcesOut
+        } elseif ($RuntimeDirName -eq "licenses") {
+            $RuntimeDestination = $LicensesOut
         } else {
-            Write-Host "==> LuaSkills runtime package has no $($Sync.name) directory"
+            throw "Unsupported LuaSkills runtime directory: $RuntimeDirName"
+        }
+
+        if (Copy-DirectoryContents -Source $RuntimeSource -Destination $RuntimeDestination) {
+            Write-Host "==> LuaSkills runtime $RuntimeDirName synced to $RuntimeDestination"
+        } else {
+            Write-Host "==> LuaSkills runtime package has no $RuntimeDirName directory"
         }
     }
-} else {
+}
+if ([string]::IsNullOrWhiteSpace($ResolvedLuaSkillsRuntimeRoot)) {
     Write-Host "==> No third_party/luaskills_runtime found (run make deps first)"
 }
 
 # Sync runtime config files to output/configs/
 if (Test-Path "runtime\configs") {
     if (-not (Test-Path $ConfigOut)) { New-Item -ItemType Directory -Path $ConfigOut -Force | Out-Null }
-    Copy-Item -Force -Recurse "runtime\configs\*" "$ConfigOut\"
+    Copy-Item -Force -Recurse "runtime\configs\*" $ConfigOut
     Enable-OutputModelConfigForLocalTesting -ConfigDirectory $ConfigOut
-    Write-Host "==> Runtime configs synced to $ConfigOut\"
+    Write-Host "==> Runtime configs synced to $ConfigOut"
 } else {
     Write-Host "==> No runtime/configs directory found"
 }
 
 # Sync runtime shared resources to output/resources/
 if (Test-Path "runtime\resources") {
-    Copy-Item -Force -Recurse "runtime\resources\*" "$ResourcesOut\"
-    Write-Host "==> Runtime shared resources synced to $ResourcesOut\"
+    Copy-Item -Force -Recurse "runtime\resources\*" $ResourcesOut
+    Write-Host "==> Runtime shared resources synced to $ResourcesOut"
 } else {
     Write-Host "==> No runtime/resources directory found"
 }
@@ -197,8 +210,8 @@ if (Test-Path "runtime\resources") {
 # Sync runtime state records to output/state/
 # 同步运行时状态记录到 output/state/
 if (Test-Path "runtime\state") {
-    Copy-Item -Force -Recurse "runtime\state\*" "$StateOut\"
-    Write-Host "==> Runtime state synced to $StateOut\"
+    Copy-Item -Force -Recurse "runtime\state\*" $StateOut
+    Write-Host "==> Runtime state synced to $StateOut"
 } else {
     Write-Host "==> No runtime/state directory found"
 }
@@ -206,8 +219,8 @@ if (Test-Path "runtime\state") {
 # Sync runtime Lua skills to output/skills/
 if (Test-Path "runtime\skills") {
     Reset-DirectoryContents -Path $SkillsOut
-    Copy-Item -Force -Recurse "runtime\skills\*" "$SkillsOut\"
-    Write-Host "==> Runtime Lua skills synced to $SkillsOut\"
+    Copy-Item -Force -Recurse "runtime\skills\*" $SkillsOut
+    Write-Host "==> Runtime Lua skills synced to $SkillsOut"
 } else {
     Write-Host "==> No runtime/skills directory found"
 }
@@ -215,7 +228,7 @@ if (Test-Path "runtime\skills") {
 # Prepare output/bin/tools/ as the host runtime tool directory.
 $HostToolsOut = Join-Path $BaseOutDir "bin\tools"
 if (-not (Test-Path $HostToolsOut)) { New-Item -ItemType Directory -Path $HostToolsOut -Force | Out-Null }
-Write-Host "==> Host tool output directory prepared at $HostToolsOut\"
+Write-Host "==> Host tool output directory prepared at $HostToolsOut"
 
 # Copy the host-installed vldb-controller executable to output/bin/ when the dependency bootstrap has prepared it.
 $ControllerOut = Join-Path $BaseOutDir "bin"
@@ -230,7 +243,7 @@ if (Test-Path $ControllerBinarySource) {
     if (-not (Get-Item -LiteralPath $ControllerBinarySource).PSIsContainer) {
         try {
             Copy-Item -Force $ControllerBinarySource "$ControllerOut\$ControllerBinaryName" -ErrorAction Stop
-            Write-Host "==> vldb-controller synced to $ControllerOut\"
+            Write-Host "==> vldb-controller synced to $ControllerOut"
         } catch {
             Write-Warning "vldb-controller is currently running or locked; keeping the existing output binary and continuing."
         }

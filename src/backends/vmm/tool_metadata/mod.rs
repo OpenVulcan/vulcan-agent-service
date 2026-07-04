@@ -29,6 +29,10 @@ const MAX_MEMORY_SEARCH_QUERIES: u64 = 16;
 /// 公开记忆写入工具接受的最大批量写入数量。
 const MAX_MEMORY_WRITE_ITEMS: u64 = 8;
 
+/// Maximum delete batch size accepted by the public memory delete tool.
+/// 公开记忆删除工具接受的最大批量删除数量。
+const MAX_MEMORY_DELETE_ITEMS: u64 = 16;
+
 /// Metadata authority string returned to host plugins for diagnostics.
 /// 返回给宿主插件用于诊断的元信息权威来源字符串。
 const VMM_MEMORY_TOOL_METADATA_SOURCE: &str = "vmm.grpc-integration-contract";
@@ -287,7 +291,8 @@ mod tests {
                 "vulcan_memory_get",
                 "vmm_memory_search",
                 "vmm_turn_details",
-                "vmm_memory_write"
+                "vmm_memory_write",
+                "vmm_memory_delete"
             ]
         );
     }
@@ -315,6 +320,29 @@ mod tests {
         assert!(write_tool.description.contains("items[].memoryLevel"));
         assert!(category_description.contains("7 = security_policy"));
         assert!(priority_description.contains("1 = P0"));
+    }
+
+    /// Verify delete metadata requires explicit memory ids and a reason before host plugins register it.
+    /// 验证删除元信息要求明确 memory id 与原因后，宿主插件才注册该工具。
+    #[test]
+    fn vmm_memory_delete_metadata_requires_explicit_ids_and_reason() {
+        let tools = vmm_memory_tool_descriptors();
+        let delete_tool = tools
+            .iter()
+            .find(|tool| tool.name == "vmm_memory_delete")
+            .expect("delete descriptor should exist");
+        let schema: Value = serde_json::from_str(&delete_tool.input_schema_json)
+            .expect("schema should be valid JSON");
+
+        assert_eq!(
+            schema["required"]
+                .as_array()
+                .map(|items| { items.iter().filter_map(Value::as_str).collect::<Vec<_>>() }),
+            Some(vec!["memoryIds", "reason"])
+        );
+        assert!(delete_tool.description.contains("memory_id"));
+        assert!(delete_tool.description.contains("replacement"));
+        assert_eq!(delete_tool.source, VMM_MEMORY_TOOL_METADATA_SOURCE);
     }
 
     /// Verify canonical memory descriptors expose the host-facing names and common annotations.

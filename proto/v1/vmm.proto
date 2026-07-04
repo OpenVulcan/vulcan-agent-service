@@ -45,8 +45,8 @@ service VMMService {
   // DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
 
-  // GetProfileNodes returns only active atomic profile nodes for one requested scope target.
-  // GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+  // GetProfileNodes returns active atomic profile nodes for one requested scope target or an explicit all-scope query.
+  // GetProfileNodes 用于返回单个目标范围，或显式全范围查询下当前 active 的原子化画像节点。
   rpc GetProfileNodes(GetProfileNodesRequest) returns (GetProfileNodesResponse);
 
   // GetProfileBundle assembles one deterministic TEAM/SPACE/PROJECT/USER prompt bundle for the requested user/project pair.
@@ -68,6 +68,10 @@ service VMMService {
   // WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
   // WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
   rpc WriteMemories(WriteMemoriesRequest) returns (WriteMemoriesResponse);
+
+  // DeleteMemories marks explicit memory rows as deleted inside the resolved user/project scope while keeping source turn details intact.
+  // DeleteMemories 用于在解析后的 user/project 范围内把明确指定的记忆行标记为 deleted，同时保留来源 turn 详情。
+  rpc DeleteMemories(DeleteMemoriesRequest) returns (DeleteMemoriesResponse);
 
   // ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
   // ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
@@ -244,14 +248,15 @@ message DeleteUserResponse {
   int64 deleted_profiles = 11;
 }
 
-// ProfileTarget identifies the single scope whose profile nodes should be queried or updated.
-// ProfileTarget 用于标识应被查询或更新画像节点的单个目标 scope。
+// ProfileTarget identifies one scope for profile mutations or one/supported-all scopes for profile-node queries.
+// ProfileTarget 用于标识画像写入的单个 scope，或画像节点查询的单个/显式全量 scope。
 enum ProfileTarget {
   PROFILE_TARGET_UNSPECIFIED = 0;
   PROFILE_TARGET_USER = 1;
   PROFILE_TARGET_PROJECT = 2;
   PROFILE_TARGET_TEAM = 3;
   PROFILE_TARGET_SPACE = 4;
+  PROFILE_TARGET_ALL = 5;
 }
 
 // ProfileNodeSourceKind describes where one durable profile node came from.
@@ -288,8 +293,8 @@ message RetiredProfileNodeEntry {
   string reason = 2;
 }
 
-// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target.
-// GetProfileNodesRequest 用于请求服务端返回单个目标下当前 active 的原子化画像节点。
+// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target or all supported targets.
+// GetProfileNodesRequest 用于请求服务端返回单个目标或全部支持目标下当前 active 的原子化画像节点。
 message GetProfileNodesRequest {
   ProfileTarget target = 1;
   uint64 user_id = 2;
@@ -449,6 +454,24 @@ message WriteMemoriesResponse {
   string trace_id = 2;
 }
 
+// DeleteMemoriesRequest carries an explicit memory-id batch and the caller scope used to prevent cross-user/project deletion.
+// DeleteMemoriesRequest 用于承载一批明确 memory id，以及防止跨 user/project 删除的调用方范围。
+message DeleteMemoriesRequest {
+  uint64 user_id = 1;
+  uint64 project_id = 2;
+  repeated uint64 memory_ids = 3;
+  string reason = 4;
+}
+
+// DeleteMemoriesResponse returns ids that were deleted and ids that were absent or outside the resolved scope.
+// DeleteMemoriesResponse 用于返回已删除的 id，以及不存在或不属于解析范围的 id。
+message DeleteMemoriesResponse {
+  repeated uint64 deleted_memory_ids = 1;
+  repeated uint64 not_found_memory_ids = 2;
+  uint64 deleted_vector_rows = 3;
+  string trace_id = 4;
+}
+
 // PreCheckRecallMode defines which memory-recall strategy one pre-check request wants the server to apply.
 // PreCheckRecallMode 用于定义单次 pre-check 请求希望服务端采用哪一种记忆召回策略。
 enum PreCheckRecallMode {
@@ -494,6 +517,7 @@ message ContextItem {
   uint64 turn_id = 3;
   bool has_dialogue = 4;
   string created_datetime = 5;
+  uint64 memory_id = 6;
 }
 
 // PreCheckResponse returns the injection decision and assembled context payload.

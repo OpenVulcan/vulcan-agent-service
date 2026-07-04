@@ -2,6 +2,28 @@ use crate::config::{Config, SkillRootConfigEntry};
 use luaskills::RuntimeSkillRoot;
 use std::collections::HashSet;
 use std::path::PathBuf;
+
+/// Normalize one path before it is exposed to Lua package search templates.
+/// 在路径暴露给 Lua 包搜索模板前对其进行规范化。
+pub(super) fn normalize_lua_visible_path(path: PathBuf) -> PathBuf {
+    // Windows verbatim prefixes contain `?`, which Lua treats as the module-name placeholder inside package.path and package.cpath.
+    // Windows verbatim 前缀包含 `?`，Lua 会在 package.path 与 package.cpath 中把它当作模块名占位符替换。
+    #[cfg(windows)]
+    {
+        // Rendered path text is used only to detect and strip Windows verbatim spelling emitted by canonicalization.
+        // 渲染后的路径文本仅用于检测并去除 canonicalize 产生的 Windows verbatim 写法。
+        let rendered = path.to_string_lossy();
+        if let Some(stripped) = rendered.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{}", stripped));
+        }
+        if let Some(stripped) = rendered.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+
+    path
+}
+
 /// Resolve the unified skill-config file path strictly from the runtime root using the fixed product layout.
 /// 严格基于运行根与固定产品目录结构解析统一 Skill 配置文件路径。
 pub fn resolve_skill_config_file_path(runtime_root: &std::path::Path) -> Result<PathBuf, String> {
@@ -75,7 +97,7 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Result<Option<PathBu
                 normalized_root.display()
             ));
         }
-        return Ok(Some(normalized_root));
+        return Ok(Some(normalize_lua_visible_path(normalized_root)));
     }
 
     let Some(exe_path) = std::env::current_exe().ok() else {
@@ -104,12 +126,12 @@ pub(super) fn resolve_implicit_runtime_root_from_paths(
     if (hosted_skills_dir.exists() && hosted_skills_dir.is_dir())
         || (hosted_configs_dir.exists() && hosted_configs_dir.is_dir())
     {
-        return Some(hosted_root);
+        return Some(normalize_lua_visible_path(hosted_root));
     }
 
     let repository_root = current_dir.join("runtime");
     if repository_root.exists() && repository_root.is_dir() {
-        return Some(repository_root);
+        return Some(normalize_lua_visible_path(repository_root));
     }
 
     None
@@ -312,7 +334,9 @@ pub fn normalize_skill_root_path(path: &std::path::Path) -> Result<PathBuf, Stri
             })?
             .join(path)
     };
-    Ok(std::fs::canonicalize(&absolute_path).unwrap_or(absolute_path))
+    Ok(normalize_lua_visible_path(
+        std::fs::canonicalize(&absolute_path).unwrap_or(absolute_path),
+    ))
 }
 
 pub fn normalize_skill_root_key(path: &std::path::Path) -> String {

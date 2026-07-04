@@ -11,6 +11,7 @@ pub fn vmm_memory_tool_descriptors() -> Vec<VmmMemoryToolDescriptor> {
         vmm_memory_search_descriptor(),
         vmm_turn_details_descriptor(),
         vmm_memory_write_descriptor(),
+        vmm_memory_delete_descriptor(),
     ]
 }
 
@@ -275,6 +276,44 @@ fn vmm_memory_write_descriptor() -> VmmMemoryToolDescriptor {
     );
     build_memory_descriptor(
         "vmm_memory_write",
+        &description,
+        schema,
+        VMM_MEMORY_SURFACE_RAW,
+        VMM_TOOL_VISIBILITY_ADVANCED,
+    )
+}
+
+/// Build the memory-delete descriptor used by host plugins for explicit memory replacement flows.
+/// 构建宿主插件用于明确记忆替换流程的记忆删除工具描述。
+fn vmm_memory_delete_descriptor() -> VmmMemoryToolDescriptor {
+    let schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["memoryIds", "reason"],
+        "properties": {
+            "memoryIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_MEMORY_DELETE_ITEMS,
+                "description": "Explicit durable memory ids to delete after the user clearly asks to delete, replace, or remove those memories. Use exact memory_id values returned by vmm_memory_search, vulcan_memory_search, or PreCheck VMM_ID context items; never use turn_id/source_turn_id and never guess ids.",
+                "items": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]*$",
+                    "description": "One decimal memory_id that belongs to the current resolved user/project scope."
+                }
+            },
+            "reason": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Brief durable reason for deletion, such as replaced_by_newer_memory, user_requested_correction, stale_requirement, or invalid_fact."
+            }
+        }
+    });
+    let description = format!(
+        "Delete explicit durable memories for the current workspace. Use this only after the user clearly instructs you to delete, remove, or replace specific remembered information, and only when the exact memory_id is available. Deletion must target memory_id values returned by vmm_memory_search, vulcan_memory_search, or PreCheck VMM_ID context items; never delete by turn_id/source_turn_id, never infer ids from text, and never use this for broad cleanup, temporary recall filtering, profile/persona changes, or guessed ids. Prefer writing a replacement with vmm_memory_write after deletion when the user is correcting a durable fact. VMM profile data is managed by the profile pipeline.\\n\\nInput parameters:\\n- memoryIds: Array of explicit decimal memory_id strings, max {MAX_MEMORY_DELETE_ITEMS}.\\n- reason: Required short deletion reason for audit and later debugging."
+    );
+    build_memory_descriptor(
+        "vmm_memory_delete",
         &description,
         schema,
         VMM_MEMORY_SURFACE_RAW,

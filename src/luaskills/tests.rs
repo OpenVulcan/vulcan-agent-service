@@ -1217,6 +1217,50 @@ fn build_engine_options_rejects_file_shaped_runtime_lua_packages_dir() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Windows verbatim runtime roots should not leak into Lua package path templates.
+/// Windows verbatim 运行根不应泄漏到 Lua 包路径模板中。
+#[cfg(windows)]
+#[test]
+fn build_engine_options_strips_windows_verbatim_prefix_from_lua_package_paths() {
+    let _guard = acquire_environment_lock();
+    let root = unique_test_dir("runtime-lua-packages-verbatim");
+    create_runtime_root_for_test(&root);
+    std::fs::create_dir_all(root.join("lua_packages"))
+        .expect("failed to create lua_packages directory");
+    let copied_executable = root
+        .join("bin")
+        .join(space_controller_executable_file_name());
+    std::fs::write(&copied_executable, b"test-controller")
+        .expect("failed to create copied controller executable");
+    // Verbatim runtime root mirrors Windows canonicalize output and proves Lua never sees a literal `?` prefix.
+    // Verbatim 运行根模拟 Windows canonicalize 输出，并验证 Lua 不会看到包含字面量 `?` 的前缀。
+    let verbatim_root = PathBuf::from(format!(r"\\?\{}", root.to_string_lossy()));
+    let config = Config {
+        runtime_root: Some(verbatim_root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+    let pool_config = LuaVmPoolConfig {
+        min_size: 1,
+        max_size: 2,
+        idle_ttl_secs: 60,
+    };
+    let cache_config = ToolCacheConfig::default();
+    let options = build_luaskills_engine_options(&config, pool_config, cache_config)
+        .expect("verbatim runtime root should build engine options");
+    // Expected Lua package root keeps the normal drive-letter spelling so Lua's `?` placeholder remains unambiguous.
+    // 期望的 Lua 包根目录保留普通盘符写法，避免 Lua 的 `?` 占位符产生歧义。
+    let expected_lua_packages_dir = root.join("lua_packages");
+    assert_eq!(
+        options.host_options.lua_packages_dir.as_ref(),
+        Some(&expected_lua_packages_dir)
+    );
+    assert_eq!(
+        options.host_options.host_provided_lua_root.as_ref(),
+        Some(&expected_lua_packages_dir)
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// File-shaped host-provided tool roots should be rejected during host option construction.
 /// 文件形态的宿主工具根目录应在宿主选项构建阶段被拒绝。
 #[test]

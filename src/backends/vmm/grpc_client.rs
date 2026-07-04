@@ -4,13 +4,14 @@ use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
 use crate::pb_vmm::{
-    ApplyProfileInstructionRequest, ChatCompactRequest, DeleteProjectRequest, DeleteUserRequest,
-    EnsureProjectRequest, EnsureProjectResponse, GetProfileBundleRequest, GetProfileBundleResponse,
-    GetProfileNodesRequest, GetProfileNodesResponse, GetTurnDetailsRequest, GetTurnDetailsResponse,
-    HealthzResponse, ListProjectsResponse, ListUsersResponse, MigrateProjectRequest,
-    MigrateProjectResponse, PostActionRequest, PostActionResponse, PostActionTimelineItem,
-    PreCheckRequest, PreCheckResponse, ResolveProjectRequest, ResolveProjectResponse,
-    ResolveUserRequest, ResolveUserResponse, SearchMemoryEventsRequest, SearchMemoryEventsResponse,
+    ApplyProfileInstructionRequest, ChatCompactRequest, DeleteMemoriesRequest,
+    DeleteProjectRequest, DeleteUserRequest, EnsureProjectRequest, EnsureProjectResponse,
+    GetProfileBundleRequest, GetProfileBundleResponse, GetProfileNodesRequest,
+    GetProfileNodesResponse, GetTurnDetailsRequest, GetTurnDetailsResponse, HealthzResponse,
+    ListProjectsResponse, ListUsersResponse, MigrateProjectRequest, MigrateProjectResponse,
+    PostActionRequest, PostActionResponse, PostActionTimelineItem, PreCheckRequest,
+    PreCheckResponse, ResolveProjectRequest, ResolveProjectResponse, ResolveUserRequest,
+    ResolveUserResponse, SearchMemoryEventsRequest, SearchMemoryEventsResponse,
     WriteMemoriesRequest, WriteMemoriesResponse, WriteMemoryItem,
     vmm_service_client::VmmServiceClient,
 };
@@ -204,6 +205,18 @@ impl VmmClient {
         let req = tonic::Request::new(request);
         let mut client = self.client.lock().await;
         let resp = client.write_memories(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Forward one VMM DeleteMemories request and return the original protobuf response.
+    /// 转发一条 VMM DeleteMemories 请求，并返回原始 protobuf 响应。
+    pub async fn forward_delete_memories(
+        &self,
+        request: DeleteMemoriesRequest,
+    ) -> Result<crate::pb_vmm::DeleteMemoriesResponse, tonic::Status> {
+        let req = tonic::Request::new(request);
+        let mut client = self.client.lock().await;
+        let resp = client.delete_memories(req).await?;
         Ok(resp.into_inner())
     }
 
@@ -621,6 +634,36 @@ impl VmmClient {
             "written={}, deduped={}, trace_id={}",
             inner.items.len(),
             deduped,
+            inner.trace_id
+        ))
+    }
+
+    /// Delete explicit durable memory ids inside one resolved user/project scope.
+    /// 在一个已解析 user/project 范围内删除明确指定的长期记忆 ID。
+    pub async fn delete_memories(
+        &self,
+        user_id: u64,
+        project_id: u64,
+        memory_ids: Vec<u64>,
+        reason: &str,
+    ) -> Result<String, String> {
+        let req = tonic::Request::new(DeleteMemoriesRequest {
+            user_id,
+            project_id,
+            memory_ids,
+            reason: reason.to_string(),
+        });
+        let mut client = self.client.lock().await;
+        let resp = client
+            .delete_memories(req)
+            .await
+            .map_err(|e| e.to_string())?;
+        let inner = resp.into_inner();
+        Ok(format!(
+            "deleted={}, not_found={}, deleted_vector_rows={}, trace_id={}",
+            inner.deleted_memory_ids.len(),
+            inner.not_found_memory_ids.len(),
+            inner.deleted_vector_rows,
             inner.trace_id
         ))
     }
