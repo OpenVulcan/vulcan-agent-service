@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
 use tokio::sync::Mutex;
@@ -20,8 +19,7 @@ use crate::support::RuntimeRequestContext;
 use luaskills::{
     LuaEngine, LuaEngineOptions, LuaVmPoolConfig, RuntimeEntryRegistryDelta,
     RuntimeSkillLifecycleCallback, RuntimeSkillLifecycleEvent, RuntimeSkillRoot, ToolCacheConfig,
-    runtime_config_store::SkillConfigStore, set_entry_registry_callback,
-    set_skill_lifecycle_callback,
+    set_entry_registry_callback, set_skill_lifecycle_callback,
 };
 
 // ============================================================
@@ -42,7 +40,6 @@ pub struct HostRuntime {
     pub(super) lua_engine: Option<Arc<StdRwLock<LuaEngine>>>,
     pub(super) lua_engine_options: Option<LuaEngineOptions>,
     pub(super) lua_skill_roots: Option<Vec<RuntimeSkillRoot>>,
-    pub(super) runtime_skill_config_file_path: Option<PathBuf>,
 }
 
 /// Lua runtime engine and effective skill-root chain used for dynamic tool execution.
@@ -78,24 +75,7 @@ impl HostRuntime {
             lua_engine: None,
             lua_engine_options: None,
             lua_skill_roots: None,
-            runtime_skill_config_file_path: None,
         }
-    }
-
-    /// Configure the explicit unified skill-config file path and expose the host-owned luaskill-config tool.
-    /// 配置显式统一 Skill 配置文件路径，并暴露宿主自有的 luaskill-config 工具。
-    /// Parameter `file_path` is the concrete JSON config file path resolved from the effective runtime root.
-    /// 参数 `file_path` 是从生效运行根解析出的具体 JSON 配置文件路径。
-    /// Returns the configured runtime while it is still uniquely owned, or an error after it has been cloned or shared.
-    /// 当运行时仍被唯一拥有时返回配置后的运行时；运行时已被克隆或共享后返回错误。
-    pub fn with_runtime_skill_config_file_path(
-        mut self,
-        file_path: PathBuf,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        self.runtime_skill_config_file_path = Some(file_path);
-        let inner = self.builder_inner_mut()?;
-        Self::insert_runtime_config_tool(inner);
-        Ok(self)
     }
 
     /// Configure the VMM (VulcanMemoryMesh) gRPC client endpoint.
@@ -135,6 +115,7 @@ impl HostRuntime {
 
         {
             let inner = self.builder_inner_mut()?;
+            Self::insert_runtime_config_tool(inner);
             Self::insert_lua_help_tools(inner);
             for entry in entries {
                 insert_skill_entry(inner, entry);
@@ -198,16 +179,16 @@ impl HostRuntime {
             .insert("skill-manager".to_string(), skill_manager_tool());
     }
 
-    /// Insert the host-owned luaskill-config tool after one effective unified config file path becomes available.
-    /// 在生效的统一配置文件路径可用后插入宿主自有的 luaskill-config 工具。
+    /// Insert the host-owned runtime-config tool after the LuaSkills engine is configured.
+    /// 在 LuaSkills 引擎完成配置后插入宿主自有的 runtime-config 工具。
     /// Parameter `inner` is the mutable runtime registry assembled during builder-only configuration.
     /// 参数 `inner` 是仅限构建期配置阶段组装的可变运行时注册表。
     fn insert_runtime_config_tool(inner: &mut ServerInner) {
-        // --- luaskill-config: inspect or mutate the host-managed unified runtime skill config ---
-        // --- luaskill-config：查看或修改宿主管理的统一运行时 Skill 配置 ---
+        // The canonical name matches LuaSkills so every transport exposes one contract and one authorization boundary.
+        // 标准名称与 LuaSkills 保持一致，使所有传输层只暴露一份契约和一个授权边界。
         inner
             .host_tools
-            .insert("luaskill-config".to_string(), runtime_config_tool());
+            .insert("runtime-config".to_string(), runtime_config_tool());
     }
 
     /// Register host-wrapped Lua help tools on a uniquely owned builder runtime.
@@ -303,31 +284,6 @@ impl HostRuntime {
         let (engine, roots) = self.resolve_lua_runtime_target()?;
         let target_root = select_skill_manager_user_root(&roots)?;
         Ok((engine, roots, target_root))
-    }
-
-    /// Build one standalone skill-config store for the host-owned luaskill-config tool.
-    /// 为宿主自有 luaskill-config 工具构造一份独立 Skill 配置存储。
-    pub(super) fn resolve_runtime_skill_config_store(
-        &self,
-    ) -> Result<SkillConfigStore, (i64, String)> {
-        let file_path = self
-            .runtime_skill_config_file_path
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| {
-                (
-                    -32603,
-                    "luaskill-config is unavailable because no runtime_root could be resolved."
-                        .to_string(),
-                )
-            })?;
-        let store = SkillConfigStore::new(Some(file_path.clone())).map_err(|error| {
-            (
-                -32603,
-                format!("failed to initialize luaskill-config store: {}", error),
-            )
-        })?;
-        Ok(store)
     }
 }
 

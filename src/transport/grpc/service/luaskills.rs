@@ -141,57 +141,20 @@ impl LuaSkillsService for McpServiceImpl {
         Ok(Response::new(tool_call_result_to_text_response(&result)))
     }
 
-    async fn list_skill_config(
+    async fn runtime_config(
         &self,
-        request: Request<LuaSkillConfigListRequest>,
-    ) -> Result<Response<LuaSkillTextResponse>, Status> {
+        request: Request<LuaSkillRuntimeConfigRequest>,
+    ) -> Result<Response<LuaSkillRuntimeConfigResponse>, Status> {
         let req = request.into_inner();
         let _context = require_luaskill_context(req.context.as_ref())?;
-        let skill_id = optional_string(req.skill_id);
-        let text = self
+        let response_json = self
             .runtime
-            .list_luaskill_config(skill_id)
+            .dispatch_luaskill_runtime_config(req.request_json)
+            .await
             .map_err(mcp_error_to_status)?;
-        Ok(Response::new(text_response(text)))
-    }
-
-    async fn get_skill_config(
-        &self,
-        request: Request<LuaSkillConfigGetRequest>,
-    ) -> Result<Response<LuaSkillTextResponse>, Status> {
-        let req = request.into_inner();
-        let _context = require_luaskill_context(req.context.as_ref())?;
-        let text = self
-            .runtime
-            .get_luaskill_config(req.skill_id, req.key)
-            .map_err(mcp_error_to_status)?;
-        Ok(Response::new(text_response(text)))
-    }
-
-    async fn set_skill_config(
-        &self,
-        request: Request<LuaSkillConfigSetRequest>,
-    ) -> Result<Response<LuaSkillTextResponse>, Status> {
-        let req = request.into_inner();
-        let _context = require_luaskill_context(req.context.as_ref())?;
-        let text = self
-            .runtime
-            .set_luaskill_config(req.skill_id, req.key, req.value)
-            .map_err(mcp_error_to_status)?;
-        Ok(Response::new(text_response(text)))
-    }
-
-    async fn delete_skill_config(
-        &self,
-        request: Request<LuaSkillConfigDeleteRequest>,
-    ) -> Result<Response<LuaSkillTextResponse>, Status> {
-        let req = request.into_inner();
-        let _context = require_luaskill_context(req.context.as_ref())?;
-        let text = self
-            .runtime
-            .delete_luaskill_config(req.skill_id, req.key)
-            .map_err(mcp_error_to_status)?;
-        Ok(Response::new(text_response(text)))
+        Ok(Response::new(LuaSkillRuntimeConfigResponse {
+            response_json,
+        }))
     }
 
     async fn list_installed_skills(

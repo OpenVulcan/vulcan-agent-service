@@ -47,15 +47,6 @@ pub(super) enum RuntimeMode {
 /// `--call-tools` 调试模式使用的默认模拟客户端名称。
 pub(super) const DEFAULT_CALL_TOOL_CLIENT_NAME: &str = "VulcanMcpTest";
 
-/// Return whether one raw CLI token still uses the removed `--config` / `-config` entrypoint, including inline `--config=...` forms.
-/// 返回某个原始 CLI 片段是否仍在使用已移除的 `--config` / `-config` 入口，包含内联 `--config=...` 形式。
-fn is_removed_config_flag_arg(arg: &str) -> bool {
-    arg == "-config"
-        || arg == "--config"
-        || arg.starts_with("-config=")
-        || arg.starts_with("--config=")
-}
-
 /// Return whether one raw CLI token carries an inline `--runtime-root=value` or `-runtime-root=value` assignment.
 /// 返回某个原始 CLI 片段是否携带内联 `--runtime-root=value` 或 `-runtime-root=value` 赋值。
 fn is_inline_runtime_root_flag_arg(arg: &str) -> bool {
@@ -84,6 +75,10 @@ pub(super) fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Er
 pub(super) fn parse_runtime_mode_from_args(
     args: &[String],
 ) -> Result<RuntimeMode, Box<dyn std::error::Error>> {
+    if args.get(1).map(String::as_str) == Some("service") {
+        return Ok(RuntimeMode::Service(parse_service_command_from_args(args)?));
+    }
+    validate_non_service_flag_names(args)?;
     for index in 0..args.len() {
         if args[index] == "--internal-luaexec-request" {
             let request_file = args
@@ -92,9 +87,6 @@ pub(super) fn parse_runtime_mode_from_args(
                 .clone();
             return Ok(RuntimeMode::InternalLuaexecRequest { request_file });
         }
-    }
-    if args.get(1).map(String::as_str) == Some("service") {
-        return Ok(RuntimeMode::Service(parse_service_command_from_args(args)?));
     }
     for argument in args {
         if argument == "--stdio" {
@@ -147,9 +139,6 @@ pub(super) fn parse_runtime_mode_from_args(
                     "--call-tools" => {
                         break;
                     }
-                    value if is_removed_config_flag_arg(value) => {
-                        return Err("Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into());
-                    }
                     value if is_inline_runtime_root_flag_arg(value) => {
                         if value.ends_with('=') {
                             return Err("--runtime-root requires a value".into());
@@ -160,7 +149,7 @@ pub(super) fn parse_runtime_mode_from_args(
                         require_cli_flag_value(args, cursor, args[cursor].as_str())?;
                         cursor += 2;
                     }
-                    value if value.starts_with("--") => {
+                    value if value.starts_with('-') => {
                         return Err(format!("Unknown --call-tools flag: {}", value).into());
                     }
                     raw_json => {
@@ -231,10 +220,7 @@ fn parse_root_skill_install_source_type_from_args(
                 }
                 cursor += 1;
             }
-            value if is_removed_config_flag_arg(value) => {
-                return Err("Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into());
-            }
-            value if value.starts_with("--") => {
+            value if value.starts_with('-') => {
                 return Err(format!("Unknown --install-root-skill flag: {}", value).into());
             }
             value => {
@@ -270,15 +256,43 @@ fn validate_root_skills_update_args(
                 }
                 cursor += 1;
             }
-            value if is_removed_config_flag_arg(value) => {
-                return Err("Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into());
-            }
-            value if value.starts_with("--") => {
+            value if value.starts_with('-') => {
                 return Err(format!("Unknown --update-root-skills flag: {}", value).into());
             }
             value => {
                 return Err(format!("Unexpected --update-root-skills argument: {}", value).into());
             }
+        }
+    }
+    Ok(())
+}
+
+/// Reject every non-service flag that is not part of the current command-line contract.
+/// 拒绝所有不属于当前命令行契约的非 service 标志。
+/// Parameters: `args` is the complete process argument vector including the executable name.
+/// 参数：`args` 是包含可执行文件名的完整进程参数向量。
+/// Returns success when every flag is current, or one generic unknown-flag error.
+/// 所有标志均属于当前契约时返回成功，否则返回通用未知标志错误。
+fn validate_non_service_flag_names(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    for argument in args
+        .iter()
+        .skip(1)
+        .filter(|argument| argument.starts_with('-'))
+    {
+        let known_flag = matches!(
+            argument.as_str(),
+            "--internal-luaexec-request"
+                | "--stdio"
+                | "--install-root-skill"
+                | "--source-type"
+                | "--update-root-skills"
+                | "--call-tools"
+                | "--call-client-name"
+                | "-runtime-root"
+                | "--runtime-root"
+        ) || is_inline_runtime_root_flag_arg(argument);
+        if !known_flag {
+            return Err(format!("Unknown CLI flag: {argument}").into());
         }
     }
     Ok(())

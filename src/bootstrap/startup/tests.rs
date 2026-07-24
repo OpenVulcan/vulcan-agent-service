@@ -395,7 +395,7 @@ fn parse_runtime_mode_rejects_missing_runtime_root_value_in_call_tools_mode() {
         "--call-tools".to_string(),
         "demo-tool".to_string(),
         "--runtime-root".to_string(),
-        "-config".to_string(),
+        "--call-client-name".to_string(),
     ];
     let error = match parse_runtime_mode_from_args(&args) {
         Ok(_) => panic!("missing value should fail"),
@@ -409,43 +409,40 @@ fn parse_runtime_mode_rejects_missing_runtime_root_value_in_call_tools_mode() {
     );
 }
 
-/// Call-tools mode should reject the removed legacy config flag and redirect callers to runtime-root based config discovery.
-/// call-tools 模式应拒绝已移除的历史 config 标志，并引导调用方改用基于 runtime-root 的配置发现。
+/// Call-tools mode should reject every flag outside the current command contract.
+/// call-tools 模式应拒绝当前命令契约之外的所有标志。
 #[test]
-fn parse_runtime_mode_rejects_legacy_config_flag_in_call_tools_mode() {
+fn parse_runtime_mode_rejects_unknown_flag_in_call_tools_mode() {
     let args = vec![
         "vulcan-agent-service.exe".to_string(),
         "--call-tools".to_string(),
         "demo-tool".to_string(),
-        "--config".to_string(),
-        "runtime/configs/config.yaml".to_string(),
+        "--obsolete-flag".to_string(),
     ];
     let error = match parse_runtime_mode_from_args(&args) {
-        Ok(_) => panic!("legacy config flag should fail"),
+        Ok(_) => panic!("unknown flag should fail"),
         Err(error) => error,
     };
     assert!(
-        error.to_string().contains("Unsupported CLI flag"),
+        error.to_string().contains("Unknown CLI flag"),
         "unexpected error: {error}"
     );
 }
 
-/// Call-tools mode should reject inline `--config=...` forms too so the removed config entrypoint is blocked consistently.
-/// call-tools 模式也应拒绝内联 `--config=...` 形式，保证已移除的配置入口被一致封死。
+/// Serve mode should reject unknown inline flags instead of silently ignoring them.
+/// serve 模式应拒绝未知内联标志，而不是静默忽略。
 #[test]
-fn parse_runtime_mode_rejects_inline_legacy_config_flag_in_call_tools_mode() {
+fn parse_runtime_mode_rejects_unknown_inline_flag_in_serve_mode() {
     let args = vec![
         "vulcan-agent-service.exe".to_string(),
-        "--call-tools".to_string(),
-        "demo-tool".to_string(),
-        "--config=runtime/configs/config.yaml".to_string(),
+        "--unknown-setting=value".to_string(),
     ];
     let error = match parse_runtime_mode_from_args(&args) {
-        Ok(_) => panic!("inline legacy config flag should fail"),
+        Ok(_) => panic!("unknown inline flag should fail"),
         Err(error) => error,
     };
     assert!(
-        error.to_string().contains("Unsupported CLI flag"),
+        error.to_string().contains("Unknown CLI flag"),
         "unexpected error: {error}"
     );
 }
@@ -512,9 +509,10 @@ fn run_call_host_tool_mode_supports_reload_without_loading_invalid_skill_roots()
     let missing_skill_root = root.join("missing-skills");
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
-        skill_roots: Some(vec![crate::config::SkillRootConfigEntry::Path(
-            missing_skill_root.to_string_lossy().to_string(),
-        )]),
+        skill_roots: Some(vec![crate::config::NamedSkillRootConfig {
+            name: "ROOT".to_string(),
+            path: missing_skill_root.to_string_lossy().to_string(),
+        }]),
         ..Config::default()
     };
 
@@ -530,14 +528,15 @@ fn run_call_host_tool_mode_supports_reload_without_loading_invalid_skill_roots()
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Host-only luaskill-config should still be exposed through the built server even when no Lua skill roots are available.
-/// 即使没有任何 Lua 技能根，构建出的服务也应继续对外暴露宿主侧 luaskill-config。
+/// runtime-config should be exposed when build_server creates and initializes the formal empty root chain.
+/// build_server 创建并初始化正式空根链后应暴露 runtime-config。
 #[test]
-fn build_server_exposes_luaskill_config_without_skill_roots() {
-    let root = unique_test_dir("luaskill-config-build-server");
+fn build_server_exposes_runtime_config_after_empty_root_chain_initialization() {
+    let root = unique_test_dir("runtime-config-build-server");
     create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
+        skill_config_root: Some(root.join("skill-config").to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
         ..Config::default()
     };
@@ -570,7 +569,7 @@ fn build_server_exposes_luaskill_config_without_skill_roots() {
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
         .collect::<Vec<_>>();
 
-    assert!(tool_names.contains(&"luaskill-config"));
+    assert!(tool_names.contains(&"runtime-config"));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -582,6 +581,7 @@ fn build_server_exposes_skill_manager_without_existing_skills() {
     create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
+        skill_config_root: Some(root.join("skill-config").to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
         ..Config::default()
     };
@@ -662,6 +662,7 @@ fn skill_manager_update_missing_skill_returns_tool_error() {
     create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
+        skill_config_root: Some(root.join("skill-config").to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
         ..Config::default()
     };
@@ -1001,6 +1002,7 @@ fn skill_manager_update_requires_skill_id() {
     create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
+        skill_config_root: Some(root.join("skill-config").to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
         ..Config::default()
     };
@@ -1039,50 +1041,41 @@ fn skill_manager_update_requires_skill_id() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Host-only luaskill-config should still run even when configured skill roots are invalid, because it should bypass Lua engine loading.
-/// 宿主侧 luaskill-config 即使在技能根配置无效时也应能运行，因为它应跳过 Lua 引擎加载。
+/// runtime-config should fail startup when configured skill roots are invalid because it requires the LuaEngine declaration registry.
+/// runtime-config 在技能根配置无效时应启动失败，因为它依赖 LuaEngine 声明注册表。
 #[test]
-fn run_call_host_tool_mode_supports_luaskill_config_without_loading_invalid_skill_roots() {
+fn run_call_host_tool_mode_rejects_runtime_config_with_invalid_skill_roots() {
     // Hold the repository-wide runtime-config fixture lock until cache-backed host-tool assertions finish.
     // 持有仓库级运行时配置夹具锁，直到依赖缓存的宿主工具断言结束。
     let _runtime_config_guard = crate::config::runtime_config_test_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let root = unique_test_dir("luaskill-config-host-tool");
+    let root = unique_test_dir("runtime-config-host-tool");
     create_test_application_runtime(&root);
     let missing_skill_root = root.join("missing-skills");
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
-        skill_roots: Some(vec![crate::config::SkillRootConfigEntry::Path(
-            missing_skill_root.to_string_lossy().to_string(),
-        )]),
+        skill_config_root: Some(root.join("skill-config").to_string_lossy().to_string()),
+        skill_roots: Some(vec![crate::config::NamedSkillRootConfig {
+            name: "ROOT".to_string(),
+            path: missing_skill_root.to_string_lossy().to_string(),
+        }]),
         ..Config::default()
     };
 
     preload_runtime_mcp_configs(&config).expect("host runtime config preload should succeed");
-    run_call_host_tool_mode(
+    let error = run_call_host_tool_mode(
         config,
-        "luaskill-config",
+        "runtime-config",
         json!({
-            "action": "set",
-            "skill_id": "demo-skill",
-            "key": "api_token",
-            "value": "sk-local"
+            "action": "describe",
+            "skill_id": "demo-skill"
         }),
         DEFAULT_CALL_TOOL_CLIENT_NAME,
     )
-    .expect("luaskill-config host tool should succeed without loading invalid skill roots");
-
-    let persisted: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            root.join("lua_runtime")
-                .join("config")
-                .join("skill_config.json"),
-        )
-        .expect("luaskill-config file should be created"),
-    )
-    .expect("persisted luaskill-config JSON should parse");
-    assert_eq!(persisted["skills"]["demo-skill"]["api_token"], "sk-local");
+    .expect_err("runtime-config should require valid skill roots and LuaEngine initialization");
+    assert!(error.to_string().contains("configured skill root"));
+    assert!(!root.join("skill-config").exists());
     let _ = std::fs::remove_dir_all(&root);
 }
 

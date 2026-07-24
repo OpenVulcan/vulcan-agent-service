@@ -409,6 +409,7 @@ fn model_embed_posts_to_openai_compatible_endpoint() {
         &root,
         &base_url,
         r#"
+format_version: 1
 openai_compatible:
   enabled: true
   embedding:
@@ -472,6 +473,7 @@ fn model_llm_posts_non_streaming_chat_completion() {
         &root,
         &base_url,
         r#"
+format_version: 1
 openai_compatible:
   enabled: true
   llm:
@@ -534,6 +536,7 @@ fn install_callbacks_registers_enabled_capabilities_for_lua_status() {
     std::fs::write(
         &config_path,
         r#"
+format_version: 1
 openai_compatible:
   enabled: true
   embedding:

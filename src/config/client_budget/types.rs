@@ -27,7 +27,11 @@ pub struct ClientBudgetLoadReport {
 /// Root client-budget configuration containing default estimation rules, fallback budgets, and per-client budget rules.
 /// 客户端预算配置根对象，包含默认估算规则、默认预算以及按客户端匹配的预算规则。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientBudgetConfig {
+    /// Strict schema version for this host client-budget configuration.
+    /// 这份宿主客户端预算配置使用的严格结构版本。
+    pub format_version: u32,
     #[serde(default)]
     pub defaults: ClientBudgetDefaults,
     #[serde(default)]
@@ -39,6 +43,7 @@ pub struct ClientBudgetConfig {
 /// Default client-budget settings containing both fallback budget values and fallback estimation multipliers.
 /// 客户端预算的默认配置，既包含预算默认值，也包含估算倍率默认值。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientBudgetDefaults {
     #[serde(default)]
     pub estimation: BudgetEstimationConfig,
@@ -49,6 +54,7 @@ pub struct ClientBudgetDefaults {
 /// Client budget matching rule activated by a client-name pattern.
 /// 客户端预算匹配规则，按客户端名称 pattern 生效。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientBudgetRule {
     pub pattern: String,
     #[serde(default)]
@@ -60,6 +66,7 @@ pub struct ClientBudgetRule {
 /// Exact gRPC client-budget override activated before shared client-name pattern rules.
 /// gRPC 精确客户端预算覆盖规则，会在统一客户端名称 pattern 规则前优先生效。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExactClientBudgetRule {
     #[serde(default)]
     pub estimation: BudgetEstimationConfig,
@@ -70,6 +77,7 @@ pub struct ExactClientBudgetRule {
 /// Budget estimation config that only keeps tokens-to-bytes, safety ratio, and unlimited-to-bytes-cap conversion controls.
 /// 预算估算倍率配置，仅保留 tokens→bytes、安全比例与 unlimited→bytes cap 三类统一控制。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BudgetEstimationConfig {
     pub bytes_per_token: Option<u64>,
     pub safe_bytes_ratio: Option<f64>,
@@ -83,6 +91,7 @@ pub type BudgetScopesConfig = BTreeMap<String, BTreeMap<String, BudgetMetricConf
 /// Configuration for one budget metric, including a default value and an ordered list of external config sources.
 /// 单个预算度量配置，包含默认值与外部配置源解析列表。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BudgetMetricConfig {
     pub default: Option<i64>,
     #[serde(default)]
@@ -94,6 +103,7 @@ pub struct BudgetMetricConfig {
 /// External budget source definition supporting env / json / toml inputs.
 /// 预算配置外部来源，支持 env / json / toml 三类输入。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BudgetConfigSource {
     #[serde(rename = "type")]
     pub source_type: String,
@@ -114,8 +124,8 @@ pub(super) struct ResolvedMetricValue {
 
 /// Final client-budget snapshot exposed to Lua.
 /// 最终暴露给 Lua 的客户端预算快照。
-/// It directly exposes the `tool_result/file_read` scopes and no longer keeps the old nested `budgets` compatibility structure.
-/// 直接提供 `tool_result/file_read` 两个 scope，不再继续兼容旧的 `budgets` 嵌套旧结构。
+/// It directly exposes result-category scopes keyed by metric name.
+/// 直接暴露按计量名称索引的结果类别 scope。
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientBudgetSnapshot {
     pub client_name: Option<String>,

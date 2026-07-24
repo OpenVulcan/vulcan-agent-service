@@ -4,6 +4,10 @@
 # English: Repository config template. It will be synced to output/configs/config.yaml during build.
 # ============================================================
 
+# 中文：宿主应用配置格式版本；当前只接受 1。
+# English: Host application config format version; only 1 is accepted.
+format_version: 1
+
 # 中文：HTTP MCP / IDE 适配服务监听地址。默认值为 127.0.0.1:19201。
 # English: HTTP MCP/IDE adapter listen address. Default is 127.0.0.1:19201.
 http: "127.0.0.1:19201"
@@ -24,8 +28,8 @@ vmm: "http://127.0.0.1:17625"
 # English: Formal skill layers for the default environment; only ROOT, PROJECT, and USER are supported, and runtime resolution is fixed as ROOT -> PROJECT -> USER.
 # 中文：ROOT 是系统控制层，通常承载官方核心技能；PROJECT/USER 是普通技能层，用户动态安装默认落在 USER。
 # English: ROOT is the system-controlled layer for official core skills; PROJECT/USER are ordinary skill layers, and dynamic user installs default to USER.
-# 中文：推荐显式具名；纯路径项会按 ROOT、PROJECT、USER 顺序映射，最多三项。
-# English: Named entries are recommended; path-only entries are mapped as ROOT, PROJECT, USER in order, with at most three entries.
+# 中文：每个技能根必须显式声明正式层级名称与路径。
+# English: Every skill root must explicitly declare its formal layer name and path.
 # skill_roots:
 #   - name: "ROOT"
 #     path: "D:/projects/vulcan-agent-service/output/lua_runtime/skills"
@@ -38,8 +42,13 @@ vmm: "http://127.0.0.1:17625"
 # runtime_root: "D:/projects/vulcan-agent-service/output"
 # Linux/macOS 示例 / Linux/macOS example:
 # runtime_root: "/opt/vulcan/output"
-# Host configs stay at `<runtime_root>/configs`; the unified skill config is fixed at `<runtime_root>/lua_runtime/config/skill_config.json`.
-# 宿主配置固定在 `<runtime_root>/configs`；统一 Skill 配置固定在 `<runtime_root>/lua_runtime/config/skill_config.json`。
+# 中文：LuaSkills 0.5.5 技能包配置使用独立的用户级绝对根目录。
+# English: LuaSkills 0.5.5 package configuration uses a dedicated absolute user-level root.
+# 中文：省略时，Windows 使用 `%USERPROFILE%\.vulcan\agent-service\config`，Unix 使用 `$HOME/.vulcan/agent-service/config`。
+# English: When omitted, Windows uses `%USERPROFILE%\.vulcan\agent-service\config`; Unix uses `$HOME/.vulcan/agent-service/config`.
+# 中文：正式服务部署建议显式配置，LuaSkills 会派生 `skills/config.json` 与 `system-skills/config.json`。
+# English: Explicit configuration is recommended for services; LuaSkills derives `skills/config.json` and `system-skills/config.json`.
+# skill_config_root: "C:/Users/yourname/.vulcan/agent-service/config"
 
 # LuaSkills derives managed Python/Node distributions and writable environments as `lua_runtime/dependencies/runtimes` and `lua_runtime/dependencies/envs` by default.
 # 受管 Python/Node 发行根与可写环境根默认由 LuaSkills 固定推导为 `lua_runtime/dependencies/runtimes` 与 `lua_runtime/dependencies/envs`。
@@ -48,8 +57,8 @@ vmm: "http://127.0.0.1:17625"
 # managed_runtime_distribution_root: "lua_runtime/dependencies/runtimes"
 # managed_runtime_environment_root: "lua_runtime/dependencies/envs"
 
-# Managed worker and persistent-session policy. Omitted fields inherit the exact LuaSkills 0.5.4 defaults.
-# 受管 Worker 与持久会话策略。省略字段时继承当前 LuaSkills 0.5.4 的精确默认值。
+# Managed worker and persistent-session policy. Omitted fields inherit the exact LuaSkills 0.5.5 defaults.
+# 受管 Worker 与持久会话策略。省略字段时继承当前 LuaSkills 0.5.5 的精确默认值。
 # managed_runtime_config:
 #   worker_pool_max_size_per_environment: 4
 #   worker_idle_ttl_secs: 60

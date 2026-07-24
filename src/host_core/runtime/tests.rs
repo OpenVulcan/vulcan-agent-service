@@ -9,6 +9,7 @@ use luaskills::{RuntimeHelpNodeDescriptor, RuntimeSkillHelpDescriptor};
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 /// Build one unique temporary directory path for one server-module test case.
 /// 为 server 模块单个测试用例构建唯一的临时目录路径。
@@ -44,6 +45,143 @@ fn write_minimal_skill_to_root(skill_root: &std::path::Path, skill_id: &str) -> 
     )
     .expect("minimal skill runtime entry should be written");
     skill_dir
+}
+
+/// Write one enabled LuaSkill fixture with typed package configuration declarations.
+/// 写入一个带类型化技能包配置声明的已启用 LuaSkill 夹具。
+/// Parameters `skill_root` and `skill_id` select the package directory and identifier.
+/// 参数：`skill_root` 和 `skill_id` 指定技能包目录与标识符。
+/// Returns the concrete package directory.
+/// 返回具体的技能包目录。
+fn write_configurable_skill_to_root(skill_root: &std::path::Path, skill_id: &str) -> PathBuf {
+    let skill_dir = skill_root.join(skill_id);
+    std::fs::create_dir_all(skill_dir.join("runtime"))
+        .expect("configurable skill runtime directory should be created");
+    std::fs::write(
+        skill_dir.join("skill.yaml"),
+        format!(
+            "name: {skill_id}\nversion: 0.1.0\nenable: true\ndebug: false\nconfig:\n  - key: api_token\n    type: string\n    required: true\n    sensitive: true\n    description: Service access token.\n    constraints:\n      min_length: 1\n      max_length: 4096\n  - key: retries\n    type: integer\n    default: 2\n    description: Retry count.\n    constraints:\n      minimum: 0\n      maximum: 10\n  - key: temperature\n    type: float\n    description: Sampling temperature.\n    constraints:\n      minimum: 0.0\n      maximum: 2.0\n  - key: provider\n    type: enum\n    description: Service provider.\n    options:\n      - value: openai\n        label: OpenAI\n        description: OpenAI service.\n      - value: local\n        label: Local\n        description: Local service.\n  - key: feature_enabled\n    type: boolean\n    description: Feature switch.\nentries:\n  - name: ping\n    description: Config ping entry.\n    lua_entry: runtime/ping.lua\n    lua_module: {skill_id}.ping\n"
+        ),
+    )
+    .expect("configurable skill manifest should be written");
+    std::fs::write(
+        skill_dir.join("runtime").join("ping.lua"),
+        "return function(args)\n  return 'ok'\nend\n",
+    )
+    .expect("configurable skill runtime entry should be written");
+    skill_dir
+}
+
+/// Build one initialized HostRuntime fixture whose runtime-config tool can access one declared package.
+/// 构建一个已初始化 HostRuntime 夹具，使 runtime-config 工具可访问一个已声明配置的技能包。
+/// Parameters `name`, `root_name`, and `skill_id` select the isolated test path and package layer.
+/// 参数：`name`、`root_name` 和 `skill_id` 指定隔离测试路径与技能包层级。
+/// Returns the fixture root, configuration root, and initialized runtime.
+/// 返回夹具根目录、配置根目录和已初始化运行时。
+fn build_runtime_config_test_server(
+    name: &str,
+    root_name: &str,
+    skill_id: &str,
+) -> (PathBuf, PathBuf, HostRuntime) {
+    let fixture_root = unique_test_dir(name);
+    let application_root = fixture_root.join("application");
+    std::fs::create_dir_all(application_root.join("lua_runtime"))
+        .expect("LuaSkills runtime root should be created");
+    let skill_root = RuntimeSkillRoot {
+        name: root_name.to_string(),
+        skills_dir: fixture_root.join("skill-root").join("skills"),
+    };
+    write_configurable_skill_to_root(&skill_root.skills_dir, skill_id);
+    // LuaSkills requires a formal ROOT layer even when the configurable package belongs to USER or PROJECT.
+    // 即使可配置技能包属于 USER 或 PROJECT，LuaSkills 也要求正式根链包含 ROOT 层。
+    let skill_roots = if root_name.eq_ignore_ascii_case("ROOT") {
+        vec![skill_root]
+    } else {
+        let root_layer = RuntimeSkillRoot {
+            name: "ROOT".to_string(),
+            skills_dir: fixture_root.join("root-layer").join("skills"),
+        };
+        std::fs::create_dir_all(&root_layer.skills_dir)
+            .expect("formal ROOT skills directory should be created");
+        vec![root_layer, skill_root]
+    };
+    let skill_config_root = fixture_root.join("skill-config");
+    let config = Config {
+        runtime_root: Some(application_root.to_string_lossy().to_string()),
+        skill_config_root: Some(skill_config_root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+    let server = HostRuntime::new()
+        .with_lua_skills(
+            &config,
+            &skill_roots,
+            LuaVmPoolConfig {
+                min_size: 1,
+                max_size: 1,
+                idle_ttl_secs: 60,
+            },
+            ToolCacheConfig::default(),
+        )
+        .expect("runtime-config test server should initialize");
+    (fixture_root, skill_config_root, server)
+}
+
+/// Invoke runtime-config through the MCP dispatcher and decode its stable JSON response envelope.
+/// 通过 MCP 分发器调用 runtime-config，并解码其稳定 JSON 响应包络。
+/// Parameters select the Tokio runtime, host runtime, JSON-RPC id, and optional tool arguments.
+/// 参数：指定 Tokio 运行时、宿主运行时、JSON-RPC 标识及可选工具参数。
+/// Returns the decoded RuntimeSkillConfigToolResponse JSON value.
+/// 返回解码后的 RuntimeSkillConfigToolResponse JSON 值。
+fn call_runtime_config(
+    runtime: &tokio::runtime::Runtime,
+    server: &HostRuntime,
+    request_id: u64,
+    arguments: Option<Value>,
+) -> Value {
+    let mut params = serde_json::Map::from_iter([(
+        "name".to_string(),
+        Value::String("runtime-config".to_string()),
+    )]);
+    if let Some(arguments) = arguments {
+        params.insert("arguments".to_string(), arguments);
+    }
+    let response = runtime
+        .block_on(
+            McpDispatcher::new(server.clone()).handle_message_with_context(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": Value::Object(params)
+                }),
+                RequestContext::default(),
+            ),
+        )
+        .expect("runtime-config should produce one JSON-RPC response");
+    assert!(
+        response.get("error").is_none(),
+        "runtime-config transport should return a tool result: {response}"
+    );
+    let tool_result: ToolCallResult = serde_json::from_value(
+        response
+            .get("result")
+            .cloned()
+            .expect("runtime-config should return a tool result"),
+    )
+    .expect("runtime-config tool result should deserialize");
+    let response_text = tool_result
+        .content
+        .first()
+        .map(|item| item.text.as_str())
+        .expect("runtime-config should return one text content block");
+    let decoded: Value = serde_json::from_str(response_text)
+        .expect("runtime-config text content should contain the stable JSON envelope");
+    let response_ok = decoded["ok"]
+        .as_bool()
+        .expect("runtime-config envelope should contain a boolean ok field");
+    let expected_tool_error = (!response_ok).then_some(true);
+    assert_eq!(tool_result.is_error, expected_tool_error);
+    decoded
 }
 
 fn make_help_descriptor() -> RuntimeSkillHelpDescriptor {
@@ -138,6 +276,12 @@ fn skill_manager_uninstall_forces_user_target_when_root_shadows_skill() {
     let user_skill_dir = write_minimal_skill_to_root(&user_layer.skills_dir, skill_id);
     let config = Config {
         runtime_root: Some(runtime_root.to_string_lossy().to_string()),
+        skill_config_root: Some(
+            runtime_root
+                .join("skill-config")
+                .to_string_lossy()
+                .to_string(),
+        ),
         ..Config::default()
     };
     let server = HostRuntime::new()
@@ -302,43 +446,55 @@ fn tools_list_hides_help_tools_when_lua_engine_is_unavailable() {
 
     assert!(tool_names.contains("reload_vulcan_mcp_configs"));
     assert!(tool_names.contains("skill-manager"));
-    assert!(!tool_names.contains("luaskill-config"));
+    assert!(!tool_names.contains("runtime-config"));
     assert!(!tool_names.contains("vulcan-help-list"));
     assert!(!tool_names.contains("vulcan-help-detail"));
 }
 
-/// Servers with one resolved runtime skill-config file path should expose luaskill-config even before Lua engine initialization.
-/// 具备已解析统一 Skill 配置文件路径的服务，即使尚未初始化 Lua 引擎，也应暴露 luaskill-config。
+/// Servers should expose runtime-config only after the LuaSkills engine and declarations are ready.
+/// 服务只应在 LuaSkills 引擎和声明就绪后暴露 runtime-config。
 #[test]
-fn tools_list_exposes_luaskill_config_when_host_path_is_available() {
-    let root = unique_test_dir("luaskill-config-tools-list");
-    let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new()
-        .with_runtime_skill_config_file_path(config_file_path)
-        .expect("luaskill-config tool should register while runtime is uniquely owned");
-    let tool_names: HashSet<String> = server
+fn tools_list_exposes_runtime_config_after_lua_engine_initialization() {
+    let (fixture_root, _skill_config_root, server) =
+        build_runtime_config_test_server("runtime-config-tools-list", "USER", "config-tool-skill");
+    let tools = server
         .list_runtime_tools()
-        .expect("tool listing should succeed after luaskill-config registration")
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect();
+        .expect("tool listing should succeed after runtime-config registration");
+    let runtime_config = tools
+        .iter()
+        .find(|tool| tool.name == "runtime-config")
+        .expect("runtime-config should be registered");
+    let annotations = runtime_config
+        .annotations
+        .as_ref()
+        .expect("runtime-config should declare security annotations");
+    let properties = runtime_config
+        .input_schema
+        .properties
+        .as_ref()
+        .expect("runtime-config should expose an input schema");
 
-    assert!(tool_names.contains("luaskill-config"));
+    assert_eq!(annotations.user_confirmation_required, Some(true));
+    assert_eq!(annotations.read_only_hint, Some(false));
+    assert_eq!(annotations.destructive_hint, Some(true));
+    assert_eq!(
+        properties["store_scope"]["enum"],
+        json!(["skills", "system-skills"])
+    );
+    drop(server);
+    let _ = std::fs::remove_dir_all(&fixture_root);
 }
 
 /// Builder-only mutation should fail explicitly after HostRuntime has been cloned.
 /// HostRuntime 被克隆后，构建期专用变更应明确失败。
 #[test]
 fn builder_mutation_rejects_shared_runtime_after_clone() {
-    let root = unique_test_dir("shared-builder-mutation");
-    let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new();
+    let mut server = HostRuntime::new();
     let _shared_runtime = server.clone();
 
-    let error = match server.with_runtime_skill_config_file_path(config_file_path) {
-        Ok(_) => panic!("builder mutation should reject already shared runtime"),
-        Err(error) => error,
-    };
+    let error = server
+        .register_lua_help_tools()
+        .expect_err("builder mutation should reject already shared runtime");
 
     assert!(
         error
@@ -419,266 +575,365 @@ fn skill_manager_url_install_reports_not_implemented() {
     assert!(!rendered.contains("requires skill_id"));
 }
 
-/// Luaskill-config should remain callable without any Lua engine because it now uses the standalone skill-config store directly.
-/// luaskill-config 现在直接使用独立 Skill 配置存储，因此在没有 Lua 引擎时也应可调用。
+/// Missing runtime-config arguments should stay inside the stable upstream tool envelope.
+/// runtime-config 缺少参数时应继续使用稳定的上游工具包络返回错误。
 #[test]
-fn luaskill_config_tool_works_without_lua_engine() {
-    let root = unique_test_dir("luaskill-config-without-engine");
-    let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new()
-        .with_runtime_skill_config_file_path(config_file_path.clone())
-        .expect("luaskill-config tool should register while runtime is uniquely owned");
+fn runtime_config_missing_action_returns_stable_tool_error() {
+    let (fixture_root, _skill_config_root, server) = build_runtime_config_test_server(
+        "runtime-config-missing-action",
+        "USER",
+        "config-missing-action-skill",
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime should build");
 
-    let set_response = runtime
-        .block_on(
-            McpDispatcher::new(server.clone()).handle_message_with_context(
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "luaskill-config",
-                        "arguments": {
-                            "action": "set",
-                            "skill_id": "demo-skill",
-                            "key": "api_token",
-                            "value": "sk-runtime"
-                        }
-                    }
-                }),
-                RequestContext::default(),
-            ),
-        )
-        .expect("luaskill-config set should produce one response");
+    let response = call_runtime_config(&runtime, &server, 1, None);
+
+    assert_eq!(response["ok"], false);
+    assert!(response["action"].is_null());
+    assert_eq!(response["error"]["code"], "CONFIG_DECLARATION_INVALID");
     assert!(
-        set_response.get("error").is_none(),
-        "unexpected luaskill-config error: {set_response}"
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing field `action`"))
+    );
+    drop(server);
+    let _ = std::fs::remove_dir_all(&fixture_root);
+}
+
+/// The canonical dispatcher should support every declared action, typed batch writes, revisions, and CAS.
+/// 标准分发器应支持全部声明动作、类型化批量写入、修订号和 CAS。
+#[test]
+fn runtime_config_dispatcher_supports_full_declared_config_lifecycle() {
+    let skill_id = "config-lifecycle-skill";
+    let (fixture_root, skill_config_root, server) =
+        build_runtime_config_test_server("runtime-config-lifecycle", "USER", skill_id);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime should build");
+
+    let describe = call_runtime_config(
+        &runtime,
+        &server,
+        1,
+        Some(json!({
+            "action": "describe",
+            "skill_id": skill_id,
+            "mode": "effective",
+            "include_values": false
+        })),
+    );
+    assert_eq!(describe["ok"], true);
+    let descriptors = describe["result"]
+        .as_array()
+        .expect("describe should return an array");
+    assert_eq!(descriptors.len(), 1);
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor["skill_id"], skill_id);
+    assert_eq!(descriptor["complete"], false);
+    assert_eq!(descriptor["revision"], "0");
+    assert_eq!(descriptor["store_scope"], "skills");
+    let retry_item = descriptor["items"]
+        .as_array()
+        .expect("describe should return declared items")
+        .iter()
+        .find(|item| item["key"] == "retries")
+        .expect("describe should retain the retries declaration");
+    assert_eq!(retry_item["type"], "integer");
+    assert_eq!(retry_item["default"], 2);
+    assert_eq!(retry_item["constraints"]["minimum"], 0);
+    assert_eq!(retry_item["constraints"]["maximum"], 10);
+    let token_item = descriptor["items"]
+        .as_array()
+        .expect("describe should return declared items")
+        .iter()
+        .find(|item| item["key"] == "api_token")
+        .expect("describe should retain the sensitive token declaration");
+    assert_eq!(token_item["sensitive"], true);
+    assert!(token_item.get("value").is_none());
+
+    let validate = call_runtime_config(
+        &runtime,
+        &server,
+        2,
+        Some(json!({"action": "validate", "skill_id": skill_id})),
+    );
+    assert_eq!(validate["ok"], true);
+    assert_eq!(validate["result"]["complete"], false);
+    assert_eq!(validate["result"]["revision"], "0");
+    assert_eq!(validate["result"]["store_scope"], "skills");
+    assert_eq!(
+        validate["result"]["missing"]
+            .as_array()
+            .expect("validate should report missing declarations")
+            .len(),
+        1
+    );
+    assert!(validate["result"]["invalid"].as_array().is_some());
+    assert!(validate["result"]["business_issues"].as_array().is_some());
+    assert!(validate["result"]["orphaned"].as_array().is_some());
+
+    let set = call_runtime_config(
+        &runtime,
+        &server,
+        3,
+        Some(json!({
+            "action": "set",
+            "skill_id": skill_id,
+            "values": {
+                "api_token": "sk-runtime",
+                "retries": 3,
+                "temperature": 0.7,
+                "provider": "local",
+                "feature_enabled": true
+            }
+        })),
+    );
+    assert_eq!(set["ok"], true);
+    assert_eq!(set["result"]["changed"], true);
+    assert_eq!(set["result"]["values"]["retries"], "3");
+    assert_eq!(set["result"]["values"]["temperature"], "0.7");
+    assert_eq!(set["result"]["values"]["provider"], "local");
+    assert_eq!(set["result"]["values"]["feature_enabled"], "true");
+    let committed_revision = set["result"]["revision"]
+        .as_str()
+        .expect("set should return a canonical revision")
+        .to_string();
+
+    let persisted_path = skill_config_root.join("skills").join("config.json");
+    let persisted: Value = serde_json::from_str(
+        &std::fs::read_to_string(&persisted_path)
+            .expect("versioned ordinary skill config should be created"),
+    )
+    .expect("versioned ordinary skill config should parse");
+    assert_eq!(persisted["format_version"], 1);
+    assert_eq!(persisted["revision"], committed_revision);
+    assert_eq!(persisted["skills"][skill_id]["api_token"], "sk-runtime");
+
+    let get = call_runtime_config(
+        &runtime,
+        &server,
+        4,
+        Some(json!({
+            "action": "get",
+            "skill_id": skill_id,
+            "key": "api_token"
+        })),
+    );
+    assert_eq!(get["ok"], true);
+    assert_eq!(get["result"]["found"], true);
+    assert_eq!(get["result"]["value"], "sk-runtime");
+
+    let list = call_runtime_config(
+        &runtime,
+        &server,
+        5,
+        Some(json!({"action": "list", "skill_id": skill_id})),
+    );
+    assert_eq!(list["ok"], true);
+    assert_eq!(
+        list["result"]
+            .as_array()
+            .expect("list result should be an array")
+            .len(),
+        5
     );
 
-    let persisted: Value = serde_json::from_str(
-        &std::fs::read_to_string(&config_file_path)
-            .expect("luaskill-config file should be created"),
-    )
-    .expect("persisted luaskill-config JSON should parse");
-    assert_eq!(persisted["skills"]["demo-skill"]["api_token"], "sk-runtime");
+    let rejected_batch = call_runtime_config(
+        &runtime,
+        &server,
+        6,
+        Some(json!({
+            "action": "set",
+            "skill_id": skill_id,
+            "values": {
+                "retries": 5,
+                "undeclared_key": "must-fail"
+            },
+            "expected_revision": committed_revision
+        })),
+    );
+    assert_eq!(rejected_batch["ok"], false);
+    assert_eq!(rejected_batch["error"]["code"], "CONFIG_KEY_UNDECLARED");
+    let unchanged = call_runtime_config(
+        &runtime,
+        &server,
+        7,
+        Some(json!({
+            "action": "get",
+            "skill_id": skill_id,
+            "key": "retries"
+        })),
+    );
+    assert_eq!(unchanged["result"]["value"], "3");
 
-    let get_response = runtime
-        .block_on(
-            McpDispatcher::new(server.clone()).handle_message_with_context(
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "luaskill-config",
-                        "arguments": {
-                            "action": "get",
-                            "skill_id": "demo-skill",
-                            "key": "api_token"
-                        }
-                    }
-                }),
-                RequestContext::default(),
-            ),
-        )
-        .expect("luaskill-config get should produce one response");
-    let tool_result: ToolCallResult = serde_json::from_value(
-        get_response
-            .get("result")
-            .cloned()
-            .expect("luaskill-config get should return a result"),
-    )
-    .expect("luaskill-config get result should deserialize");
-    let rendered = tool_result
-        .content
-        .first()
-        .map(|item| item.text.clone())
-        .unwrap_or_default();
+    let cas_set = call_runtime_config(
+        &runtime,
+        &server,
+        8,
+        Some(json!({
+            "action": "set",
+            "skill_id": skill_id,
+            "key": "retries",
+            "value": 4,
+            "expected_revision": committed_revision
+        })),
+    );
+    assert_eq!(cas_set["ok"], true);
+    let cas_revision = cas_set["result"]["revision"]
+        .as_str()
+        .expect("successful CAS set should return a revision")
+        .to_string();
+    let committed_revision_number = committed_revision
+        .parse::<u64>()
+        .expect("committed revision should be a canonical decimal string");
+    let cas_revision_number = cas_revision
+        .parse::<u64>()
+        .expect("CAS revision should be a canonical decimal string");
+    assert!(cas_revision_number > committed_revision_number);
 
-    assert!(rendered.contains("skill_id: demo-skill"));
-    assert!(rendered.contains("- api_token = \"sk-runtime\""));
-    assert!(!rendered.contains("```json"));
-    assert!(!rendered.contains("skill_config.json"));
-    let _ = std::fs::remove_dir_all(&root);
+    let conflict = call_runtime_config(
+        &runtime,
+        &server,
+        9,
+        Some(json!({
+            "action": "set",
+            "skill_id": skill_id,
+            "key": "retries",
+            "value": 5,
+            "expected_revision": committed_revision
+        })),
+    );
+    assert_eq!(conflict["ok"], false);
+    assert_eq!(conflict["error"]["code"], "CONFIG_REVISION_CONFLICT");
+
+    let unrelated_field = call_runtime_config(
+        &runtime,
+        &server,
+        10,
+        Some(json!({
+            "action": "get",
+            "skill_id": skill_id,
+            "key": "api_token",
+            "store_scope": "skills"
+        })),
+    );
+    assert_eq!(unrelated_field["ok"], false);
+    assert_eq!(
+        unrelated_field["error"]["code"],
+        "CONFIG_BATCH_ARGUMENT_CONFLICT"
+    );
+
+    let unknown_field = call_runtime_config(
+        &runtime,
+        &server,
+        11,
+        Some(json!({
+            "action": "describe",
+            "skill_id": skill_id,
+            "unexpected_field": true
+        })),
+    );
+    assert_eq!(unknown_field["ok"], false);
+    assert_eq!(unknown_field["error"]["code"], "CONFIG_DECLARATION_INVALID");
+
+    let redacted_describe = call_runtime_config(
+        &runtime,
+        &server,
+        12,
+        Some(json!({
+            "action": "describe",
+            "skill_id": skill_id
+        })),
+    );
+    assert_eq!(redacted_describe["ok"], true);
+    assert!(!redacted_describe.to_string().contains("sk-runtime"));
+
+    let delete = call_runtime_config(
+        &runtime,
+        &server,
+        13,
+        Some(json!({
+            "action": "delete",
+            "skill_id": skill_id,
+            "key": "feature_enabled",
+            "expected_revision": cas_revision
+        })),
+    );
+    assert_eq!(delete["ok"], true);
+    assert_eq!(delete["result"]["deleted"], true);
+    let delete_revision_number = delete["result"]["revision"]
+        .as_str()
+        .expect("delete should return a canonical revision")
+        .parse::<u64>()
+        .expect("delete revision should be a canonical decimal string");
+    assert!(delete_revision_number > cas_revision_number);
+
+    let refresh = call_runtime_config(
+        &runtime,
+        &server,
+        14,
+        Some(json!({"action": "refresh", "store_scope": "skills"})),
+    );
+    assert_eq!(refresh["ok"], true);
+    assert!(refresh["result"].is_array());
+    let refresh_all =
+        call_runtime_config(&runtime, &server, 15, Some(json!({"action": "refresh"})));
+    assert_eq!(refresh_all["ok"], true);
+    assert_eq!(
+        refresh_all["result"]
+            .as_array()
+            .expect("all-store refresh should return an array")
+            .len(),
+        2
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&fixture_root);
 }
 
-/// MCP tools/call should treat an omitted arguments field as an empty JSON object before host-tool parsing.
-/// MCP tools/call 应在宿主工具解析前把省略的 arguments 字段视为空 JSON 对象。
+/// ROOT package writes should route only to the dedicated system-skills store.
+/// ROOT 技能包写入应只路由到专用的 system-skills 存储。
 #[test]
-fn tools_call_missing_arguments_uses_empty_object_contract() {
-    let root = unique_test_dir("tools-call-missing-arguments");
-    let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new()
-        .with_runtime_skill_config_file_path(config_file_path)
-        .expect("luaskill-config tool should register while runtime is uniquely owned");
+fn runtime_config_routes_root_packages_to_system_store() {
+    let skill_id = "root-config-skill";
+    let (fixture_root, skill_config_root, server) =
+        build_runtime_config_test_server("runtime-config-root-store", "ROOT", skill_id);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime should build");
 
-    let response = runtime
-        .block_on(McpDispatcher::new(server).handle_message_with_context(
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "luaskill-config"
-                }
-            }),
-            RequestContext::default(),
-        ))
-        .expect("tools/call without arguments should return one response");
-    let error = response
-        .get("error")
-        .expect("missing luaskill-config action should return a JSON-RPC error");
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .expect("error should contain a message");
+    let response = call_runtime_config(
+        &runtime,
+        &server,
+        1,
+        Some(json!({
+            "action": "set",
+            "skill_id": skill_id,
+            "key": "api_token",
+            "value": "root-secret"
+        })),
+    );
 
-    assert_eq!(error.get("code").and_then(Value::as_i64), Some(-32602));
-    assert!(message.contains("missing field `action`"));
-    assert!(!message.contains("invalid type: null"));
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// Empty luaskill-config listings should explicitly report that no configuration exists yet.
-/// 空的 luaskill-config 列表结果应明确提示当前还没有任何配置。
-#[test]
-fn luaskill_config_list_reports_empty_state() {
-    let root = unique_test_dir("luaskill-config-empty-list");
-    let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new()
-        .with_runtime_skill_config_file_path(config_file_path)
-        .expect("luaskill-config tool should register while runtime is uniquely owned");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime should build");
-
-    let response = runtime
-        .block_on(
-            McpDispatcher::new(server.clone()).handle_message_with_context(
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "luaskill-config",
-                        "arguments": {
-                            "action": "list"
-                        }
-                    }
-                }),
-                RequestContext::default(),
-            ),
-        )
-        .expect("luaskill-config list should produce one response");
-    let tool_result: ToolCallResult = serde_json::from_value(
-        response
-            .get("result")
-            .cloned()
-            .expect("luaskill-config list should return a result"),
-    )
-    .expect("luaskill-config list result should deserialize");
-    let rendered = tool_result
-        .content
-        .first()
-        .map(|item| item.text.clone())
-        .unwrap_or_default();
-
-    assert_eq!(rendered, "No luaskill configuration is currently set.");
-    assert!(!rendered.contains("skill_config.json"));
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// Non-empty luaskill-config listings should group entries by skill id and show stable key-value lines.
-/// 非空的 luaskill-config 列表结果应按 skill_id 分组并稳定展示键值行。
-#[test]
-fn luaskill_config_list_groups_entries_by_skill_id() {
-    let root = unique_test_dir("luaskill-config-grouped-list");
-    let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new()
-        .with_runtime_skill_config_file_path(config_file_path)
-        .expect("luaskill-config tool should register while runtime is uniquely owned");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime should build");
-
-    for (skill_id, key, value) in [
-        ("alpha-skill", "endpoint", "https://api.example.com"),
-        ("alpha-skill", "token", "sk-alpha"),
-        ("beta-skill", "region", "cn-sh"),
-    ] {
-        runtime
-            .block_on(
-                McpDispatcher::new(server.clone()).handle_message_with_context(
-                    &json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "luaskill-config",
-                            "arguments": {
-                                "action": "set",
-                                "skill_id": skill_id,
-                                "key": key,
-                                "value": value
-                            }
-                        }
-                    }),
-                    RequestContext::default(),
-                ),
-            )
-            .expect("luaskill-config set should succeed for grouped list setup");
-    }
-
-    let response = runtime
-        .block_on(
-            McpDispatcher::new(server.clone()).handle_message_with_context(
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "luaskill-config",
-                        "arguments": {
-                            "action": "list"
-                        }
-                    }
-                }),
-                RequestContext::default(),
-            ),
-        )
-        .expect("luaskill-config list should produce one response");
-    let tool_result: ToolCallResult = serde_json::from_value(
-        response
-            .get("result")
-            .cloned()
-            .expect("luaskill-config grouped list should return a result"),
-    )
-    .expect("luaskill-config grouped list result should deserialize");
-    let rendered = tool_result
-        .content
-        .first()
-        .map(|item| item.text.clone())
-        .unwrap_or_default();
-
-    assert!(rendered.contains("Found 2 luaskill configuration namespaces:"));
-    assert!(rendered.contains("skill_id: alpha-skill"));
-    assert!(rendered.contains("- endpoint = \"https://api.example.com\""));
-    assert!(rendered.contains("- token = \"sk-alpha\""));
-    assert!(rendered.contains("skill_id: beta-skill"));
-    assert!(rendered.contains("- region = \"cn-sh\""));
-    assert!(!rendered.contains("```json"));
-    assert!(!rendered.contains("skill_config.json"));
-    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(response["ok"], true);
+    assert!(
+        skill_config_root
+            .join("system-skills")
+            .join("config.json")
+            .is_file()
+    );
+    assert!(
+        !skill_config_root
+            .join("skills")
+            .join("config.json")
+            .is_file()
+    );
+    drop(server);
+    let _ = std::fs::remove_dir_all(&fixture_root);
 }
 
 /// MCP initialize should advertise only the retained tool surface for a plain host runtime.

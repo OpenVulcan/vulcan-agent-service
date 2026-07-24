@@ -44,13 +44,6 @@ if (-not [string]::IsNullOrWhiteSpace($env:LUA_RUNTIME_PACKAGES_VERSION)) {
     $LuaRuntimePackagesVersion = $env:LUA_RUNTIME_PACKAGES_VERSION.Trim()
 }
 
-# LuaRuntimeVersion preserves the legacy environment contract where callers often pass the luaskills crate version.
-# LuaRuntimeVersion 保留旧环境变量契约；历史调用方通常会在这里传入 luaskills crate 版本号。
-$LuaRuntimeVersion = ""
-if (-not [string]::IsNullOrWhiteSpace($env:LUA_RUNTIME_VERSION)) {
-    $LuaRuntimeVersion = $env:LUA_RUNTIME_VERSION.Trim()
-}
-
 # ThirdParty stores all downloaded dependency payloads outside the tracked source tree.
 # ThirdParty 保存所有下载后的依赖载荷，避免写入受版本控制的源码目录。
 $ThirdParty = Join-Path $ProjectDir "third_party"
@@ -185,8 +178,8 @@ function Resolve-ReleaseTagForSeries {
 function Resolve-LuaRuntimePackagesTag {
     <#
     .SYNOPSIS
-    Resolve the effective luaskills-packages release tag from explicit overrides, legacy inputs, and the compatible series.
-    基于精确覆盖、旧输入语义与兼容协议线解析最终 luaskills-packages 发布标签。
+    Resolve the effective luaskills-packages release tag from an exact override or the configured series.
+    基于精确覆盖或已配置协议线解析最终 luaskills-packages 发布标签。
 
     .PARAMETER Repo
     GitHub repository in owner/name form.
@@ -200,37 +193,17 @@ function Resolve-LuaRuntimePackagesTag {
     Optional exact luaskills-packages release tag override.
     可选的 luaskills-packages 精确发布标签覆盖值。
 
-    .PARAMETER LegacyRuntimeVersion
-    Legacy runtime version input that may still carry the luaskills crate version.
-    旧运行时版本输入，历史上可能仍承载 luaskills crate 版本号。
     #>
     param(
         [string]$Repo,
         [string]$Series,
-        [string]$PackagesVersion,
-        [string]$LegacyRuntimeVersion
+        [string]$PackagesVersion
     )
 
     if (-not [string]::IsNullOrWhiteSpace($PackagesVersion)) {
         return Normalize-ReleaseTag -Value $PackagesVersion
     }
 
-    if ([string]::IsNullOrWhiteSpace($LegacyRuntimeVersion)) {
-        return Resolve-ReleaseTagForSeries -Repo $Repo -Series $Series
-    }
-
-    $LegacyTag = Normalize-ReleaseTag -Value $LegacyRuntimeVersion
-    try {
-        $LegacySemVer = Convert-TagToSemVer -Tag $LegacyTag
-        $LegacySeries = "$($LegacySemVer.Major).$($LegacySemVer.Minor)"
-        if ($LegacySeries -eq $Series) {
-            return $LegacyTag
-        }
-    } catch {
-        throw "Unsupported LUA_RUNTIME_VERSION value '$LegacyRuntimeVersion'. Use a semantic version such as 0.5.4, or set LUA_RUNTIME_PACKAGES_VERSION for an exact luaskills-packages tag."
-    }
-
-    Write-Host "==> LUA_RUNTIME_VERSION=$LegacyRuntimeVersion detected as legacy luaskills crate version; resolving compatible luaskills-packages tag from series $Series."
     return Resolve-ReleaseTagForSeries -Repo $Repo -Series $Series
 }
 
@@ -573,8 +546,7 @@ function Install-LuaRuntimePayloads {
 $ResolvedLuaRuntimeTag = Resolve-LuaRuntimePackagesTag `
     -Repo $LuaRuntimeRepo `
     -Series $LuaRuntimeSeries `
-    -PackagesVersion $LuaRuntimePackagesVersion `
-    -LegacyRuntimeVersion $LuaRuntimeVersion
+    -PackagesVersion $LuaRuntimePackagesVersion
 $Platform = Get-CurrentPlatformKey
 $RuntimeAssetName = "lua-runtime-packages-$Platform.tar.gz"
 

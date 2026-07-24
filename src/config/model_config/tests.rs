@@ -53,7 +53,57 @@ fn model_config_template_parses() {
     let yaml = include_str!("../../../runtime/configs/model_config.yaml");
     let parsed: ModelConfig = serde_yaml::from_str(yaml).expect("model_config.yaml parses");
 
+    assert_eq!(
+        parsed.format_version,
+        super::super::HOST_CONFIG_FORMAT_VERSION
+    );
     assert!(!parsed.openai_compatible.enabled);
+}
+
+/// Model config should require the current explicit format-version field.
+/// 模型配置应要求当前显式格式版本字段。
+#[test]
+fn model_config_rejects_missing_format_version() {
+    let error = serde_yaml::from_str::<ModelConfig>("openai_compatible:\n  enabled: false\n")
+        .expect_err("missing format version should fail");
+
+    assert!(error.to_string().contains("format_version"));
+}
+
+/// Model config should reject fields outside the current strict schema.
+/// 模型配置应拒绝当前严格结构以外的字段。
+#[test]
+fn model_config_rejects_unknown_fields() {
+    let error =
+        serde_yaml::from_str::<ModelConfig>("format_version: 1\nunsupported_setting: true\n")
+            .expect_err("unknown model config fields should fail");
+
+    assert!(error.to_string().contains("unsupported_setting"));
+}
+
+/// Model config loading should reject every format version other than the current contract.
+/// 模型配置加载应拒绝当前契约版本以外的所有格式版本。
+#[test]
+fn model_config_rejects_unsupported_format_version() {
+    let _guard = runtime_root_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let root = unique_test_dir("unsupported-version");
+    let config_path = root.join("configs").join("model_config.yaml");
+    std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
+        .expect("model config directory should be created");
+    std::fs::write(
+        &config_path,
+        "format_version: 2\nopenai_compatible:\n  enabled: false\n",
+    )
+    .expect("model config fixture should be written");
+    initialize_model_config_runtime_root(Some(&root)).expect("runtime root should set");
+
+    let error = load_model_config_runtime().expect_err("unsupported version should fail");
+
+    assert!(error.contains("unsupported format_version 2"));
+    initialize_model_config_runtime_root(None).expect("runtime root should clear");
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// Verify that disabled providers do not require a present API key.
@@ -62,6 +112,7 @@ fn model_config_template_parses() {
 fn disabled_provider_allows_missing_env_secret() {
     let parsed: ModelConfig = serde_yaml::from_value(
         serde_yaml::to_value(json!({
+            "format_version": 1,
             "openai_compatible": {
                 "enabled": false,
                 "embedding": {
@@ -91,6 +142,7 @@ fn disabled_provider_allows_missing_env_secret() {
 fn enabled_capability_requires_resolved_api_key() {
     let parsed: ModelConfig = serde_yaml::from_value(
         serde_yaml::to_value(json!({
+            "format_version": 1,
             "openai_compatible": {
                 "enabled": true,
                 "embedding": {
@@ -127,6 +179,7 @@ fn enabled_capability_requires_resolved_api_key() {
 fn enabled_embedding_accepts_capability_specific_credentials() {
     let parsed: ModelConfig = serde_yaml::from_value(
         serde_yaml::to_value(json!({
+            "format_version": 1,
             "openai_compatible": {
                 "enabled": true,
                 "embedding": {
@@ -163,6 +216,7 @@ fn enabled_embedding_accepts_capability_specific_credentials() {
 fn shared_provider_credentials_are_rejected() {
     let error = serde_yaml::from_value::<ModelConfig>(
         serde_yaml::to_value(json!({
+            "format_version": 1,
             "openai_compatible": {
                 "enabled": true,
                 "base_url": "https://shared.example.test/v1",
@@ -203,6 +257,7 @@ fn preload_model_config_prefers_explicit_runtime_root() {
     std::fs::write(
         &config_path,
         r#"
+format_version: 1
 openai_compatible:
   enabled: true
   embedding:

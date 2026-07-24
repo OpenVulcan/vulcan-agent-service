@@ -127,6 +127,39 @@
 .\output\debug\vulcan-agent-service.exe --call-tools vmcp-ast '{"path":".\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
 ```
 
+### 3.3 调试技能包配置
+
+`runtime-config` 是唯一的配置管理工具。它会读取完整 LuaEngine 已发现的技能包，因此配置调试必须使用有效的 runtime root；引擎或技能根加载失败时不会退回独立配置存储。
+
+先查看包的声明和完整性，默认不披露保存值或有效值：
+
+```powershell
+.\output\debug\vulcan-agent-service.exe --call-tools runtime-config '{"action":"describe","skill_id":"example-skill"}'
+```
+
+记下 `describe` 返回的当前 `revision`。在用户确认或等价授权之后，通过一次批量事务设置类型化值；以下示例假设刚读取到的 revision 为 `12`：
+
+```powershell
+.\output\debug\vulcan-agent-service.exe --call-tools runtime-config '{"action":"set","skill_id":"example-skill","values":{"api_token":"secret","retry_count":3},"expected_revision":"12"}'
+```
+
+revision 属于整个 `skills` 或 `system-skills` 存储，不能因为目标技能尚未配置就假设它是 `0`。发生 `CONFIG_REVISION_CONFLICT` 时重新执行 `describe`，核对最新状态后再提交。
+
+写入前可只做校验：
+
+```powershell
+.\output\debug\vulcan-agent-service.exe --call-tools runtime-config '{"action":"validate","skill_id":"example-skill","values":{"api_token":"secret","retry_count":3}}'
+```
+
+响应始终是 `{ok, action, result, error}`。`ok=false` 时，`error.code` 与 `error.message` 给出稳定失败信息；不要把敏感输入复制到日志或问题报告。
+
+默认配置根为：
+
+- Windows：`%USERPROFILE%\.vulcan\agent-service\config`
+- Linux/macOS：`$HOME/.vulcan/agent-service/config`
+
+普通技能文件是 `skills/config.json`，`ROOT` 系统技能文件是 `system-skills/config.json`。两份文档都必须使用 `format_version: 1` 的当前严格契约。
+
 ## 4. 参数传递说明
 
 ### 4.1 JSON 参数必须是合法对象

@@ -50,21 +50,9 @@ service LuaSkillsService {
   // GetHelp 返回一个 LuaSkills 帮助流程的 Markdown 渲染文本。
   rpc GetHelp(LuaSkillGetHelpRequest) returns (LuaSkillTextResponse);
 
-  // ListSkillConfig lists host-managed LuaSkill configuration entries.
-  // ListSkillConfig 列出宿主管理的 LuaSkill 配置项。
-  rpc ListSkillConfig(LuaSkillConfigListRequest) returns (LuaSkillTextResponse);
-
-  // GetSkillConfig reads one host-managed LuaSkill configuration value.
-  // GetSkillConfig 读取一个宿主管理的 LuaSkill 配置值。
-  rpc GetSkillConfig(LuaSkillConfigGetRequest) returns (LuaSkillTextResponse);
-
-  // SetSkillConfig writes one host-managed LuaSkill configuration value.
-  // SetSkillConfig 写入一个宿主管理的 LuaSkill 配置值。
-  rpc SetSkillConfig(LuaSkillConfigSetRequest) returns (LuaSkillTextResponse);
-
-  // DeleteSkillConfig deletes one host-managed LuaSkill configuration value.
-  // DeleteSkillConfig 删除一个宿主管理的 LuaSkill 配置值。
-  rpc DeleteSkillConfig(LuaSkillConfigDeleteRequest) returns (LuaSkillTextResponse);
+  // RuntimeConfig dispatches the canonical LuaSkills package-configuration JSON contract.
+  // RuntimeConfig 分发标准 LuaSkills 技能包配置 JSON 契约。
+  rpc RuntimeConfig(LuaSkillRuntimeConfigRequest) returns (LuaSkillRuntimeConfigResponse);
 
   // ListInstalledSkills renders the USER-layer managed LuaSkills inventory.
   // ListInstalledSkills 渲染 USER 层受管 LuaSkills 清单。
@@ -410,60 +398,23 @@ message LuaSkillGetHelpRequest {
   string flow = 3;
 }
 
-// LuaSkillConfigListRequest lists configuration entries, optionally scoped by skill id.
-// LuaSkillConfigListRequest 列出配置项，可选按技能标识限定范围。
-message LuaSkillConfigListRequest {
+// LuaSkillRuntimeConfigRequest carries one strict upstream runtime-config request.
+// LuaSkillRuntimeConfigRequest 承载一份严格的上游 runtime-config 请求。
+message LuaSkillRuntimeConfigRequest {
   // Trusted client context for this request.
   // 本次请求的受信任客户端上下文。
   LuaSkillClientContext context = 1;
-  // Optional skill id filter.
-  // 可选技能标识过滤条件。
-  string skill_id = 2;
+  // Complete JSON-encoded RuntimeSkillConfigToolRequest object.
+  // 完整 JSON 编码的 RuntimeSkillConfigToolRequest 对象。
+  string request_json = 2;
 }
 
-// LuaSkillConfigGetRequest reads one configuration key.
-// LuaSkillConfigGetRequest 读取一个配置键。
-message LuaSkillConfigGetRequest {
-  // Trusted client context for this request.
-  // 本次请求的受信任客户端上下文。
-  LuaSkillClientContext context = 1;
-  // Target skill id.
-  // 目标技能标识。
-  string skill_id = 2;
-  // Configuration key.
-  // 配置键。
-  string key = 3;
-}
-
-// LuaSkillConfigSetRequest writes one configuration key.
-// LuaSkillConfigSetRequest 写入一个配置键。
-message LuaSkillConfigSetRequest {
-  // Trusted client context for this request.
-  // 本次请求的受信任客户端上下文。
-  LuaSkillClientContext context = 1;
-  // Target skill id.
-  // 目标技能标识。
-  string skill_id = 2;
-  // Configuration key.
-  // 配置键。
-  string key = 3;
-  // Configuration value.
-  // 配置值。
-  string value = 4;
-}
-
-// LuaSkillConfigDeleteRequest deletes one configuration key.
-// LuaSkillConfigDeleteRequest 删除一个配置键。
-message LuaSkillConfigDeleteRequest {
-  // Trusted client context for this request.
-  // 本次请求的受信任客户端上下文。
-  LuaSkillClientContext context = 1;
-  // Target skill id.
-  // 目标技能标识。
-  string skill_id = 2;
-  // Configuration key.
-  // 配置键。
-  string key = 3;
+// LuaSkillRuntimeConfigResponse carries the stable upstream response envelope.
+// LuaSkillRuntimeConfigResponse 承载稳定的上游响应包络。
+message LuaSkillRuntimeConfigResponse {
+  // Complete JSON-encoded RuntimeSkillConfigToolResponse object.
+  // 完整 JSON 编码的 RuntimeSkillConfigToolResponse 对象。
+  string response_json = 1;
 }
 
 // LuaSkillListInstalledSkillsRequest asks for the USER-layer managed inventory.

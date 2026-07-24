@@ -32,8 +32,8 @@ HOST_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_host_deps.sh"
 # LUA_DEPS_SCRIPT_PATH 用于指向专用的 shell Lua 依赖初始化脚本。
 LUA_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_lua_deps.sh"
 
-# MANAGED_RUNTIME_DEPS_SCRIPT_PATH points at the verified LuaSkills 0.5.4 Python/Node fetcher.
-# MANAGED_RUNTIME_DEPS_SCRIPT_PATH 指向经过校验的 LuaSkills 0.5.4 Python/Node 拉取器。
+# MANAGED_RUNTIME_DEPS_SCRIPT_PATH points at the verified LuaSkills 0.5.5 Python/Node fetcher.
+# MANAGED_RUNTIME_DEPS_SCRIPT_PATH 指向经过校验的 LuaSkills 0.5.5 Python/Node 拉取器。
 MANAGED_RUNTIME_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/deps/fetch_managed_runtimes.sh"
 
 # MANAGED_RUNTIME_LAYOUT_CHECK_SCRIPT_PATH points at the post-fetch manifest/layout validator.

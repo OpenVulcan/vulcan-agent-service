@@ -14,6 +14,80 @@
 
 当前仓库已支持 `--call-tools <tool_name> [json_arguments]` 本地调试模式，可在不启动 HTTP / gRPC 服务的情况下直接初始化 Lua skill 并执行目标 tool。
 
+## LuaSkills 0.5.5 技能包配置
+
+配置归属于技能包，而不是单个 entry。同一包内的所有 entry 共享顶层声明、持久化命名空间、revision 和可选业务校验器。声明只能放在 `skill.yaml` 顶层；entry 内的 `config` 或 `config_validator` 会被 0.5.5 作为未知字段拒绝。
+
+最小声明示例：
+
+```yaml
+config:
+  - key: api_token
+    type: string
+    required: true
+    sensitive: true
+    description: Service access token
+    format: password
+    constraints:
+      min_length: 1
+      max_length: 4096
+
+  - key: retry_count
+    type: integer
+    default: 3
+    description: Maximum request retry count
+    constraints:
+      minimum: 0
+      maximum: 10
+
+config_validator: runtime/config-validator.lua
+```
+
+声明规则：
+
+- 支持 `integer`、`string`、`float`、`enum`、`boolean` 五种类型。
+- `description` 必填；`required` 与 `sensitive` 默认均为 `false`。
+- 整数和浮点约束使用包含边界的 `minimum`、`maximum`；字符串使用 `min_length`、`max_length`。
+- `enum` 必须使用 `options`，每项包含 `value`、`label`、`description`。
+- `default` 是公开声明元数据，即使 `sensitive=true` 也会被 `describe` 返回，因此严禁把真实秘密写成默认值。
+- `config_validator` 是可选的包级跨字段校验器；校验失败时整个批量写入回滚。
+
+技能 Lua 只能访问当前包，不能指定或修改其他包。可用 API 如下：
+
+| API | 作用 |
+| --- | --- |
+| `vulcan.config.get(key)` | 返回已保存值或声明默认值；未声明键会失败 |
+| `vulcan.config.has(key)` | 判断已保存值或声明默认值是否存在 |
+| `vulcan.config.set(key, value)` | 通过原子批量事务写入一个标量 |
+| `vulcan.config.set(values)` | 原子写入非空键值表，任一项失败则全部不落盘 |
+| `vulcan.config.delete(key)` | 删除已保存值，删除后可能重新显露声明默认值 |
+| `vulcan.config.list()` | 列出全部已声明键的有效值 |
+| `vulcan.config.describe()` | 返回声明、约束与状态，不返回值 |
+| `vulcan.config.status()` | 返回 revision、存储范围、完整性、问题与孤儿键 |
+
+推荐在真正需要配置的入口中显式检查完整性：
+
+```lua
+local status = vulcan.config.status()
+if not status.complete then
+    return [[This skill package configuration is incomplete.
+Ask the AI to call runtime-config with action=describe and this package id.
+Only call action=set after host or user authorization, and never echo secrets.]]
+end
+
+local api_token = vulcan.config.get("api_token")
+return use_service(api_token)
+```
+
+宿主对外只暴露 `runtime-config`，支持 `describe`、`validate`、`list`、`get`、`set`、`delete`、`refresh`。该工具能够跨包读取或修改配置，因此调用方必须完成用户确认或等价授权；请求本身没有可信的“已授权”字段。写入应把当前可用值放在一次类型化 `values` 批次中，并在并发或陈旧界面场景携带 `expected_revision`。敏感值不得写入日志、帮助文本或错误消息。
+
+服务默认使用用户级配置根：
+
+- Windows：`%USERPROFILE%\.vulcan\agent-service\config`
+- Linux/macOS：`$HOME/.vulcan/agent-service/config`
+
+普通技能保存到 `<skill_config_root>/skills/config.json`，`ROOT` 系统技能保存到 `<skill_config_root>/system-skills/config.json`。两份文档都使用 `format_version: 1` 的当前严格契约。
+
 ## LuaSkills 托管字段契约
 
 部分 LuaSkill 需要稳定的会话、任务或上下文身份，用于把多次工具调用绑定到同一份状态。为了避免每个对接方各自约定参数名和隐藏规则，LuaSkills 生态保留 `LUASKILL_SID` 作为通用托管身份字段。

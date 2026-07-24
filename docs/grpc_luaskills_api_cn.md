@@ -22,7 +22,7 @@
 
 LuaSkills 的 gRPC 对外面遵循以下规则：
 
-- 常见稳定功能直接映射为显式 RPC，例如工具发现、help 读取、skill config、skill lifecycle 和运行期配置重载。
+- 常见稳定功能直接映射为显式 RPC，例如工具发现、help 读取、标准 runtime-config dispatcher、skill lifecycle 和运行期配置重载。
 - 只有 LuaSkill package 暴露出的动态 runtime entry 通过 `LuaSkillsService.CallTool` 调用。
 - LuaSkills gRPC 调用不使用 `session_id` 表达上下文；工具调用本身是请求级上下文。
 - 每个 `LuaSkillsService` 请求都必须携带 `context.client_name`。
@@ -68,10 +68,7 @@ gRPC 对接方应按自身能力选择处理模式：
 | 动态调用 | `CallTool` | 调用一个 LuaSkills 动态工具。 |
 | Help | `ListHelp` | 返回已注册 LuaSkills help 树的 Markdown 渲染文本。 |
 | Help | `GetHelp` | 按 `skill_id + flow` 返回指定 help 节点的 Markdown 文本。 |
-| 配置 | `ListSkillConfig` | 列出宿主管理的 LuaSkill 配置项，可按 `skill_id` 过滤。 |
-| 配置 | `GetSkillConfig` | 读取一个 LuaSkill 配置值。 |
-| 配置 | `SetSkillConfig` | 写入一个 LuaSkill 配置值。 |
-| 配置 | `DeleteSkillConfig` | 删除一个 LuaSkill 配置值。 |
+| 配置 | `RuntimeConfig` | 分发 LuaSkills 0.5.5 标准技能包配置 JSON 请求，并返回稳定 JSON 响应包络。 |
 | 安装管理 | `ListInstalledSkills` | 渲染 USER 层受管 LuaSkills 清单。 |
 | 安装管理 | `InstallSkill` | 从来源安装一个 USER 层 LuaSkill。 |
 | 安装管理 | `UpdateSkill` | 按 `skill_id` 更新一个 USER 层 LuaSkill。 |
@@ -107,6 +104,7 @@ gRPC 对接方应按自身能力选择处理模式：
 LuaSkills gRPC 专用预算配置位于 `runtime/configs/client_budgets.yaml`：
 
 ```yaml
+format_version: 1
 grpc_clients:
   workbench-grpc:
     budgets:
@@ -200,16 +198,17 @@ grpcurl -plaintext \
 
 ## 配置接口
 
-Skill 配置由宿主管理，和 Lua skill 内部的 `vulcan.config.*` 共用同一份运行期配置。
+Skill 配置由宿主授权，协议、声明校验、双存储路由、revision、CAS、缓存与事件由 LuaSkills 0.5.5 管理；Lua skill 内部的 `vulcan.config.*` 使用同一套配置服务。
 
 | RPC | 参数 | 说明 |
 | --- | --- | --- |
-| `ListSkillConfig` | `context`、可选 `skill_id` | 列出配置项。 |
-| `GetSkillConfig` | `context`、`skill_id`、`key` | 读取配置值。 |
-| `SetSkillConfig` | `context`、`skill_id`、`key`、`value` | 写入配置值。 |
-| `DeleteSkillConfig` | `context`、`skill_id`、`key` | 删除配置值。 |
+| `RuntimeConfig` | `context`、`request_json` | `request_json` 是完整 JSON 编码的 `RuntimeSkillConfigToolRequest`；`response_json` 是完整 JSON 编码的 `RuntimeSkillConfigToolResponse`。 |
 
-`SetSkillConfig` 和 `DeleteSkillConfig` 是写操作，客户端应在 UI 或上层协议中明确展示影响的 `skill_id` 与 `key`。
+`request_json.action` 支持 `describe`、`validate`、`list`、`get`、`set`、`delete`、`refresh`。写入支持类型化单键或批量值，并可通过 `expected_revision` 执行 CAS。上游严格拒绝未知字段、无关动作字段和重复批量键。
+
+`response_json` 始终保留 `ok`、`action`、`result`、`error.code`、`error.message` 和 `error.details`。请求形态、声明、校验或 revision 冲突属于该稳定响应包络，不转换为模糊文本；只有缺少受信任上下文、LuaEngine 不可用、线程任务失败或锁中毒等宿主执行失败才映射为 gRPC status。
+
+客户端必须在调用前完成授权：`include_values=true`、`mode=installed`、`root_name`、`list/get/set/delete/refresh` 均可能披露敏感状态或改变持久化数据。服务端不会从任意自声明的 `client_capabilities` 推测授权。
 
 ## 安装管理接口
 

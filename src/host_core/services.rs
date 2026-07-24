@@ -44,26 +44,13 @@ pub(crate) trait RuntimeHelpService {
 /// 面向 LuaSkills 配置与包管理的内部服务能力面。
 #[allow(dead_code)]
 pub(crate) trait RuntimeSkillAdminService {
-    /// List effective runtime skill configuration entries.
-    /// 列出生效的运行时技能配置项。
-    fn list_skill_config(&self, skill_id: Option<String>) -> Result<String, (i64, String)>;
-
-    /// Read one runtime skill configuration value.
-    /// 读取单个运行时技能配置值。
-    fn get_skill_config(&self, skill_id: String, key: String) -> Result<String, (i64, String)>;
-
-    /// Write one runtime skill configuration value.
-    /// 写入单个运行时技能配置值。
-    fn set_skill_config(
-        &self,
-        skill_id: String,
-        key: String,
-        value: String,
-    ) -> Result<String, (i64, String)>;
-
-    /// Delete one runtime skill configuration value.
-    /// 删除单个运行时技能配置值。
-    fn delete_skill_config(&self, skill_id: String, key: String) -> Result<String, (i64, String)>;
+    /// Dispatch one canonical LuaSkills runtime-config JSON request.
+    /// 分发一份标准 LuaSkills runtime-config JSON 请求。
+    /// Parameter `request_json` is the complete strict upstream request object.
+    /// 参数：`request_json` 是完整的上游严格请求对象。
+    /// Returns the stable upstream JSON response envelope or a host execution error.
+    /// 返回稳定的上游 JSON 响应包络，或宿主执行错误。
+    async fn dispatch_runtime_config(&self, request_json: String) -> Result<String, (i64, String)>;
 
     /// List installed LuaSkills in the mutable runtime layer.
     /// 列出可变运行层中已安装的 LuaSkills。

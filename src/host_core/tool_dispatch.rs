@@ -95,12 +95,31 @@ impl HostRuntime {
                 is_error: None,
             },
 
-            "luaskill-config" => RuntimeToolCallResult {
-                content: vec![RuntimeTextContent::text(
-                    &self.execute_luaskill_config_tool_text(&args)?,
-                )],
-                is_error: None,
-            },
+            "runtime-config" => {
+                // Serialize the already-decoded MCP argument object back to the canonical upstream JSON boundary.
+                // 把 MCP 已解码参数对象重新序列化到上游标准 JSON 边界。
+                let request_json = serde_json::to_string(&args).map_err(|error| {
+                    (
+                        -32603,
+                        format!("failed to serialize runtime-config request: {}", error),
+                    )
+                })?;
+                let response_json = self.dispatch_luaskill_runtime_config(request_json).await?;
+                let response: luaskills::RuntimeSkillConfigToolResponse =
+                    serde_json::from_str(&response_json).map_err(|error| {
+                        (
+                            -32603,
+                            format!(
+                                "failed to decode runtime-config dispatcher response: {}",
+                                error
+                            ),
+                        )
+                    })?;
+                RuntimeToolCallResult {
+                    content: vec![RuntimeTextContent::text(&response_json)],
+                    is_error: (!response.ok).then_some(true),
+                }
+            }
 
             "skill-manager" => self.execute_skill_manager_tool_args(&args).await?,
 

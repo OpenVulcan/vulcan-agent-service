@@ -46,7 +46,6 @@ $LibsOut = "$LuaRuntimeOut\libs"
 $SkillsOut = "$LuaRuntimeOut\skills"
 $PkgOut = "$LuaRuntimeOut\lua_packages"
 $ConfigOut = "$BaseOutDir\configs"
-$LuaRuntimeConfigOut = "$LuaRuntimeOut\config"
 $ResourcesOut = "$LuaRuntimeOut\resources"
 $LicensesOut = "$LuaRuntimeOut\licenses"
 $DependenciesOut = "$LuaRuntimeOut\dependencies"
@@ -59,70 +58,6 @@ $LuaSkillsRuntimeRoot = Join-Path $ProjectDir "third_party\luaskills_runtime"
 $ManagedRuntimeDistributionRoot = Join-Path $ProjectDir "third_party\luaskills_managed_runtimes"
 $SourceLuaRuntimeRoot = Join-Path $ProjectDir "runtime\lua_runtime"
 $ManagedRuntimeLayoutCheckScript = Join-Path $ProjectDir "scripts\debug-tools\managed_runtime_layout_check.py"
-
-function Remove-LegacyOutputLayout {
-    <#
-    .SYNOPSIS
-    Remove the obsolete top-level LuaSkills layout from the application output root.
-    从应用输出根中删除已废弃的顶层 LuaSkills 布局。
-
-    .PARAMETER ApplicationOutputRoot
-    Absolute or repository-relative application output root guarded before recursive deletion.
-    在递归删除前受保护校验的绝对或仓库相对应用输出根。
-    #>
-    param([string]$ApplicationOutputRoot)
-
-    # ResolvedOutputRoot is the only parent under which legacy entries may be deleted.
-    # ResolvedOutputRoot 是允许删除旧目录项的唯一父目录。
-    $ResolvedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $ApplicationOutputRoot))
-    # ResolvedProjectRoot prevents any computed delete target from escaping the repository.
-    # ResolvedProjectRoot 防止任何计算出的删除目标逃逸仓库范围。
-    $ResolvedProjectRoot = [System.IO.Path]::GetFullPath($ProjectDir)
-    # ResolvedProjectPrefix includes a directory separator so similarly prefixed sibling paths cannot pass the boundary check.
-    # ResolvedProjectPrefix 包含目录分隔符，避免同前缀的相邻路径通过边界校验。
-    $ResolvedProjectPrefix = $ResolvedProjectRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-    if (-not $ResolvedOutputRoot.StartsWith($ResolvedProjectPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Output cleanup root escaped the repository: $ResolvedOutputRoot"
-    }
-    # ResolvedOutputPrefix applies the same component-aware boundary to every recursive child deletion.
-    # ResolvedOutputPrefix 对每个递归子项删除应用相同的路径组件级边界。
-    $ResolvedOutputPrefix = $ResolvedOutputRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-
-    # LegacyNames contains only LuaSkills directories that moved under output/lua_runtime.
-    # LegacyNames 仅包含已经迁移到 output/lua_runtime 下的 LuaSkills 目录。
-    $LegacyNames = @(
-        "skills", "state", "dependencies", "databases", "temp", "libs",
-        "lua_packages", "resources", "licenses", "system_lua_lib"
-    )
-    foreach ($LegacyName in $LegacyNames) {
-        # LegacyPath is validated independently before recursive removal.
-        # LegacyPath 在递归删除前单独执行边界校验。
-        $LegacyPath = [System.IO.Path]::GetFullPath((Join-Path $ResolvedOutputRoot $LegacyName))
-        if (-not $LegacyPath.StartsWith($ResolvedOutputPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Legacy cleanup target escaped output: $LegacyPath"
-        }
-        if (Test-Path -LiteralPath $LegacyPath) {
-            Remove-Item -LiteralPath $LegacyPath -Recurse -Force
-        }
-    }
-
-    # LegacyBinEntries removes only obsolete Lua-owned payloads while retaining the host binary directory.
-    # LegacyBinEntries 仅删除废弃的 Lua 载荷，同时保留宿主二进制目录。
-    $LegacyBinEntries = @("tools", "vldb-controller", "vldb-controller.exe")
-    foreach ($LegacyBinEntry in $LegacyBinEntries) {
-        # LegacyBinPath is a fixed child of output/bin and cannot target the host executable.
-        # LegacyBinPath 是 output/bin 的固定子项，不会指向宿主可执行文件。
-        $LegacyBinPath = [System.IO.Path]::GetFullPath(
-            (Join-Path $ResolvedOutputRoot ("bin\" + $LegacyBinEntry))
-        )
-        if (-not $LegacyBinPath.StartsWith($ResolvedOutputPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Legacy bin cleanup target escaped output: $LegacyBinPath"
-        }
-        if (Test-Path -LiteralPath $LegacyBinPath) {
-            Remove-Item -LiteralPath $LegacyBinPath -Recurse -Force
-        }
-    }
-}
 
 function Reset-DirectoryContents {
     <#
@@ -193,21 +128,22 @@ function Enable-OutputModelConfigForLocalTesting {
         return
     }
 
-    $Content = Get-Content -LiteralPath $ModelConfigOut -Raw
-    $Content = $Content -replace '(?m)^  enabled:\s*false\s*$', '  enabled: true'
-    $Content = $Content -replace '(?m)^    enabled:\s*false\s*$', '    enabled: true'
-    Set-Content -LiteralPath $ModelConfigOut -Value $Content -Encoding UTF8
+    # Utf8NoBom preserves the repository template encoding while the output-only flags are changed.
+    # Utf8NoBom 在修改仅用于输出的开关时保持仓库模板的 UTF-8 编码。
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    # Content is read explicitly as UTF-8 so Windows PowerShell cannot reinterpret Chinese comments through the active ANSI code page.
+    # Content 以显式 UTF-8 读取，避免 Windows PowerShell 通过当前 ANSI 代码页错误解释中文注释。
+    $Content = [System.IO.File]::ReadAllText($ModelConfigOut, $Utf8NoBom)
+    $Content = $Content -replace '(?m)^  enabled:[ \t]*false[ \t]*$', '  enabled: true'
+    $Content = $Content -replace '(?m)^    enabled:[ \t]*false[ \t]*$', '    enabled: true'
+    [System.IO.File]::WriteAllText($ModelConfigOut, $Content, $Utf8NoBom)
     Write-Host "==> Output model_config.yaml enabled for local model smoke tests"
 }
-
-# Remove the old sibling runtime layout before materializing the new isolated package.
-# 在生成新的隔离运行时包前删除旧的同级运行时布局。
-Remove-LegacyOutputLayout -ApplicationOutputRoot $BaseOutDir
 
 # Ensure output directories exist
 if (-not (Test-Path $BaseOutDir)) { New-Item -ItemType Directory -Path $BaseOutDir -Force | Out-Null }
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
-foreach ($dir in @($LuaRuntimeOut, $LibsOut, $SkillsOut, $PkgOut, $ConfigOut, $LuaRuntimeConfigOut, $ResourcesOut, $LicensesOut, $DependenciesOut, $DatabasesOut, $StateOut, $TempOut, $SystemLuaLibOut, $LogsOut)) {
+foreach ($dir in @($LuaRuntimeOut, $LibsOut, $SkillsOut, $PkgOut, $ConfigOut, $ResourcesOut, $LicensesOut, $DependenciesOut, $DatabasesOut, $StateOut, $TempOut, $SystemLuaLibOut, $LogsOut)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 foreach ($dir in @(
@@ -291,19 +227,14 @@ if (Copy-DirectoryContents -Source $ManagedRuntimeDistributionRoot -Destination 
 # Sync runtime config files to output/configs/
 if (Test-Path "runtime\configs") {
     if (-not (Test-Path $ConfigOut)) { New-Item -ItemType Directory -Path $ConfigOut -Force | Out-Null }
+    # Rebuild the generated config directory as an exact mirror of the current repository templates.
+    # 将生成配置目录重建为当前仓库模板的精确镜像。
+    Reset-DirectoryContents -Path $ConfigOut
     Copy-Item -Force -Recurse "runtime\configs\*" $ConfigOut
     Enable-OutputModelConfigForLocalTesting -ConfigDirectory $ConfigOut
     Write-Host "==> Runtime configs synced to $ConfigOut"
 } else {
     Write-Host "==> No runtime/configs directory found"
-}
-
-# Sync the source runtime skill config to output/lua_runtime/config/.
-# 同步源码运行时 Skill 配置到 output/lua_runtime/config/。
-if (Test-Path "runtime\lua_runtime\config") {
-    Reset-DirectoryContents -Path $LuaRuntimeConfigOut
-    Copy-Item -Force -Recurse "runtime\lua_runtime\config\*" $LuaRuntimeConfigOut
-    Write-Host "==> LuaSkills config synced to $LuaRuntimeConfigOut"
 }
 
 # Sync runtime shared resources to output/lua_runtime/resources/.

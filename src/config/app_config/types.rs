@@ -20,6 +20,7 @@ pub enum SpaceControllerProcessModeConfig {
 /// Host-level controller configuration forwarded into the controller-only LuaSkills runtime.
 /// 转发给 controller-only LuaSkills 运行时的宿主级控制器配置。
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SpaceControllerConfig {
     /// Optional explicit controller endpoint.
     /// 可选的显式控制器端点。
@@ -79,13 +80,7 @@ impl Default for SpaceControllerConfig {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
-pub enum SkillRootConfigEntry {
-    Named(NamedSkillRootConfig),
-    Path(String),
-}
-
-#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct NamedSkillRootConfig {
     /// Stable skill-root name such as ROOT, USER, or one project identifier.
     /// 技能根的稳定名称，例如 ROOT、USER 或某个项目标识符。
@@ -98,6 +93,7 @@ pub struct NamedSkillRootConfig {
 /// Optional config block that overrides the dedicated isolated `runlua` VM pool.
 /// 用于覆盖隔离 `runlua` 专用虚拟机池的可选配置段。
 #[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RunLuaPoolConfigSection {
     /// Minimum number of isolated runlua VMs kept warm. When omitted, the upstream default is used.
     /// 隔离 runlua 虚拟机的最小常驻数量；缺失时使用上游默认值。
@@ -113,6 +109,7 @@ pub struct RunLuaPoolConfigSection {
 /// Optional host overrides for managed Python and Node worker/session resource policy.
 /// 受管 Python 与 Node Worker/会话资源策略的可选宿主覆盖配置。
 #[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ManagedRuntimeConfigSection {
     /// Maximum live workers for one exact environment and package-owner pool key.
     /// 单个精确环境与包所有者池键允许的最大活动 Worker 数量。
@@ -136,7 +133,12 @@ pub struct ManagedRuntimeConfigSection {
 // ============================================================
 
 #[derive(Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Strict schema version for this host application configuration.
+    /// 这份宿主应用配置使用的严格结构版本。
+    pub format_version: u32,
+
     /// HTTP transport listen address, for example "127.0.0.1:19201".
     /// HTTP 传输监听地址，例如 "127.0.0.1:19201"。
     #[serde(default = "default_http_addr")]
@@ -158,11 +160,15 @@ pub struct Config {
 
     /// Formal skill roots for the default runtime environment, limited to ROOT, PROJECT, and USER.
     /// 默认运行环境使用的正式技能根目录，仅限 ROOT、PROJECT 与 USER。
-    pub skill_roots: Option<Vec<SkillRootConfigEntry>>,
+    pub skill_roots: Option<Vec<NamedSkillRootConfig>>,
 
     /// Optional application root that owns host binaries, configs, logs, and the isolated `lua_runtime` package.
     /// 可选应用根目录，承载宿主二进制、配置、日志与隔离的 `lua_runtime` 包。
     pub runtime_root: Option<String>,
+
+    /// Optional absolute user-level root for LuaSkills package configuration stores.
+    /// LuaSkills 技能包配置存储使用的可选用户级绝对根目录。
+    pub skill_config_root: Option<String>,
 
     /// Optional absolute or application-root-relative managed Python/Node distribution root.
     /// 可选的绝对路径或相对应用根的受管 Python/Node 发行根目录。

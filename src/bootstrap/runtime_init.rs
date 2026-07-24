@@ -3,9 +3,8 @@ use crate::config::Config;
 use crate::host_core::HostRuntime;
 use crate::luaskills_adapter::{
     build_luaskills_cache_config, build_luaskills_engine_options, default_user_skill_root,
-    resolve_luaskills_runtime_root_from_config, resolve_skill_config_file_path,
-    resolve_skill_roots_from_config, try_normalize_skill_root_key,
-    validate_unique_skill_root_spaces,
+    resolve_luaskills_runtime_root_from_config, resolve_skill_roots_from_config,
+    try_normalize_skill_root_key, validate_unique_skill_root_spaces,
 };
 use crate::support::temp_maintenance::initialize_runtime_temp_root;
 use crate::support::tool_result_format::initialize_tool_result_template_roots;
@@ -25,29 +24,12 @@ pub(super) fn resolve_luaskills_runtime_root_for_host(
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
 }
 
-/// Resolve the explicit unified runtime skill-config file path used by host-owned luaskill-config operations.
-/// 解析宿主自有 luaskill-config 操作使用的显式统一运行时 Skill 配置文件路径。
-fn resolve_runtime_skill_config_file_path_for_host(
-    config: &Config,
-) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
-    let Some(runtime_root) = resolve_luaskills_runtime_root_for_host(config)? else {
-        return Ok(None);
-    };
-    let file_path = resolve_skill_config_file_path(&runtime_root)
-        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-    Ok(Some(file_path))
-}
-
-/// Build one host-only runtime surface and inject luaskill-config when the runtime root is available.
-/// 构建一份仅含宿主工具面的运行时服务，并在运行根可用时注入 luaskill-config。
-pub(super) fn build_host_tool_surface_server(
-    config: &Config,
-) -> Result<HostRuntime, Box<dyn std::error::Error>> {
-    let mut server = HostRuntime::new();
-    if let Some(skill_config_file_path) = resolve_runtime_skill_config_file_path_for_host(config)? {
-        server = server.with_runtime_skill_config_file_path(skill_config_file_path)?;
-    }
-    Ok(server)
+/// Build one host-only runtime surface without LuaEngine-dependent tools.
+/// 构建一份不包含 LuaEngine 依赖工具的宿主工具面运行时。
+/// Returns a newly initialized host runtime.
+/// 返回新初始化的宿主运行时。
+pub(super) fn build_host_tool_surface_server() -> HostRuntime {
+    HostRuntime::new()
 }
 
 /// Initialize the shared runtime temp root from config after runtime-root validation has completed.
@@ -80,7 +62,7 @@ pub(super) struct RootSkillCliContext {
 /// Build and initialize the host runtime, including external clients, Lua skills, and shared cache.
 /// 构建并初始化宿主运行时，包括外部客户端、Lua Skills 与共享缓存。
 pub(super) async fn build_server(cfg: &Config) -> Result<HostRuntime, Box<dyn std::error::Error>> {
-    let mut server = build_host_tool_surface_server(cfg)?;
+    let mut server = build_host_tool_surface_server();
 
     // Connect the VMM gRPC client only when explicitly enabled.
     // 仅在显式启用时连接 VMM gRPC 客户端。

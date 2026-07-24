@@ -8,10 +8,6 @@ use crate::host_core::projections::{
     require_non_empty_grpc_field,
 };
 use crate::host_core::runtime::HostRuntime;
-use crate::host_core::runtime_config_tool::{
-    RuntimeConfigAction, RuntimeConfigToolArguments, execute_runtime_config_tool,
-    parse_runtime_config_tool_arguments,
-};
 use crate::host_core::skill_tools::{
     infer_skill_install_source_type, parse_optional_skill_install_source_type,
     render_skill_url_install_not_implemented_result, require_skill_manager_skill_id,
@@ -264,69 +260,31 @@ impl HostRuntime {
         }
     }
 
-    /// List host-managed LuaSkill config values through a stable gRPC method.
-    /// 通过稳定 gRPC 方法列出宿主管理的 LuaSkill 配置值。
-    pub fn list_luaskill_config(&self, skill_id: Option<String>) -> Result<String, (i64, String)> {
-        let store = self.resolve_runtime_skill_config_store()?;
-        let request = RuntimeConfigToolArguments {
-            action: RuntimeConfigAction::List,
-            skill_id,
-            key: None,
-            value: None,
-        };
-        execute_runtime_config_tool(&store, &request)
-    }
-
-    /// Read one host-managed LuaSkill config value through a stable gRPC method.
-    /// 通过稳定 gRPC 方法读取一个宿主管理的 LuaSkill 配置值。
-    pub fn get_luaskill_config(
+    /// Dispatch one strict LuaSkills runtime-config JSON request on the blocking runtime pool.
+    /// 在阻塞运行时线程池中分发一份严格的 LuaSkills runtime-config JSON 请求。
+    /// Parameter `request_json` is the complete upstream request object encoded as JSON.
+    /// 参数：`request_json` 是编码为 JSON 的完整上游请求对象。
+    /// Returns the upstream stable JSON response envelope or a host execution error.
+    /// 返回上游稳定 JSON 响应包络，或宿主执行错误。
+    pub async fn dispatch_luaskill_runtime_config(
         &self,
-        skill_id: String,
-        key: String,
+        request_json: String,
     ) -> Result<String, (i64, String)> {
-        let store = self.resolve_runtime_skill_config_store()?;
-        let request = RuntimeConfigToolArguments {
-            action: RuntimeConfigAction::Get,
-            skill_id: Some(skill_id),
-            key: Some(key),
-            value: None,
-        };
-        execute_runtime_config_tool(&store, &request)
-    }
-
-    /// Write one host-managed LuaSkill config value through a stable gRPC method.
-    /// 通过稳定 gRPC 方法写入一个宿主管理的 LuaSkill 配置值。
-    pub fn set_luaskill_config(
-        &self,
-        skill_id: String,
-        key: String,
-        value: String,
-    ) -> Result<String, (i64, String)> {
-        let store = self.resolve_runtime_skill_config_store()?;
-        let request = RuntimeConfigToolArguments {
-            action: RuntimeConfigAction::Set,
-            skill_id: Some(skill_id),
-            key: Some(key),
-            value: Some(value),
-        };
-        execute_runtime_config_tool(&store, &request)
-    }
-
-    /// Delete one host-managed LuaSkill config value through a stable gRPC method.
-    /// 通过稳定 gRPC 方法删除一个宿主管理的 LuaSkill 配置值。
-    pub fn delete_luaskill_config(
-        &self,
-        skill_id: String,
-        key: String,
-    ) -> Result<String, (i64, String)> {
-        let store = self.resolve_runtime_skill_config_store()?;
-        let request = RuntimeConfigToolArguments {
-            action: RuntimeConfigAction::Delete,
-            skill_id: Some(skill_id),
-            key: Some(key),
-            value: None,
-        };
-        execute_runtime_config_tool(&store, &request)
+        let engine = self.resolve_lua_engine_for_environment()?;
+        tokio::task::spawn_blocking(move || {
+            let mut engine = engine
+                .write()
+                .map_err(|_| "Lua engine lock poisoned".to_string())?;
+            Ok(engine.dispatch_runtime_config_tool_json(&request_json))
+        })
+        .await
+        .map_err(|error| {
+            (
+                -32603,
+                format!("runtime-config dispatcher spawn error: {}", error),
+            )
+        })?
+        .map_err(|error| (-32603, error))
     }
 
     /// Render the USER-layer managed LuaSkill inventory through a stable gRPC method.
@@ -423,16 +381,5 @@ impl HostRuntime {
                 .as_deref()
                 .unwrap_or("unavailable")
         ))
-    }
-
-    /// Execute the host-owned luaskill-config tool from raw JSON arguments.
-    /// 使用原始 JSON 参数执行宿主自有 luaskill-config 工具。
-    pub(crate) fn execute_luaskill_config_tool_text(
-        &self,
-        args: &Value,
-    ) -> Result<String, (i64, String)> {
-        let store = self.resolve_runtime_skill_config_store()?;
-        let request = parse_runtime_config_tool_arguments(args)?;
-        execute_runtime_config_tool(&store, &request)
     }
 }

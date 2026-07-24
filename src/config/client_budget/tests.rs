@@ -196,6 +196,10 @@ fn client_budget_yaml_parses_expected_rules() {
     let yaml = include_str!("../../../runtime/configs/client_budgets.yaml");
     let parsed: ClientBudgetConfig = from_str(yaml).expect("client_budgets.yaml should parse");
 
+    assert_eq!(
+        parsed.format_version,
+        super::super::HOST_CONFIG_FORMAT_VERSION
+    );
     assert!(parsed.clients.iter().any(|rule| rule.pattern == "*qwen*"));
     assert!(
         parsed
@@ -461,7 +465,7 @@ fn preload_client_budget_config_prefers_explicit_runtime_root() {
         .expect("failed to create config directory");
     std::fs::write(
         &config_path,
-        "defaults:\n  budgets:\n    tool_result:\n      bytes:\n        default: 1234\n",
+        "format_version: 1\ndefaults:\n  budgets:\n    tool_result:\n      bytes:\n        default: 1234\n",
     )
     .expect("failed to write client budget config");
 
@@ -500,7 +504,7 @@ fn preload_client_budget_config_reports_malformed_external_source() {
     std::fs::write(
         &config_path,
         format!(
-            "defaults:\n  budgets:\n    tool_result:\n      bytes:\n        default: 1234\n        config_sources:\n          - type: json\n            path: '{}'\n            field: tool_output.max_bytes\n",
+            "format_version: 1\ndefaults:\n  budgets:\n    tool_result:\n      bytes:\n        default: 1234\n        config_sources:\n          - type: json\n            path: '{}'\n            field: tool_output.max_bytes\n",
             escaped_source_path
         ),
     )
@@ -516,6 +520,57 @@ fn preload_client_budget_config_reports_malformed_external_source() {
         "unexpected error: {error}"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Client-budget config should require the current explicit format-version field.
+/// 客户端预算配置应要求当前显式格式版本字段。
+#[test]
+fn client_budget_config_rejects_missing_format_version() {
+    let error = serde_yaml::from_str::<ClientBudgetConfig>("defaults: {}\n")
+        .expect_err("missing format version should fail");
+
+    assert!(error.to_string().contains("format_version"));
+}
+
+/// Client-budget config should reject fields outside the current strict schema.
+/// 客户端预算配置应拒绝当前严格结构以外的字段。
+#[test]
+fn client_budget_config_rejects_unknown_fields() {
+    let error = serde_yaml::from_str::<ClientBudgetConfig>(
+        "format_version: 1\nunsupported_setting: true\n",
+    )
+    .expect_err("unknown client budget fields should fail");
+
+    assert!(error.to_string().contains("unsupported_setting"));
+}
+
+/// Client-budget loading should reject every format version other than the current contract.
+/// 客户端预算加载应拒绝当前契约版本以外的所有格式版本。
+#[test]
+fn client_budget_config_rejects_unsupported_format_version() {
+    let _guard = runtime_root_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "vulcan-agent-service-budget-version-runtime-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let config_path = root.join("configs").join("client_budgets.yaml");
+    std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
+        .expect("client budget config directory should be created");
+    std::fs::write(&config_path, "format_version: 2\ndefaults: {}\n")
+        .expect("client budget config fixture should be written");
+    initialize_client_budget_runtime_root(Some(&root)).expect("runtime root should set");
+
+    let error = load_client_budget_runtime().expect_err("unsupported version should fail");
+
+    assert!(error.contains("unsupported format_version 2"));
+    initialize_client_budget_runtime_root(None).expect("runtime root should clear");
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// Prepare one isolated runtime root backed by one test-local client budget config so matching tests stay deterministic.
@@ -571,6 +626,7 @@ fn resolve_client_budget_snapshot_prefers_env_override_name() {
     let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
     let root = prepare_isolated_client_budget_runtime_root_with_yaml(
         r#"
+format_version: 1
 defaults:
   budgets:
     tool_result:
@@ -638,6 +694,7 @@ fn resolve_client_budget_snapshot_ignores_blank_env_override() {
     let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
     let root = prepare_isolated_client_budget_runtime_root_with_yaml(
         r#"
+format_version: 1
 defaults:
   budgets:
     tool_result:
@@ -698,6 +755,7 @@ fn resolve_client_budget_snapshot_prefers_request_context_override_name() {
     let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
     let root = prepare_isolated_client_budget_runtime_root_with_yaml(
         r#"
+format_version: 1
 defaults:
   budgets:
     tool_result:
@@ -766,6 +824,7 @@ fn resolve_grpc_client_budget_snapshot_prefers_exact_grpc_client_rule() {
     let previous = std::env::var(CLIENT_MATCH_NAME_OVERRIDE_ENV).ok();
     let root = prepare_isolated_client_budget_runtime_root_with_yaml(
         r#"
+format_version: 1
 defaults:
   budgets:
     tool_result:
@@ -845,6 +904,7 @@ fn resolve_grpc_client_budget_snapshot_falls_back_to_wildcard_rules() {
         .unwrap_or_else(|error| error.into_inner());
     let root = prepare_isolated_client_budget_runtime_root_with_yaml(
         r#"
+format_version: 1
 defaults:
   budgets:
     tool_result:

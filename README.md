@@ -35,7 +35,7 @@
 - 数据库访问固定走 `space_controller` 控制器模式
 - 自动加载运行根下符合规则的 LuaSkills
 - 把 skill entry 映射成 MCP tools
-- 提供宿主封装的 strict help 工具与统一 `luaskill-config` 配置工具
+- 提供宿主封装的 strict help 工具与统一 `runtime-config` 配置工具
 - 在宿主层处理工具结果的分页、截断与 spill 文件输出
 - 支持宿主级 `client_budgets.yaml`、`tool_configs.yaml`、`model_config.yaml` 与统一 Skill 运行时配置
 - 提供统一 gRPC 服务面：兼容型能力走 `McpService`，LuaSkills 稳定能力走显式 RPC，动态 entry 走 `CallTool`，Host Adapter / VMM 走独立 service
@@ -82,6 +82,7 @@
 例如把默认 `19801` 改成 `20333`：
 
 ```yaml
+format_version: 1
 space_controller:
   endpoint: "http://127.0.0.1:20333"
 ```
@@ -196,30 +197,26 @@ runtime/lua_runtime/skills/<skill>/
 - `vulcan-help-detail`
   - 按 `skill + flow` 读取具体帮助节点
 
-### 3. Luaskill Config 工具
+### 3. Runtime Config 工具
 
-统一 Skill 配置文件会由服务中枢额外包装为：
+LuaSkills 0.5.5 的技能包配置 dispatcher 由服务中枢直接暴露为：
 
-- `luaskill-config`
+- `runtime-config`
 
 其中：
 
 - 调用约束
-  - 只有用户明确要求查看或修改 LuaSkill 配置时，才应调用该工具
-  - 执行 `set` / `delete` 后，调用方必须向用户明确回报受影响的 `skill_id` / `key` 与最终工具结果
+  - 工具整体标记为需要用户确认，因为同一标准入口既可披露原始值，也可修改持久化配置
+  - 宿主只负责授权边界和传输，不重复实现上游声明、校验、revision、CAS 或错误码语义
 - `action`
-  - 支持 `list` / `get` / `set` / `delete`
-- `skill_id`
-  - `list` 时可选，用于只查看单个 skill 命名空间
-  - `get` / `set` / `delete` 时必填
-- `key`
-  - `get` / `set` / `delete` 时必填
-- `value`
-  - `set` 时必填
+  - 支持 `describe` / `validate` / `list` / `get` / `set` / `delete` / `refresh`
+- 写入契约
+  - 支持单键 `key + value` 或类型化批量 `values`
+  - `expected_revision` 用于 CAS；revision 使用规范十进制字符串
+  - 只能写入 `skill.yaml` 顶层 `config` 已声明且校验通过的键
 - 返回结果
-  - 返回面向 AI 的纯文本结果，不再附带 JSON 代码块
-  - `list` 为空时会明确提示无配置；非空时按 `skill_id -> key/value` 分组展示
-  - 与 Lua skill 内部的 `vulcan.config.*` 共用同一份宿主统一运行期配置
+  - 原样返回上游稳定 JSON 包络：`ok`、`action`、`result`、`error`
+  - Lua skill 内部的 `vulcan.config.*` 与宿主 `runtime-config` 共用同一套声明、路由、缓存和存储
 
 ### 4. RunLua 暴露策略
 
@@ -278,7 +275,6 @@ runtime/
 ├─ configs/               # 宿主配置模板，仅供主程序读取
 └─ lua_runtime/           # 完整 LuaSkills 运行时源码镜像
    ├─ bin/                # controller 与宿主提供工具
-   ├─ config/             # LuaSkills 统一 skill_config.json
    ├─ skills/             # 官方内建 LuaSkills
    ├─ dependencies/       # Skill 依赖、受管发行包与环境
    ├─ databases/          # SQLite / LanceDB 数据目录
@@ -295,7 +291,6 @@ output/
 ├─ logs/                  # 宿主日志目录
 └─ lua_runtime/           # 实际运行使用的完整 LuaSkills 包
    ├─ bin/                # vldb-controller 与宿主提供工具
-   ├─ config/             # skill_config.json
    ├─ skills/             # ROOT 系统技能
    ├─ dependencies/       # Skill 依赖、runtimes 与 envs
    ├─ databases/          # SQLite / LanceDB 数据目录
@@ -310,27 +305,29 @@ output/
 
 ### 配置文件
 
-`vulcan-agent-service` 仍然使用宿主配置文件，例如：
+`vulcan-agent-service` 使用以下宿主配置文件：
 
-- CLI 入口已收敛为 `--runtime-root` 或标准运行目录自动发现，不再支持 `--config`
+- CLI 入口使用 `--runtime-root` 或标准运行目录自动发现。
 
 - `config.yaml`
 - `client_budgets.yaml`
 - `tool_configs.yaml`
-- `skill_config.json`
+- `model_config.yaml`
 
 其中：
 
-- `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml`
+- 四份 YAML 都必须显式声明 `format_version: 1`；缺失版本、版本不匹配和各自固定结构中的未知字段都会直接导致加载失败
+- `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml` / `model_config.yaml`
   - 属于宿主层配置，由 `vulcan-agent-service` 自己读取
+  - `tool_configs.yaml` 的顶层结构固定为 `format_version` 与 `skills`，具体技能配置放在 `skills.<skill_name>` 下
   - `tool_configs.yaml` 的 `bytes_per_token` 与 `unlimited_bytes_cap` 必须写成 YAML 无符号整数；字符串、负数、浮点数、布尔值、`null` 与数组会在预载或热重载时被拒绝
-- `skill_config.json`
-  - 固定由应用根推导为 `<runtime_root>/lua_runtime/config/skill_config.json` 并传给 `luaskills`
-  - 当前产品不再提供单独文件路径覆盖，避免与运行根参数产生冲突
-  - 当前能力会通过宿主 `luaskill-config` MCP 工具对外提供 `list/get/set/delete` 入口
-  - 工具返回纯文本结果，不暴露底层配置文件物理地址
-  - Lua skill 内部的 `vulcan.config.*` 与宿主 `luaskill-config` 共用这一份统一运行期配置文件
-  - 仓库内提供默认空模板，初始内容为 `{}`，便于运行目录直接复制使用
+- 技能包配置
+  - `config.yaml` 可通过 `skill_config_root` 指定绝对用户级目录
+  - 未配置时使用 `%USERPROFILE%\.vulcan\agent-service\config`（Windows）或 `$HOME/.vulcan/agent-service/config`（Unix）
+  - LuaSkills 分别持久化到 `<skill_config_root>/skills/config.json` 与 `<skill_config_root>/system-skills/config.json`
+  - ROOT 技能固定进入 `system-skills`，其他正式层进入 `skills`
+  - 构建和打包不会复制、清空或覆盖该用户配置根
+  - 宿主通过标准 `runtime-config` MCP 工具和 `RuntimeConfig` gRPC RPC 暴露上游严格 JSON 契约
 
 ### Lua VM 池配置
 
@@ -344,6 +341,7 @@ output/
 默认模板如下：
 
 ```yaml
+format_version: 1
 lua_vm_pool_min_size: 2
 lua_vm_pool_max_size: 8
 lua_vm_pool_idle_ttl_secs: 600
@@ -354,8 +352,7 @@ runlua_pool_config:
   idle_ttl_secs: 60
 ```
 
-其中 `runlua_pool_config` 会映射到 `LuaRuntimeHostOptions.runlua_pool_config`。  
-如果旧配置文件里暂时没有该配置段，宿主会保留 `luaskills` 上游默认值。
+其中 `runlua_pool_config` 会映射到 `LuaRuntimeHostOptions.runlua_pool_config`；省略该可选段时使用 `luaskills` 上游默认值。
 
 ### Skill 目录规则
 
@@ -460,7 +457,7 @@ cargo run -- --update-root-skills --runtime-root output
 当前仓库通过 Cargo 原生版本依赖引用：
 
 ```toml
-luaskills = "0.5.4"
+luaskills = "0.5.5"
 ```
 
 相关地址：
@@ -469,11 +466,11 @@ luaskills = "0.5.4"
 - Cargo：<https://crates.io/crates/luaskills>
 - Runtime packages：<https://github.com/LuaSkills/luaskills-packages>
 
-当前 `0.5.4` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
+当前 `0.5.5` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
 Lua runtime packages 与原生依赖包已经独立到 `luaskills-packages` 发布，
 本仓库里的依赖拉取脚本也按这个拆分后的发布模型工作。
 
-`0.5.4` 保持固定 `runtime_root`、受管 Python/Node 发行根、可写环境根与 Worker/持久会话资源策略，并将 Rust controller client 与受管 VLDB 运行时统一对齐到 `vldb-controller 0.2.3` 和 `vldb-sqlite 0.1.6`。宿主不再手工拼接历史目录字段，而是把 `output/lua_runtime` 作为唯一 LuaSkills 根交给上游规范化。
+`0.5.5` 保持固定 `runtime_root`、受管 Python/Node 发行根、可写环境根与 Worker/持久会话资源策略，并将 Rust controller client 与受管 VLDB 运行时统一对齐到 `vldb-controller 0.2.3` 和 `vldb-sqlite 0.1.6`。技能包配置使用显式用户级 `skill_config_root`、普通与 ROOT 系统双存储、类型化声明、revision、CAS、缓存监听和标准 `runtime-config` dispatcher。
 
 同时，宿主直接复用 LuaSkills 导出的工具说明文本；
 `vulcan-agent-service` 现在直接复用 `luaskills` 导出的 entry description、
@@ -493,7 +490,7 @@ parameter description 与 final AI-facing `input_schema`，
 - `output/lua_runtime` 是唯一 LuaSkills 根；`skills`、`dependencies`、`databases`、`temp`、`libs`、`lua_packages`、`resources`、`state` 全部位于其下
 - `vldb-controller(.exe)` 与共享宿主工具固定放在 `output/lua_runtime/bin`
 - 受管 Python/Node 发行包固定放在 `output/lua_runtime/dependencies/runtimes`，可写环境固定放在 `output/lua_runtime/dependencies/envs`
-- 构建会删除 `output` 下已经废弃的旧同级 Lua 目录，不提供旧布局兼容
+- 构建只生成并同步上述当前目录，不扫描或改写当前布局以外的输出目录
 
 ## 后续方向
 

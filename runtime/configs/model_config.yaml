@@ -1,11 +1,15 @@
 # English: Host-owned model configuration for LuaSkills-facing simplified model capabilities.
 # 中文：宿主管理的模型配置，用于面向 LuaSkills 的简化模型能力。
 #
-# English: This file is intentionally separate from skill_config.json; Lua skills must not read or mutate model provider secrets.
-# 中文：本文件刻意与 skill_config.json 分离；Lua skill 不应读取或修改模型供应商密钥。
+# English: This file is intentionally separate from package configuration stores; Lua skills must not read or mutate model provider secrets.
+# 中文：本文件刻意与技能包配置存储分离；Lua skill 不应读取或修改模型供应商密钥。
 #
 # English: The only provider shape currently supported by this host is OpenAI-compatible HTTP APIs.
 # 中文：当前宿主只支持 OpenAI-compatible HTTP API 这一类供应商形态。
+
+# English: Host model config format version; only 1 is accepted.
+# 中文：宿主模型配置格式版本；当前只接受 1。
+format_version: 1
 
 openai_compatible:
   # English: Keep the provider disabled by default so builds and tests never call a remote model accidentally.

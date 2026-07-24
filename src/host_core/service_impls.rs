@@ -46,33 +46,10 @@ impl RuntimeHelpService for HostRuntime {
 }
 
 impl RuntimeSkillAdminService for HostRuntime {
-    /// List LuaSkill configuration through the internal runtime service trait.
-    /// 通过内部运行时服务接口列出 LuaSkill 配置。
-    fn list_skill_config(&self, skill_id: Option<String>) -> Result<String, (i64, String)> {
-        self.list_luaskill_config(skill_id)
-    }
-
-    /// Read LuaSkill configuration through the internal runtime service trait.
-    /// 通过内部运行时服务接口读取 LuaSkill 配置。
-    fn get_skill_config(&self, skill_id: String, key: String) -> Result<String, (i64, String)> {
-        self.get_luaskill_config(skill_id, key)
-    }
-
-    /// Write LuaSkill configuration through the internal runtime service trait.
-    /// 通过内部运行时服务接口写入 LuaSkill 配置。
-    fn set_skill_config(
-        &self,
-        skill_id: String,
-        key: String,
-        value: String,
-    ) -> Result<String, (i64, String)> {
-        self.set_luaskill_config(skill_id, key, value)
-    }
-
-    /// Delete LuaSkill configuration through the internal runtime service trait.
-    /// 通过内部运行时服务接口删除 LuaSkill 配置。
-    fn delete_skill_config(&self, skill_id: String, key: String) -> Result<String, (i64, String)> {
-        self.delete_luaskill_config(skill_id, key)
+    /// Dispatch LuaSkill configuration through the canonical internal runtime service contract.
+    /// 通过标准内部运行时服务契约分发 LuaSkill 配置请求。
+    async fn dispatch_runtime_config(&self, request_json: String) -> Result<String, (i64, String)> {
+        self.dispatch_luaskill_runtime_config(request_json).await
     }
 
     /// List installed LuaSkills through the internal runtime service trait.

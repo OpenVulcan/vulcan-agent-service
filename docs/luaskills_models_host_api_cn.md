@@ -1,6 +1,6 @@
 # LuaSkills 模型能力宿主接口说明
 
-本文档说明 `vulcan-agent-service` 统一服务中枢中，面向 LuaSkills 提供的简化模型能力子集。当前已基于 `luaskills 0.5.4` 接入专用 `vulcan.models.*` 宿主回调，并由宿主配置决定是否注册 embedding / LLM 能力。宿主侧直接消费 `luaskills` 导出的 entry / parameter description 与 final AI-facing `input_schema`。
+本文档说明 `vulcan-agent-service` 统一服务中枢中，面向 LuaSkills 提供的简化模型能力子集。当前已基于 `luaskills 0.5.5` 接入专用 `vulcan.models.*` 宿主回调，并由宿主配置决定是否注册 embedding / LLM 能力。宿主侧直接消费 `luaskills` 导出的 entry / parameter description 与 final AI-facing `input_schema`。
 
 ## 设计边界
 
@@ -8,7 +8,7 @@
 - 不向 Lua skill 暴露原始 OpenAI API、API key、base URL 或完整 request schema。
 - LLM 固定为单轮、非流式调用。
 - embedding 固定为单文本调用，不支持批量向量。
-- 模型配置由宿主管理，独立于 `skill_config.json`。
+- 模型配置由宿主管理，独立于 `skill_config_root` 下的 LuaSkills 技能包配置双存储。
 - Lua skill 只根据能力是否存在决定是否启用增强逻辑。
 
 ## Lua API
@@ -91,6 +91,7 @@ runtime/configs/model_config.yaml
 核心结构：
 
 ```yaml
+format_version: 1
 openai_compatible:
   enabled: false
 
@@ -113,7 +114,7 @@ openai_compatible:
     request_overrides: {}
 ```
 
-embedding 与 llm 的 `base_url/api_key` 必须分别配置在各自能力块下。顶层 `openai_compatible.base_url/api_key` 不再作为兼容回退，避免宿主在多供应商、多账号场景下误用密钥。
+embedding 与 llm 的 `base_url/api_key` 必须分别配置在各自能力块下；`openai_compatible` 顶层只接受当前结构定义的字段，避免宿主在多供应商、多账号场景下误用密钥。
 
 生效规则：
 

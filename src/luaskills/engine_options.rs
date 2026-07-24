@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use super::runtime_paths::{
     resolve_application_root_from_config, resolve_luaskills_runtime_root_from_config,
-    resolve_skill_config_file_path,
+    resolve_skill_config_root_from_config,
 };
 
 /// Built-in AI memory skill that is superseded when a VMM gRPC endpoint is configured.
@@ -46,14 +46,15 @@ pub fn build_luaskills_engine_options(
     let runtime_root = resolve_luaskills_runtime_root_from_config(config)?
         .ok_or("Failed to resolve LuaSkills runtime root")?;
     validate_luaskills_runtime_layout(&runtime_root)?;
-    resolve_skill_config_file_path(&runtime_root)
+    let skill_config_root = resolve_skill_config_root_from_config(config)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     // Temp initialization happens before engine construction so path failures surface during startup.
     // 临时目录在引擎构造前初始化，使路径错误在启动阶段直接暴露。
     ensure_runtime_temp_dir_for_root(&runtime_root)?;
-    // HostOptions starts from the upstream fixed-layout constructor; manually derived legacy paths are intentionally absent.
-    // HostOptions 从上游固定布局构造器开始；不再手工派生历史路径。
+    // HostOptions starts from the upstream fixed-layout constructor and receives only current host overrides.
+    // HostOptions 从上游固定布局构造器开始，并且只接收当前宿主覆盖项。
     let mut host_options = LuaRuntimeHostOptions::with_runtime_root(runtime_root.clone());
+    host_options.skill_config_root = Some(skill_config_root);
     host_options.managed_runtime_distribution_root = resolve_managed_runtime_root_override(
         config,
         config.managed_runtime_distribution_root.as_deref(),
@@ -88,8 +89,8 @@ pub fn build_luaskills_engine_options(
     Ok(LuaEngineOptions::new(pool_config, host_options))
 }
 
-/// Validate the shape of every fixed LuaSkills 0.5.4 directory before engine construction.
-/// 在引擎构造前校验 LuaSkills 0.5.4 全部固定目录的形态。
+/// Validate the shape of every fixed LuaSkills 0.5.5 directory before engine construction.
+/// 在引擎构造前校验 LuaSkills 0.5.5 全部固定目录的形态。
 /// Parameters: `runtime_root` is the existing isolated LuaSkills package root.
 /// 参数：`runtime_root` 是已存在的隔离 LuaSkills 包根目录。
 /// Returns unit when every present path is a directory, otherwise an explicit shape or metadata error.
@@ -211,8 +212,8 @@ fn resolve_managed_runtime_root_override(
     }
 }
 
-/// Merge host-managed runtime policy overrides onto the upstream 0.5.4 defaults.
-/// 将宿主受管运行时策略覆盖项合并到上游 0.5.4 默认值。
+/// Merge host-managed runtime policy overrides onto the upstream 0.5.5 defaults.
+/// 将宿主受管运行时策略覆盖项合并到上游 0.5.5 默认值。
 /// Parameters: `config` contains optional positive policy limits.
 /// 参数：`config` 包含可选的正数策略限制。
 /// Returns one validated policy or an explicit field-qualified error.
@@ -610,7 +611,7 @@ pub fn host_reserved_tool_names() -> Vec<String> {
         "vulcan-help-list".to_string(),
         "vulcan-help-detail".to_string(),
         "reload_vulcan_mcp_configs".to_string(),
-        "luaskill-config".to_string(),
+        "runtime-config".to_string(),
         "skill-manager".to_string(),
     ]
 }

@@ -395,6 +395,14 @@ fn load_client_budget_runtime() -> Result<ClientBudgetRuntime, String> {
             error
         )
     })?;
+    if parsed.format_version != super::HOST_CONFIG_FORMAT_VERSION {
+        return Err(format!(
+            "Invalid client budget config {}: unsupported format_version {}; expected {}",
+            path.display(),
+            parsed.format_version,
+            super::HOST_CONFIG_FORMAT_VERSION
+        ));
+    }
     resolve_budget_sources_in_place(&mut parsed)?;
 
     Ok(ClientBudgetRuntime {

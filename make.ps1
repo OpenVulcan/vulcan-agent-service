@@ -37,8 +37,8 @@ $HostDepsScriptPath = Join-Path $ScriptDir "scripts\install_host_deps.ps1"
 # LuaDepsScriptPath 用于指向专用的 PowerShell Lua 依赖初始化脚本。
 $LuaDepsScriptPath = Join-Path $ScriptDir "scripts\install_lua_deps.ps1"
 
-# ManagedRuntimeDepsScriptPath points at the verified LuaSkills 0.5.4 Python/Node fetcher.
-# ManagedRuntimeDepsScriptPath 指向经过校验的 LuaSkills 0.5.4 Python/Node 拉取器。
+# ManagedRuntimeDepsScriptPath points at the verified LuaSkills 0.5.5 Python/Node fetcher.
+# ManagedRuntimeDepsScriptPath 指向经过校验的 LuaSkills 0.5.5 Python/Node 拉取器。
 $ManagedRuntimeDepsScriptPath = Join-Path $ScriptDir "scripts\deps\fetch_managed_runtimes.ps1"
 
 # ManagedRuntimeLayoutCheckScriptPath points at the post-fetch manifest/layout validator.

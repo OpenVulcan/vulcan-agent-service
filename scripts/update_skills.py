@@ -76,6 +76,36 @@ def normalized_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/")
 
 
+def resolve_skill_config_root(configured_value: str | None) -> Path:
+    """
+    Resolve the explicit or default absolute user-level LuaSkills configuration root.
+    解析显式或默认的用户级 LuaSkills 绝对配置根目录。
+
+    Args:
+        configured_value: Optional command-line override that must already be absolute.
+        configured_value：可选命令行覆盖值，且必须已经是绝对路径。
+
+    Returns:
+        The normalized absolute configuration root.
+        规范化后的绝对配置根目录。
+    """
+
+    candidate = (
+        Path(configured_value).expanduser()
+        if configured_value is not None
+        else Path.home() / ".vulcan" / "agent-service" / "config"
+    )
+    if not candidate.is_absolute():
+        raise ValueError(
+            f"--skill-config-root must be an absolute directory path: {candidate}"
+        )
+    if candidate.exists() and not candidate.is_dir():
+        raise ValueError(
+            f"--skill-config-root must identify a directory: {candidate}"
+        )
+    return candidate.resolve()
+
+
 def ensure_runtime_layout(root: Path) -> None:
     """
     Create the runtime directories required by LuaSkills lifecycle updates.
@@ -92,7 +122,6 @@ def ensure_runtime_layout(root: Path) -> None:
         "lua_packages",
         "bin",
         "libs",
-        "config",
         "system_lua_lib",
         "licenses",
     ]:
@@ -145,18 +174,29 @@ def assert_path_within(root: Path, path: Path, description: str) -> None:
 
 def candidate_library_paths(root: Path) -> list[Path]:
     """
-    Build an ordered list of LuaSkills FFI library candidates from Cargo outputs.
-    从 Cargo 产物构造 LuaSkills FFI 动态库候选列表。
+    Build an ordered list of LuaSkills FFI library candidates from the effective Cargo target directory.
+    从生效的 Cargo target 目录构造 LuaSkills FFI 动态库候选列表。
     """
 
     candidates: list[Path] = []
     patterns = luaskills_library_patterns()
-    for profile in ["release", "debug"]:
-        for directory in [root / "target" / profile / "deps", root / "target" / profile]:
-            if not directory.exists():
-                continue
-            for pattern in patterns:
-                candidates.extend(directory.glob(pattern))
+    target_roots = [root / "target"]
+    configured_target_root = os.environ.get("CARGO_TARGET_DIR")
+    if configured_target_root:
+        expanded_target_root = Path(
+            os.path.expandvars(os.path.expanduser(configured_target_root))
+        )
+        if not expanded_target_root.is_absolute():
+            expanded_target_root = root / expanded_target_root
+        target_roots.insert(0, expanded_target_root)
+
+    for target_root in unique_paths(target_roots):
+        for profile in ["release", "debug"]:
+            for directory in [target_root / profile / "deps", target_root / profile]:
+                if not directory.exists():
+                    continue
+                for pattern in patterns:
+                    candidates.extend(directory.glob(pattern))
     candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     return unique_paths(path for path in candidates if path.is_file() and path.stat().st_size > 4096)
 
@@ -272,10 +312,20 @@ def call_json_ffi(library: ctypes.CDLL, function_name: str, payload: dict) -> di
     return decode_json_response(ffi_function(input_buffer), library)
 
 
-def build_engine_options(runtime_root: Path) -> dict:
+def build_engine_options(runtime_root: Path, skill_config_root: Path) -> dict:
     """
     Build JSON engine options aligned with the MCP output runtime layout.
     构造与 MCP output 运行根布局对齐的 JSON 引擎选项。
+
+    Args:
+        runtime_root: Isolated LuaSkills runtime root used for lifecycle operations.
+        runtime_root：生命周期操作使用的隔离 LuaSkills 运行根。
+        skill_config_root: Absolute user-level package configuration root.
+        skill_config_root：用户级技能包配置绝对根目录。
+
+    Returns:
+        Complete LuaSkills JSON FFI engine options.
+        完整的 LuaSkills JSON FFI 引擎选项。
     """
 
     return {
@@ -306,7 +356,9 @@ def build_engine_options(runtime_root: Path) -> dict:
             "dependency_dir_name": "dependencies",
             "state_dir_name": "state",
             "database_dir_name": "databases",
-            "skill_config_file_path": normalized_path(runtime_root / "config" / "skill_config.json"),
+            "skill_config_root": normalized_path(skill_config_root),
+            "skill_config_lock_timeout_ms": None,
+            "skill_config_watch_debounce_ms": None,
             "allow_network_download": True,
             "github_base_url": None,
             "github_api_base_url": None,
@@ -490,6 +542,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="LuaSkills source root that receives updated skills and install records. Defaults to ./runtime/lua_runtime.",
     )
     parser.add_argument(
+        "--skill-config-root",
+        default=None,
+        help="Absolute user-level LuaSkills configuration root. Defaults to ~/.vulcan/agent-service/config.",
+    )
+    parser.add_argument(
         "--skill-id",
         action="append",
         default=[],
@@ -498,7 +555,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--luaskills-lib",
         default=None,
-        help="Explicit LuaSkills FFI dynamic library path. Defaults to the newest target/*/deps LuaSkills DLL.",
+        help="Explicit LuaSkills FFI dynamic library path. Defaults to the newest library under the effective Cargo target directory.",
     )
     parser.add_argument(
         "--skip-build",
@@ -533,6 +590,7 @@ def run(argv: list[str]) -> int:
     root = project_root()
     output_runtime_root = resolve_repo_relative_path(root, args.output_runtime_root)
     target_runtime_root = resolve_repo_relative_path(root, args.target_runtime_root)
+    skill_config_root = resolve_skill_config_root(args.skill_config_root)
 
     requested_skill_ids = [*args.skill_id, *args.skill_ids]
     skill_ids = unique_skill_ids(requested_skill_ids or discover_skill_ids(output_runtime_root))
@@ -544,6 +602,7 @@ def run(argv: list[str]) -> int:
 
     print("[update-skills] Output runtime:", output_runtime_root)
     print("[update-skills] Target runtime:", target_runtime_root)
+    print("[update-skills] Skill config root:", skill_config_root)
     print("[update-skills] Skills:", ", ".join(skill_ids))
 
     if args.dry_run:
@@ -560,7 +619,7 @@ def run(argv: list[str]) -> int:
     engine_result = call_json_ffi(
         library,
         "luaskills_ffi_engine_new_json",
-        {"options": build_engine_options(output_runtime_root)},
+        {"options": build_engine_options(output_runtime_root, skill_config_root)},
     )
     engine_id = int(engine_result["engine_id"])
 

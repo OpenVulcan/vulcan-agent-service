@@ -39,10 +39,6 @@ LUA_RUNTIME_SERIES="${LUA_RUNTIME_SERIES:-0.1}"
 # LUA_RUNTIME_PACKAGES_VERSION 保存 luaskills-packages GitHub Release 标签的可选精确覆盖值。
 LUA_RUNTIME_PACKAGES_VERSION="${LUA_RUNTIME_PACKAGES_VERSION:-}"
 
-# LUA_RUNTIME_VERSION preserves the legacy environment contract where callers often pass the luaskills crate version.
-# LUA_RUNTIME_VERSION 保留旧环境变量契约；历史调用方通常会在这里传入 luaskills crate 版本号。
-LUA_RUNTIME_VERSION="${LUA_RUNTIME_VERSION:-}"
-
 ensure_dir() {
     # Create one directory when it does not already exist.
     # 当目录不存在时创建目录。
@@ -82,21 +78,6 @@ platform_key() {
     printf '%s-%s\n' "$os_key" "$arch_key"
 }
 
-convert_tag_to_semver() {
-    # Convert one Git tag such as v0.1.6 into a semantic-version tuple.
-    # 将形如 v0.1.6 的 Git 标签转换为语义化版本元组。
-    python3 - "$1" <<'PY'
-import re
-import sys
-
-tag = sys.argv[1]
-normalized = tag[1:] if tag.startswith("v") else tag
-if not re.fullmatch(r"\d+\.\d+\.\d+", normalized):
-    raise SystemExit(f"Unsupported semantic version tag: {tag}")
-print(normalized)
-PY
-}
-
 resolve_release_tag_for_series() {
     # Resolve the newest published GitHub release tag inside one major.minor series.
     # 解析一个 major.minor 协议线内最新的已发布 GitHub release 标签。
@@ -134,49 +115,17 @@ print(matches[0][1])
 }
 
 resolve_lua_runtime_packages_tag() {
-    # Resolve the effective luaskills-packages release tag from exact overrides, legacy inputs, and the compatible series.
-    # 基于精确覆盖、旧输入语义与兼容协议线解析最终 luaskills-packages 发布标签。
+    # Resolve the effective luaskills-packages release tag from an exact override or the configured series.
+    # 基于精确覆盖或已配置协议线解析最终 luaskills-packages 发布标签。
     local repo="$1"
     local series="$2"
     local packages_version="${3:-}"
-    local legacy_runtime_version="${4:-}"
 
     if [ -n "$packages_version" ]; then
         normalize_release_tag "$packages_version"
         return 0
     fi
 
-    if [ -z "$legacy_runtime_version" ]; then
-        resolve_release_tag_for_series "$repo" "$series"
-        return 0
-    fi
-
-    local legacy_tag legacy_series
-    legacy_tag="$(normalize_release_tag "$legacy_runtime_version")"
-    # Fail fast on malformed legacy version input so Bash matches PowerShell semantics.
-    # 对格式错误的旧版本输入立即失败，确保 Bash 与 PowerShell 语义一致。
-    if ! legacy_series="$(python3 - "$legacy_tag" <<'PY'
-import re
-import sys
-
-tag = sys.argv[1]
-normalized = tag[1:] if tag.startswith("v") else tag
-if not re.fullmatch(r"\d+\.\d+\.\d+", normalized):
-    raise SystemExit(1)
-major, minor, _patch = normalized.split(".")
-print(f"{major}.{minor}")
-PY
-)"; then
-        echo "Unsupported LUA_RUNTIME_VERSION value '${legacy_runtime_version}'. Use a semantic version such as 0.5.4, or set LUA_RUNTIME_PACKAGES_VERSION for an exact luaskills-packages tag." >&2
-        return 1
-    fi
-
-    if [ "$legacy_series" = "$series" ]; then
-        printf '%s\n' "$legacy_tag"
-        return 0
-    fi
-
-    echo "==> LUA_RUNTIME_VERSION=${legacy_runtime_version} detected as legacy luaskills crate version; resolving compatible luaskills-packages tag from series ${series}." >&2
     resolve_release_tag_for_series "$repo" "$series"
 }
 
@@ -415,7 +364,7 @@ PY
     echo "==> LuaSkills runtime payloads installed to $RUNTIME_INSTALL_ROOT"
 }
 
-RESOLVED_LUA_RUNTIME_TAG="$(resolve_lua_runtime_packages_tag "$LUA_RUNTIME_REPO" "$LUA_RUNTIME_SERIES" "$LUA_RUNTIME_PACKAGES_VERSION" "$LUA_RUNTIME_VERSION")"
+RESOLVED_LUA_RUNTIME_TAG="$(resolve_lua_runtime_packages_tag "$LUA_RUNTIME_REPO" "$LUA_RUNTIME_SERIES" "$LUA_RUNTIME_PACKAGES_VERSION")"
 PLATFORM="$(platform_key)"
 RUNTIME_ASSET_NAME="lua-runtime-packages-${PLATFORM}.tar.gz"
 BUNDLE_ASSET_NAME="luaskills-packages-bundle-${RESOLVED_LUA_RUNTIME_TAG}.zip"

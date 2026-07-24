@@ -1,5 +1,9 @@
 use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+/// Current strict format version required by every host-owned runtime configuration file.
+/// 每份宿主持有的运行时配置文件必须使用的当前严格格式版本。
+pub const HOST_CONFIG_FORMAT_VERSION: u32 = 1;
+
 /// Runtime application configuration loading and CLI configuration discovery.
 /// 运行时应用配置加载与 CLI 配置发现。
 pub mod app_config;

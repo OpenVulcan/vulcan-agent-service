@@ -40,40 +40,6 @@ SOURCE_LUA_RUNTIME_ROOT="runtime/lua_runtime"
 MANAGED_RUNTIME_DISTRIBUTION_ROOT="third_party/luaskills_managed_runtimes"
 MANAGED_RUNTIME_LAYOUT_CHECK_SCRIPT="scripts/debug-tools/managed_runtime_layout_check.py"
 
-# remove_legacy_output_layout deletes only obsolete Lua-owned children below the verified output root.
-# remove_legacy_output_layout 仅删除已校验 output 根下废弃的 Lua 所有目录项。
-remove_legacy_output_layout() {
-    # output_root is canonical because the repository working directory already exists.
-    # output_root 是规范路径，因为仓库工作目录已经存在。
-    local output_root="$(pwd -P)/output"
-    # legacy_names enumerates runtime directories that moved beneath output/lua_runtime.
-    # legacy_names 枚举已经迁移到 output/lua_runtime 下的运行时目录。
-    local legacy_names=(skills state dependencies databases temp libs lua_packages resources licenses system_lua_lib)
-    local legacy_name=""
-    local legacy_path=""
-    mkdir -p "${output_root}"
-    for legacy_name in "${legacy_names[@]}"; do
-        legacy_path="${output_root}/${legacy_name}"
-        case "${legacy_path}" in
-            "${output_root}"/*) rm -rf -- "${legacy_path}" ;;
-            *) echo "Legacy cleanup target escaped output: ${legacy_path}" >&2; exit 1 ;;
-        esac
-    done
-    # legacy_bin_entries excludes the host executable and removes only old Lua-owned bin payloads.
-    # legacy_bin_entries 排除宿主可执行文件，仅删除旧 Lua 所有的 bin 载荷。
-    local legacy_bin_entries=(tools vldb-controller vldb-controller.exe)
-    local legacy_bin_entry=""
-    for legacy_bin_entry in "${legacy_bin_entries[@]}"; do
-        legacy_path="${output_root}/bin/${legacy_bin_entry}"
-        case "${legacy_path}" in
-            "${output_root}"/*) rm -rf -- "${legacy_path}" ;;
-            *) echo "Legacy bin cleanup target escaped output: ${legacy_path}" >&2; exit 1 ;;
-        esac
-    done
-}
-
-remove_legacy_output_layout
-
 mkdir -p "$LUA_RUNTIME_OUT/bin"
 mkdir -p "$LUA_RUNTIME_OUT/dependencies/runtimes"
 mkdir -p "$LUA_RUNTIME_OUT/dependencies/envs"
@@ -81,7 +47,6 @@ mkdir -p "$LUA_RUNTIME_OUT/lua_packages"
 mkdir -p "$LUA_RUNTIME_OUT/libs"
 mkdir -p "$LUA_RUNTIME_OUT/resources"
 mkdir -p "$LUA_RUNTIME_OUT/licenses"
-mkdir -p "$LUA_RUNTIME_OUT/config"
 mkdir -p "$LUA_RUNTIME_OUT/databases/sqlite"
 mkdir -p "$LUA_RUNTIME_OUT/databases/lancedb"
 mkdir -p "$LUA_RUNTIME_OUT/state/skills"
@@ -114,8 +79,8 @@ enable_output_model_config_for_local_testing() {
     local model_config_out="$config_dir/model_config.yaml"
     [ -f "$model_config_out" ] || return 0
     sed -i.bak -E \
-        -e 's/^  enabled:[[:space:]]*false[[:space:]]*$/  enabled: true/' \
-        -e 's/^    enabled:[[:space:]]*false[[:space:]]*$/    enabled: true/' \
+        -e 's/^  enabled:[[:blank:]]*false[[:blank:]]*$/  enabled: true/' \
+        -e 's/^    enabled:[[:blank:]]*false[[:blank:]]*$/    enabled: true/' \
         "$model_config_out"
     rm -f "$model_config_out.bak"
     echo "==> Output model_config.yaml enabled for local model smoke tests"
@@ -176,19 +141,14 @@ fi
 # Sync runtime config files to output/configs/
 mkdir -p output/configs
 if [ -d "runtime/configs" ] && [ "$(ls -A runtime/configs/ 2>/dev/null)" ]; then
+    # Rebuild the generated config directory as an exact mirror of the current repository templates.
+    # 将生成配置目录重建为当前仓库模板的精确镜像。
+    reset_directory_contents "output/configs"
     cp -rf runtime/configs/* output/configs/
     enable_output_model_config_for_local_testing "output/configs"
     echo "==> Runtime configs synced to output/configs/"
 else
     echo "==> No runtime/configs directory found"
-fi
-
-# Sync the source runtime skill config to the isolated package.
-# 把源码运行时 Skill 配置同步到隔离包。
-if [ -d "$SOURCE_LUA_RUNTIME_ROOT/config" ] && [ "$(ls -A "$SOURCE_LUA_RUNTIME_ROOT/config/" 2>/dev/null)" ]; then
-    reset_directory_contents "$LUA_RUNTIME_OUT/config"
-    cp -a "$SOURCE_LUA_RUNTIME_ROOT/config/." "$LUA_RUNTIME_OUT/config/"
-    echo "==> LuaSkills config synced to $LUA_RUNTIME_OUT/config/"
 fi
 
 # Sync runtime shared resources to output/lua_runtime/resources/.

@@ -5,7 +5,7 @@ use super::tool_mapping::{
 };
 use super::*;
 use crate::config::{
-    Config, SkillRootConfigEntry, SpaceControllerConfig, SpaceControllerProcessModeConfig,
+    Config, NamedSkillRootConfig, SpaceControllerConfig, SpaceControllerProcessModeConfig,
 };
 use crate::support::{RuntimeClientInfo, RuntimeRequestContext};
 use luaskills::runtime_options::LuaRuntimeRunLuaPoolConfig;
@@ -15,6 +15,7 @@ use luaskills::{
     RuntimeSkillRoot, ToolCacheConfig,
 };
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -31,6 +32,45 @@ fn acquire_environment_lock() -> MutexGuard<'static, ()> {
     environment_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Restore one environment variable after a test mutates process-wide state.
+/// 在测试修改进程级状态后恢复一个环境变量。
+struct EnvironmentVariableGuard {
+    /// Environment variable name owned by this guard.
+    /// 当前守卫负责的环境变量名称。
+    name: &'static str,
+    /// Original environment variable value, or absence.
+    /// 环境变量原始值，或原始缺失状态。
+    original: Option<OsString>,
+}
+
+impl EnvironmentVariableGuard {
+    /// Capture one environment variable before a test changes it.
+    /// 在测试修改环境变量前捕获其原始状态。
+    /// Parameter `name` is the static environment variable name to restore.
+    /// 参数：`name` 是需要恢复的静态环境变量名称。
+    /// Returns a guard that restores the captured state on drop.
+    /// 返回一个在销毁时恢复捕获状态的守卫。
+    fn capture(name: &'static str) -> Self {
+        Self {
+            name,
+            original: std::env::var_os(name),
+        }
+    }
+}
+
+impl Drop for EnvironmentVariableGuard {
+    /// Restore the captured environment variable state.
+    /// 恢复已捕获的环境变量状态。
+    fn drop(&mut self) {
+        unsafe {
+            match self.original.as_ref() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
 }
 
 /// Build one unique temporary directory path for one test case.
@@ -452,8 +492,8 @@ fn build_engine_options_maps_space_controller_configuration() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Engine options should pin the fixed `system_lua_lib` directory from the LuaSkills 0.5.4 runtime root.
-/// 引擎选项应从 LuaSkills 0.5.4 运行根固定 `system_lua_lib` 目录。
+/// Engine options should pin the fixed `system_lua_lib` directory from the LuaSkills 0.5.5 runtime root.
+/// 引擎选项应从 LuaSkills 0.5.5 运行根固定 `system_lua_lib` 目录。
 #[test]
 fn build_engine_options_sets_fixed_system_lua_lib_dir() {
     let _guard = acquire_environment_lock();
@@ -601,10 +641,10 @@ fn build_engine_options_maps_runlua_pool_config_with_default_fill() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Missing skill config path should default to the runtime `configs/skill_config.json` file so MCP and LuaSkills share one stable location.
-/// 缺失 Skill 配置路径时应默认回退到运行根下的 `configs/skill_config.json`，让 MCP 与 LuaSkills 共享同一稳定位置。
+/// Missing skill_config_root should use the current account's fixed user-level configuration directory.
+/// 缺失 skill_config_root 时应使用当前账户固定的用户级配置目录。
 #[test]
-fn build_engine_options_defaults_skill_config_path_under_runtime_configs() {
+fn build_engine_options_defaults_skill_config_root_under_user_home() {
     let _guard = acquire_environment_lock();
     let root = unique_test_dir("skill-config-default-path");
     create_runtime_root_for_test(&root);
@@ -625,54 +665,108 @@ fn build_engine_options_defaults_skill_config_path_under_runtime_configs() {
     .expect("failed to build luaskills engine options");
 
     assert_eq!(
-        options.host_options.skill_config_file_path.as_ref(),
-        Some(
-            &root
-                .join("lua_runtime")
-                .join("config")
-                .join("skill_config.json")
-        )
+        options.host_options.skill_config_root.as_ref(),
+        default_skill_config_root().as_ref()
     );
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Runtime skill config path resolution should always stay under the runtime-root `configs/` directory.
-/// 运行时 Skill 配置路径解析应始终固定在运行根的 `configs/` 目录下。
+/// An explicit absolute skill_config_root should be passed through as the sole configuration root.
+/// 显式绝对 skill_config_root 应作为唯一配置根传递。
 #[test]
-fn resolve_skill_config_file_path_uses_runtime_root_config_directory() {
+fn resolve_skill_config_root_uses_explicit_absolute_directory() {
     let root = unique_test_dir("skill-config-fixed-path");
-    create_runtime_root_for_test(&root);
+    let configured_root = root.join("user-config");
+    let config = Config {
+        skill_config_root: Some(configured_root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
 
-    let runtime_root = root.join("lua_runtime");
-    let resolved = resolve_skill_config_file_path(&runtime_root)
-        .expect("runtime skill config path should resolve");
-    assert_eq!(
-        resolved,
-        runtime_root.join("config").join("skill_config.json")
-    );
+    let resolved = resolve_skill_config_root_from_config(&config)
+        .expect("explicit skill config root should resolve");
+    assert_eq!(resolved, configured_root);
 
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Directory-shaped runtime skill config paths should fail during path resolution.
-/// 目录形态的运行时 Skill 配置路径应在路径解析阶段失败。
+/// Relative skill_config_root values should be rejected instead of being anchored to runtime_root or cwd.
+/// 相对 skill_config_root 应被拒绝，不能依附到 runtime_root 或当前工作目录。
 #[test]
-fn resolve_skill_config_file_path_rejects_directory_shaped_config_path() {
-    let root = unique_test_dir("skill-config-directory-shaped");
-    create_runtime_root_for_test(&root);
-    let runtime_root = root.join("lua_runtime");
-    let config_path = runtime_root.join("config").join("skill_config.json");
-    std::fs::create_dir_all(&config_path)
-        .expect("directory-shaped skill config path should be created");
+fn resolve_skill_config_root_rejects_relative_path() {
+    let config = Config {
+        skill_config_root: Some("relative/config".to_string()),
+        ..Config::default()
+    };
 
-    let error = resolve_skill_config_file_path(&runtime_root)
-        .expect_err("directory-shaped skill config path should fail");
+    let error = resolve_skill_config_root_from_config(&config)
+        .expect_err("relative skill config root should fail");
     assert!(
-        error.contains("runtime skill config path is not a file"),
+        error.contains("must be an absolute directory path"),
         "unexpected error: {error}"
     );
+}
 
+/// An explicitly configured blank skill_config_root should fail instead of silently selecting the account default.
+/// 显式配置为空白的 skill_config_root 应失败，不能静默选择账户默认目录。
+#[test]
+fn resolve_skill_config_root_rejects_blank_override() {
+    let config = Config {
+        skill_config_root: Some("   ".to_string()),
+        ..Config::default()
+    };
+
+    let error = resolve_skill_config_root_from_config(&config)
+        .expect_err("blank skill config root should fail");
+    assert!(
+        error.contains("must not be empty"),
+        "unexpected error: {error}"
+    );
+}
+
+/// File-shaped skill_config_root values should fail before LuaEngine construction.
+/// 文件形态的 skill_config_root 应在 LuaEngine 构造前失败。
+#[test]
+fn resolve_skill_config_root_rejects_file_shaped_path() {
+    let root = unique_test_dir("skill-config-file-shaped");
+    std::fs::create_dir_all(&root).expect("fixture root should be created");
+    let configured_root = root.join("config-file");
+    std::fs::write(&configured_root, b"not-a-directory")
+        .expect("file-shaped skill config root should be created");
+    let config = Config {
+        skill_config_root: Some(configured_root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+
+    let error = resolve_skill_config_root_from_config(&config)
+        .expect_err("file-shaped skill config root should fail");
+    assert!(
+        error.contains("skill config root is not a directory"),
+        "unexpected error: {error}"
+    );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Missing account-home state should fail explicitly when no skill_config_root override is provided.
+/// 未提供 skill_config_root 覆盖值且账户主目录缺失时应明确失败。
+#[test]
+fn resolve_skill_config_root_rejects_missing_account_home() {
+    let _guard = acquire_environment_lock();
+    #[cfg(windows)]
+    let home_variable = "USERPROFILE";
+    #[cfg(not(windows))]
+    let home_variable = "HOME";
+    let _home_guard = EnvironmentVariableGuard::capture(home_variable);
+    unsafe {
+        std::env::remove_var(home_variable);
+    }
+
+    let error = resolve_skill_config_root_from_config(&Config::default())
+        .expect_err("missing account home should fail without an explicit config root");
+
+    assert!(
+        error.contains("current account home directory is unavailable"),
+        "unexpected error: {error}"
+    );
 }
 
 /// Relative controller executable paths should be resolved against the runtime root instead of the current working directory.
@@ -997,12 +1091,10 @@ fn resolve_skill_roots_uses_config_base_dir_for_relative_paths() {
     std::fs::create_dir_all(&config_dir).expect("failed to create config directory");
     std::fs::create_dir_all(&skills_dir).expect("failed to create relative skills directory");
     let config = Config {
-        skill_roots: Some(vec![SkillRootConfigEntry::Named(
-            crate::config::NamedSkillRootConfig {
-                name: "PROJECT".to_string(),
-                path: "project-skills".to_string(),
-            },
-        )]),
+        skill_roots: Some(vec![NamedSkillRootConfig {
+            name: "PROJECT".to_string(),
+            path: "project-skills".to_string(),
+        }]),
         loaded_config_path: Some(config_dir.join("config.yaml").to_string_lossy().to_string()),
         ..Config::default()
     };
@@ -1232,8 +1324,8 @@ fn map_runtime_entry_to_mcp_tool_omits_environment_id_parameter() {
     assert!(!schema.contains_key("environment_id"));
 }
 
-/// MCP tool mapping should preserve the normalized tool and parameter descriptions exported by LuaSkills 0.5.4.
-/// MCP 工具映射应保留 LuaSkills 0.5.4 导出的规范化工具说明与参数说明文本。
+/// MCP tool mapping should preserve the normalized tool and parameter descriptions exported by LuaSkills 0.5.5.
+/// MCP 工具映射应保留 LuaSkills 0.5.5 导出的规范化工具说明与参数说明文本。
 #[test]
 fn map_runtime_entry_to_mcp_tool_preserves_luaskills_normalized_descriptions() {
     let entry = RuntimeEntryDescriptor {
@@ -1481,7 +1573,7 @@ fn inject_managed_luaskill_sid_argument_requires_session_id() {
 fn host_reserved_tool_names_omit_environment_management_tools() {
     let names = host_reserved_tool_names();
 
-    assert!(names.iter().any(|name| name == "luaskill-config"));
+    assert!(names.iter().any(|name| name == "runtime-config"));
     assert!(names.iter().any(|name| name == "skill-manager"));
     assert!(
         !names

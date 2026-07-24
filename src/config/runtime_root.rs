@@ -130,7 +130,8 @@ mod tests {
         let config_path = root.join("configs").join("client_budgets.yaml");
         std::fs::create_dir_all(config_path.parent().expect("config parent should exist"))
             .expect("config parent should be created");
-        std::fs::write(&config_path, "defaults: {}\n").expect("config file should be written");
+        std::fs::write(&config_path, "format_version: 1\ndefaults: {}\n")
+            .expect("config file should be written");
 
         let found =
             find_optional_runtime_config_file(Some(root.clone()), "client_budgets.yaml", "test")

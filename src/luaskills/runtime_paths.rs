@@ -1,4 +1,4 @@
-use crate::config::{Config, SkillRootConfigEntry};
+use crate::config::Config;
 use crate::support::{hosted_application_root_from_executable, luaskills_runtime_root};
 use luaskills::RuntimeSkillRoot;
 use std::collections::HashSet;
@@ -26,14 +26,45 @@ pub(super) fn normalize_lua_visible_path(path: PathBuf) -> PathBuf {
     path
 }
 
-/// Resolve the unified skill-config file path strictly from the runtime root using the fixed product layout.
-/// 严格基于运行根与固定产品目录结构解析统一 Skill 配置文件路径。
-pub fn resolve_skill_config_file_path(runtime_root: &std::path::Path) -> Result<PathBuf, String> {
-    let resolved_path = runtime_root.join("config").join("skill_config.json");
+/// Resolve the absolute user-level root used by LuaSkills package configuration stores.
+/// 解析 LuaSkills 技能包配置存储使用的用户级绝对根目录。
+/// Parameter `config` supplies an optional explicit absolute override.
+/// 参数：`config` 提供可选的显式绝对路径覆盖值。
+/// Returns a normalized absolute directory path, or an explicit path/configuration error.
+/// 返回规范化后的绝对目录路径，或明确的路径/配置错误。
+pub fn resolve_skill_config_root_from_config(config: &Config) -> Result<PathBuf, String> {
+    let resolved_root = match config.skill_config_root.as_deref() {
+        Some(value) => {
+            let trimmed_value = value.trim();
+            if trimmed_value.is_empty() {
+                return Err("skill_config_root must not be empty when configured".to_string());
+            }
+            PathBuf::from(trimmed_value)
+        }
+        None => default_skill_config_root().ok_or_else(|| {
+            "failed to resolve skill_config_root because the current account home directory is unavailable"
+                .to_string()
+        })?,
+    };
+    if !resolved_root.is_absolute() {
+        return Err(format!(
+            "skill_config_root must be an absolute directory path: {}",
+            resolved_root.display()
+        ));
+    }
+    optional_directory_present(&resolved_root, "skill config root")?;
 
-    optional_file_present(&resolved_path, "runtime skill config path")?;
-
-    Ok(resolved_path)
+    match std::fs::canonicalize(&resolved_root) {
+        Ok(path) => Ok(normalize_lua_visible_path(path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            Ok(normalize_lua_visible_path(resolved_root))
+        }
+        Err(error) => Err(format!(
+            "failed to canonicalize skill config root '{}': {}",
+            resolved_root.display(),
+            error
+        )),
+    }
 }
 
 /// Resolve the stable base directory used for relative host configuration paths.
@@ -177,7 +208,6 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     let mut ordered_roots = Vec::new();
     let mut seen_roots = HashSet::new();
     let mut seen_root_names = HashSet::new();
-    let mut synthesized_index = 1usize;
     let config_base_dir = resolve_config_base_dir(config);
     let runtime_root = resolve_luaskills_runtime_root_from_config(config)?;
 
@@ -217,34 +247,16 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     };
 
     if let Some(configured_roots) = &config.skill_roots {
-        for (index, value) in configured_roots.iter().enumerate() {
-            match value {
-                SkillRootConfigEntry::Named(named) => {
-                    let name = named.name.trim();
-                    let path = named.path.trim();
-                    if name.is_empty() || path.is_empty() {
-                        return Err(format!(
-                            "skill_roots[{}] must declare non-empty name and path",
-                            index
-                        ));
-                    }
-                    push_unique_root(name.to_string(), resolve_configured_path(path))?;
-                }
-                SkillRootConfigEntry::Path(path) => {
-                    let trimmed = path.trim();
-                    if trimmed.is_empty() {
-                        return Err(format!("skill_roots[{}] path must not be empty", index));
-                    }
-                    let generated = synthesized_skill_root_name(synthesized_index).ok_or_else(|| {
-                        format!(
-                            "skill_roots[{}] cannot be mapped to a formal layer; use named ROOT, PROJECT, or USER entries",
-                            index
-                        )
-                    })?;
-                    synthesized_index += 1;
-                    push_unique_root(generated, resolve_configured_path(trimmed))?;
-                }
+        for (index, named) in configured_roots.iter().enumerate() {
+            let name = named.name.trim();
+            let path = named.path.trim();
+            if name.is_empty() || path.is_empty() {
+                return Err(format!(
+                    "skill_roots[{}] must declare non-empty name and path",
+                    index
+                ));
             }
+            push_unique_root(name.to_string(), resolve_configured_path(path))?;
         }
         sort_formal_skill_roots(&mut ordered_roots)?;
     } else if let Some(runtime_root) = runtime_root.as_ref() {
@@ -285,17 +297,6 @@ fn normalize_formal_skill_root_name(name: &str) -> Result<String, String> {
             "unsupported skill root name '{}'; expected ROOT, PROJECT, or USER",
             name.trim()
         )),
-    }
-}
-
-/// Return the formal layer name represented by one legacy path-only skill-root slot.
-/// 返回旧式纯路径技能根槽位对应的正式层级名称。
-fn synthesized_skill_root_name(index: usize) -> Option<String> {
-    match index {
-        1 => Some("ROOT".to_string()),
-        2 => Some("PROJECT".to_string()),
-        3 => Some("USER".to_string()),
-        _ => None,
     }
 }
 
@@ -496,24 +497,6 @@ fn optional_directory_present(
     Ok(true)
 }
 
-/// Return whether one optional runtime file exists and reject non-file shapes.
-/// 返回一个可选运行时文件是否存在，并拒绝非文件形态。
-/// Parameters: `path` is the runtime-managed file path to inspect.
-/// 参数：`path` 是需要检查的运行时托管文件路径。
-/// Parameters: `file_label` names the file kind in diagnostics.
-/// 参数：`file_label` 用于在诊断中标识文件类型。
-/// Returns `true` when present, `false` when absent, or an inspection/shape error.
-/// 文件存在时返回 `true`，缺失时返回 `false`，否则返回检查/形态错误。
-fn optional_file_present(path: &std::path::Path, file_label: &str) -> Result<bool, String> {
-    let Some(metadata) = optional_path_metadata(path, file_label)? else {
-        return Ok(false);
-    };
-    if !metadata.is_file() {
-        return Err(format!("{} is not a file: {}", file_label, path.display()));
-    }
-    Ok(true)
-}
-
 /// Canonicalize one known runtime directory and normalize it for Lua-visible path templates.
 /// 规范化一个已确认存在的运行时目录，并转换为 Lua 可见路径模板可用的形式。
 /// Parameters: `path` is the runtime directory path that has already passed metadata inspection.
@@ -562,5 +545,18 @@ pub fn default_user_skill_root() -> Option<std::path::PathBuf> {
             .join(".vulcan")
             .join("agent-service")
             .join("skills"),
+    )
+}
+
+/// Return the default user-level LuaSkills package configuration root.
+/// 返回默认的用户级 LuaSkills 技能包配置根目录。
+/// Returns `<home>/.vulcan/agent-service/config`, or `None` when the account home cannot be resolved.
+/// 返回 `<home>/.vulcan/agent-service/config`；无法解析当前账户主目录时返回 `None`。
+pub fn default_skill_config_root() -> Option<std::path::PathBuf> {
+    Some(
+        home_dir()?
+            .join(".vulcan")
+            .join("agent-service")
+            .join("config"),
     )
 }

@@ -10,7 +10,7 @@ pub fn is_host_tool_name(tool_name: &str) -> bool {
         "vulcan-help-list"
             | "vulcan-help-detail"
             | "reload_vulcan_mcp_configs"
-            | "luaskill-config"
+            | "runtime-config"
             | "skill-manager"
     )
 }
@@ -20,7 +20,7 @@ pub fn is_host_tool_name(tool_name: &str) -> bool {
 pub fn host_tool_requires_lua_engine(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "vulcan-help-list" | "vulcan-help-detail" | "skill-manager"
+        "vulcan-help-list" | "vulcan-help-detail" | "runtime-config" | "skill-manager"
     )
 }
 
@@ -81,32 +81,63 @@ pub(super) fn skill_manager_tool() -> RuntimeToolDescriptor {
 /// 构建宿主管理的统一 LuaSkill 配置工具描述。
 pub(super) fn runtime_config_tool() -> RuntimeToolDescriptor {
     RuntimeToolDescriptor::with_annotations(
-        "luaskill-config",
-        "Inspect or mutate the host-managed unified Lua skill configuration. Supports `list`, `get`, `set`, and `delete` across skill namespaces, and returns AI-friendly text instead of raw JSON. Only call this tool when the user explicitly asks to inspect or modify LuaSkill configuration. For `set` and `delete`, report the affected `skill_id`/`key` and the final tool result back to the user.",
+        "runtime-config",
+        "Dispatch one already-authorized LuaSkills 0.5.5 package-configuration request. Supports `describe`, `validate`, `list`, `get`, `set`, `delete`, and `refresh`; typed values, batch writes, revisions, CAS, declaration validation, ROOT/system-store routing, and response errors follow the upstream stable JSON contract. This tool requires user confirmation because the single canonical entry can disclose values or mutate persisted configuration.",
         json!({
             "action": {
                 "type": "string",
-                "description": "Operation to perform. Supported values: `list`, `get`, `set`, `delete`.",
-                "enum": ["list", "get", "set", "delete"]
+                "description": "Dispatcher action.",
+                "enum": ["describe", "validate", "list", "get", "set", "delete", "refresh"]
             },
             "skill_id": {
                 "type": "string",
-                "description": "Target skill id. Optional for `list` to filter one namespace, required for `get`, `set`, and `delete`."
+                "description": "Effective package identifier when required by the selected action."
             },
             "key": {
                 "type": "string",
-                "description": "Config key. Required for `get`, `set`, and `delete`."
+                "description": "Single configuration key for `get`, `set`, or `delete`."
             },
             "value": {
+                "type": ["string", "number", "boolean"],
+                "description": "Typed scalar used by the single-key `set` form."
+            },
+            "values": {
+                "type": "object",
+                "description": "Typed key-to-scalar map used by the atomic batch `set` form.",
+                "additionalProperties": {
+                    "type": ["string", "number", "boolean"]
+                }
+            },
+            "expected_revision": {
                 "type": "string",
-                "description": "String config value. Required for `set`."
+                "description": "Optional canonical decimal revision used for compare-and-swap writes."
+            },
+            "include_values": {
+                "type": "boolean",
+                "description": "Whether read responses may disclose raw persisted values.",
+                "default": false
+            },
+            "mode": {
+                "type": "string",
+                "description": "Declaration discovery mode used by `describe`.",
+                "enum": ["effective", "installed"],
+                "default": "effective"
+            },
+            "root_name": {
+                "type": "string",
+                "description": "Optional physical root filter accepted only by installed `describe`."
+            },
+            "store_scope": {
+                "type": "string",
+                "description": "Optional persisted store scope accepted only by `refresh`.",
+                "enum": ["skills", "system-skills"]
             }
         }),
         vec!["action".to_string()],
         RuntimeToolAnnotations {
             read_only_hint: Some(false),
-            destructive_hint: Some(false),
-            user_confirmation_required: Some(false),
+            destructive_hint: Some(true),
+            user_confirmation_required: Some(true),
             idempotent_hint: Some(false),
         },
     )

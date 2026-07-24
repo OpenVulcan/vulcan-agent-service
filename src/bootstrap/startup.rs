@@ -379,7 +379,7 @@ fn run_call_host_tool_mode(
         .enable_all()
         .build()?;
     let server = if is_host_tool_name(tool_name) && !host_tool_requires_lua_engine(tool_name) {
-        build_host_tool_surface_server(&config)?
+        build_host_tool_surface_server()
     } else {
         runtime.block_on(async_build_stdio_server(config))?
     };

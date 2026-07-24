@@ -1,8 +1,21 @@
 use super::paths::{
     find_exe_parent_config_from_exe_path, find_runtime_root_config, normalize_cli_config_path,
-    normalize_cli_runtime_root_arg, parse_cli_path_flag_from_args, reject_legacy_config_flag,
+    normalize_cli_runtime_root_arg, parse_cli_path_flag_from_args,
 };
 use super::{Config, ManagedRuntimeConfigSection, RunLuaPoolConfigSection};
+
+/// Repository application-config template should satisfy the current strict contract.
+/// 仓库应用配置模板应满足当前严格契约。
+#[test]
+fn application_config_template_parses() {
+    let yaml = include_str!("../../../runtime/configs/config.yaml");
+    let parsed: Config = serde_yaml::from_str(yaml).expect("config.yaml should parse");
+
+    assert_eq!(
+        parsed.format_version,
+        super::super::HOST_CONFIG_FORMAT_VERSION
+    );
+}
 
 /// Relative runtime-root CLI arguments should be normalized against the current working directory immediately.
 /// 相对 runtime-root CLI 参数应当立即相对当前工作目录完成规范化。
@@ -42,7 +55,8 @@ fn find_runtime_root_config_returns_existing_config_path() {
     let config_path = root.join("configs").join("config.yaml");
     std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
         .expect("failed to create config directory");
-    std::fs::write(&config_path, "stdio: true\n").expect("failed to write config file");
+    std::fs::write(&config_path, "format_version: 1\nstdio: true\n")
+        .expect("failed to write config file");
 
     let discovered = find_runtime_root_config(&root.to_string_lossy())
         .expect("runtime-root config discovery should succeed")
@@ -171,37 +185,60 @@ fn find_exe_parent_config_from_exe_path_rejects_directory_shaped_config_path() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Legacy config flags should be rejected so runtime config discovery stays anchored to one runtime root.
-/// 历史 config 标志应被拒绝，从而让运行时配置发现始终锚定到唯一运行根。
+/// Application config should require the current explicit format version.
+/// 应用配置应要求当前显式格式版本。
 #[test]
-fn reject_legacy_config_flag_reports_runtime_root_only_model() {
-    let args = vec![
-        "vulcan-agent-service.exe".to_string(),
-        "--config".to_string(),
-        "runtime/configs/config.yaml".to_string(),
-    ];
-    let error =
-        reject_legacy_config_flag(&args).expect_err("legacy config flag should be rejected");
-    assert!(
-        error.to_string().contains("Unsupported CLI flag"),
-        "unexpected error: {error}"
-    );
+fn config_rejects_missing_format_version() {
+    let error = serde_yaml::from_str::<Config>("http: \"127.0.0.1:19201\"\n")
+        .expect_err("missing format version should fail");
+    assert!(error.to_string().contains("format_version"));
 }
 
-/// Inline `--config=...` forms should be rejected too so removed config entrypoints cannot slip through argv parsing.
-/// 内联 `--config=...` 形式也应被拒绝，避免已移除的配置入口从 argv 解析中漏过去。
+/// Application config should reject fields outside the current strict schema.
+/// 应用配置应拒绝当前严格结构以外的字段。
 #[test]
-fn reject_legacy_config_flag_rejects_inline_equals_form() {
-    let args = vec![
-        "vulcan-agent-service.exe".to_string(),
-        "--config=runtime/configs/config.yaml".to_string(),
-    ];
+fn config_rejects_unknown_fields() {
+    let error = serde_yaml::from_str::<Config>("format_version: 1\nunsupported_setting: true\n")
+        .expect_err("unknown fields should fail");
+    assert!(error.to_string().contains("unsupported_setting"));
+}
+
+/// Application config should reject path-only skill roots instead of assigning implicit layer names.
+/// 应用配置应拒绝纯路径技能根，而不是为其分配隐式层级名称。
+#[test]
+fn config_rejects_path_only_skill_roots() {
     let error =
-        reject_legacy_config_flag(&args).expect_err("inline legacy config flag should fail");
+        serde_yaml::from_str::<Config>("format_version: 1\nskill_roots:\n  - \"D:/skills/root\"\n")
+            .expect_err("path-only skill roots should fail");
+    assert!(error.to_string().contains("skill_roots"));
+}
+
+/// Application config loading should reject every format version other than the current contract.
+/// 应用配置加载应拒绝当前契约版本以外的所有格式版本。
+#[test]
+fn config_rejects_unsupported_format_version() {
+    let root = std::env::temp_dir().join(format!(
+        "vulcan-agent-service-app-config-version-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let config_path = root.join("config.yaml");
+    std::fs::create_dir_all(&root).expect("config test directory should be created");
+    std::fs::write(&config_path, "format_version: 2\n")
+        .expect("versioned config fixture should be written");
+
+    let error = Config::from_file(&config_path.to_string_lossy())
+        .expect_err("unsupported version should fail");
+
     assert!(
-        error.to_string().contains("Unsupported CLI flag"),
-        "unexpected error: {error}"
+        error
+            .to_string()
+            .contains("Unsupported config format_version 2")
     );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// CLI runtime-root flags should fail early when the next argv token is another flag instead of a path.
@@ -260,6 +297,7 @@ fn parse_cli_path_flag_rejects_empty_inline_runtime_root_value() {
 fn config_deserializes_runlua_pool_config_block() {
     let config: Config = serde_yaml::from_str(
         r#"
+format_version: 1
 runlua_pool_config:
   min_size: 2
   max_size: 6
@@ -278,14 +316,33 @@ runlua_pool_config:
     );
 }
 
-/// Managed runtime roots and policy fields should deserialize without reusing removed legacy directory-name options.
-/// 受管运行时根与策略字段应正常反序列化，且不再复用已移除的旧目录名称选项。
+/// Config YAML should deserialize the explicit user-level LuaSkills package configuration root.
+/// 配置 YAML 应能反序列化显式的用户级 LuaSkills 技能包配置根。
+#[test]
+fn config_deserializes_skill_config_root() {
+    let config: Config = serde_yaml::from_str(
+        r#"
+format_version: 1
+skill_config_root: "D:/service-data/vulcan/config"
+"#,
+    )
+    .expect("skill config root should deserialize");
+
+    assert_eq!(
+        config.skill_config_root.as_deref(),
+        Some("D:/service-data/vulcan/config")
+    );
+}
+
+/// Managed runtime roots and policy fields should deserialize through their canonical fields.
+/// 受管运行时根与策略字段应通过规范字段正常反序列化。
 #[test]
 fn config_deserializes_managed_runtime_block() {
     // ConfigText exercises both root placement and every positive resource-policy field.
     // ConfigText 同时覆盖根目录位置与全部正数资源策略字段。
     let config: Config = serde_yaml::from_str(
         r#"
+format_version: 1
 managed_runtime_distribution_root: "lua_runtime/dependencies/runtimes"
 managed_runtime_environment_root: "lua_runtime/dependencies/envs"
 managed_runtime_config:

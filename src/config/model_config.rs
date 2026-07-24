@@ -17,7 +17,11 @@ static MODEL_CONFIG_RUNTIME_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::
 /// Root model configuration owned by the host and never exposed to Lua for mutation.
 /// 宿主管理的模型配置根对象，不允许 Lua 侧直接修改。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelConfig {
+    /// Strict schema version for this host model configuration.
+    /// 这份宿主模型配置使用的严格结构版本。
+    pub format_version: u32,
     /// OpenAI-compatible provider settings used by the current host.
     /// 当前宿主使用的 OpenAI-compatible 供应商设置。
     #[serde(default)]
@@ -46,6 +50,7 @@ pub struct OpenAiCompatibleModelConfig {
 /// Embedding capability configuration for a single text input.
 /// 单文本向量能力配置。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmbeddingModelConfig {
     /// Whether the embedding capability is enabled under the selected provider.
     /// 是否在当前供应商下启用向量能力。
@@ -72,6 +77,7 @@ pub struct EmbeddingModelConfig {
 /// LLM capability configuration for one non-streaming chat-completion request.
 /// 单轮非流式 chat-completion 请求的 LLM 能力配置。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlmModelConfig {
     /// Whether the LLM capability is enabled under the selected provider.
     /// 是否在当前供应商下启用 LLM 能力。
@@ -280,6 +286,14 @@ fn load_model_config_runtime() -> Result<ModelConfigRuntime, String> {
             error
         )
     })?;
+    if config.format_version != super::HOST_CONFIG_FORMAT_VERSION {
+        return Err(format!(
+            "Invalid model config file {}: unsupported format_version {}; expected {}",
+            path.display(),
+            config.format_version,
+            super::HOST_CONFIG_FORMAT_VERSION
+        ));
+    }
     let embedding_api_key =
         resolve_optional_secret(config.openai_compatible.embedding.api_key.as_deref());
     let llm_api_key = resolve_optional_secret(config.openai_compatible.llm.api_key.as_deref());

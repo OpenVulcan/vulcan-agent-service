@@ -66,6 +66,39 @@ Example for `vmcp-ast`:
 .\output\debug\vulcan-agent-service.exe --call-tools vmcp-ast '{"path":".\\runtime\\skills\\vulcan-codekit\\runtime\\codekit-ast-tree.lua","comment":false}'
 ```
 
+### 3.3 Debug package configuration
+
+`runtime-config` is the only configuration-management tool. It uses the packages discovered by the complete LuaEngine, so configuration debugging requires valid runtime roots; an engine or skill-root failure never falls back to a standalone configuration store.
+
+Inspect a package declaration and completeness first. Stored and effective values are omitted by default:
+
+```powershell
+.\output\debug\vulcan-agent-service.exe --call-tools runtime-config '{"action":"describe","skill_id":"example-skill"}'
+```
+
+Record the current `revision` returned by `describe`. After user confirmation or equivalent authorization, submit typed values in one atomic batch. The following example assumes that the revision just read was `12`:
+
+```powershell
+.\output\debug\vulcan-agent-service.exe --call-tools runtime-config '{"action":"set","skill_id":"example-skill","values":{"api_token":"secret","retry_count":3},"expected_revision":"12"}'
+```
+
+The revision belongs to the entire `skills` or `system-skills` store. Do not assume it is `0` merely because the target skill has not been configured. On `CONFIG_REVISION_CONFLICT`, run `describe` again, review the latest state, and then resubmit.
+
+Validate without persisting:
+
+```powershell
+.\output\debug\vulcan-agent-service.exe --call-tools runtime-config '{"action":"validate","skill_id":"example-skill","values":{"api_token":"secret","retry_count":3}}'
+```
+
+Every response uses `{ok, action, result, error}`. When `ok=false`, `error.code` and `error.message` provide stable failure information. Never copy sensitive inputs into logs or issue reports.
+
+The default configuration root is:
+
+- Windows: `%USERPROFILE%\.vulcan\agent-service\config`
+- Linux/macOS: `$HOME/.vulcan/agent-service/config`
+
+Ordinary skills use `skills/config.json`; `ROOT` system skills use `system-skills/config.json`. Both documents must use the current strict `format_version: 1` contract.
+
 ## 4. Argument Format
 
 ### 4.1 Arguments must be valid JSON

@@ -6,6 +6,10 @@
 # 中文：HTTP / SSE 请求也可通过 `Vulcan-Client-Match-Name` 请求头强制覆盖当前客户端匹配名。
 # English: HTTP / SSE requests can also force-override the current client match name with the `Vulcan-Client-Match-Name` header.
 
+# 中文：宿主客户端预算配置格式版本；当前只接受 1。
+# English: Host client-budget config format version; only 1 is accepted.
+format_version: 1
+
 defaults:
   estimation:
     # 中文：仅当客户端本身使用 tokens 计量时，才按该倍率折算成 bytes。

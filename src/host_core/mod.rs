@@ -5,7 +5,6 @@ pub(crate) mod luaskills_api;
 pub(crate) mod model;
 pub(crate) mod projections;
 pub mod runtime;
-pub(crate) mod runtime_config_tool;
 pub(crate) mod runtime_views;
 pub(crate) mod service_impls;
 pub(crate) mod services;

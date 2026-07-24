@@ -50,13 +50,13 @@ use pb::{
     HostAdapterRuntimeResponse, HostAdapterToolDescriptor, HostAdapterToolRefreshNoticeRequest,
     HostAdapterToolRefreshNoticeResponse, HostAdapterVmmStatusRequest,
     HostAdapterVmmStatusResponse, LuaSkillCallToolRequest, LuaSkillCallToolResponse,
-    LuaSkillConfigDeleteRequest, LuaSkillConfigGetRequest, LuaSkillConfigListRequest,
-    LuaSkillConfigSetRequest, LuaSkillGetHelpRequest, LuaSkillGetToolRequest,
-    LuaSkillGetToolResponse, LuaSkillInstallRequest, LuaSkillListHelpRequest,
-    LuaSkillListInstalledSkillsRequest, LuaSkillListSkillsRequest, LuaSkillListSkillsResponse,
-    LuaSkillListToolsRequest, LuaSkillListToolsResponse, LuaSkillReloadRuntimeConfigsRequest,
-    LuaSkillTextResponse, LuaSkillUninstallRequest, LuaSkillUpdateRequest, McpCallRequest,
-    McpCallResponse, WelcomeEvent, connect_event::Event as ConnectEventType,
+    LuaSkillGetHelpRequest, LuaSkillGetToolRequest, LuaSkillGetToolResponse,
+    LuaSkillInstallRequest, LuaSkillListHelpRequest, LuaSkillListInstalledSkillsRequest,
+    LuaSkillListSkillsRequest, LuaSkillListSkillsResponse, LuaSkillListToolsRequest,
+    LuaSkillListToolsResponse, LuaSkillReloadRuntimeConfigsRequest, LuaSkillRuntimeConfigRequest,
+    LuaSkillRuntimeConfigResponse, LuaSkillTextResponse, LuaSkillUninstallRequest,
+    LuaSkillUpdateRequest, McpCallRequest, McpCallResponse, WelcomeEvent,
+    connect_event::Event as ConnectEventType,
 };
 use vmm_pb::vmm_service_server::{VmmService, VmmServiceServer};
 
@@ -537,5 +537,105 @@ mod host_adapter_grpc_tests {
             .into_inner();
         assert!(!tools.vmm_enabled);
         assert!(tools.tools.is_empty());
+    }
+
+    /// Build one isolated gRPC fixture with a complete LuaSkills engine and formal ROOT layer.
+    /// 构建一个带完整 LuaSkills 引擎和正式 ROOT 层的隔离 gRPC 夹具。
+    /// Returns the fixture directory and service; callers must remove the directory after the assertion.
+    /// 返回夹具目录与服务；调用方必须在断言后删除该目录。
+    fn build_runtime_config_grpc_service() -> (std::path::PathBuf, McpServiceImpl) {
+        let unique = format!(
+            "vulcan-agent-service-runtime-config-grpc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        let fixture_root = std::env::temp_dir().join(unique);
+        let application_root = fixture_root.join("application");
+        let root_skills = fixture_root.join("root").join("skills");
+        std::fs::create_dir_all(application_root.join("lua_runtime"))
+            .expect("gRPC runtime fixture should create the Lua runtime root");
+        std::fs::create_dir_all(&root_skills)
+            .expect("gRPC runtime fixture should create the formal ROOT skills directory");
+        let config = crate::config::Config {
+            runtime_root: Some(application_root.to_string_lossy().to_string()),
+            skill_config_root: Some(
+                fixture_root
+                    .join("skill-config")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            ..crate::config::Config::default()
+        };
+        let runtime = HostRuntime::new()
+            .with_lua_skills(
+                &config,
+                &[::luaskills::RuntimeSkillRoot {
+                    name: "ROOT".to_string(),
+                    skills_dir: root_skills,
+                }],
+                ::luaskills::LuaVmPoolConfig {
+                    min_size: 1,
+                    max_size: 1,
+                    idle_ttl_secs: 60,
+                },
+                ::luaskills::ToolCacheConfig::default(),
+            )
+            .expect("gRPC runtime-config fixture should initialize LuaSkills");
+        (
+            fixture_root,
+            McpServiceImpl::new(runtime, ConnectionManager::new()),
+        )
+    }
+
+    /// RuntimeConfig must reject requests that omit the trusted client context.
+    /// RuntimeConfig 必须拒绝缺少受信任客户端上下文的请求。
+    #[tokio::test]
+    async fn runtime_config_grpc_requires_trusted_client_context() {
+        let service = McpServiceImpl::new(HostRuntime::new(), ConnectionManager::new());
+
+        let error = LuaSkillsService::runtime_config(
+            &service,
+            Request::new(LuaSkillRuntimeConfigRequest {
+                context: None,
+                request_json: "{}".to_string(),
+            }),
+        )
+        .await
+        .expect_err("runtime-config gRPC should reject a missing context");
+
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().contains("requires context"));
+    }
+
+    /// RuntimeConfig must preserve the upstream stable response envelope for protocol failures.
+    /// RuntimeConfig 必须为协议失败保留上游稳定响应包络。
+    #[tokio::test]
+    async fn runtime_config_grpc_preserves_upstream_response_envelope() {
+        let (fixture_root, service) = build_runtime_config_grpc_service();
+
+        let response = LuaSkillsService::runtime_config(
+            &service,
+            Request::new(LuaSkillRuntimeConfigRequest {
+                context: Some(pb::LuaSkillClientContext {
+                    client_name: "trusted-admin-test".to_string(),
+                    client_version: "0.5.5".to_string(),
+                    request_id: "runtime-config-envelope".to_string(),
+                }),
+                request_json: "{}".to_string(),
+            }),
+        )
+        .await
+        .expect("runtime-config protocol errors should remain in the response envelope")
+        .into_inner();
+        let envelope: Value = serde_json::from_str(&response.response_json)
+            .expect("runtime-config gRPC response should contain valid JSON");
+
+        assert_eq!(envelope["ok"], false);
+        assert!(envelope["error"]["code"].is_string());
+        assert!(envelope["error"]["message"].is_string());
+        let _ = std::fs::remove_dir_all(fixture_root);
     }
 }

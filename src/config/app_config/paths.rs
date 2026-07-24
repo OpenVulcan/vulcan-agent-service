@@ -8,26 +8,6 @@ use std::path::{Path, PathBuf};
 /// 配置路径发现辅助函数使用的结果类型。
 type ConfigPathResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-/// Reject the removed legacy `--config` entry so runtime configuration stays anchored to one runtime root.
-/// 拒绝已移除的历史 `--config` 入口，从而让运行时配置始终锚定到唯一运行根。
-pub(super) fn reject_legacy_config_flag(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.iter().any(|arg| is_removed_config_flag_arg(arg)) {
-        return Err(
-            "Unsupported CLI flag: -config/--config. Use --runtime-root and place config at <runtime_root>/configs/config.yaml.".into(),
-        );
-    }
-    Ok(())
-}
-
-/// Return whether one raw argv token still uses the removed `--config` / `-config` CLI entry, including `--config=...` inline forms.
-/// 返回某个原始 argv 片段是否仍在使用已移除的 `--config` / `-config` CLI 入口，包含 `--config=...` 内联写法。
-fn is_removed_config_flag_arg(arg: &str) -> bool {
-    arg == "-config"
-        || arg == "--config"
-        || arg.starts_with("-config=")
-        || arg.starts_with("--config=")
-}
-
 /// Parse one CLI path flag from argv and fail early when the flag is missing a concrete value.
 /// 从 argv 解析单个 CLI 路径标志，并在缺少实际取值时尽早失败。
 pub(super) fn parse_cli_path_flag_from_args(

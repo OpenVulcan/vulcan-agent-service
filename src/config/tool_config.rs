@@ -274,15 +274,38 @@ pub(super) fn stage_tool_config_runtime()
     Ok((runtime, report))
 }
 
-/// Normalize the raw YAML root object into a `skill_name -> flat config object` mapping.
-/// 把原始 YAML 根对象规范化为 “skill_name -> flat config object” 的映射。
+/// Normalize the strict versioned YAML document into a `skill_name -> flat config object` mapping.
+/// 把严格版本化的 YAML 文档规范化为“skill_name -> flat config object”映射。
 fn normalize_tool_config_root(root: &Value) -> Result<BTreeMap<String, Value>, String> {
     let root_object = root
         .as_object()
         .ok_or_else(|| "tool_configs.yaml root must be an object".to_string())?;
+    for field_name in root_object.keys() {
+        if !matches!(field_name.as_str(), "format_version" | "skills") {
+            return Err(format!(
+                "tool_configs.yaml contains unknown root field `{field_name}`"
+            ));
+        }
+    }
+    let format_version = root_object
+        .get("format_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "tool_configs.yaml format_version must be an unsigned integer".to_string()
+        })?;
+    if format_version != u64::from(super::HOST_CONFIG_FORMAT_VERSION) {
+        return Err(format!(
+            "tool_configs.yaml uses unsupported format_version {format_version}; expected {}",
+            super::HOST_CONFIG_FORMAT_VERSION
+        ));
+    }
+    let skills = root_object
+        .get("skills")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "tool_configs.yaml skills must be an object".to_string())?;
 
     let mut configs = BTreeMap::new();
-    for (skill_name, raw_config) in root_object {
+    for (skill_name, raw_config) in skills {
         let normalized_name = skill_name.trim();
         if normalized_name.is_empty() {
             return Err("tool config key must not be empty".to_string());
@@ -400,6 +423,19 @@ mod tests {
         crate::config::runtime_config_test_lock()
     }
 
+    /// Wrap one skill map in the current strict tool-config document envelope.
+    /// 将一份技能映射包装进当前严格工具配置文档信封。
+    /// Parameters: `skills` is the dynamic skill-name to flat-config mapping.
+    /// 参数：`skills` 是动态的技能名到扁平配置映射。
+    /// Returns one versioned JSON value consumed by the production normalizer.
+    /// 返回一份由生产规范化器消费的版本化 JSON 值。
+    fn versioned_tool_config(skills: Value) -> Value {
+        json!({
+            "format_version": super::super::HOST_CONFIG_FORMAT_VERSION,
+            "skills": skills
+        })
+    }
+
     /// Cached tool-config errors should surface instead of becoming an empty tool config object.
     /// 缓存的工具配置错误应显式暴露，而不是变成空工具配置对象。
     #[test]
@@ -421,11 +457,64 @@ mod tests {
         }
     }
 
+    /// Repository tool-config template should satisfy the current strict contract.
+    /// 仓库工具配置模板应满足当前严格契约。
+    #[test]
+    fn tool_config_template_parses() {
+        let yaml = include_str!("../../runtime/configs/tool_configs.yaml");
+        let parsed: Value = serde_yaml::from_str(yaml).expect("tool_configs.yaml should parse");
+        let normalized =
+            normalize_tool_config_root(&parsed).expect("tool config template should normalize");
+
+        assert!(normalized.contains_key("vulcan-codekit"));
+    }
+
+    /// Tool config should reject the unversioned direct skill map used by prior host releases.
+    /// 工具配置应拒绝旧宿主版本使用的无版本直接技能映射。
+    #[test]
+    fn normalize_tool_config_root_rejects_unversioned_skill_map() {
+        let error = normalize_tool_config_root(&json!({
+            "vulcan-codekit": {
+                "bytes_per_token": 3
+            }
+        }))
+        .expect_err("unversioned tool config should fail");
+
+        assert!(error.contains("unknown root field `vulcan-codekit`"));
+    }
+
+    /// Tool config should reject every format version other than the current contract.
+    /// 工具配置应拒绝当前契约版本以外的所有格式版本。
+    #[test]
+    fn normalize_tool_config_root_rejects_unsupported_format_version() {
+        let error = normalize_tool_config_root(&json!({
+            "format_version": 2,
+            "skills": {}
+        }))
+        .expect_err("unsupported tool config version should fail");
+
+        assert!(error.contains("unsupported format_version 2"));
+    }
+
+    /// Tool config should reject fields outside the current strict root schema.
+    /// 工具配置应拒绝当前严格根结构以外的字段。
+    #[test]
+    fn normalize_tool_config_root_rejects_unknown_root_fields() {
+        let error = normalize_tool_config_root(&json!({
+            "format_version": 1,
+            "skills": {},
+            "unsupported_setting": true
+        }))
+        .expect_err("unknown tool config root fields should fail");
+
+        assert!(error.contains("unknown root field `unsupported_setting`"));
+    }
+
     /// Verify that tool configs support one-level scalar values and arrays.
     /// 验证工具配置支持一层标量与数组值。
     #[test]
     fn normalize_tool_config_root_accepts_flat_values_and_arrays() {
-        let raw = json!({
+        let raw = versioned_tool_config(json!({
             "vulcan-codekit": {
                 "a": 1,
                 "b": 10,
@@ -434,7 +523,7 @@ mod tests {
                 "bytes_per_token": 3,
                 "unlimited_bytes_cap": 204800
             }
-        });
+        }));
 
         let normalized = normalize_tool_config_root(&raw).expect("tool config should be valid");
         assert_eq!(normalized["vulcan-codekit"]["a"], json!(1));
@@ -465,11 +554,11 @@ mod tests {
         for (field_name, invalid_value) in invalid_cases {
             // Build one isolated config containing exactly the invalid reserved field under test.
             // 构建一份仅包含当前待测非法保留字段的隔离配置。
-            let raw = json!({
+            let raw = versioned_tool_config(json!({
                 "vulcan-codekit": {
                     (field_name): invalid_value
                 }
-            });
+            }));
             // Normalize through the same boundary used by startup preload and hot reload.
             // 通过启动预载与热重载使用的同一个边界执行规范化。
             let error = normalize_tool_config_root(&raw)
@@ -506,11 +595,11 @@ mod tests {
     fn normalize_tool_config_root_rejects_field_name_whitespace() {
         // Use a reserved-field lookalike that would otherwise bypass typed budget extraction.
         // 使用一个保留字段近似键；若不拒绝空白，它会绕过类型化预算提取。
-        let raw = json!({
+        let raw = versioned_tool_config(json!({
             "vulcan-codekit": {
                 " bytes_per_token": 3
             }
-        });
+        }));
         let error = normalize_tool_config_root(&raw)
             .expect_err("surrounding field-name whitespace should be rejected");
 
@@ -523,10 +612,10 @@ mod tests {
     fn normalize_tool_config_root_rejects_skill_name_whitespace() {
         // Include both spellings to prove that normalization cannot collapse them into one cache entry.
         // 同时提供两种拼写，证明规范化不会把它们折叠为同一缓存项。
-        let raw = json!({
+        let raw = versioned_tool_config(json!({
             "vulcan-codekit": {"bytes_per_token": 3},
             " vulcan-codekit ": {"bytes_per_token": 4}
-        });
+        }));
         // Normalize through the production load boundary and require an explicit key diagnostic.
         // 通过生产加载边界规范化，并要求返回显式键名诊断。
         let error = normalize_tool_config_root(&raw)
@@ -539,13 +628,13 @@ mod tests {
     /// 验证嵌套对象会被拒绝，避免工具配置无限膨胀。
     #[test]
     fn normalize_tool_config_root_rejects_nested_objects() {
-        let raw = json!({
+        let raw = versioned_tool_config(json!({
             "vulcan-codekit": {
                 "nested": {
                     "value": 1
                 }
             }
-        });
+        }));
 
         let error = normalize_tool_config_root(&raw).expect_err("nested object must be rejected");
         assert!(error.contains("vulcan-codekit"));
@@ -567,8 +656,11 @@ mod tests {
         let config_path = root.join("configs").join("tool_configs.yaml");
         std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
             .expect("failed to create config directory");
-        std::fs::write(&config_path, "vulcan-codekit:\n  bytes_per_token: 17\n")
-            .expect("failed to write tool config");
+        std::fs::write(
+            &config_path,
+            "format_version: 1\nskills:\n  vulcan-codekit:\n    bytes_per_token: 17\n",
+        )
+        .expect("failed to write tool config");
 
         initialize_tool_config_runtime_root(Some(&root)).expect("runtime root init should succeed");
         let report = preload_tool_configs().expect("tool config preload should succeed");
