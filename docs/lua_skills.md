@@ -150,7 +150,7 @@ python scripts/verify_vmcp_ast_comment_notes.py
 
 ### 内部模板目录
 
-- `runtime/skills` 下只有符合技能命名规则的目录才会被宿主自动加载
+- `runtime/lua_runtime/skills` 下只有符合技能命名规则的目录才会被宿主自动加载
 - 这类目录适合存放内部模板、演示 skill、复制样板
 - 推荐保留一个 `__demo` 目录，方便一键复制后改名投入使用
 
@@ -219,7 +219,7 @@ python scripts/verify_vmcp_ast_comment_notes.py
 
 - 每个 skill 最多只绑定一个 LanceDB 库
 - 库名固定等于 **skill 目录名**
-- 宿主会自动使用 `output/databases/lancedb/<skill_dir_name>` 作为数据库目录
+- 宿主会自动使用 `output/lua_runtime/databases/lancedb/<skill_dir_name>` 作为数据库目录
 - 若目录不存在，宿主会自动创建
 - Lua 不负责创建/删除数据库，只负责在该固定库内创建表、写入、检索和删表
 - 未开启 `lancedb_enable` 的 skill 不会获得可用的 `vulcan.lancedb` 上下文
@@ -418,7 +418,7 @@ print(result)
 
 ### `vulcan.runtime.temp_dir -> string`
 
-返回宿主提供的 MCP 临时目录绝对路径。当前规则为“程序目录的上级目录下的 `temp` 目录”，例如调试构建常见为 `output/temp`。
+返回宿主提供的 MCP 临时目录绝对路径。当前固定为 `<application_root>/lua_runtime/temp`，例如调试构建为 `output/lua_runtime/temp`。
 
 ```lua
 local spill_root = vulcan.path.join(vulcan.runtime.temp_dir, "mcp", "cache")
@@ -645,8 +645,8 @@ dependencies:
 
 运行规则：
 
-- 宿主提供工具目录固定为运行根下的 `bin/tools/`（正式构建默认即 `output/bin/tools/`），托管下载依赖仍进入运行根下的 `dependencies/`
-- `bin/tools/` 仅表示宿主提供的共享命令行工具目录，不是数据库 controller 目录；`vldb-controller(.exe)` 固定放在 `output/bin/`
+- 宿主提供可执行文件目录固定为 LuaSkills 运行根下的 `bin/`（正式构建为 `output/lua_runtime/bin/`），技能的版本化命令行工具进入 `output/lua_runtime/dependencies/tools/`
+- `vldb-controller(.exe)` 固定放在 `output/lua_runtime/bin/`，不属于版本化依赖工具树
 - 当前 `vulcan-agent-service` 产品固定采用 controller-only 数据库访问模型，skill 应假设数据库能力由宿主通过 controller 统一提供
 - 会先检查 `install_as` 对应文件是否已存在，存在则直接跳过
 - 支持 `asset_name`、`install_as`、`archive_path` 中使用 `{tag}` 与 `{version}` 占位符
@@ -667,7 +667,7 @@ dependencies:
 
 源码变化时输出日志：
 ```
-[LuaSkill] Hot reload codekit-ast-detail: <repo_root>\output\skills\vulcan-codekit\runtime\codekit-ast-detail.lua
+[LuaSkill] Hot reload codekit-ast-detail: <repo_root>\output\lua_runtime\skills\vulcan-codekit\runtime\codekit-ast-detail.lua
 ```
 
 ## Skill 模板

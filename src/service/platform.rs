@@ -1,18 +1,17 @@
 use super::*;
+use std::io::ErrorKind;
 
 pub(super) fn install_service(
     options: ServiceInstallOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let normalized_runtime_root = resolve_service_runtime_root(options.runtime_root.as_deref())?;
     let artifact = build_install_artifact(&options, normalized_runtime_root.clone())?;
-    prepare_runtime_service_directories(&normalized_runtime_root)?;
     preflight_runtime_config(&normalized_runtime_root)?;
+    prepare_runtime_service_log_directory(&normalized_runtime_root)?;
     if options.force {
-        let _ = remove_existing_service_if_possible(&artifact);
+        remove_existing_service_for_reinstall(&artifact)?;
     }
     apply_install_artifact(&artifact)?;
-    let manifest = HostServiceManifest::from_artifact(&artifact, now_local());
-    write_manifest_file(&manifest)?;
     if options.start_immediately {
         start_service(ServiceTargetOptions {
             service_name: artifact.service_name.clone(),
@@ -32,22 +31,15 @@ pub(super) fn install_service(
     Ok(())
 }
 
-/// Remove one installed service definition and delete the persisted manifest when present.
-/// 卸载一份已安装的服务定义，并在存在时删除持久化 manifest。
+/// Remove one installed service definition through the active platform manager.
+/// 通过当前平台管理器卸载一份已安装的服务定义。
 pub(super) fn uninstall_service(
     options: ServiceTargetOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = HostServiceManifest::load_best_effort(&options.service_name, options.scope)?;
     if options.force {
-        let _ = stop_service(options.clone());
+        stop_service_if_running(&options)?;
     }
     uninstall_platform_service(&options)?;
-    if let Some(existing_manifest) = manifest.as_ref() {
-        remove_manifest_file(
-            &existing_manifest.runtime_root,
-            &existing_manifest.service_name,
-        )?;
-    }
     println!("Service uninstalled: {}", options.service_name);
     Ok(())
 }
@@ -82,6 +74,25 @@ pub(super) fn stop_service(
     Ok(())
 }
 
+/// Stop one service only when it is running, accepting manager-specific absent or not-running states.
+/// 仅在服务正在运行时停止服务，并接受各平台的不存在或未运行状态。
+fn stop_service_if_running(
+    options: &ServiceTargetOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match current_service_manager()? {
+        HostServiceManager::WindowsScm => {
+            run_windows_service_stop_if_running(&options.service_name)
+        }
+        HostServiceManager::Systemd => run_systemd_manager_command_allowing_absent(
+            options.scope,
+            ["stop", options.service_name.as_str()],
+        ),
+        HostServiceManager::Launchd => {
+            run_launchctl_bootout_if_loaded(&options.service_name, options.scope)
+        }
+    }
+}
+
 /// Restart one installed service through the current platform manager.
 /// 通过当前平台管理器重启一个已安装服务。
 pub(super) fn restart_service(
@@ -89,7 +100,7 @@ pub(super) fn restart_service(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match current_service_manager()? {
         HostServiceManager::WindowsScm => {
-            let _ = run_windows_service_action("stop", &options.service_name);
+            run_windows_service_stop_if_running(&options.service_name)?;
             run_windows_service_action("start", &options.service_name)?;
         }
         HostServiceManager::Systemd => run_systemd_action("restart", &options)?,
@@ -121,13 +132,11 @@ pub(super) fn run_service_entrypoint(
     let normalized_runtime_root = resolve_service_runtime_root(options.runtime_root.as_deref())?;
     #[cfg(windows)]
     {
-        if let Err(error) = windows::run_windows_service_dispatcher(ServiceRunOptions {
+        windows::run_windows_service_dispatcher(ServiceRunOptions {
             runtime_root: Some(normalized_runtime_root.clone()),
             service_name: options.service_name.clone(),
-        }) {
-            return Err(error);
-        }
-        return Ok(());
+        })?;
+        Ok(())
     }
     #[cfg(not(windows))]
     {
@@ -149,13 +158,16 @@ pub(super) fn print_service_definition(
     Ok(())
 }
 
-/// Prepare shared service state and log directories under the runtime root.
-/// 在运行根下准备共享服务状态目录与日志目录。
-fn prepare_runtime_service_directories(
+/// Prepare the service log directory after runtime configuration preflight succeeds.
+/// 在运行时配置预检成功后准备服务日志目录。
+/// Parameters: `runtime_root` is the validated runtime root that owns the log directory.
+/// 参数：`runtime_root` 是拥有日志目录的已校验运行根。
+/// Returns success after the directory exists, or the filesystem creation error.
+/// 日志目录存在后返回成功，否则返回文件系统创建错误。
+fn prepare_runtime_service_log_directory(
     runtime_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(runtime_root.join("logs"))?;
-    std::fs::create_dir_all(runtime_root.join("state").join("service"))?;
     Ok(())
 }
 
@@ -163,7 +175,7 @@ fn prepare_runtime_service_directories(
 /// 预检运行时配置，使服务安装在写入平台状态之前就能失败。
 fn preflight_runtime_config(runtime_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = runtime_root.join("configs").join("config.yaml");
-    if !config_path.exists() {
+    if !inspect_optional_service_file(&config_path, "service config file")? {
         return Err(format!("config file not found: {}", config_path.display()).into());
     }
     let mut config = Config::from_file(&config_path.to_string_lossy())?;
@@ -176,9 +188,13 @@ fn preflight_runtime_config(runtime_root: &Path) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// Best-effort removal used by force-reinstall flows before applying new definitions.
-/// force 重装流程在写入新定义前尝试执行的尽力清理。
-fn remove_existing_service_if_possible(
+/// Remove the current platform service before a force reinstall.
+/// 在强制重装前移除当前平台服务。
+/// Parameters: `artifact` supplies the exact service name and scope selected for reinstallation.
+/// 参数：`artifact` 提供重装所选的确切服务名与作用域。
+/// Returns success after precise platform-specific absence handling, or the original uninstall error.
+/// 在按平台精确处理服务缺席后返回成功，否则返回原始卸载错误。
+fn remove_existing_service_for_reinstall(
     artifact: &ServiceInstallArtifact,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let target = ServiceTargetOptions {
@@ -186,8 +202,7 @@ fn remove_existing_service_if_possible(
         scope: artifact.scope,
         force: true,
     };
-    let _ = uninstall_service(target);
-    Ok(())
+    uninstall_service(target)
 }
 
 /// Apply one prepared install artifact to the current platform service manager.
@@ -208,6 +223,9 @@ fn uninstall_platform_service(
     options: &ServiceTargetOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match current_service_manager()? {
+        HostServiceManager::WindowsScm if options.force => {
+            run_windows_service_delete_if_present(&options.service_name)
+        }
         HostServiceManager::WindowsScm => {
             run_windows_service_action("delete", &options.service_name)
         }
@@ -279,11 +297,15 @@ fn uninstall_systemd_service(
     options: &ServiceTargetOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let unit_path = definition::systemd_unit_path(&options.service_name, options.scope)?;
-    let _ = run_systemd_manager_command(options.scope, ["disable", options.service_name.as_str()]);
-    let _ = run_systemd_manager_command(options.scope, ["stop", options.service_name.as_str()]);
-    if unit_path.exists() {
-        std::fs::remove_file(unit_path)?;
-    }
+    run_systemd_manager_command_allowing_absent(
+        options.scope,
+        ["disable", options.service_name.as_str()],
+    )?;
+    run_systemd_manager_command_allowing_absent(
+        options.scope,
+        ["stop", options.service_name.as_str()],
+    )?;
+    remove_optional_service_file(&unit_path, "systemd unit file")?;
     run_systemd_manager_command(options.scope, ["daemon-reload"])?;
     Ok(())
 }
@@ -315,10 +337,67 @@ fn uninstall_launchd_service(
     options: &ServiceTargetOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let plist_path = definition::launchd_plist_path(&options.service_name, options.scope)?;
-    let _ = run_launchctl_bootout(&options.service_name, options.scope);
-    if plist_path.exists() {
-        std::fs::remove_file(plist_path)?;
+    run_launchctl_bootout_if_loaded(&options.service_name, options.scope)?;
+    remove_optional_service_file(&plist_path, "launchd plist file")?;
+    Ok(())
+}
+
+/// Inspect one optional service-managed file and reject non-file shapes or metadata errors.
+/// 检查一个可选的服务管理文件，并拒绝非文件形态或元数据错误。
+/// Parameters: `path` is the service-managed file path to inspect.
+/// 参数：`path` 是需要检查的服务管理文件路径。
+/// Parameters: `file_label` names the file kind in diagnostics.
+/// 参数：`file_label` 用于在诊断中标识文件类型。
+/// Returns `true` when the file exists, `false` when absent, or an inspection error.
+/// 文件存在时返回 `true`，缺失时返回 `false`，否则返回路径检查错误。
+fn inspect_optional_service_file(
+    path: &Path,
+    file_label: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    // Only NotFound is a valid optional-file absence; everything else means the service state is ambiguous.
+    // 只有 NotFound 是合法的可选文件缺失；其他情况都表示服务状态不明确。
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect {} path {}: {}",
+                file_label,
+                path.display(),
+                error
+            )
+            .into());
+        }
+    };
+    if !metadata.is_file() {
+        return Err(format!("{} path is not a file: {}", file_label, path.display()).into());
     }
+    Ok(true)
+}
+
+/// Remove one optional service-managed file after explicit metadata inspection.
+/// 在显式元数据检查后删除一个可选的服务管理文件。
+/// Parameters: `path` is the service-managed file path to remove when present.
+/// 参数：`path` 是存在时需要删除的服务管理文件路径。
+/// Parameters: `file_label` names the file kind in diagnostics.
+/// 参数：`file_label` 用于在诊断中标识文件类型。
+/// Returns `Ok(())` when the file is absent or removed, otherwise a path-aware deletion error.
+/// 文件缺失或已删除时返回 `Ok(())`，否则返回包含路径的删除错误。
+fn remove_optional_service_file(
+    path: &Path,
+    file_label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !inspect_optional_service_file(path, file_label)? {
+        return Ok(());
+    }
+    std::fs::remove_file(path).map_err(|error| {
+        format!(
+            "failed to remove {} {}: {}",
+            file_label,
+            path.display(),
+            error
+        )
+    })?;
     Ok(())
 }
 
@@ -333,6 +412,71 @@ fn run_windows_service_action(
         &[OsString::from(action), OsString::from(service_name)],
     )?;
     Ok(())
+}
+
+/// Stop one Windows service and accept the idempotent already-stopped or absent states.
+/// 停止一个 Windows 服务，并接受已经停止或不存在这类幂等状态。
+fn run_windows_service_stop_if_running(
+    service_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_windows_service_action_with_allowed_diagnostic(
+        "stop",
+        service_name,
+        is_windows_service_absent_or_stopped_message,
+    )
+}
+
+/// Delete one Windows service and accept the idempotent absent state.
+/// 删除一个 Windows 服务，并接受服务不存在这一幂等状态。
+fn run_windows_service_delete_if_present(
+    service_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_windows_service_action_with_allowed_diagnostic(
+        "delete",
+        service_name,
+        is_windows_service_absent_message,
+    )
+}
+
+/// Run one Windows service action while allowing a narrow idempotent diagnostic.
+/// 执行一个 Windows 服务动作，同时允许一类狭窄的幂等诊断。
+fn run_windows_service_action_with_allowed_diagnostic(
+    action: &str,
+    service_name: &str,
+    allowed_diagnostic: fn(&str) -> bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let outcome = capture_command_outcome(
+        "sc.exe",
+        &[OsString::from(action), OsString::from(service_name)],
+    )?;
+    if outcome.success || allowed_diagnostic(outcome.primary_diagnostic()) {
+        return Ok(());
+    }
+    Err(format!(
+        "sc.exe {} failed with code {:?}: {}",
+        action,
+        outcome.exit_code,
+        outcome.primary_diagnostic()
+    )
+    .into())
+}
+
+/// Return whether a Windows SCM diagnostic means the service does not exist.
+/// 判断 Windows SCM 诊断是否表示服务不存在。
+fn is_windows_service_absent_message(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("does not exist as an installed service")
+        || lowered.contains("openservice failed 1060")
+        || lowered.contains("the specified service does not exist")
+}
+
+/// Return whether a Windows SCM diagnostic means the service is absent or already stopped.
+/// 判断 Windows SCM 诊断是否表示服务不存在或已经停止。
+fn is_windows_service_absent_or_stopped_message(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    is_windows_service_absent_message(&lowered)
+        || lowered.contains("service has not been started")
+        || lowered.contains("the service has not been started")
 }
 
 /// Capture Windows service status output through `sc.exe query`.
@@ -455,6 +599,38 @@ fn run_systemd_manager_command<const N: usize>(
     Ok(())
 }
 
+/// Execute one `systemctl` command while accepting idempotent absent or not-loaded diagnostics.
+/// 执行一条 `systemctl` 命令，同时接受不存在或未加载这类幂等诊断。
+fn run_systemd_manager_command_allowing_absent<const N: usize>(
+    scope: ServiceScope,
+    tail: [&str; N],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rendered_tail = tail.join(" ");
+    let outcome = capture_systemd_manager_outcome(scope, tail)?;
+    if outcome.success || is_systemd_absent_or_not_loaded_message(outcome.primary_diagnostic()) {
+        return Ok(());
+    }
+    Err(format!(
+        "systemctl {} failed with code {:?}: {}",
+        rendered_tail,
+        outcome.exit_code,
+        outcome.primary_diagnostic()
+    )
+    .into())
+}
+
+/// Return whether a systemd diagnostic means the unit is absent or not loaded.
+/// 判断 systemd 诊断是否表示 unit 不存在或未加载。
+fn is_systemd_absent_or_not_loaded_message(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("not loaded")
+        || lowered.contains("not found")
+        || lowered.contains("could not be found")
+        || lowered.contains("no such file")
+        || lowered.contains("does not exist")
+        || lowered.contains("unit file") && lowered.contains("does not exist")
+}
+
 /// Capture one `systemctl` command outcome in either system or user scope without interpreting non-zero exits as fatal.
 /// 在 system 或 user 作用域下捕获一条 `systemctl` 命令的执行结果，并且不把非零退出直接视为致命错误。
 fn capture_systemd_manager_outcome<const N: usize>(
@@ -521,6 +697,32 @@ fn run_launchctl_bootout(
     Ok(())
 }
 
+/// Boot one launchd job out while accepting the idempotent not-loaded state.
+/// 移除一个 launchd 作业，同时接受未加载这一幂等状态。
+fn run_launchctl_bootout_if_loaded(
+    service_name: &str,
+    scope: ServiceScope,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let domain = definition::launchd_domain(scope)?;
+    let label = definition::launchd_label(service_name);
+    let outcome = capture_command_outcome(
+        "launchctl",
+        &[
+            OsString::from("bootout"),
+            OsString::from(format!("{}/{}", domain, label)),
+        ],
+    )?;
+    if outcome.success || is_launchd_not_loaded_message(outcome.primary_diagnostic()) {
+        return Ok(());
+    }
+    Err(format!(
+        "launchctl bootout failed with code {:?}: {}",
+        outcome.exit_code,
+        outcome.primary_diagnostic()
+    )
+    .into())
+}
+
 /// Capture the raw `launchctl print` outcome for one domain-qualified job label.
 /// 捕获某个按域限定的作业标签对应的原始 `launchctl print` 结果。
 fn capture_launchd_print_outcome(
@@ -552,4 +754,154 @@ fn is_launchd_job_loaded(domain: &str, label: &str) -> Result<bool, Box<dyn std:
         outcome.primary_diagnostic()
     )
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build one unique temporary directory path for a platform test case.
+    /// 为 platform 测试用例构建一个唯一临时目录路径。
+    fn unique_platform_test_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "vulcan-agent-service-platform-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    /// Remove one platform test directory while accepting already-absent cleanup targets.
+    /// 删除一个 platform 测试目录，并接受清理目标已经缺失的情况。
+    /// Parameters: `path` is the temporary platform test directory to remove.
+    /// 参数：`path` 是需要删除的临时 platform 测试目录。
+    /// Returns nothing and panics with path context when cleanup cannot complete.
+    /// 不返回值；清理无法完成时携带路径上下文 panic。
+    fn remove_platform_test_dir(path: &Path) {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                panic!(
+                    "temporary platform test directory should be removed: {}: {}",
+                    path.display(),
+                    error
+                );
+            }
+        }
+    }
+
+    /// Runtime config preflight should report a missing required config file explicitly.
+    /// 运行时配置预检应显式报告缺失的必需配置文件。
+    #[test]
+    fn preflight_runtime_config_reports_missing_config_file() {
+        let temp_dir = unique_platform_test_dir("missing-config");
+        let error = preflight_runtime_config(&temp_dir)
+            .expect_err("missing runtime config should fail preflight");
+        let message = error.to_string();
+        assert!(
+            message.contains("config file not found"),
+            "missing config error should be explicit: {message}"
+        );
+        remove_platform_test_dir(&temp_dir);
+    }
+
+    /// Runtime config preflight should reject a directory where the config file is required.
+    /// 运行时配置预检应拒绝必需配置文件位置出现目录。
+    #[test]
+    fn preflight_runtime_config_rejects_directory_shaped_config_file() {
+        let temp_dir = unique_platform_test_dir("directory-config");
+        let config_path = temp_dir.join("configs").join("config.yaml");
+        std::fs::create_dir_all(&config_path)
+            .expect("directory-shaped config path should be created");
+        let error = preflight_runtime_config(&temp_dir)
+            .expect_err("directory-shaped runtime config should fail preflight");
+        let message = error.to_string();
+        assert!(
+            message.contains("service config file path is not a file"),
+            "directory-shaped config error should be explicit: {message}"
+        );
+        remove_platform_test_dir(&temp_dir);
+    }
+
+    /// Optional service file removal should ignore a missing cleanup target.
+    /// 可选服务文件删除应忽略缺失的清理目标。
+    #[test]
+    fn remove_optional_service_file_ignores_missing_file() {
+        let temp_dir = unique_platform_test_dir("missing-optional-file");
+        let file_path = temp_dir.join("missing.service");
+        remove_optional_service_file(&file_path, "test service file")
+            .expect("missing optional service file should be ignored");
+        remove_platform_test_dir(&temp_dir);
+    }
+
+    /// Optional service file removal should delete an existing regular file.
+    /// 可选服务文件删除应删除已经存在的普通文件。
+    #[test]
+    fn remove_optional_service_file_removes_existing_file() {
+        let temp_dir = unique_platform_test_dir("remove-existing-file");
+        let file_path = temp_dir.join("existing.service");
+        std::fs::create_dir_all(&temp_dir).expect("temporary platform directory should be created");
+        std::fs::write(&file_path, "unit").expect("temporary service file should be written");
+        remove_optional_service_file(&file_path, "test service file")
+            .expect("existing optional service file should be removed");
+        let metadata_result = std::fs::metadata(&file_path);
+        assert!(
+            matches!(metadata_result, Err(error) if error.kind() == ErrorKind::NotFound),
+            "removed service file should be absent"
+        );
+        remove_platform_test_dir(&temp_dir);
+    }
+
+    /// Optional service file removal should reject a directory-shaped cleanup target.
+    /// 可选服务文件删除应拒绝目录形态的清理目标。
+    #[test]
+    fn remove_optional_service_file_rejects_directory_path() {
+        let temp_dir = unique_platform_test_dir("directory-optional-file");
+        let file_path = temp_dir.join("directory.service");
+        std::fs::create_dir_all(&file_path)
+            .expect("directory-shaped optional service file path should be created");
+        let error = remove_optional_service_file(&file_path, "test service file")
+            .expect_err("directory-shaped optional service file should fail removal");
+        let message = error.to_string();
+        assert!(
+            message.contains("test service file path is not a file"),
+            "directory-shaped optional file error should be explicit: {message}"
+        );
+        remove_platform_test_dir(&temp_dir);
+    }
+
+    /// Windows SCM absence diagnostics should be accepted for force cleanup paths.
+    /// Windows SCM 的服务缺席诊断应被 force 清理路径接受。
+    #[test]
+    fn windows_service_absence_diagnostic_is_idempotent() {
+        assert!(is_windows_service_absent_message(
+            "[SC] OpenService FAILED 1060:\n\nThe specified service does not exist as an installed service."
+        ));
+    }
+
+    /// Windows SCM already-stopped diagnostics should be accepted for stop-before-start paths.
+    /// Windows SCM 的已停止诊断应被先停再启路径接受。
+    #[test]
+    fn windows_service_stopped_diagnostic_is_idempotent_for_stop() {
+        assert!(is_windows_service_absent_or_stopped_message(
+            "The service has not been started."
+        ));
+    }
+
+    /// Systemd absence diagnostics should be accepted for uninstall cleanup paths.
+    /// systemd 的 unit 缺席诊断应被卸载清理路径接受。
+    #[test]
+    fn systemd_absence_diagnostic_is_idempotent() {
+        assert!(is_systemd_absent_or_not_loaded_message(
+            "Failed to disable unit: Unit file vulcan-agent-service.service does not exist."
+        ));
+        assert!(is_systemd_absent_or_not_loaded_message(
+            "Failed to stop vulcan-agent-service.service: Unit vulcan-agent-service.service not loaded."
+        ));
+    }
 }

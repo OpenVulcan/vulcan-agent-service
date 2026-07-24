@@ -31,8 +31,8 @@ impl HostServiceManager {
     }
 }
 
-/// Prepared service install artifact shared by install, manifest, and print-definition flows.
-/// 安装、manifest 与定义预览流程共享的服务安装产物。
+/// Prepared service install artifact shared by install and print-definition flows.
+/// 安装与定义预览流程共享的服务安装产物。
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceInstallArtifact {
     /// Current platform manager used by the artifact.
@@ -381,19 +381,85 @@ pub(crate) fn launchd_label(service_name: &str) -> String {
 pub(crate) fn launchd_domain(scope: ServiceScope) -> Result<String, Box<dyn std::error::Error>> {
     match scope {
         ServiceScope::System => Ok("system".to_string()),
-        ServiceScope::User => {
-            let uid = if let Ok(uid) = std::env::var("UID") {
-                uid
-            } else {
-                let output = std::process::Command::new("id").arg("-u").output()?;
-                String::from_utf8_lossy(&output.stdout).trim().to_string()
-            };
-            if uid.is_empty() {
-                return Err("failed to resolve uid for launchd user domain".into());
-            }
-            Ok(format!("gui/{}", uid))
-        }
+        ServiceScope::User => Ok(launchd_user_domain(resolve_launchd_user_uid()?)),
     }
+}
+
+/// Resolve the current macOS user ID from the platform-owned identity command.
+/// 通过平台拥有的身份命令解析当前 macOS 用户 ID。
+/// Returns a validated unsigned user ID, or an explicit spawn, exit-status, UTF-8, or numeric error.
+/// 返回已校验的无符号用户 ID，或显式的启动、退出状态、UTF-8 或数值错误。
+fn resolve_launchd_user_uid() -> Result<u32, Box<dyn std::error::Error>> {
+    // Use the fixed macOS system binary so PATH and mutable UID environment variables cannot select the launch domain.
+    // 使用固定的 macOS 系统二进制文件，避免 PATH 与可变 UID 环境变量决定 launch 域。
+    let output = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .map_err(|error| format!("failed to execute `/usr/bin/id -u`: {error}"))?;
+    parse_launchd_user_uid_output(
+        output.status.success(),
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
+    .map_err(Into::into)
+}
+
+/// Validate the raw result produced by `/usr/bin/id -u` without applying lossy identity conversion.
+/// 校验 `/usr/bin/id -u` 产生的原始结果，不对身份值执行有损转换。
+/// Parameters: `success` and `exit_code` describe the command status; `stdout` carries the UID and `stderr` carries diagnostics.
+/// 参数：`success` 与 `exit_code` 描述命令状态；`stdout` 携带 UID，`stderr` 携带诊断。
+/// Returns a strictly parsed decimal `u32`, or an error explaining the rejected command result.
+/// 返回严格解析的十进制 `u32`，或说明命令结果被拒绝原因的错误。
+fn parse_launchd_user_uid_output(
+    success: bool,
+    exit_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<u32, String> {
+    if !success {
+        // Diagnostic text may be lossy because it never participates in identity selection.
+        // 诊断文本可以有损转换，因为它不参与身份选择。
+        let diagnostic = String::from_utf8_lossy(stderr);
+        // Normalize an empty diagnostic into a stable explicit message.
+        // 把空诊断规范化为稳定的显式消息。
+        let diagnostic = diagnostic.trim();
+        let diagnostic = if diagnostic.is_empty() {
+            "no stderr output"
+        } else {
+            diagnostic
+        };
+        return Err(format!(
+            "`/usr/bin/id -u` failed with code {exit_code:?}: {diagnostic}"
+        ));
+    }
+
+    // Identity bytes must be valid UTF-8; replacement characters could select a different domain string.
+    // 身份字节必须是有效 UTF-8；替换字符可能选中不同的域字符串。
+    let uid_text = std::str::from_utf8(stdout)
+        .map_err(|error| format!("`/usr/bin/id -u` returned invalid UTF-8: {error}"))?
+        .trim();
+    if uid_text.is_empty() {
+        return Err("`/usr/bin/id -u` returned an empty uid".to_string());
+    }
+    if !uid_text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "`/usr/bin/id -u` returned a non-decimal uid: {uid_text:?}"
+        ));
+    }
+    uid_text
+        .parse::<u32>()
+        .map_err(|error| format!("`/usr/bin/id -u` returned an invalid uid: {error}"))
+}
+
+/// Format one validated user ID as a launchd GUI domain.
+/// 把一个已校验用户 ID 格式化为 launchd GUI 域。
+/// Parameters: `uid` is the typed user ID returned by the strict identity resolver.
+/// 参数：`uid` 是严格身份解析器返回的类型化用户 ID。
+/// Returns the stable `gui/<uid>` launchd domain string.
+/// 返回稳定的 `gui/<uid>` launchd 域字符串。
+fn launchd_user_domain(uid: u32) -> String {
+    format!("gui/{uid}")
 }
 
 /// Quote one command argument for human-readable shell previews.
@@ -541,5 +607,69 @@ mod tests {
                 runtime_root.to_string_lossy().to_string(),
             ]
         );
+    }
+
+    /// Successful UID command output should accept decimal stdout and ignore non-fatal stderr diagnostics.
+    /// UID 命令成功时应接受十进制 stdout，并忽略不致命的 stderr 诊断。
+    #[test]
+    fn parse_launchd_user_uid_output_accepts_valid_decimal_stdout() {
+        // Parse the same newline-terminated shape emitted by `/usr/bin/id -u`.
+        // 解析与 `/usr/bin/id -u` 输出一致的换行结尾形态。
+        let uid = parse_launchd_user_uid_output(true, Some(0), b"501\n", b"notice")
+            .expect("valid uid output should parse");
+
+        assert_eq!(uid, 501);
+    }
+
+    /// UID parsing should reject empty, signed, non-decimal, overflowing, and invalid UTF-8 identity bytes.
+    /// UID 解析应拒绝空值、带符号值、非十进制值、溢出值与非法 UTF-8 身份字节。
+    #[test]
+    fn parse_launchd_user_uid_output_rejects_invalid_identity_values() {
+        // Cover every value class that the former string-only check accepted or converted lossily.
+        // 覆盖旧字符串检查会接受或有损转换的每类值。
+        let invalid_outputs = [
+            Vec::new(),
+            b"   \n".to_vec(),
+            b"-1\n".to_vec(),
+            b"+501\n".to_vec(),
+            b"abc\n".to_vec(),
+            b"4294967296\n".to_vec(),
+            vec![0xff, b'\n'],
+        ];
+
+        for stdout in invalid_outputs {
+            // Validate each raw byte sequence through the production parser.
+            // 通过生产解析器校验每个原始字节序列。
+            let error = parse_launchd_user_uid_output(true, Some(0), &stdout, b"")
+                .expect_err("invalid uid output should be rejected");
+
+            assert!(!error.is_empty());
+        }
+    }
+
+    /// A failed identity command should be rejected even when stdout contains a plausible UID.
+    /// 即使 stdout 包含看似合法的 UID，身份命令失败也必须被拒绝。
+    #[test]
+    fn parse_launchd_user_uid_output_rejects_nonzero_exit() {
+        // Preserve exit-code and stderr evidence in the returned diagnostic.
+        // 在返回诊断中保留退出码与 stderr 证据。
+        let error = parse_launchd_user_uid_output(false, Some(7), b"501\n", b"identity failed")
+            .expect_err("nonzero identity command should fail");
+
+        assert!(error.contains("Some(7)"));
+        assert!(error.contains("identity failed"));
+    }
+
+    /// Launchd domain formatting should keep the system token independent and use only typed user IDs for GUI domains.
+    /// launchd 域格式化应保持 system 标记独立，并仅用类型化用户 ID 生成 GUI 域。
+    #[test]
+    fn launchd_domain_formats_system_and_typed_user_domains() {
+        // System scope must not execute the user identity command on any platform.
+        // System 作用域在任何平台都不应执行用户身份命令。
+        let system_domain = launchd_domain(ServiceScope::System)
+            .expect("system launchd domain should resolve without uid lookup");
+
+        assert_eq!(system_domain, "system");
+        assert_eq!(launchd_user_domain(501), "gui/501");
     }
 }

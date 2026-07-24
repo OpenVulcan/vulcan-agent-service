@@ -5,6 +5,7 @@ use crate::host_core::HostRuntime;
 use crate::transport::mcp::McpDispatcher;
 use crate::transport::mcp::protocol::{
     InitializeRequest, PROTOCOL_VERSION_LATEST, RequestContext, negotiate_version,
+    parse_required_params,
 };
 
 /// Stateful stdio session metadata for one MCP client attached over stdin/stdout.
@@ -86,15 +87,13 @@ fn build_initialize_request_context(
         return Err("initialize response did not include result.protocolVersion.".into());
     };
 
-    let initialize_request: InitializeRequest = serde_json::from_value(
-        message.get("params").cloned().unwrap_or_default(),
-    )
-    .map_err(|error| {
-        format!(
-            "initialize params could not be reconstructed after success: {}",
-            error
-        )
-    })?;
+    let initialize_request: InitializeRequest =
+        parse_required_params("initialize", message.get("params").cloned()).map_err(|error| {
+            format!(
+                "initialize params could not be reconstructed after success: {}",
+                error
+            )
+        })?;
 
     Ok(Some(RequestContext {
         transport: Some("stdio".to_string()),

@@ -8,8 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Return one shared mutex used to serialize runtime-root override tests for client-budget loading.
 /// 返回一个共享互斥锁，用于串行化客户端预算加载中的运行根覆盖测试。
 fn runtime_root_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::config::runtime_config_test_lock()
 }
 
 /// Return one shared mutex used to serialize environment-variable override tests for client-budget matching.
@@ -17,6 +16,17 @@ fn runtime_root_lock() -> &'static Mutex<()> {
 fn environment_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Cached client-budget errors should surface instead of becoming the default budget config.
+/// 缓存的客户端预算错误应显式暴露，而不是变成默认预算配置。
+#[test]
+fn client_budget_config_from_runtime_state_reports_cached_error() {
+    let runtime_state: ClientBudgetRuntimeState = Err("cached client budget failure".to_string());
+    let error = client_budget_config_from_runtime_state(&runtime_state)
+        .expect_err("cached client budget error should be returned");
+
+    assert_eq!(error, "cached client budget failure");
 }
 
 /// Verify that `-1` is parsed as explicit unlimited rather than a normal numeric value.
@@ -170,7 +180,10 @@ fn merge_effective_estimation_uses_defaults_without_override() {
         unlimited_bytes_cap: Some(200 * 1024),
     };
 
-    let estimation = merge_effective_estimation(&defaults, None, None);
+    // Use an empty typed tool override to isolate client-budget defaults.
+    // 使用空的类型化工具覆盖以隔离客户端预算默认值。
+    let tool_override = crate::config::tool_config::ToolEstimationOverride::default();
+    let estimation = merge_effective_estimation(&defaults, None, &tool_override);
     assert_eq!(estimation.bytes_per_token, 3);
     assert!((estimation.safe_bytes_ratio - 0.95).abs() < f64::EPSILON);
     assert_eq!(estimation.unlimited_bytes_cap, 200 * 1024);
@@ -274,10 +287,12 @@ fn read_metric_from_source_reads_nested_json_fields() {
         field: Some("tool_output.max_bytes".to_string()),
     };
 
-    let resolved_lines =
-        read_metric_from_source(&line_source).expect("expected line metric from json source");
-    let resolved_bytes =
-        read_metric_from_source(&byte_source).expect("expected byte metric from json source");
+    let resolved_lines = read_metric_from_source(&line_source)
+        .expect("json line source should read")
+        .expect("expected line metric from json source");
+    let resolved_bytes = read_metric_from_source(&byte_source)
+        .expect("json byte source should read")
+        .expect("expected byte metric from json source");
 
     assert_eq!(resolved_lines.value, Some(10_000));
     assert_eq!(resolved_lines.source, "client_config");
@@ -285,6 +300,104 @@ fn read_metric_from_source_reads_nested_json_fields() {
     assert_eq!(resolved_bytes.source, "client_config");
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Missing optional JSON config files should be treated as absent sources so defaults remain usable.
+/// 缺失的可选 JSON 配置文件应视为来源不存在，从而继续使用默认值。
+#[test]
+fn read_metric_from_source_treats_missing_json_file_as_absent() {
+    let root = std::env::temp_dir().join(format!(
+        "vulcan-agent-service-budget-missing-json-source-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let source = BudgetConfigSource {
+        source_type: "json".to_string(),
+        key: None,
+        path: Some(root.join("missing.json").to_string_lossy().to_string()),
+        field: Some("tool_output.max_lines".to_string()),
+    };
+
+    let resolved = read_metric_from_source(&source).expect("missing json source should not fail");
+
+    assert!(resolved.is_none());
+}
+
+/// Existing malformed JSON config files should fail instead of silently falling back to defaults.
+/// 已存在但格式错误的 JSON 配置文件应失败，而不是静默回退到默认值。
+#[test]
+fn read_metric_from_source_reports_malformed_json_file() {
+    let root = std::env::temp_dir().join(format!(
+        "vulcan-agent-service-budget-bad-json-source-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let config_path = root.join("bad.json");
+    std::fs::create_dir_all(&root).expect("failed to create bad json source directory");
+    std::fs::write(&config_path, "{bad-json").expect("failed to write bad json source");
+    let source = BudgetConfigSource {
+        source_type: "json".to_string(),
+        key: None,
+        path: Some(config_path.to_string_lossy().to_string()),
+        field: Some("tool_output.max_lines".to_string()),
+    };
+
+    let error = read_metric_from_source(&source).expect_err("malformed json source should fail");
+
+    assert!(
+        error.contains("failed to parse client budget json source"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Present but invalid environment budget values should fail instead of being ignored.
+/// 已存在但值非法的环境变量预算应失败，而不是被忽略。
+#[test]
+fn read_metric_from_source_reports_invalid_env_value() {
+    let _guard = environment_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let key = format!(
+        "VULCAN_TEST_BAD_BUDGET_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
+    let previous = std::env::var(&key).ok();
+    unsafe {
+        std::env::set_var(&key, "not-a-number");
+    }
+    let source = BudgetConfigSource {
+        source_type: "env".to_string(),
+        key: Some(key.clone()),
+        path: None,
+        field: None,
+    };
+
+    let error = read_metric_from_source(&source).expect_err("invalid env budget should fail");
+
+    if let Some(value) = previous {
+        unsafe {
+            std::env::set_var(&key, value);
+        }
+    } else {
+        unsafe {
+            std::env::remove_var(&key);
+        }
+    }
+    assert!(
+        error.contains("must be -1 or a non-negative integer"),
+        "unexpected error: {error}"
+    );
 }
 
 /// Verify that when a client does not explicitly define file_read, it falls back to the same client's tool_result budget.
@@ -300,7 +413,10 @@ fn resolve_client_budget_snapshot_falls_back_file_read_to_tool_result() {
         .find(|rule| rule.pattern == "codex-mcp-client")
         .expect("codex rule should exist");
 
-    let estimation = merge_effective_estimation(&parsed.defaults.estimation, None, None);
+    // Keep tool-level estimation absent so this test isolates scope fallback behavior.
+    // 保持工具级估算缺失，使本测试只覆盖 scope 回退行为。
+    let tool_override = crate::config::tool_config::ToolEstimationOverride::default();
+    let estimation = merge_effective_estimation(&parsed.defaults.estimation, None, &tool_override);
     let mut budgets = BTreeMap::new();
     for (scope_name, metric_configs) in &codex_rule.budgets {
         budgets.insert(
@@ -309,10 +425,10 @@ fn resolve_client_budget_snapshot_falls_back_file_read_to_tool_result() {
         );
     }
 
-    if !budgets.contains_key("file_read") {
-        if let Some(tool_result_scope) = budgets.get("tool_result").cloned() {
-            budgets.insert("file_read".to_string(), tool_result_scope);
-        }
+    if !budgets.contains_key("file_read")
+        && let Some(tool_result_scope) = budgets.get("tool_result").cloned()
+    {
+        budgets.insert("file_read".to_string(), tool_result_scope);
     }
 
     let tool_result = budgets
@@ -360,6 +476,48 @@ fn preload_client_budget_config_prefers_explicit_runtime_root() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Client-budget preload should fail when an existing external JSON source is malformed.
+/// 当已存在的外部 JSON 来源格式错误时，客户端预算预载应失败。
+#[test]
+fn preload_client_budget_config_reports_malformed_external_source() {
+    let _guard = runtime_root_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "vulcan-agent-service-budget-bad-external-runtime-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let config_path = root.join("configs").join("client_budgets.yaml");
+    let bad_source_path = root.join("bad-client.json");
+    std::fs::create_dir_all(config_path.parent().expect("config dir should exist"))
+        .expect("failed to create config directory");
+    std::fs::write(&bad_source_path, "{bad-json").expect("failed to write bad json source");
+    let escaped_source_path = bad_source_path.to_string_lossy().replace('\'', "''");
+    std::fs::write(
+        &config_path,
+        format!(
+            "defaults:\n  budgets:\n    tool_result:\n      bytes:\n        default: 1234\n        config_sources:\n          - type: json\n            path: '{}'\n            field: tool_output.max_bytes\n",
+            escaped_source_path
+        ),
+    )
+    .expect("failed to write client budget config");
+
+    initialize_client_budget_runtime_root(Some(&root)).expect("runtime root init should succeed");
+    let error =
+        preload_client_budget_config().expect_err("malformed external source should fail preload");
+
+    initialize_client_budget_runtime_root(None).expect("runtime root clear should succeed");
+    assert!(
+        error.contains("failed to parse client budget json source"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Prepare one isolated runtime root backed by one test-local client budget config so matching tests stay deterministic.
 /// 基于测试专用客户端预算配置准备隔离 runtime root，确保匹配测试具备稳定且可重复的配置来源。
 fn prepare_isolated_client_budget_runtime_root_with_yaml(
@@ -379,7 +537,13 @@ fn prepare_isolated_client_budget_runtime_root_with_yaml(
     std::fs::write(&config_path, client_budget_yaml)
         .expect("failed to write isolated client budget config");
     initialize_client_budget_runtime_root(Some(&root)).expect("runtime root init should succeed");
-    preload_client_budget_config().expect("client budget preload should succeed");
+    crate::config::tool_config::initialize_tool_config_runtime_root(Some(&root))
+        .expect("tool config runtime root init should succeed");
+    crate::config::model_config::initialize_model_config_runtime_root(Some(&root))
+        .expect("model config runtime root init should succeed");
+    // Use the production aggregate reload so the fixture exposes exactly one committed generation.
+    // 使用生产聚合重载，确保夹具只暴露一个已提交版本。
+    crate::config::reload_runtime_configs().expect("runtime config fixture reload should succeed");
     root
 }
 
@@ -387,6 +551,10 @@ fn prepare_isolated_client_budget_runtime_root_with_yaml(
 /// 清理单次匹配测试创建的隔离 runtime root，并将运行根发现恢复为默认行为。
 fn cleanup_isolated_client_budget_runtime_root(root: &std::path::Path) {
     initialize_client_budget_runtime_root(None).expect("runtime root clear should succeed");
+    crate::config::tool_config::initialize_tool_config_runtime_root(None)
+        .expect("tool config runtime root clear should succeed");
+    crate::config::model_config::initialize_model_config_runtime_root(None)
+        .expect("model config runtime root clear should succeed");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -439,7 +607,8 @@ clients:
         ..RuntimeRequestContext::default()
     };
 
-    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None)
+        .expect("client budget snapshot should resolve");
     assert_eq!(snapshot.client_name.as_deref(), Some("qwen-forced"));
     assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
     assert_eq!(snapshot.tool_result.bytes, 23_750);
@@ -498,7 +667,8 @@ clients:
         ..RuntimeRequestContext::default()
     };
 
-    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None)
+        .expect("client budget snapshot should resolve");
     assert_eq!(snapshot.client_name.as_deref(), Some("mcphost"));
     assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("mcphost"));
     assert_eq!(snapshot.tool_result.bytes, 95_000);
@@ -565,7 +735,8 @@ clients:
         ..RuntimeRequestContext::default()
     };
 
-    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None)
+        .expect("client budget snapshot should resolve");
     assert_eq!(snapshot.client_name.as_deref(), Some("qwen-inline"));
     assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
     assert_eq!(snapshot.tool_result.bytes, 23_750);
@@ -631,7 +802,8 @@ clients:
         std::env::set_var(CLIENT_MATCH_NAME_OVERRIDE_ENV, "qwen-forced");
     }
 
-    let snapshot = resolve_grpc_client_budget_snapshot("exact-client", None, None);
+    let snapshot = resolve_grpc_client_budget_snapshot("exact-client", None, None)
+        .expect("gRPC client budget snapshot should resolve");
     assert_eq!(snapshot.client_name.as_deref(), Some("exact-client"));
     assert_eq!(
         snapshot.matched_client_pattern.as_deref(),
@@ -647,7 +819,8 @@ clients:
         disable_client_match_overrides: true,
         ..RuntimeRequestContext::default()
     };
-    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None);
+    let snapshot = resolve_client_budget_snapshot(Some(&request_context), None, None)
+        .expect("client budget snapshot should resolve");
     assert_eq!(snapshot.client_name.as_deref(), Some("exact-client"));
     assert_eq!(snapshot.tool_result.bytes, 47_500);
 
@@ -690,7 +863,8 @@ clients:
 "#,
     );
 
-    let snapshot = resolve_grpc_client_budget_snapshot("qwen-grpc", None, None);
+    let snapshot = resolve_grpc_client_budget_snapshot("qwen-grpc", None, None)
+        .expect("gRPC client budget snapshot should resolve");
     assert_eq!(snapshot.client_name.as_deref(), Some("qwen-grpc"));
     assert_eq!(snapshot.matched_client_pattern.as_deref(), Some("*qwen*"));
     assert_eq!(snapshot.tool_result.bytes, 23_750);

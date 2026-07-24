@@ -32,6 +32,14 @@ HOST_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_host_deps.sh"
 # LUA_DEPS_SCRIPT_PATH 用于指向专用的 shell Lua 依赖初始化脚本。
 LUA_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/install_lua_deps.sh"
 
+# MANAGED_RUNTIME_DEPS_SCRIPT_PATH points at the verified LuaSkills 0.5.4 Python/Node fetcher.
+# MANAGED_RUNTIME_DEPS_SCRIPT_PATH 指向经过校验的 LuaSkills 0.5.4 Python/Node 拉取器。
+MANAGED_RUNTIME_DEPS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/deps/fetch_managed_runtimes.sh"
+
+# MANAGED_RUNTIME_LAYOUT_CHECK_SCRIPT_PATH points at the post-fetch manifest/layout validator.
+# MANAGED_RUNTIME_LAYOUT_CHECK_SCRIPT_PATH 指向拉取后的清单与布局校验器。
+MANAGED_RUNTIME_LAYOUT_CHECK_SCRIPT_PATH="${SCRIPT_DIR}/scripts/debug-tools/managed_runtime_layout_check.py"
+
 # UPDATE_SKILLS_SCRIPT_PATH points at the dedicated shell LuaSkills update script.
 # UPDATE_SKILLS_SCRIPT_PATH 用于指向专用的 shell LuaSkills 更新脚本。
 UPDATE_SKILLS_SCRIPT_PATH="${SCRIPT_DIR}/scripts/update_skills.sh"
@@ -120,6 +128,9 @@ invoke_dependency_install() {
         lua)
             script_path="${LUA_DEPS_SCRIPT_PATH}"
             ;;
+        managed|python|node)
+            script_path="${MANAGED_RUNTIME_DEPS_SCRIPT_PATH}"
+            ;;
         *)
             echo "Unsupported dependency kind: '${dependency_kind}'" >&2
             exit 1
@@ -131,7 +142,25 @@ invoke_dependency_install() {
         exit 1
     fi
 
-    bash "${script_path}"
+    if [ "${dependency_kind}" = "managed" ]; then
+        bash "${script_path}" all
+    elif [ "${dependency_kind}" = "python" ]; then
+        bash "${script_path}" python
+    elif [ "${dependency_kind}" = "node" ]; then
+        bash "${script_path}" node
+    else
+        bash "${script_path}"
+    fi
+
+    if [ "${dependency_kind}" = "managed" ]; then
+        command -v python3 >/dev/null 2>&1 || {
+            echo "python3 is required to validate the fetched managed runtime layout" >&2
+            exit 1
+        }
+        python3 "${MANAGED_RUNTIME_LAYOUT_CHECK_SCRIPT_PATH}" \
+            "${SCRIPT_DIR}/third_party/managed_runtime_cache" \
+            --distribution-root "${SCRIPT_DIR}/third_party/luaskills_managed_runtimes"
+    fi
 }
 
 # invoke_update_skills delegates managed LuaSkills updates to the dedicated shell script.
@@ -155,9 +184,12 @@ Usage:
   ./make.sh release     # release build
   ./make.sh run         # run debug build
   ./make.sh run release # run release build
-  ./make.sh deps        # install host + official LuaSkills runtime dependencies
+  ./make.sh deps        # install host + Lua + managed Python/Node dependencies
   ./make.sh deps host   # install host native dependencies only
   ./make.sh deps lua    # install official LuaSkills runtime dependencies only
+  ./make.sh deps managed # fetch managed Python + Node distributions
+  ./make.sh deps python # fetch managed Python distribution only
+  ./make.sh deps node   # fetch managed Node + pnpm distributions only
   ./make.sh update-skills [skill-id...] # update output skills and sync them into runtime
 EOF
 }
@@ -196,12 +228,22 @@ case "${NORMALIZED_MODE}" in
             ""|all)
                 invoke_dependency_install "host"
                 invoke_dependency_install "lua"
+                invoke_dependency_install "managed"
                 ;;
             host)
                 invoke_dependency_install "host"
                 ;;
             lua)
                 invoke_dependency_install "lua"
+                ;;
+            managed)
+                invoke_dependency_install "managed"
+                ;;
+            python)
+                invoke_dependency_install "python"
+                ;;
+            node)
+                invoke_dependency_install "node"
                 ;;
             *)
                 echo "Unsupported deps command: '${COMMAND_VARIANT}'" >&2

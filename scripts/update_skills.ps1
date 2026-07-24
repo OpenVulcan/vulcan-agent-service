@@ -1,13 +1,13 @@
-param(
-    # Optional skill ids to update; omitted means all install records under output/state/installs.
-    # 可选的待更新技能标识；省略时使用 output/state/installs 下的全部安装记录。
+﻿param(
+    # Optional skill ids to update; omitted means all install records under output/lua_runtime/state/installs.
+    # 可选的待更新技能标识；省略时使用 output/lua_runtime/state/installs 下的全部安装记录。
     [string[]]$SkillId = @(),
     # Runtime root used as the update staging area.
     # 作为更新暂存区使用的运行根。
-    [string]$OutputRuntimeRoot = "output",
+    [string]$OutputRuntimeRoot = "output\lua_runtime",
     # Runtime root that receives updated skills and install records.
     # 接收已更新技能与安装记录的运行根。
-    [string]$TargetRuntimeRoot = "runtime",
+    [string]$TargetRuntimeRoot = "runtime\lua_runtime",
     # Optional explicit LuaSkills FFI dynamic library path.
     # 可选的显式 LuaSkills FFI 动态库路径。
     [string]$LuaskillsLib = "",

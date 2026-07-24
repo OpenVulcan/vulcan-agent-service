@@ -9,6 +9,6 @@ mod types;
 
 #[allow(unused_imports)]
 pub use types::{
-    Config, NamedSkillRootConfig, RunLuaPoolConfigSection, SkillRootConfigEntry,
-    SpaceControllerConfig, SpaceControllerProcessModeConfig,
+    Config, ManagedRuntimeConfigSection, NamedSkillRootConfig, RunLuaPoolConfigSection,
+    SkillRootConfigEntry, SpaceControllerConfig, SpaceControllerProcessModeConfig,
 };

@@ -52,7 +52,7 @@ fn make_help_descriptor() -> RuntimeSkillHelpDescriptor {
         skill_name: "Demo Skill".to_string(),
         skill_version: "1.2.3".to_string(),
         root_name: "ROOT".to_string(),
-        skill_dir: "D:/runtime/skills/demo-skill".to_string(),
+        skill_dir: "D:/runtime/lua_runtime/skills/demo-skill".to_string(),
         main: RuntimeHelpNodeDescriptor {
             flow_name: "main".to_string(),
             description: "Summarize the package-level capability surface.".to_string(),
@@ -123,7 +123,8 @@ fn skill_manager_user_selection_uses_only_user_layer() {
 #[test]
 fn skill_manager_uninstall_forces_user_target_when_root_shadows_skill() {
     let runtime_root = unique_test_dir("skill-manager-user-target");
-    std::fs::create_dir_all(&runtime_root).expect("runtime root should be created");
+    std::fs::create_dir_all(runtime_root.join("lua_runtime"))
+        .expect("LuaSkills runtime root should be created");
     let root_layer = RuntimeSkillRoot {
         name: "ROOT".to_string(),
         skills_dir: runtime_root.join("root-space").join("skills"),
@@ -151,9 +152,7 @@ fn skill_manager_uninstall_forces_user_target_when_root_shadows_skill() {
             ToolCacheConfig::default(),
         )
         .expect("server should load shadowed skill roots");
-    let _lifecycle_callback_guard = luaskills_lifecycle_callback_lock()
-        .lock()
-        .expect("LuaSkills lifecycle callback lock should not be poisoned");
+    let _lifecycle_callback_guard = lock_luaskills_lifecycle_callback();
     let lifecycle_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
         RuntimeSkillLifecycleEvent,
     >::new()));
@@ -314,7 +313,9 @@ fn tools_list_hides_help_tools_when_lua_engine_is_unavailable() {
 fn tools_list_exposes_luaskill_config_when_host_path_is_available() {
     let root = unique_test_dir("luaskill-config-tools-list");
     let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new().with_runtime_skill_config_file_path(config_file_path);
+    let server = HostRuntime::new()
+        .with_runtime_skill_config_file_path(config_file_path)
+        .expect("luaskill-config tool should register while runtime is uniquely owned");
     let tool_names: HashSet<String> = server
         .list_runtime_tools()
         .expect("tool listing should succeed after luaskill-config registration")
@@ -325,12 +326,35 @@ fn tools_list_exposes_luaskill_config_when_host_path_is_available() {
     assert!(tool_names.contains("luaskill-config"));
 }
 
+/// Builder-only mutation should fail explicitly after HostRuntime has been cloned.
+/// HostRuntime 被克隆后，构建期专用变更应明确失败。
+#[test]
+fn builder_mutation_rejects_shared_runtime_after_clone() {
+    let root = unique_test_dir("shared-builder-mutation");
+    let config_file_path = root.join("configs").join("skill_config.json");
+    let server = HostRuntime::new();
+    let _shared_runtime = server.clone();
+
+    let error = match server.with_runtime_skill_config_file_path(config_file_path) {
+        Ok(_) => panic!("builder mutation should reject already shared runtime"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("requires a uniquely owned runtime")
+    );
+}
+
 /// Lua help tools should become visible only after the Lua runtime capability has been registered explicitly.
 /// Lua help 工具只应在显式注册了 Lua 运行时能力后才对外可见。
 #[test]
 fn register_lua_help_tools_exposes_help_tools_after_runtime_ready() {
     let mut server = HostRuntime::new();
-    server.register_lua_help_tools();
+    server
+        .register_lua_help_tools()
+        .expect("Lua help tools should register while runtime is uniquely owned");
     let tool_names: HashSet<String> = server
         .list_runtime_tools()
         .expect("tool listing should succeed after help registration")
@@ -401,7 +425,9 @@ fn skill_manager_url_install_reports_not_implemented() {
 fn luaskill_config_tool_works_without_lua_engine() {
     let root = unique_test_dir("luaskill-config-without-engine");
     let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new().with_runtime_skill_config_file_path(config_file_path.clone());
+    let server = HostRuntime::new()
+        .with_runtime_skill_config_file_path(config_file_path.clone())
+        .expect("luaskill-config tool should register while runtime is uniquely owned");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -480,13 +506,56 @@ fn luaskill_config_tool_works_without_lua_engine() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// MCP tools/call should treat an omitted arguments field as an empty JSON object before host-tool parsing.
+/// MCP tools/call 应在宿主工具解析前把省略的 arguments 字段视为空 JSON 对象。
+#[test]
+fn tools_call_missing_arguments_uses_empty_object_contract() {
+    let root = unique_test_dir("tools-call-missing-arguments");
+    let config_file_path = root.join("configs").join("skill_config.json");
+    let server = HostRuntime::new()
+        .with_runtime_skill_config_file_path(config_file_path)
+        .expect("luaskill-config tool should register while runtime is uniquely owned");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime should build");
+
+    let response = runtime
+        .block_on(McpDispatcher::new(server).handle_message_with_context(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "luaskill-config"
+                }
+            }),
+            RequestContext::default(),
+        ))
+        .expect("tools/call without arguments should return one response");
+    let error = response
+        .get("error")
+        .expect("missing luaskill-config action should return a JSON-RPC error");
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .expect("error should contain a message");
+
+    assert_eq!(error.get("code").and_then(Value::as_i64), Some(-32602));
+    assert!(message.contains("missing field `action`"));
+    assert!(!message.contains("invalid type: null"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Empty luaskill-config listings should explicitly report that no configuration exists yet.
 /// 空的 luaskill-config 列表结果应明确提示当前还没有任何配置。
 #[test]
 fn luaskill_config_list_reports_empty_state() {
     let root = unique_test_dir("luaskill-config-empty-list");
     let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new().with_runtime_skill_config_file_path(config_file_path);
+    let server = HostRuntime::new()
+        .with_runtime_skill_config_file_path(config_file_path)
+        .expect("luaskill-config tool should register while runtime is uniquely owned");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -534,7 +603,9 @@ fn luaskill_config_list_reports_empty_state() {
 fn luaskill_config_list_groups_entries_by_skill_id() {
     let root = unique_test_dir("luaskill-config-grouped-list");
     let config_file_path = root.join("configs").join("skill_config.json");
-    let server = HostRuntime::new().with_runtime_skill_config_file_path(config_file_path);
+    let server = HostRuntime::new()
+        .with_runtime_skill_config_file_path(config_file_path)
+        .expect("luaskill-config tool should register while runtime is uniquely owned");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 use luaskills::{
     SkillApplyResult, SkillInstallRequest, SkillInstallSourceType, SkillManagementAuthority,
 };
@@ -13,6 +11,7 @@ use crate::config::Config;
 use crate::luaskills_adapter::install_luaskills_log_callback;
 use crate::support::runtime_logging::set_non_error_logging_enabled;
 use crate::support::temp_maintenance::{CleanupTrigger, maintain_runtime_temp_dir};
+use crate::support::{append_blank_rendered_line, append_rendered_line};
 
 /// Install one managed LuaSkill into ROOT from the local CLI without starting MCP transports.
 /// 在不启动 MCP 传输服务的情况下，从本地 CLI 将单个受管 LuaSkill 安装到 ROOT。
@@ -67,24 +66,25 @@ pub(super) fn run_root_skills_update_mode() -> Result<(), Box<dyn std::error::Er
     // Render a single command summary so partial failures remain visible to shell callers.
     // 渲染单份命令摘要，确保 shell 调用方能看到局部失败。
     let mut rendered = String::new();
-    writeln!(&mut rendered, "# root-skill-manager update-all")
-        .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- layer: ROOT").expect("writing to String should not fail");
-    writeln!(
+    append_rendered_line(
         &mut rendered,
-        "- target_root: {}",
-        context.target_root.skills_dir.display()
-    )
-    .expect("writing to String should not fail");
+        format_args!("# root-skill-manager update-all"),
+    );
+    append_rendered_line(&mut rendered, format_args!("- layer: ROOT"));
+    append_rendered_line(
+        &mut rendered,
+        format_args!(
+            "- target_root: {}",
+            context.target_root.skills_dir.display()
+        ),
+    );
 
     if managed_skill_ids.is_empty() {
-        writeln!(&mut rendered, "- status: no_managed_skills")
-            .expect("writing to String should not fail");
-        writeln!(
+        append_rendered_line(&mut rendered, format_args!("- status: no_managed_skills"));
+        append_rendered_line(
             &mut rendered,
-            "- message: no managed ROOT LuaSkills are installed"
-        )
-        .expect("writing to String should not fail");
+            format_args!("- message: no managed ROOT LuaSkills are installed"),
+        );
         println!("{}", rendered);
         return Ok(());
     }
@@ -166,9 +166,11 @@ fn render_root_skill_apply_result(action: &str, result: &SkillApplyResult) -> St
     // Build output in the same high-signal shape as the MCP skill-manager result.
     // 使用与 MCP skill-manager 结果相同的高信号形态构建输出。
     let mut rendered = String::new();
-    writeln!(&mut rendered, "# root-skill-manager {}", action)
-        .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- layer: ROOT").expect("writing to String should not fail");
+    append_rendered_line(
+        &mut rendered,
+        format_args!("# root-skill-manager {}", action),
+    );
+    append_rendered_line(&mut rendered, format_args!("- layer: ROOT"));
     append_root_skill_apply_fields(&mut rendered, result);
     rendered
 }
@@ -176,32 +178,31 @@ fn render_root_skill_apply_result(action: &str, result: &SkillApplyResult) -> St
 /// Append common apply-result fields shared by ROOT install and update output.
 /// 追加 ROOT 安装与更新输出共享的应用结果字段。
 fn append_root_skill_apply_fields(rendered: &mut String, result: &SkillApplyResult) {
-    writeln!(rendered, "- skill_id: {}", result.skill_id)
-        .expect("writing to String should not fail");
-    writeln!(rendered, "- status: {}", result.status).expect("writing to String should not fail");
+    append_rendered_line(rendered, format_args!("- skill_id: {}", result.skill_id));
+    append_rendered_line(rendered, format_args!("- status: {}", result.status));
     if let Some(version) = result.version.as_deref() {
-        writeln!(rendered, "- version: {}", version).expect("writing to String should not fail");
+        append_rendered_line(rendered, format_args!("- version: {}", version));
     }
     if let Some(source_type) = result.source_type {
-        writeln!(
+        append_rendered_line(
             rendered,
-            "- source_type: {}",
-            render_root_skill_install_source_type(source_type)
-        )
-        .expect("writing to String should not fail");
+            format_args!(
+                "- source_type: {}",
+                render_root_skill_install_source_type(source_type)
+            ),
+        );
     }
     if let Some(source_locator) = result.source_locator.as_deref() {
-        writeln!(rendered, "- source: {}", source_locator)
-            .expect("writing to String should not fail");
+        append_rendered_line(rendered, format_args!("- source: {}", source_locator));
     }
-    writeln!(rendered, "- message: {}", result.message).expect("writing to String should not fail");
+    append_rendered_line(rendered, format_args!("- message: {}", result.message));
 }
 
 /// Append one successful ROOT update result to the update-all command summary.
 /// 将单个成功的 ROOT 更新结果追加到全量更新命令摘要。
 fn append_root_skill_update_result(rendered: &mut String, result: &SkillApplyResult) {
-    writeln!(rendered).expect("writing to String should not fail");
-    writeln!(rendered, "## {}", result.skill_id).expect("writing to String should not fail");
+    append_blank_rendered_line(rendered);
+    append_rendered_line(rendered, format_args!("## {}", result.skill_id));
     append_root_skill_apply_fields(rendered, result);
 }
 
@@ -212,11 +213,11 @@ fn append_root_skill_update_error(
     skill_id: &str,
     error: &dyn std::error::Error,
 ) {
-    writeln!(rendered).expect("writing to String should not fail");
-    writeln!(rendered, "## {}", skill_id).expect("writing to String should not fail");
-    writeln!(rendered, "- skill_id: {}", skill_id).expect("writing to String should not fail");
-    writeln!(rendered, "- status: failed").expect("writing to String should not fail");
-    writeln!(rendered, "- message: {}", error).expect("writing to String should not fail");
+    append_blank_rendered_line(rendered);
+    append_rendered_line(rendered, format_args!("## {}", skill_id));
+    append_rendered_line(rendered, format_args!("- skill_id: {}", skill_id));
+    append_rendered_line(rendered, format_args!("- status: failed"));
+    append_rendered_line(rendered, format_args!("- message: {}", error));
 }
 
 /// Render one skill install source type as a stable CLI string.
@@ -227,5 +228,70 @@ fn render_root_skill_install_source_type(source_type: SkillInstallSourceType) ->
         SkillInstallSourceType::OfficialHub => "official_hub",
         SkillInstallSourceType::Url => "url",
         SkillInstallSourceType::PrivateUrlManifest => "private_url_manifest",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Render ROOT apply results with optional source fields preserved.
+    /// 验证 ROOT 应用结果渲染会保留可选来源字段。
+    #[test]
+    fn render_root_skill_apply_result_includes_root_layer_and_source_fields() {
+        // Use a complete result so every apply field is asserted.
+        // 使用完整结果以断言每个应用结果字段。
+        let result = SkillApplyResult {
+            skill_id: "demo-skill".to_string(),
+            status: "installed".to_string(),
+            message: "installed successfully".to_string(),
+            version: Some("1.2.3".to_string()),
+            source_type: Some(SkillInstallSourceType::PrivateUrlManifest),
+            source_locator: Some("https://example.test/source.yaml".to_string()),
+        };
+
+        // Render the install path without starting ROOT runtime services.
+        // 在不启动 ROOT 运行时服务的情况下渲染安装路径。
+        let rendered = render_root_skill_apply_result("install", &result);
+
+        assert_eq!(
+            rendered,
+            concat!(
+                "# root-skill-manager install\n",
+                "- layer: ROOT\n",
+                "- skill_id: demo-skill\n",
+                "- status: installed\n",
+                "- version: 1.2.3\n",
+                "- source_type: private_url_manifest\n",
+                "- source: https://example.test/source.yaml\n",
+                "- message: installed successfully\n"
+            )
+        );
+    }
+
+    /// Render ROOT update errors as isolated failed skill sections.
+    /// 验证 ROOT 更新错误会渲染为独立的失败技能段落。
+    #[test]
+    fn append_root_skill_update_error_renders_failed_section() {
+        // Use a concrete error value to exercise the dyn Error rendering path.
+        // 使用具体错误值覆盖 dyn Error 渲染路径。
+        let error = std::io::Error::other("network denied");
+        // Start from the command header because update-all appends per-skill sections.
+        // 从命令标题开始，因为 update-all 会追加逐技能段落。
+        let mut rendered = String::from("# root-skill-manager update-all\n");
+
+        append_root_skill_update_error(&mut rendered, "broken-skill", &error);
+
+        assert_eq!(
+            rendered,
+            concat!(
+                "# root-skill-manager update-all\n",
+                "\n",
+                "## broken-skill\n",
+                "- skill_id: broken-skill\n",
+                "- status: failed\n",
+                "- message: network denied\n"
+            )
+        );
     }
 }

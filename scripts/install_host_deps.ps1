@@ -14,7 +14,7 @@ $ThirdParty = Join-Path $ProjectDir "third_party"
 $VldbControllerDir = Join-Path $ThirdParty "vldb_controller"
 $VldbControllerBinDir = Join-Path $VldbControllerDir "bin"
 $VldbControllerRepo = "OpenVulcan/vldb-controller"
-$VldbControllerTag = "v0.2.1"
+$VldbControllerTag = "v0.2.3"
 
 function Ensure-Dir {
     param([string]$Path)

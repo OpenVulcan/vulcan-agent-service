@@ -1,3 +1,7 @@
+/// Generate protobuf bindings and configure binary-specific linker behavior.
+/// 生成 Protobuf 绑定并配置二进制专属链接行为。
+/// Returns success after code generation and linker directive emission, or the underlying build error.
+/// 代码生成及链接指令输出完成后返回成功，否则返回底层构建错误。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     unsafe {
@@ -28,6 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(false)
         .build_server(true)
         .compile_protos(&mcp_protos, &[proto_dir])?;
+
+    // LuaJIT static objects carry CRT export directives; this executable has no consumers for the auxiliary import/export libraries they would generate.
+    // LuaJIT 静态对象携带 CRT 导出指令；本可执行文件没有辅助导入库与导出库的消费者，因此无需生成这些文件。
+    println!("cargo:rustc-link-arg-bin=vulcan-agent-service=/NOEXP");
+    println!("cargo:rustc-link-arg-bin=vulcan-agent-service=/NOIMPLIB");
 
     Ok(())
 }

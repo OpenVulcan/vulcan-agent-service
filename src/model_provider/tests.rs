@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 /// Captured one-shot HTTP request received by the local mock model provider.
@@ -28,9 +27,8 @@ struct MockProviderRequest {
 
 /// Return one shared mutex used to serialize process-wide LuaSkills model callback tests.
 /// 返回一个共享互斥锁，用于串行化进程级 LuaSkills 模型回调测试。
-fn callback_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn callback_lock() -> &'static std::sync::Mutex<()> {
+    crate::config::runtime_config_test_lock()
 }
 
 /// Build one unique temporary directory path for a model-provider test case.
@@ -61,12 +59,24 @@ fn make_lua_engine() -> LuaEngine {
     .expect("Lua engine should be created")
 }
 
+/// Model-config cache failures should be exposed as host-side internal model errors.
+/// 模型配置缓存失败应暴露为宿主侧模型内部错误。
+#[test]
+fn model_config_runtime_error_uses_internal_error_code() {
+    // Build one representative cache failure message.
+    // 构造一条代表性的缓存失败消息。
+    let error = model_config_runtime_error("model config runtime lock poisoned".to_string());
+
+    assert_eq!(error.code, ModelErrorCode::InternalError);
+    assert!(error.message.contains("model config runtime lock poisoned"));
+}
+
 /// Restore model config discovery to the repository template and re-apply callback registration.
 /// 将模型配置发现恢复到仓库模板，并重新应用回调注册。
 fn restore_default_model_callbacks() {
     let _ = initialize_model_config_runtime_root(None);
     let _ = preload_model_config();
-    install_luaskills_model_callbacks();
+    let _ = install_luaskills_model_callbacks();
 }
 
 /// Start a one-shot local HTTP server that returns the provided OpenAI-compatible response body.
@@ -132,7 +142,7 @@ fn expected_http_request_len(request_bytes: &[u8]) -> Option<usize> {
     let header_text = std::str::from_utf8(&request_bytes[..header_end]).ok()?;
     let content_length = header_text
         .lines()
-        .find_map(|line| parse_content_length_header(line))
+        .find_map(parse_content_length_header)
         .unwrap_or(0);
     Some(header_end + content_length)
 }
@@ -335,6 +345,25 @@ fn provider_error_preserves_sanitized_provider_fields() {
     assert_eq!(error.provider_status, Some(400));
 }
 
+/// Provider HTTP errors with non-JSON bodies should keep parse diagnostics and sanitized text.
+/// 非 JSON 响应体的供应商 HTTP 错误应保留解析诊断与脱敏文本。
+#[test]
+fn provider_error_reports_non_json_body_parse_failure() {
+    let error = provider_error_from_http_status(
+        StatusCode::TOO_MANY_REQUESTS,
+        "plain sk-secret",
+        "sk-secret",
+    );
+
+    assert_eq!(error.code, ModelErrorCode::ProviderError);
+    assert!(error.message.contains("model provider returned HTTP 429"));
+    assert!(error.message.contains("non-JSON error body"));
+    assert!(!error.message.contains("sk-secret"));
+    assert_eq!(error.provider_message.as_deref(), Some("plain ***"));
+    assert_eq!(error.provider_code, None);
+    assert_eq!(error.provider_status, Some(429));
+}
+
 /// Model errors should serialize into the stable Lua-facing error object shape.
 /// 模型错误应序列化为稳定的 Lua 面向错误对象形态。
 #[test]
@@ -521,7 +550,7 @@ openai_compatible:
 
     initialize_model_config_runtime_root(Some(&root)).expect("runtime root should set");
     preload_model_config().expect("model config should preload");
-    install_luaskills_model_callbacks();
+    install_luaskills_model_callbacks().expect("model callbacks should install");
 
     let engine = make_lua_engine();
     let result = engine

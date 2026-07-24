@@ -27,18 +27,6 @@ pub struct ModelInvocationContext {
     pub request_id: Option<String>,
 }
 
-/// Runtime-visible model capability names.
-/// 运行时可见的模型能力名称。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelCapability {
-    /// Single-text embedding capability.
-    /// 单文本向量能力。
-    Embed,
-    /// One-shot non-streaming LLM capability.
-    /// 单轮非流式 LLM 能力。
-    Llm,
-}
-
 /// User-facing status snapshot that LuaSkills can mirror through `vulcan.models.status()`.
 /// 面向用户的状态快照，LuaSkills 后续可通过 `vulcan.models.status()` 映射。
 #[derive(Debug, Clone, Serialize)]

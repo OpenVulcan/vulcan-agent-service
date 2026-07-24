@@ -4,11 +4,13 @@
 mod capabilities;
 mod content;
 mod initialization;
+mod params;
 mod tools;
 mod version;
 
 pub use capabilities::*;
 pub use content::*;
 pub use initialization::*;
+pub use params::*;
 pub use tools::*;
 pub use version::*;

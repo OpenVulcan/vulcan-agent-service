@@ -1,16 +1,14 @@
 #[cfg(not(windows))]
 use crate::bootstrap::{ProcessShutdownMode, run_service_host_for_runtime_root};
 use crate::config::Config;
-use chrono::{DateTime, Local};
-use serde::{Deserialize, Serialize};
+use crate::support::luaskills_runtime_root;
 use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod command_outcome;
 mod definition;
-mod manifest;
-#[cfg(windows)]
 mod platform;
 
 use command_outcome::{
@@ -22,10 +20,10 @@ use platform::{
     run_service_entrypoint, start_service, stop_service, uninstall_service,
 };
 
+#[cfg(windows)]
 mod windows;
 
 use definition::{HostServiceManager, ServiceInstallArtifact, build_install_artifact};
-use manifest::{HostServiceManifest, remove_manifest_file, write_manifest_file};
 
 /// Default stable service name used when the caller does not override it.
 /// 当调用方未显式覆盖时使用的默认稳定服务名称。
@@ -37,7 +35,7 @@ pub(crate) const DEFAULT_SERVICE_DESCRIPTION: &str = "Vulcan unified agent servi
 
 /// Cross-platform service scope used for installation and lifecycle management.
 /// 安装与生命周期管理使用的跨平台服务作用域。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ServiceScope {
     /// Install into the system-wide service manager scope.
     /// 安装到系统级服务管理作用域。
@@ -60,7 +58,7 @@ impl ServiceScope {
 
 /// Startup policy requested during service installation.
 /// 服务安装时请求的启动策略。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ServiceStartup {
     /// Start automatically with the platform service manager.
     /// 跟随平台服务管理器自动启动。
@@ -185,8 +183,6 @@ pub(crate) fn run_service_command(
     }
 }
 
-/// Install one platform-native service definition and persist the resulting manifest.
-
 /// Resolve the platform service manager supported by the current target OS.
 /// 解析当前目标操作系统支持的平台服务管理器。
 fn current_service_manager() -> Result<HostServiceManager, Box<dyn std::error::Error>> {
@@ -224,7 +220,7 @@ pub(crate) fn resolve_service_runtime_root(
     }
     let current_dir = std::env::current_dir()?;
     let exe_path = std::env::current_exe()?;
-    let inferred_root = resolve_service_runtime_root_from_layout(&current_dir, &exe_path).ok_or(
+    let inferred_root = resolve_service_runtime_root_from_layout(&current_dir, &exe_path)?.ok_or(
         "failed to resolve service runtime root from the current layout; run the command from <runtime_root> or <runtime_root>/bin, or pass --runtime-root explicitly",
     )?;
     normalize_service_runtime_root_path(&inferred_root)
@@ -232,6 +228,10 @@ pub(crate) fn resolve_service_runtime_root(
 
 /// Normalize one service runtime root path into a stable absolute directory path.
 /// 把一份服务运行根路径规范化为稳定的绝对目录路径。
+/// Parameters: `path` is the explicit or inferred runtime-root candidate path.
+/// 参数：`path` 是显式或推导得到的运行根候选路径。
+/// Returns the canonical runtime-root directory or a path inspection/canonicalization error.
+/// 返回规范化后的运行根目录，或路径检查/规范化错误。
 pub(crate) fn normalize_service_runtime_root_path(
     path: &Path,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -240,34 +240,63 @@ pub(crate) fn normalize_service_runtime_root_path(
     } else {
         std::env::current_dir()?.join(path)
     };
-    if !absolute_path.exists() {
-        return Err(format!("runtime_root does not exist: {}", absolute_path.display()).into());
-    }
-    if !absolute_path.is_dir() {
+    let metadata = match std::fs::metadata(&absolute_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(format!("runtime_root does not exist: {}", absolute_path.display()).into());
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect runtime_root {}: {}",
+                absolute_path.display(),
+                error
+            )
+            .into());
+        }
+    };
+    if !metadata.is_dir() {
         return Err(format!(
             "runtime_root is not a directory: {}",
             absolute_path.display()
         )
         .into());
     }
-    Ok(absolute_path.canonicalize().unwrap_or(absolute_path))
+    absolute_path.canonicalize().map_err(|error| {
+        format!(
+            "failed to canonicalize runtime_root {}: {}",
+            absolute_path.display(),
+            error
+        )
+        .into()
+    })
 }
 
 /// Resolve one runtime root from the current directory and executable layout used by direct startup.
 /// 基于直接启动使用的当前目录与可执行文件布局解析一份运行根。
+/// Parameters: `current_dir` is the process working directory used for current-layout inference.
+/// 参数：`current_dir` 是用于当前布局推导的进程工作目录。
+/// Parameters: `exe_path` is the current executable path used for executable-side inference.
+/// 参数：`exe_path` 是用于可执行文件侧推导的当前可执行文件路径。
+/// Returns the inferred runtime root, `None` when no candidate matches, or a marker inspection error.
+/// 返回推导出的运行根、无匹配候选时的 `None`，或标记目录检查错误。
 fn resolve_service_runtime_root_from_layout(
     current_dir: &Path,
     exe_path: &Path,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     for candidate_root in current_runtime_layout_candidates(current_dir) {
-        if looks_like_service_runtime_root(&candidate_root) {
-            return Some(candidate_root);
+        if looks_like_service_runtime_root(&candidate_root)? {
+            return Ok(Some(candidate_root));
         }
     }
-    let exe_dir = exe_path.parent()?;
-    executable_runtime_layout_candidates(exe_dir)
-        .into_iter()
-        .find(|candidate| looks_like_service_runtime_root(candidate))
+    let Some(exe_dir) = exe_path.parent() else {
+        return Ok(None);
+    };
+    for candidate_root in executable_runtime_layout_candidates(exe_dir) {
+        if looks_like_service_runtime_root(&candidate_root)? {
+            return Ok(Some(candidate_root));
+        }
+    }
+    Ok(None)
 }
 
 /// Enumerate current-layout runtime-root candidates in stable preference order.
@@ -275,10 +304,10 @@ fn resolve_service_runtime_root_from_layout(
 fn current_runtime_layout_candidates(root: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     candidates.push(root.to_path_buf());
-    if root.file_name().is_some_and(|name| name == "bin") {
-        if let Some(parent_dir) = root.parent() {
-            candidates.push(parent_dir.to_path_buf());
-        }
+    if root.file_name().is_some_and(|name| name == "bin")
+        && let Some(parent_dir) = root.parent()
+    {
+        candidates.push(parent_dir.to_path_buf());
     }
     candidates.push(root.join("output"));
     candidates
@@ -298,10 +327,53 @@ fn executable_runtime_layout_candidates(exe_dir: &Path) -> Vec<PathBuf> {
 
 /// Return whether one directory looks like the hosted runtime root layout.
 /// 返回某个目录是否看起来像宿主运行根布局。
-fn looks_like_service_runtime_root(root: &Path) -> bool {
-    let has_configs = root.join("configs").is_dir();
-    let has_skills = root.join("skills").is_dir();
-    has_configs || has_skills
+/// Parameters: `root` is the candidate runtime-root directory to inspect.
+/// 参数：`root` 是需要检查的候选运行根目录。
+/// Returns `true` when a known marker directory exists, `false` when markers are absent, or an inspection error.
+/// 存在已知标记目录时返回 `true`，标记缺失时返回 `false`，否则返回检查错误。
+fn looks_like_service_runtime_root(root: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    let has_configs = runtime_root_marker_dir_present(&root.join("configs"), "runtime configs")?;
+    let has_lua_runtime = runtime_root_marker_dir_present(
+        &luaskills_runtime_root(root),
+        "LuaSkills runtime package",
+    )?;
+    Ok(has_configs || has_lua_runtime)
+}
+
+/// Inspect one runtime-root marker directory without hiding filesystem errors.
+/// 检查一个运行根标记目录，且不隐藏文件系统错误。
+/// Parameters: `path` is the marker directory path such as `configs` or `lua_runtime`.
+/// 参数：`path` 是 `configs` 或 `lua_runtime` 等标记目录路径。
+/// Parameters: `marker_label` names the marker kind in diagnostics.
+/// 参数：`marker_label` 用于在诊断中标识标记类型。
+/// Returns `true` when the marker directory exists, `false` when absent, or an inspection error.
+/// 标记目录存在时返回 `true`，缺失时返回 `false`，否则返回检查错误。
+fn runtime_root_marker_dir_present(
+    path: &Path,
+    marker_label: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect {} marker path {}: {}",
+                marker_label,
+                path.display(),
+                error
+            )
+            .into());
+        }
+    };
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{} marker path is not a directory: {}",
+            marker_label,
+            path.display()
+        )
+        .into());
+    }
+    Ok(true)
 }
 
 /// Ensure the parent directory of one file path exists before writing.
@@ -312,12 +384,6 @@ fn ensure_parent_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>
         .ok_or_else(|| format!("path has no parent directory: {}", path.display()))?;
     std::fs::create_dir_all(parent)?;
     Ok(())
-}
-
-/// Capture the current local timestamp for manifest persistence.
-/// 获取当前本地时间戳用于 manifest 持久化。
-fn now_local() -> DateTime<Local> {
-    Local::now()
 }
 
 #[cfg(test)]
@@ -333,6 +399,52 @@ mod tests {
             .expect("system time should be after unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("vulcan-agent-service-service-{name}-{timestamp}"))
+    }
+
+    /// Runtime-root normalization should report a missing directory explicitly.
+    /// 运行根规范化应显式报告缺失目录。
+    #[test]
+    fn normalize_service_runtime_root_path_reports_missing_runtime_root() {
+        let runtime_root = unique_service_test_dir("missing-runtime-root");
+        let error = normalize_service_runtime_root_path(&runtime_root)
+            .expect_err("missing runtime root should fail normalization");
+        let message = error.to_string();
+        assert!(
+            message.contains("runtime_root does not exist"),
+            "missing runtime root error should be explicit: {message}"
+        );
+    }
+
+    /// Runtime-root normalization should reject a regular file where a directory is required.
+    /// 运行根规范化应拒绝需要目录的位置出现普通文件。
+    #[test]
+    fn normalize_service_runtime_root_path_rejects_file_shaped_runtime_root() {
+        let runtime_root = unique_service_test_dir("file-runtime-root");
+        std::fs::write(&runtime_root, "not a directory")
+            .expect("file-shaped runtime root should be written");
+        let error = normalize_service_runtime_root_path(&runtime_root)
+            .expect_err("file-shaped runtime root should fail normalization");
+        let message = error.to_string();
+        assert!(
+            message.contains("runtime_root is not a directory"),
+            "file-shaped runtime root error should be explicit: {message}"
+        );
+        std::fs::remove_file(&runtime_root).expect("file-shaped runtime root should be removed");
+    }
+
+    /// Runtime-root normalization should return the canonical path for an existing directory.
+    /// 运行根规范化应返回已存在目录的规范化路径。
+    #[test]
+    fn normalize_service_runtime_root_path_canonicalizes_existing_directory() {
+        let runtime_root = unique_service_test_dir("canonical-runtime-root");
+        std::fs::create_dir_all(&runtime_root).expect("runtime root directory should be created");
+        let expected = runtime_root
+            .canonicalize()
+            .expect("runtime root directory should canonicalize");
+        let resolved = normalize_service_runtime_root_path(&runtime_root)
+            .expect("existing runtime root should normalize");
+        assert_eq!(resolved, expected);
+        std::fs::remove_dir_all(&runtime_root).expect("runtime root directory should be removed");
     }
 
     /// `systemctl` inactive output should be treated as a normal textual status instead of an error.
@@ -369,6 +481,7 @@ mod tests {
             .expect("runtime root configs directory should be created");
         let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
         let resolved = resolve_service_runtime_root_from_layout(&runtime_root, &fake_exe)
+            .expect("runtime-root marker inspection should succeed")
             .expect("current runtime root should resolve");
         assert_eq!(resolved, runtime_root);
     }
@@ -384,6 +497,7 @@ mod tests {
         std::fs::create_dir_all(&bin_dir).expect("bin directory should be created");
         let fake_exe = bin_dir.join("vulcan-agent-service.exe");
         let resolved = resolve_service_runtime_root_from_layout(&bin_dir, &fake_exe)
+            .expect("runtime-root marker inspection should succeed")
             .expect("bin working directory should resolve back to runtime root");
         assert_eq!(resolved, runtime_root);
     }
@@ -401,6 +515,7 @@ mod tests {
         std::fs::create_dir_all(&unrelated_dir).expect("unrelated directory should be created");
         let fake_exe = debug_dir.join("vulcan-agent-service.exe");
         let resolved = resolve_service_runtime_root_from_layout(&unrelated_dir, &fake_exe)
+            .expect("runtime-root marker inspection should succeed")
             .expect("debug executable directory should resolve back to runtime root");
         assert_eq!(resolved, runtime_root);
     }
@@ -416,7 +531,66 @@ mod tests {
         std::fs::create_dir_all(&unrelated_dir).expect("unrelated directory should be created");
         let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
         let resolved = resolve_service_runtime_root_from_layout(&unrelated_dir, &fake_exe)
+            .expect("runtime-root marker inspection should succeed")
             .expect("executable layout should resolve when current directory is unrelated");
         assert_eq!(resolved, runtime_root);
+    }
+
+    /// Service runtime-root inference should return none when no candidate has runtime markers.
+    /// 服务运行根推导在所有候选都没有运行根标记时应返回空。
+    #[test]
+    fn resolve_service_runtime_root_from_layout_returns_none_without_markers() {
+        let current_dir = unique_service_test_dir("no-markers-current");
+        let exe_root = unique_service_test_dir("no-markers-exe");
+        std::fs::create_dir_all(&current_dir).expect("current candidate directory should exist");
+        let fake_exe = exe_root.join("bin").join("vulcan-agent-service.exe");
+        let resolved = resolve_service_runtime_root_from_layout(&current_dir, &fake_exe)
+            .expect("missing runtime-root markers should not fail inspection");
+        assert!(
+            resolved.is_none(),
+            "runtime-root inference should not resolve without markers"
+        );
+        std::fs::remove_dir_all(&current_dir)
+            .expect("current candidate directory should be removed");
+    }
+
+    /// Service runtime-root inference should reject the removed top-level skills-only layout.
+    /// 服务运行根推导应拒绝仅含已移除顶层 skills 的旧布局。
+    #[test]
+    fn resolve_service_runtime_root_from_layout_rejects_removed_skills_only_layout() {
+        // RuntimeRoot contains the historical marker but no current application-root marker.
+        // RuntimeRoot 包含历史标记，但不包含任何当前应用根标记。
+        let runtime_root = unique_service_test_dir("removed-skills-only-layout");
+        std::fs::create_dir_all(runtime_root.join("skills"))
+            .expect("historical top-level skills marker should be created");
+        let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
+
+        let resolved = resolve_service_runtime_root_from_layout(&runtime_root, &fake_exe)
+            .expect("historical marker inspection should not fail");
+
+        assert!(
+            resolved.is_none(),
+            "removed top-level skills layout must not resolve as an application root"
+        );
+        std::fs::remove_dir_all(&runtime_root).expect("runtime root candidate should be removed");
+    }
+
+    /// Service runtime-root inference should reject a file-shaped `configs` marker.
+    /// 服务运行根推导应拒绝文件形态的 `configs` 标记。
+    #[test]
+    fn resolve_service_runtime_root_from_layout_rejects_file_shaped_configs_marker() {
+        let runtime_root = unique_service_test_dir("file-shaped-configs-marker");
+        std::fs::create_dir_all(&runtime_root).expect("runtime root candidate should be created");
+        std::fs::write(runtime_root.join("configs"), "not a directory")
+            .expect("file-shaped configs marker should be written");
+        let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
+        let error = resolve_service_runtime_root_from_layout(&runtime_root, &fake_exe)
+            .expect_err("file-shaped configs marker should fail inference");
+        let message = error.to_string();
+        assert!(
+            message.contains("runtime configs marker path is not a directory"),
+            "file-shaped configs marker error should be explicit: {message}"
+        );
+        std::fs::remove_dir_all(&runtime_root).expect("runtime root candidate should be removed");
     }
 }

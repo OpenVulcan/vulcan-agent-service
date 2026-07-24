@@ -3,8 +3,9 @@ use crate::config::Config;
 use crate::host_core::HostRuntime;
 use crate::luaskills_adapter::{
     build_luaskills_cache_config, build_luaskills_engine_options, default_user_skill_root,
-    normalize_skill_root_key, resolve_runtime_root_from_config, resolve_skill_config_file_path,
-    resolve_skill_roots_from_config, validate_unique_skill_root_spaces,
+    resolve_luaskills_runtime_root_from_config, resolve_skill_config_file_path,
+    resolve_skill_roots_from_config, try_normalize_skill_root_key,
+    validate_unique_skill_root_spaces,
 };
 use crate::support::temp_maintenance::initialize_runtime_temp_root;
 use crate::support::tool_result_format::initialize_tool_result_template_roots;
@@ -14,12 +15,13 @@ use luaskills::{
     SkillManagerConfig,
 };
 use serde_json::json;
+use std::io::ErrorKind;
 /// Resolve the effective runtime root for one host execution path and surface explicit runtime-root misconfiguration as an immediate error.
 /// 为单条宿主执行链解析生效运行根，并把显式 runtime_root 配置错误立即上抛。
-pub(super) fn resolve_runtime_root_for_host(
+pub(super) fn resolve_luaskills_runtime_root_for_host(
     config: &Config,
 ) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
-    resolve_runtime_root_from_config(config)
+    resolve_luaskills_runtime_root_from_config(config)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
 }
 
@@ -28,7 +30,7 @@ pub(super) fn resolve_runtime_root_for_host(
 fn resolve_runtime_skill_config_file_path_for_host(
     config: &Config,
 ) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
-    let Some(runtime_root) = resolve_runtime_root_for_host(config)? else {
+    let Some(runtime_root) = resolve_luaskills_runtime_root_for_host(config)? else {
         return Ok(None);
     };
     let file_path = resolve_skill_config_file_path(&runtime_root)
@@ -43,7 +45,7 @@ pub(super) fn build_host_tool_surface_server(
 ) -> Result<HostRuntime, Box<dyn std::error::Error>> {
     let mut server = HostRuntime::new();
     if let Some(skill_config_file_path) = resolve_runtime_skill_config_file_path_for_host(config)? {
-        server = server.with_runtime_skill_config_file_path(skill_config_file_path);
+        server = server.with_runtime_skill_config_file_path(skill_config_file_path)?;
     }
     Ok(server)
 }
@@ -53,8 +55,8 @@ pub(super) fn build_host_tool_surface_server(
 pub(super) fn initialize_runtime_temp_root_from_config(
     config: &Config,
 ) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
-    let runtime_root = resolve_runtime_root_for_host(config)?;
-    initialize_runtime_temp_root(runtime_root.as_deref());
+    let runtime_root = resolve_luaskills_runtime_root_for_host(config)?;
+    initialize_runtime_temp_root(runtime_root.as_deref())?;
     Ok(runtime_root)
 }
 
@@ -93,8 +95,8 @@ pub(super) async fn build_server(cfg: &Config) -> Result<HostRuntime, Box<dyn st
     }
 
     // Load Lua skills from system directory, with optional user override
-    let runtime_root = resolve_runtime_root_for_host(cfg)?;
-    let mut skill_roots = find_skill_roots(&cfg)?;
+    let runtime_root = resolve_luaskills_runtime_root_for_host(cfg)?;
+    let mut skill_roots = find_skill_roots(cfg)?;
     ensure_skill_manager_runtime_roots(runtime_root.as_deref(), &mut skill_roots)?;
     let resources_root = runtime_root.as_ref().map(|root| root.join("resources"));
     initialize_tool_result_template_roots(
@@ -174,9 +176,15 @@ fn ensure_user_skill_manager_root(
             error
         )
     })?;
-    let user_root_key = normalize_skill_root_key(&user_skills_dir);
-    let mut candidate_roots = skill_roots.clone();
-    candidate_roots.retain(|root| normalize_skill_root_key(&root.skills_dir) != user_root_key);
+    let user_root_key = try_normalize_skill_root_key(&user_skills_dir).map_err(|error| {
+        format!(
+            "Failed to normalize USER skills directory {}: {}",
+            user_skills_dir.display(),
+            error
+        )
+    })?;
+    let mut candidate_roots =
+        skill_roots_without_matching_key(skill_roots, &user_root_key, "USER skills directory")?;
     candidate_roots.push(RuntimeSkillRoot {
         name: "USER".to_string(),
         skills_dir: user_skills_dir,
@@ -223,9 +231,15 @@ pub(super) fn ensure_root_skill_manager_root(
             error
         )
     })?;
-    let managed_root_key = normalize_skill_root_key(&root_skills_dir);
-    let mut candidate_roots = skill_roots.clone();
-    candidate_roots.retain(|root| normalize_skill_root_key(&root.skills_dir) != managed_root_key);
+    let managed_root_key = try_normalize_skill_root_key(&root_skills_dir).map_err(|error| {
+        format!(
+            "Failed to normalize ROOT skills directory {}: {}",
+            root_skills_dir.display(),
+            error
+        )
+    })?;
+    let mut candidate_roots =
+        skill_roots_without_matching_key(skill_roots, &managed_root_key, "ROOT skills directory")?;
     candidate_roots.push(RuntimeSkillRoot {
         name: "ROOT".to_string(),
         skills_dir: root_skills_dir,
@@ -244,6 +258,39 @@ pub(super) fn ensure_root_skill_manager_root(
     })?;
     *skill_roots = candidate_roots;
     Ok(())
+}
+
+/// Clone all skill roots whose normalized key does not match one managed root key.
+/// 克隆所有规范化键不匹配某个托管根键的技能根。
+/// Parameters: `skill_roots` is the current skill-manager root chain.
+/// 参数：`skill_roots` 是当前 skill-manager 根链。
+/// Parameters: `excluded_key` is the normalized key that should be removed from the cloned chain.
+/// 参数：`excluded_key` 是需要从克隆链中移除的规范化键。
+/// Parameters: `operation_label` names the managed root being compared in diagnostics.
+/// 参数：`operation_label` 用于在诊断中标识正在比较的托管根。
+/// Returns a cloned root chain without matching entries or a key-normalization error.
+/// 返回移除匹配项后的克隆根链，或键规范化错误。
+fn skill_roots_without_matching_key(
+    skill_roots: &[RuntimeSkillRoot],
+    excluded_key: &str,
+    operation_label: &str,
+) -> Result<Vec<RuntimeSkillRoot>, Box<dyn std::error::Error>> {
+    let mut retained_roots = Vec::with_capacity(skill_roots.len());
+    for root in skill_roots {
+        let root_key = try_normalize_skill_root_key(&root.skills_dir).map_err(|error| {
+            format!(
+                "Failed to compare {} with skill root '{}' at {}: {}",
+                operation_label,
+                root.name,
+                root.skills_dir.display(),
+                error
+            )
+        })?;
+        if root_key != excluded_key {
+            retained_roots.push(root.clone());
+        }
+    }
+    Ok(retained_roots)
 }
 
 /// Normalize one skill-manager layer label for local chain construction.
@@ -271,11 +318,17 @@ fn skill_manager_layer_rank(name: &str) -> Result<usize, String> {
 pub(super) fn sort_skill_manager_formal_roots(
     skill_roots: &mut [RuntimeSkillRoot],
 ) -> Result<(), String> {
-    for root in skill_roots.iter_mut() {
-        root.name = normalize_skill_manager_layer_name(&root.name);
-        skill_manager_layer_rank(&root.name)?;
+    let mut ranked_roots = Vec::with_capacity(skill_roots.len());
+    for root in skill_roots.iter() {
+        let mut normalized_root = root.clone();
+        normalized_root.name = normalize_skill_manager_layer_name(&normalized_root.name);
+        let rank = skill_manager_layer_rank(&normalized_root.name)?;
+        ranked_roots.push((rank, normalized_root));
     }
-    skill_roots.sort_by_key(|root| skill_manager_layer_rank(&root.name).unwrap_or(usize::MAX));
+    ranked_roots.sort_by_key(|(rank, _root)| *rank);
+    for (target_root, (_rank, sorted_root)) in skill_roots.iter_mut().zip(ranked_roots) {
+        *target_root = sorted_root;
+    }
     Ok(())
 }
 
@@ -286,7 +339,7 @@ pub(super) fn build_root_skill_cli_context(
 ) -> Result<RootSkillCliContext, Box<dyn std::error::Error>> {
     // Resolve runtime root first so implicit ROOT/USER layers match normal service startup.
     // 先解析运行根，确保隐式 ROOT/USER 层与正常服务启动保持一致。
-    let runtime_root = resolve_runtime_root_for_host(config)?;
+    let runtime_root = resolve_luaskills_runtime_root_for_host(config)?;
     // Resolve and normalize the complete formal skill-root chain before selecting ROOT.
     // 在选择 ROOT 前解析并规范化完整正式技能根链。
     let mut skill_roots = find_skill_roots(config)?;
@@ -374,7 +427,7 @@ pub(super) fn collect_managed_root_skill_ids(
     root: &RuntimeSkillRoot,
     manager: &SkillManager,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    if !root.skills_dir.exists() {
+    if !optional_runtime_directory_present(&root.skills_dir, "ROOT skills directory")? {
         return Ok(Vec::new());
     }
     // Keep output deterministic regardless of filesystem iteration order.
@@ -384,7 +437,15 @@ pub(super) fn collect_managed_root_skill_ids(
         // Read one directory entry from the ROOT skills directory.
         // 从 ROOT skills 目录读取单个目录项。
         let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+        let entry_path = entry.path();
+        let entry_type = entry.file_type().map_err(|error| {
+            format!(
+                "Failed to inspect ROOT skill entry {}: {}",
+                entry_path.display(),
+                error
+            )
+        })?;
+        if !entry_type.is_dir() {
             continue;
         }
         // Convert the directory name into the skill id used by LuaSkills records.
@@ -392,7 +453,8 @@ pub(super) fn collect_managed_root_skill_ids(
         let Some(skill_id) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if !entry.path().join("skill.yaml").exists() {
+        let manifest_path = entry_path.join("skill.yaml");
+        if !optional_runtime_file_present(&manifest_path, "ROOT skill manifest")? {
             continue;
         }
         // Only managed records carry an update source; unmanaged ROOT directories are intentionally skipped.
@@ -408,12 +470,79 @@ pub(super) fn collect_managed_root_skill_ids(
     Ok(skill_ids)
 }
 
+/// Inspect one optional runtime path without hiding metadata errors.
+/// 检查一个可选运行时路径，且不隐藏元数据错误。
+/// Parameters: `path` is the runtime-managed path to inspect.
+/// 参数：`path` 是需要检查的运行时托管路径。
+/// Parameters: `path_label` names the path kind in diagnostics.
+/// 参数：`path_label` 用于在诊断中标识路径类型。
+/// Returns metadata when present, `None` when absent, or an inspection error.
+/// 路径存在时返回元数据，缺失时返回 `None`，否则返回检查错误。
+fn optional_runtime_path_metadata(
+    path: &std::path::Path,
+    path_label: &str,
+) -> Result<Option<std::fs::Metadata>, Box<dyn std::error::Error>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "Failed to inspect {} {}: {}",
+            path_label,
+            path.display(),
+            error
+        )
+        .into()),
+    }
+}
+
+/// Return whether one optional runtime directory exists and reject non-directory shapes.
+/// 返回一个可选运行时目录是否存在，并拒绝非目录形态。
+/// Parameters: `path` is the runtime-managed directory path to inspect.
+/// 参数：`path` 是需要检查的运行时托管目录路径。
+/// Parameters: `directory_label` names the directory kind in diagnostics.
+/// 参数：`directory_label` 用于在诊断中标识目录类型。
+/// Returns `true` when present, `false` when absent, or an inspection/shape error.
+/// 目录存在时返回 `true`，缺失时返回 `false`，否则返回检查/形态错误。
+fn optional_runtime_directory_present(
+    path: &std::path::Path,
+    directory_label: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(metadata) = optional_runtime_path_metadata(path, directory_label)? else {
+        return Ok(false);
+    };
+    if !metadata.is_dir() {
+        return Err(format!("{} is not a directory: {}", directory_label, path.display()).into());
+    }
+    Ok(true)
+}
+
+/// Return whether one optional runtime file exists and reject non-file shapes.
+/// 返回一个可选运行时文件是否存在，并拒绝非文件形态。
+/// Parameters: `path` is the runtime-managed file path to inspect.
+/// 参数：`path` 是需要检查的运行时托管文件路径。
+/// Parameters: `file_label` names the file kind in diagnostics.
+/// 参数：`file_label` 用于在诊断中标识文件类型。
+/// Returns `true` when present, `false` when absent, or an inspection/shape error.
+/// 文件存在时返回 `true`，缺失时返回 `false`，否则返回检查/形态错误。
+fn optional_runtime_file_present(
+    path: &std::path::Path,
+    file_label: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(metadata) = optional_runtime_path_metadata(path, file_label)? else {
+        return Ok(false);
+    };
+    if !metadata.is_file() {
+        return Err(format!("{} is not a file: {}", file_label, path.display()).into());
+    }
+    Ok(true)
+}
+
 /// Build a single-VM LuaEngine with fully loaded skills from the unified runtime root for local debug modes.
 /// 在本地调试模式下基于统一运行根构建一个完整加载 skills 的单虚拟机 LuaEngine。
 pub(super) fn build_single_vm_lua_engine_for_local_mode(
     config: &Config,
 ) -> Result<LuaEngine, Box<dyn std::error::Error>> {
-    let runtime_root = resolve_runtime_root_for_host(config)?;
+    let runtime_root = resolve_luaskills_runtime_root_for_host(config)?;
     let mut skill_roots = find_skill_roots(config)?;
     ensure_skill_manager_runtime_roots(runtime_root.as_deref(), &mut skill_roots)?;
     if !skill_roots
@@ -475,31 +604,32 @@ pub(super) fn build_call_tool_request_context(client_name: &str) -> RequestConte
 /// Prepend runtime-root libs/ to PATH so C dependency DLLs (zlib1.dll, etc.) are discoverable when Lua C modules load via FFI.
 /// 将运行根下的 libs/ 前置到 PATH，保证 Lua C 模块通过 FFI 加载时能找到依赖 DLL。
 pub(super) fn add_libs_to_path(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(runtime_root) = resolve_runtime_root_for_host(config)? else {
+    let Some(runtime_root) = resolve_luaskills_runtime_root_for_host(config)? else {
         return Ok(());
     };
     let libs_dir = runtime_root.join("libs");
 
-    if !libs_dir.exists() {
+    if !optional_runtime_directory_present(&libs_dir, "runtime libs path")? {
         return Ok(());
     }
-    if !libs_dir.is_dir() {
-        return Err(format!(
-            "runtime libs path is not a directory: {}",
-            libs_dir.display()
-        )
-        .into());
+
+    prepend_runtime_libs_to_path(&libs_dir)
+}
+
+/// Prepend the runtime libs directory to the process PATH while preserving OS-native path entries.
+/// 将运行时 libs 目录前置到进程 PATH，同时保留操作系统原生路径条目。
+fn prepend_runtime_libs_to_path(
+    libs_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut path_entries = vec![libs_dir.to_path_buf()];
+    if let Some(current_path) = std::env::var_os("PATH") {
+        // Preserve the current PATH as OS strings because Unix environments can contain non-UTF-8 path entries.
+        // 以 OS 字符串保留当前 PATH，因为 Unix 环境变量可能包含非 UTF-8 路径条目。
+        path_entries.extend(std::env::split_paths(&current_path));
     }
 
-    let libs_str = libs_dir.to_string_lossy().to_string();
-    let current_path = std::env::var("PATH").unwrap_or_default();
-
-    #[cfg(windows)]
-    let separator = ";";
-    #[cfg(not(windows))]
-    let separator = ":";
-
-    let new_path = format!("{}{}{}", libs_str, separator, current_path);
+    let new_path = std::env::join_paths(path_entries.iter().map(|entry| entry.as_os_str()))
+        .map_err(|error| format!("failed to prepend runtime libs path to PATH: {error}"))?;
     unsafe {
         std::env::set_var("PATH", new_path);
     }

@@ -1,0 +1,4 @@
+# Force MSVC native dependencies to use the same dynamic C runtime as Rust.
+# 强制 MSVC 原生依赖使用与 Rust 相同的动态 C 运行库。
+[env]
+CL = { value = "/MD", force = true }

@@ -23,6 +23,58 @@ fn unique_test_dir(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(unique)
 }
 
+/// Create the fixed host and LuaSkills directories required by one application-root fixture.
+/// 创建单个应用根测试夹具所需的固定宿主与 LuaSkills 目录。
+/// Parameters: `application_root` is the isolated root used by the test.
+/// 参数：`application_root` 是测试使用的隔离根目录。
+/// Returns the created `<application_root>/lua_runtime` path.
+/// 返回已创建的 `<application_root>/lua_runtime` 路径。
+fn create_test_application_runtime(application_root: &std::path::Path) -> std::path::PathBuf {
+    // LuaRuntimeRoot mirrors the production package boundary.
+    // LuaRuntimeRoot 镜像生产环境包边界。
+    let lua_runtime_root = application_root.join("lua_runtime");
+    std::fs::create_dir_all(application_root.join("configs"))
+        .expect("failed to create application config directory");
+    std::fs::create_dir_all(lua_runtime_root.join("config"))
+        .expect("failed to create LuaSkills config directory");
+    std::fs::create_dir_all(lua_runtime_root.join("bin"))
+        .expect("failed to create LuaSkills bin directory");
+    lua_runtime_root
+}
+
+/// Restores the process PATH to the value captured before one environment-mutating test.
+/// 将进程 PATH 恢复为单个环境修改测试开始前捕获的值。
+struct PathEnvGuard {
+    /// PATH value captured before the test mutates process environment state.
+    /// 测试修改进程环境状态前捕获的 PATH 值。
+    original_path: Option<std::ffi::OsString>,
+}
+
+impl PathEnvGuard {
+    /// Capture the current PATH value so it can be restored when the guard is dropped.
+    /// 捕获当前 PATH 值，以便守卫析构时恢复。
+    fn capture() -> Self {
+        Self {
+            original_path: std::env::var_os("PATH"),
+        }
+    }
+}
+
+impl Drop for PathEnvGuard {
+    /// Restore the captured PATH value after a test finishes or panics.
+    /// 在测试结束或 panic 后恢复捕获到的 PATH 值。
+    fn drop(&mut self) {
+        match &self.original_path {
+            Some(value) => unsafe {
+                std::env::set_var("PATH", value);
+            },
+            None => unsafe {
+                std::env::remove_var("PATH");
+            },
+        }
+    }
+}
+
 /// Write one minimal ROOT skill directory used by local CLI tests.
 /// 写入一个供本地 CLI 测试使用的最小 ROOT 技能目录。
 fn write_minimal_root_skill(skill_root: &std::path::Path, skill_id: &str) {
@@ -97,6 +149,31 @@ fn parse_runtime_mode_allows_runtime_root_in_call_tools_mode() {
             panic!("expected call-tools runtime mode");
         }
     }
+}
+
+/// Process shutdown notification should send a true update while a receiver is alive.
+/// 进程关闭通知应在接收端存活时发送 true 更新。
+#[tokio::test]
+async fn request_process_shutdown_sends_true_update() {
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+    assert!(request_process_shutdown(&shutdown_tx));
+    shutdown_rx
+        .changed()
+        .await
+        .expect("shutdown receiver should observe the update");
+
+    assert!(*shutdown_rx.borrow());
+}
+
+/// Process shutdown notification should report when every receiver has already dropped.
+/// 进程关闭通知应在所有接收端均已丢弃时报告失败。
+#[test]
+fn request_process_shutdown_reports_dropped_receiver() {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    drop(shutdown_rx);
+
+    assert!(!request_process_shutdown(&shutdown_tx));
 }
 
 /// Stdio mode should be selectable directly so MCP can run over stdin/stdout without opening ports.
@@ -425,8 +502,13 @@ fn parse_runtime_mode_rejects_empty_inline_runtime_root_value() {
 /// 仅宿主侧的 reload 工具即使在技能根配置无效时也应能运行，因为它们不再要求预先加载 Lua 引擎。
 #[test]
 fn run_call_host_tool_mode_supports_reload_without_loading_invalid_skill_roots() {
+    // Hold the repository-wide runtime-config fixture lock through preload and host-tool reload.
+    // 在预载与宿主工具重载全过程持有仓库级运行时配置夹具锁。
+    let _runtime_config_guard = crate::config::runtime_config_test_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let root = unique_test_dir("reload-host-tool");
-    std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+    create_test_application_runtime(&root);
     let missing_skill_root = root.join("missing-skills");
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
@@ -453,7 +535,7 @@ fn run_call_host_tool_mode_supports_reload_without_loading_invalid_skill_roots()
 #[test]
 fn build_server_exposes_luaskill_config_without_skill_roots() {
     let root = unique_test_dir("luaskill-config-build-server");
-    std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+    create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
@@ -497,7 +579,7 @@ fn build_server_exposes_luaskill_config_without_skill_roots() {
 #[test]
 fn build_server_exposes_skill_manager_without_existing_skills() {
     let root = unique_test_dir("skill-manager-empty-runtime");
-    std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+    create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
@@ -512,7 +594,7 @@ fn build_server_exposes_skill_manager_without_existing_skills() {
         .block_on(build_server(&config))
         .expect("build_server should succeed without preinstalled skills");
     assert!(
-        root.join("skills").is_dir(),
+        root.join("lua_runtime").join("skills").is_dir(),
         "ROOT skills directory should be created for skill-manager"
     );
 
@@ -577,7 +659,7 @@ fn build_server_exposes_skill_manager_without_existing_skills() {
 #[test]
 fn skill_manager_update_missing_skill_returns_tool_error() {
     let root = unique_test_dir("skill-manager-update-missing");
-    std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+    create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
@@ -672,6 +754,62 @@ fn skill_manager_roots_are_ordered_by_formal_layers() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Formal root sorting should normalize labels and order ROOT, PROJECT, then USER.
+/// 正式根排序应规范化标签并按 ROOT、PROJECT、USER 排序。
+#[test]
+fn sort_skill_manager_formal_roots_normalizes_and_orders_layers() {
+    let mut skill_roots = vec![
+        RuntimeSkillRoot {
+            name: "user".to_string(),
+            skills_dir: std::path::PathBuf::from("D:/user/skills"),
+        },
+        RuntimeSkillRoot {
+            name: "project".to_string(),
+            skills_dir: std::path::PathBuf::from("D:/project/skills"),
+        },
+        RuntimeSkillRoot {
+            name: "root".to_string(),
+            skills_dir: std::path::PathBuf::from("D:/runtime/skills"),
+        },
+    ];
+
+    sort_skill_manager_formal_roots(&mut skill_roots).expect("formal roots should sort");
+
+    assert_eq!(
+        skill_roots
+            .iter()
+            .map(|root| root.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ROOT", "PROJECT", "USER"]
+    );
+}
+
+/// Formal root sorting should leave the input untouched when a label is invalid.
+/// 正式根排序在标签无效时应保持输入不变。
+#[test]
+fn sort_skill_manager_formal_roots_preserves_input_on_invalid_label() {
+    let mut skill_roots = vec![
+        RuntimeSkillRoot {
+            name: "user".to_string(),
+            skills_dir: std::path::PathBuf::from("D:/user/skills"),
+        },
+        RuntimeSkillRoot {
+            name: "BROKEN".to_string(),
+            skills_dir: std::path::PathBuf::from("D:/broken/skills"),
+        },
+    ];
+    let original_roots = skill_roots.clone();
+
+    let error = sort_skill_manager_formal_roots(&mut skill_roots)
+        .expect_err("invalid formal root label should fail");
+
+    assert!(
+        error.contains("unsupported skill root label"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(skill_roots, original_roots);
+}
+
 /// ROOT CLI selection should choose the system layer even when ordinary layers are also present.
 /// 即使普通层同时存在，ROOT CLI 选择逻辑也应选中系统层。
 #[test]
@@ -725,6 +863,103 @@ fn collect_managed_root_skill_ids_skips_unmanaged_skills() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// ROOT update-all discovery should treat a missing ROOT skills directory as an empty managed set.
+/// ROOT 全量更新发现逻辑应把缺失的 ROOT skills 目录视为空受管集合。
+#[test]
+fn collect_managed_root_skill_ids_returns_empty_for_missing_root_directory() {
+    let root = unique_test_dir("root-managed-missing-dir");
+    let runtime_root = root.join("runtime");
+    let root_layer = RuntimeSkillRoot {
+        name: "ROOT".to_string(),
+        skills_dir: runtime_root.join("skills"),
+    };
+    let host_options = LuaRuntimeHostOptions {
+        temp_dir: Some(runtime_root.join("temp")),
+        state_dir_name: "state".to_string(),
+        allow_network_download: false,
+        ..LuaRuntimeHostOptions::default()
+    };
+    let manager = build_root_skill_manager_for_cli(&root_layer, &host_options)
+        .expect("ROOT manager should build");
+
+    let skill_ids = collect_managed_root_skill_ids(&root_layer, &manager)
+        .expect("missing ROOT skills directory should be treated as empty");
+
+    assert!(
+        skill_ids.is_empty(),
+        "missing ROOT directory should be empty"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ROOT update-all discovery should reject a file where the ROOT skills directory is required.
+/// ROOT 全量更新发现逻辑应拒绝 ROOT skills 目录位置出现文件。
+#[test]
+fn collect_managed_root_skill_ids_rejects_file_shaped_root_directory() {
+    let root = unique_test_dir("root-managed-file-dir");
+    let runtime_root = root.join("runtime");
+    let root_layer = RuntimeSkillRoot {
+        name: "ROOT".to_string(),
+        skills_dir: runtime_root.join("skills"),
+    };
+    std::fs::create_dir_all(&runtime_root).expect("runtime root should be created");
+    std::fs::write(&root_layer.skills_dir, b"not-a-directory")
+        .expect("file-shaped ROOT skills directory should be written");
+    let host_options = LuaRuntimeHostOptions {
+        temp_dir: Some(runtime_root.join("temp")),
+        state_dir_name: "state".to_string(),
+        allow_network_download: false,
+        ..LuaRuntimeHostOptions::default()
+    };
+    let manager = build_root_skill_manager_for_cli(&root_layer, &host_options)
+        .expect("ROOT manager should build");
+
+    let error = collect_managed_root_skill_ids(&root_layer, &manager)
+        .expect_err("file-shaped ROOT skills directory should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("ROOT skills directory is not a directory"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ROOT update-all discovery should reject a directory where a skill manifest file is required.
+/// ROOT 全量更新发现逻辑应拒绝技能清单文件位置出现目录。
+#[test]
+fn collect_managed_root_skill_ids_rejects_directory_shaped_skill_manifest() {
+    let root = unique_test_dir("root-managed-directory-manifest");
+    let runtime_root = root.join("runtime");
+    let root_layer = RuntimeSkillRoot {
+        name: "ROOT".to_string(),
+        skills_dir: runtime_root.join("skills"),
+    };
+    let skill_dir = root_layer.skills_dir.join("broken-skill");
+    std::fs::create_dir_all(skill_dir.join("skill.yaml"))
+        .expect("directory-shaped skill manifest should be created");
+    let host_options = LuaRuntimeHostOptions {
+        temp_dir: Some(runtime_root.join("temp")),
+        state_dir_name: "state".to_string(),
+        allow_network_download: false,
+        ..LuaRuntimeHostOptions::default()
+    };
+    let manager = build_root_skill_manager_for_cli(&root_layer, &host_options)
+        .expect("ROOT manager should build");
+
+    let error = collect_managed_root_skill_ids(&root_layer, &manager)
+        .expect_err("directory-shaped skill manifest should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("ROOT skill manifest is not a file"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The host-managed root must not bypass sibling runtime-space uniqueness after it is appended.
 /// 宿主管理根追加后不得绕过同级运行空间唯一性约束。
 #[test]
@@ -763,7 +998,7 @@ fn skill_manager_root_rejects_sibling_runtime_space_collision() {
 #[test]
 fn skill_manager_update_requires_skill_id() {
     let root = unique_test_dir("skill-manager-update-skill-id");
-    std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+    create_test_application_runtime(&root);
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
         skill_roots: Some(vec![]),
@@ -808,8 +1043,13 @@ fn skill_manager_update_requires_skill_id() {
 /// 宿主侧 luaskill-config 即使在技能根配置无效时也应能运行，因为它应跳过 Lua 引擎加载。
 #[test]
 fn run_call_host_tool_mode_supports_luaskill_config_without_loading_invalid_skill_roots() {
+    // Hold the repository-wide runtime-config fixture lock until cache-backed host-tool assertions finish.
+    // 持有仓库级运行时配置夹具锁，直到依赖缓存的宿主工具断言结束。
+    let _runtime_config_guard = crate::config::runtime_config_test_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let root = unique_test_dir("luaskill-config-host-tool");
-    std::fs::create_dir_all(root.join("configs")).expect("failed to create runtime config dir");
+    create_test_application_runtime(&root);
     let missing_skill_root = root.join("missing-skills");
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
@@ -834,8 +1074,12 @@ fn run_call_host_tool_mode_supports_luaskill_config_without_loading_invalid_skil
     .expect("luaskill-config host tool should succeed without loading invalid skill roots");
 
     let persisted: Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("configs").join("skill_config.json"))
-            .expect("luaskill-config file should be created"),
+        &std::fs::read_to_string(
+            root.join("lua_runtime")
+                .join("config")
+                .join("skill_config.json"),
+        )
+        .expect("luaskill-config file should be created"),
     )
     .expect("persisted luaskill-config JSON should parse");
     assert_eq!(persisted["skills"]["demo-skill"]["api_token"], "sk-local");
@@ -858,10 +1102,141 @@ fn preload_runtime_mcp_configs_rejects_invalid_explicit_runtime_root() {
     assert!(
         error
             .to_string()
-            .contains("configured runtime_root does not exist"),
+            .contains("configured application runtime_root does not exist"),
         "unexpected error: {error}"
     );
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Missing runtime libs paths should be skipped without mutating PATH.
+/// 缺失的运行时 libs 路径应被跳过且不修改 PATH。
+#[test]
+fn add_libs_to_path_skips_missing_runtime_libs_dir_without_path_mutation() {
+    let _guard = environment_lock().lock().expect("lock should succeed");
+    let root = unique_test_dir("runtime-libs-missing");
+    create_test_application_runtime(&root);
+    let _path_guard = PathEnvGuard::capture();
+    unsafe {
+        std::env::set_var("PATH", "original-path");
+    }
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+
+    add_libs_to_path(&config).expect("missing libs path should be skipped");
+
+    assert_eq!(
+        std::env::var("PATH").expect("PATH should remain valid unicode"),
+        "original-path",
+        "PATH should remain unchanged when libs path is missing"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Existing runtime libs paths should be prepended to PATH before the original value.
+/// 已存在的运行时 libs 路径应被前置到原始 PATH 之前。
+#[test]
+fn add_libs_to_path_prepends_existing_runtime_libs_dir() {
+    let _guard = environment_lock().lock().expect("lock should succeed");
+    let root = unique_test_dir("runtime-libs-existing");
+    let libs_dir = root.join("lua_runtime").join("libs");
+    create_test_application_runtime(&root);
+    std::fs::create_dir_all(&libs_dir).expect("failed to create runtime libs dir");
+    let _path_guard = PathEnvGuard::capture();
+    unsafe {
+        std::env::set_var("PATH", "original-path");
+    }
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+
+    add_libs_to_path(&config).expect("existing libs path should be prepended");
+
+    #[cfg(windows)]
+    let separator = ";";
+    #[cfg(not(windows))]
+    let separator = ":";
+    assert_eq!(
+        std::env::var("PATH").expect("PATH should remain valid unicode"),
+        format!("{}{}original-path", libs_dir.to_string_lossy(), separator),
+        "PATH should prepend runtime libs"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Existing runtime libs paths should become the complete PATH when no original PATH exists.
+/// 当原始 PATH 不存在时，已存在的运行时 libs 路径应成为完整 PATH。
+#[test]
+fn add_libs_to_path_sets_only_runtime_libs_when_path_is_missing() {
+    let _guard = environment_lock().lock().expect("lock should succeed");
+    let root = unique_test_dir("runtime-libs-no-path");
+    let libs_dir = root.join("lua_runtime").join("libs");
+    create_test_application_runtime(&root);
+    std::fs::create_dir_all(&libs_dir).expect("failed to create runtime libs dir");
+    let _path_guard = PathEnvGuard::capture();
+    unsafe {
+        std::env::remove_var("PATH");
+    }
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+
+    add_libs_to_path(&config).expect("existing libs path should define PATH");
+
+    let current_path = std::env::var_os("PATH").expect("PATH should be set");
+    let path_entries: Vec<_> = std::env::split_paths(&current_path).collect();
+    assert_eq!(
+        path_entries,
+        vec![libs_dir],
+        "PATH should contain only the runtime libs path when original PATH is missing"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Non-UTF-8 PATH entries should survive runtime libs prepending on Unix hosts.
+/// Unix 主机上的非 UTF-8 PATH 条目应在前置运行时 libs 后保留下来。
+#[cfg(unix)]
+#[test]
+fn add_libs_to_path_preserves_non_unicode_path_entries() {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    let _guard = environment_lock().lock().expect("lock should succeed");
+    let root = unique_test_dir("runtime-libs-non-unicode-path");
+    let libs_dir = root.join("lua_runtime").join("libs");
+    create_test_application_runtime(&root);
+    std::fs::create_dir_all(&libs_dir).expect("failed to create runtime libs dir");
+    let _path_guard = PathEnvGuard::capture();
+    let non_unicode_path = std::ffi::OsString::from_vec(b"/tmp/vulcan-\xFF-path".to_vec());
+    unsafe {
+        std::env::set_var("PATH", &non_unicode_path);
+    }
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        ..Config::default()
+    };
+
+    add_libs_to_path(&config).expect("existing libs path should preserve non-unicode PATH");
+
+    let current_path = std::env::var_os("PATH").expect("PATH should be set");
+    let path_entries: Vec<_> = std::env::split_paths(&current_path).collect();
+    assert_eq!(
+        path_entries.first(),
+        Some(&libs_dir),
+        "PATH should prepend runtime libs before existing entries"
+    );
+    assert_eq!(
+        path_entries
+            .get(1)
+            .expect("non-unicode PATH entry should remain")
+            .as_os_str()
+            .as_bytes(),
+        non_unicode_path.as_os_str().as_bytes(),
+        "PATH should preserve the original non-unicode entry bytes"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -871,10 +1246,11 @@ fn preload_runtime_mcp_configs_rejects_invalid_explicit_runtime_root() {
 fn add_libs_to_path_rejects_file_shaped_runtime_libs_dir() {
     let _guard = environment_lock().lock().expect("lock should succeed");
     let root = unique_test_dir("runtime-libs-file");
-    std::fs::create_dir_all(&root).expect("failed to create runtime root");
-    let libs_file = root.join("libs");
+    create_test_application_runtime(&root);
+    let libs_file = root.join("lua_runtime").join("libs");
     std::fs::write(&libs_file, b"not-a-directory").expect("failed to create libs file");
-    let original_path = std::env::var("PATH").unwrap_or_default();
+    let _path_guard = PathEnvGuard::capture();
+    let original_path = std::env::var_os("PATH");
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
         ..Config::default()
@@ -888,7 +1264,7 @@ fn add_libs_to_path_rejects_file_shaped_runtime_libs_dir() {
         "unexpected error: {error}"
     );
     assert_eq!(
-        std::env::var("PATH").unwrap_or_default(),
+        std::env::var_os("PATH"),
         original_path,
         "PATH should remain unchanged when libs path is invalid"
     );

@@ -11,10 +11,11 @@ use crate::support::{RuntimeClientInfo, RuntimeRequestContext};
 use luaskills::runtime_options::LuaRuntimeRunLuaPoolConfig;
 use luaskills::{
     LuaRuntimeDatabaseCallbackMode, LuaRuntimeDatabaseProviderMode,
-    LuaRuntimeSpaceControllerProcessMode, LuaVmPoolConfig, RuntimeEntryDescriptor, ToolCacheConfig,
+    LuaRuntimeSpaceControllerProcessMode, LuaVmPoolConfig, RuntimeEntryDescriptor,
+    RuntimeSkillRoot, ToolCacheConfig,
 };
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Return one shared mutex used to serialize environment-variable dependent tests.
@@ -55,7 +56,7 @@ fn sample_runtime_entry_descriptor() -> RuntimeEntryDescriptor {
         skill_id: "demo-skill".to_string(),
         local_name: "search".to_string(),
         root_name: "ROOT".to_string(),
-        skill_dir: "D:/runtime/skills/demo-skill".to_string(),
+        skill_dir: "D:/runtime/lua_runtime/skills/demo-skill".to_string(),
         description: "Search demo content.".to_string(),
         parameters: vec![],
         input_schema: serde_json::Value::Null,
@@ -64,10 +65,20 @@ fn sample_runtime_entry_descriptor() -> RuntimeEntryDescriptor {
 
 /// Create one minimal runtime root layout used by host option resolution tests.
 /// 创建一份供宿主选项解析测试使用的最小运行时根目录布局。
-fn create_runtime_root_for_test(root: &PathBuf) {
-    std::fs::create_dir_all(root.join("skills")).expect("failed to create skills directory");
-    std::fs::create_dir_all(root.join("bin").join("tools"))
-        .expect("failed to create tools directory");
+/// Parameters: `root` is the test runtime root directory to initialize.
+/// 参数：`root` 是需要初始化的测试运行时根目录。
+/// Returns nothing after creating the required skills and tools directories.
+/// 返回值：创建必需的 skills 与 tools 目录后不返回数据。
+fn create_runtime_root_for_test(root: &Path) {
+    // LuaRuntimeRoot mirrors the production `<application_root>/lua_runtime` package boundary.
+    // LuaRuntimeRoot 镜像生产环境的 `<application_root>/lua_runtime` 包边界。
+    let lua_runtime_root = root.join("lua_runtime");
+    std::fs::create_dir_all(lua_runtime_root.join("skills"))
+        .expect("failed to create skills directory");
+    std::fs::create_dir_all(lua_runtime_root.join("bin"))
+        .expect("failed to create runtime bin directory");
+    std::fs::create_dir_all(lua_runtime_root.join("config"))
+        .expect("failed to create runtime config directory");
 }
 
 /// Default config should keep both database backends on the controller-only path.
@@ -80,8 +91,8 @@ fn default_config_keeps_controller_only_modes() {
         runtime_root: Some(root.to_string_lossy().to_string()),
         ..Config::default()
     };
-    let options =
-        resolve_space_controller_options(&config, &root).expect("controller options failed");
+    let options = resolve_space_controller_options(&config, &root.join("lua_runtime"))
+        .expect("controller options failed");
     assert!(options.endpoint.is_none());
     assert!(options.executable_path.is_none());
     assert!(options.auto_spawn);
@@ -96,6 +107,7 @@ fn build_engine_options_forwards_configured_ignored_skill_ids() {
     let root = unique_test_dir("ignored-skill-config");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -136,6 +148,7 @@ fn build_engine_options_ignores_ai_memory_only_when_vmm_is_configured() {
     let root = unique_test_dir("ignored-skill-vmm");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -188,6 +201,7 @@ fn build_engine_options_keeps_ai_memory_when_vmm_is_disabled() {
     let root = unique_test_dir("ignored-skill-vmm-disabled");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -335,6 +349,7 @@ fn controller_config_maps_to_space_controller_options() {
     let root = unique_test_dir("space-controller");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -356,8 +371,8 @@ fn controller_config_maps_to_space_controller_options() {
         },
         ..Config::default()
     };
-    let options =
-        resolve_space_controller_options(&config, &root).expect("controller options failed");
+    let options = resolve_space_controller_options(&config, &root.join("lua_runtime"))
+        .expect("controller options failed");
     assert_eq!(options.endpoint.as_deref(), Some("http://127.0.0.1:29801"));
     assert_eq!(options.executable_path.as_ref(), Some(&copied_executable));
     assert_eq!(
@@ -382,6 +397,7 @@ fn build_engine_options_maps_space_controller_configuration() {
     let root = unique_test_dir("engine-options-controller");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -436,14 +452,15 @@ fn build_engine_options_maps_space_controller_configuration() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Engine options should pin the fixed `system_lua_lib` directory so 0.4.3 runtime lease fallbacks never guess from the first skill root.
-/// 引擎选项应固定 `system_lua_lib` 目录，避免 0.4.3 运行时租约从第一个技能根目录进行隐式猜测回退。
+/// Engine options should pin the fixed `system_lua_lib` directory from the LuaSkills 0.5.4 runtime root.
+/// 引擎选项应从 LuaSkills 0.5.4 运行根固定 `system_lua_lib` 目录。
 #[test]
 fn build_engine_options_sets_fixed_system_lua_lib_dir() {
     let _guard = acquire_environment_lock();
     let root = unique_test_dir("engine-options-system-lua-lib");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -465,7 +482,7 @@ fn build_engine_options_sets_fixed_system_lua_lib_dir() {
 
     assert_eq!(
         options.host_options.system_lua_lib_dir.as_ref(),
-        Some(&root.join("system_lua_lib"))
+        Some(&root.join("lua_runtime").join("system_lua_lib"))
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -478,12 +495,16 @@ fn build_engine_options_rejects_file_shaped_system_lua_lib_dir() {
     let root = unique_test_dir("engine-options-system-lua-lib-file");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
         .expect("failed to create copied controller executable");
-    std::fs::write(root.join("system_lua_lib"), b"not-a-directory")
-        .expect("failed to create file-shaped system_lua_lib path");
+    std::fs::write(
+        root.join("lua_runtime").join("system_lua_lib"),
+        b"not-a-directory",
+    )
+    .expect("failed to create file-shaped system_lua_lib path");
     let config = Config {
         runtime_root: Some(root.to_string_lossy().to_string()),
         ..Config::default()
@@ -502,7 +523,7 @@ fn build_engine_options_rejects_file_shaped_system_lua_lib_dir() {
     assert!(
         error
             .to_string()
-            .contains("runtime system_lua_lib path is not a directory"),
+            .contains("LuaSkills runtime system_lua_lib path is not a directory"),
         "unexpected error: {error}"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -516,6 +537,7 @@ fn build_engine_options_leaves_runlua_pool_unset_when_config_is_absent() {
     let root = unique_test_dir("runlua-pool-defaults");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -545,6 +567,7 @@ fn build_engine_options_maps_runlua_pool_config_with_default_fill() {
     let root = unique_test_dir("runlua-pool-configured");
     create_runtime_root_for_test(&root);
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -603,7 +626,12 @@ fn build_engine_options_defaults_skill_config_path_under_runtime_configs() {
 
     assert_eq!(
         options.host_options.skill_config_file_path.as_ref(),
-        Some(&root.join("configs").join("skill_config.json"))
+        Some(
+            &root
+                .join("lua_runtime")
+                .join("config")
+                .join("skill_config.json")
+        )
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -611,13 +639,38 @@ fn build_engine_options_defaults_skill_config_path_under_runtime_configs() {
 /// Runtime skill config path resolution should always stay under the runtime-root `configs/` directory.
 /// 运行时 Skill 配置路径解析应始终固定在运行根的 `configs/` 目录下。
 #[test]
-fn resolve_skill_config_file_path_uses_runtime_root_configs_directory() {
+fn resolve_skill_config_file_path_uses_runtime_root_config_directory() {
     let root = unique_test_dir("skill-config-fixed-path");
     create_runtime_root_for_test(&root);
 
-    let resolved =
-        resolve_skill_config_file_path(&root).expect("runtime skill config path should resolve");
-    assert_eq!(resolved, root.join("configs").join("skill_config.json"));
+    let runtime_root = root.join("lua_runtime");
+    let resolved = resolve_skill_config_file_path(&runtime_root)
+        .expect("runtime skill config path should resolve");
+    assert_eq!(
+        resolved,
+        runtime_root.join("config").join("skill_config.json")
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Directory-shaped runtime skill config paths should fail during path resolution.
+/// 目录形态的运行时 Skill 配置路径应在路径解析阶段失败。
+#[test]
+fn resolve_skill_config_file_path_rejects_directory_shaped_config_path() {
+    let root = unique_test_dir("skill-config-directory-shaped");
+    create_runtime_root_for_test(&root);
+    let runtime_root = root.join("lua_runtime");
+    let config_path = runtime_root.join("config").join("skill_config.json");
+    std::fs::create_dir_all(&config_path)
+        .expect("directory-shaped skill config path should be created");
+
+    let error = resolve_skill_config_file_path(&runtime_root)
+        .expect_err("directory-shaped skill config path should fail");
+    assert!(
+        error.contains("runtime skill config path is not a file"),
+        "unexpected error: {error}"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -629,7 +682,7 @@ fn controller_config_resolves_relative_executable_path_under_runtime_root() {
     let root = unique_test_dir("controller-relative-executable");
     create_runtime_root_for_test(&root);
     let relative_executable = PathBuf::from("bin").join(space_controller_executable_file_name());
-    let copied_executable = root.join(&relative_executable);
+    let copied_executable = root.join("lua_runtime").join(&relative_executable);
     std::fs::write(&copied_executable, b"test-controller")
         .expect("failed to create relative controller executable");
     let config = Config {
@@ -640,9 +693,44 @@ fn controller_config_resolves_relative_executable_path_under_runtime_root() {
         },
         ..Config::default()
     };
-    let options =
-        resolve_space_controller_options(&config, &root).expect("controller options failed");
+    let options = resolve_space_controller_options(&config, &root.join("lua_runtime"))
+        .expect("controller options failed");
     assert_eq!(options.executable_path.as_ref(), Some(&copied_executable));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Directory-shaped explicit controller executable paths should fail during host option construction.
+/// 目录形态的显式控制器可执行文件路径应在宿主选项构建阶段失败。
+#[test]
+fn controller_config_rejects_directory_shaped_executable_path() {
+    // The runtime root contains a directory where the explicit controller executable should be.
+    // 运行根在显式控制器可执行文件位置放置一个目录。
+    let root = unique_test_dir("controller-directory-executable");
+    create_runtime_root_for_test(&root);
+    // The relative executable path forces the resolver through runtime_root anchoring before inspection.
+    // 相对可执行文件路径会迫使解析器先基于 runtime_root 锚定，再执行检查。
+    let relative_executable = PathBuf::from("bin").join(space_controller_executable_file_name());
+    let copied_executable = root.join("lua_runtime").join(&relative_executable);
+    std::fs::create_dir_all(&copied_executable)
+        .expect("failed to create directory-shaped controller executable");
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        space_controller: SpaceControllerConfig {
+            executable_path: Some(relative_executable.to_string_lossy().to_string()),
+            ..SpaceControllerConfig::default()
+        },
+        ..Config::default()
+    };
+
+    // The configured executable path should report its own source label, not the fallback path label.
+    // 显式配置的可执行文件路径应报告自身来源标签，而不是 fallback 路径标签。
+    let error = resolve_space_controller_options(&config, &root.join("lua_runtime"))
+        .expect_err("directory-shaped configured executable should fail");
+
+    assert!(
+        error.contains("space_controller.executable_path is not a file"),
+        "unexpected error: {error}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -685,6 +773,7 @@ fn build_engine_options_rejects_directory_shaped_fallback_controller_path() {
     let root = unique_test_dir("controller-directory-fallback");
     create_runtime_root_for_test(&root);
     let copied_executable_dir = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::create_dir_all(&copied_executable_dir)
@@ -742,26 +831,160 @@ fn build_engine_options_rejects_remote_controller_endpoint_for_auto_spawn() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Controller auto-spawn should accept local URL endpoints even when path, query, and fragment are present.
+/// 控制器自动拉起应接受带路径、查询串和片段的本地 URL 端点。
+#[test]
+fn build_engine_options_accepts_local_controller_url_with_path_query_and_fragment() {
+    let _guard = acquire_environment_lock();
+    let root = unique_test_dir("controller-local-url-parts");
+    create_runtime_root_for_test(&root);
+    let copied_executable = root
+        .join("lua_runtime")
+        .join("bin")
+        .join(space_controller_executable_file_name());
+    std::fs::write(&copied_executable, b"test-controller")
+        .expect("failed to create copied controller executable");
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        space_controller: SpaceControllerConfig {
+            endpoint: Some("http://localhost:29801/api/leases?scope=test#ready".to_string()),
+            auto_spawn: true,
+            ..SpaceControllerConfig::default()
+        },
+        ..Config::default()
+    };
+    let pool_config = LuaVmPoolConfig {
+        min_size: 1,
+        max_size: 2,
+        idle_ttl_secs: 60,
+    };
+    let cache_config = ToolCacheConfig::default();
+
+    build_luaskills_engine_options(&config, pool_config, cache_config)
+        .expect("local URL controller endpoint should pass host validation");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Controller auto-spawn should reject remote URL authorities even when the path mentions localhost.
+/// 控制器自动拉起应拒绝远端 URL authority，即使路径中出现 localhost。
+#[test]
+fn build_engine_options_rejects_remote_authority_with_localhost_path() {
+    let _guard = acquire_environment_lock();
+    let root = unique_test_dir("controller-remote-authority-local-path");
+    create_runtime_root_for_test(&root);
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        space_controller: SpaceControllerConfig {
+            endpoint: Some("http://controller.internal/localhost:29801".to_string()),
+            auto_spawn: true,
+            ..SpaceControllerConfig::default()
+        },
+        ..Config::default()
+    };
+    let pool_config = LuaVmPoolConfig {
+        min_size: 1,
+        max_size: 2,
+        idle_ttl_secs: 60,
+    };
+    let cache_config = ToolCacheConfig::default();
+    let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+        .expect_err("remote URL authority should fail during host validation");
+    assert!(
+        error
+            .to_string()
+            .contains("space_controller.auto_spawn=true requires one local bindable endpoint"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Controller auto-spawn should reject unsupported URL schemes instead of treating their authority as local.
+/// 控制器自动拉起应拒绝不支持的 URL scheme，而不是把其中的 authority 当作本地地址。
+#[test]
+fn build_engine_options_rejects_unknown_scheme_for_auto_spawn() {
+    let _guard = acquire_environment_lock();
+    let root = unique_test_dir("controller-unknown-scheme");
+    create_runtime_root_for_test(&root);
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        space_controller: SpaceControllerConfig {
+            endpoint: Some("grpc://localhost:29801".to_string()),
+            auto_spawn: true,
+            ..SpaceControllerConfig::default()
+        },
+        ..Config::default()
+    };
+    let pool_config = LuaVmPoolConfig {
+        min_size: 1,
+        max_size: 2,
+        idle_ttl_secs: 60,
+    };
+    let cache_config = ToolCacheConfig::default();
+    let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+        .expect_err("unknown controller endpoint scheme should fail host validation");
+    assert!(
+        error
+            .to_string()
+            .contains("space_controller.auto_spawn=true requires one local bindable endpoint"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Controller auto-spawn should reject bare host endpoints that contain URL-only path syntax.
+/// 控制器自动拉起应拒绝包含 URL 专属路径语法的裸 host 端点。
+#[test]
+fn build_engine_options_rejects_bare_localhost_path_for_auto_spawn() {
+    let _guard = acquire_environment_lock();
+    let root = unique_test_dir("controller-bare-localhost-path");
+    create_runtime_root_for_test(&root);
+    let config = Config {
+        runtime_root: Some(root.to_string_lossy().to_string()),
+        space_controller: SpaceControllerConfig {
+            endpoint: Some("localhost:29801/api".to_string()),
+            auto_spawn: true,
+            ..SpaceControllerConfig::default()
+        },
+        ..Config::default()
+    };
+    let pool_config = LuaVmPoolConfig {
+        min_size: 1,
+        max_size: 2,
+        idle_ttl_secs: 60,
+    };
+    let cache_config = ToolCacheConfig::default();
+    let error = build_luaskills_engine_options(&config, pool_config, cache_config)
+        .expect_err("bare host endpoint with path syntax should fail host validation");
+    assert!(
+        error
+            .to_string()
+            .contains("space_controller.auto_spawn=true requires one local bindable endpoint"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Relative runtime_root should be resolved against the loaded config file directory instead of the current working directory.
 /// 相对 runtime_root 应基于已加载配置文件所在目录解析，而不是依赖当前工作目录。
 #[test]
-fn resolve_runtime_root_uses_config_file_directory_for_relative_paths() {
+fn resolve_application_root_uses_config_file_directory_for_relative_paths() {
     let base_dir = unique_test_dir("runtime-root-relative");
     let config_dir = base_dir.join("configs");
     let runtime_root = base_dir.join("runtime");
     std::fs::create_dir_all(&config_dir).expect("failed to create config directory");
-    std::fs::create_dir_all(runtime_root.join("skills"))
-        .expect("failed to create runtime skills directory");
+    std::fs::create_dir_all(runtime_root.join("lua_runtime"))
+        .expect("failed to create LuaSkills runtime package directory");
     let config = Config {
         runtime_root: Some("runtime".to_string()),
         loaded_config_path: Some(config_dir.join("config.yaml").to_string_lossy().to_string()),
         ..Config::default()
     };
-    let resolved = resolve_runtime_root_from_config(&config)
+    let resolved = resolve_application_root_from_config(&config)
         .expect("runtime root lookup should succeed")
         .expect("runtime root should resolve");
     assert_eq!(resolved, runtime_root);
-    let _ = std::fs::remove_dir_all(&base_dir);
+    std::fs::remove_dir_all(&base_dir).expect("test runtime root should be removed");
 }
 
 /// Relative configured skill roots should be resolved from the stable config base directory instead of the current working directory.
@@ -792,10 +1015,83 @@ fn resolve_skill_roots_uses_config_base_dir_for_relative_paths() {
     let _ = std::fs::remove_dir_all(&base_dir);
 }
 
+/// Formal skill roots should sort into ROOT, PROJECT, then USER without fallback ranks.
+/// 正式技能根应在不使用降级 rank 的情况下排序为 ROOT、PROJECT、USER。
+#[test]
+fn sort_formal_skill_roots_orders_known_layers() {
+    // The input order is intentionally reversed so the test proves rank-based ordering.
+    // 输入顺序有意反转，用于证明排序确实基于层级 rank。
+    let mut skill_roots = vec![
+        RuntimeSkillRoot {
+            name: "USER".to_string(),
+            skills_dir: PathBuf::from("D:/user/skills"),
+        },
+        RuntimeSkillRoot {
+            name: "ROOT".to_string(),
+            skills_dir: PathBuf::from("D:/runtime/skills"),
+        },
+        RuntimeSkillRoot {
+            name: "PROJECT".to_string(),
+            skills_dir: PathBuf::from("D:/project/skills"),
+        },
+    ];
+
+    sort_formal_skill_roots(&mut skill_roots).expect("formal skill roots should sort");
+
+    assert_eq!(
+        skill_roots
+            .iter()
+            .map(|root| root.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ROOT", "PROJECT", "USER"]
+    );
+}
+
+/// Formal skill-root sorting should leave input order untouched when a label is invalid.
+/// 当标签无效时，正式技能根排序应保持输入顺序不变。
+#[test]
+fn sort_formal_skill_roots_preserves_input_on_invalid_layer() {
+    // The invalid root is placed before ROOT so the old fallback-rank sort would have moved it.
+    // 无效根位于 ROOT 之前，旧的降级 rank 排序会移动它。
+    let mut skill_roots = vec![
+        RuntimeSkillRoot {
+            name: "BROKEN".to_string(),
+            skills_dir: PathBuf::from("D:/broken/skills"),
+        },
+        RuntimeSkillRoot {
+            name: "ROOT".to_string(),
+            skills_dir: PathBuf::from("D:/runtime/skills"),
+        },
+    ];
+    let original_roots = skill_roots.clone();
+
+    let error = sort_formal_skill_roots(&mut skill_roots)
+        .expect_err("invalid formal skill root should fail");
+
+    assert!(
+        error.contains("unsupported skill root name"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(skill_roots, original_roots);
+}
+
+/// Fallible skill-root key normalization should still allow missing paths so validation can report domain-specific errors later.
+/// 可失败的技能根键规范化仍应允许缺失路径，以便后续校验报告领域专用错误。
+#[test]
+fn try_normalize_skill_root_key_preserves_missing_path_for_deferred_validation() {
+    let missing_path = unique_test_dir("missing-skill-root-key").join("skills");
+    let key = try_normalize_skill_root_key(&missing_path)
+        .expect("missing skill root key should normalize for later validation");
+    assert!(
+        key.ends_with("skills"),
+        "missing skill root key should preserve path text: {key}"
+    );
+}
+
 /// Invalid explicit runtime_root values should return explicit resolution errors instead of silently collapsing into implicit fallback discovery.
 /// 无效的显式 runtime_root 应返回明确的解析错误，而不是静默塌缩成隐式回退发现。
 #[test]
-fn resolve_runtime_root_rejects_missing_or_non_directory_paths() {
+fn resolve_application_root_rejects_missing_or_non_directory_paths() {
     let base_dir = unique_test_dir("runtime-root-invalid");
     let file_path = base_dir.join("runtime-file");
     std::fs::create_dir_all(&base_dir).expect("failed to create base directory");
@@ -810,10 +1106,10 @@ fn resolve_runtime_root_rejects_missing_or_non_directory_paths() {
         ),
         ..Config::default()
     };
-    let missing_error = resolve_runtime_root_from_config(&missing_config)
+    let missing_error = resolve_application_root_from_config(&missing_config)
         .expect_err("missing runtime root should fail");
     assert!(
-        missing_error.contains("configured runtime_root does not exist"),
+        missing_error.contains("configured application runtime_root does not exist"),
         "unexpected error: {missing_error}"
     );
 
@@ -821,10 +1117,10 @@ fn resolve_runtime_root_rejects_missing_or_non_directory_paths() {
         runtime_root: Some(file_path.to_string_lossy().to_string()),
         ..Config::default()
     };
-    let file_error =
-        resolve_runtime_root_from_config(&file_config).expect_err("file runtime root should fail");
+    let file_error = resolve_application_root_from_config(&file_config)
+        .expect_err("file runtime root should fail");
     assert!(
-        file_error.contains("configured runtime_root is not a directory"),
+        file_error.contains("configured application runtime_root is not a directory"),
         "unexpected error: {file_error}"
     );
     let _ = std::fs::remove_dir_all(&base_dir);
@@ -833,7 +1129,7 @@ fn resolve_runtime_root_rejects_missing_or_non_directory_paths() {
 /// File-shaped implicit repository runtime paths should not be accepted as valid fallback runtime roots.
 /// 文件形态的隐式仓库 runtime 路径不应被接受为合法的回退运行根。
 #[test]
-fn resolve_implicit_runtime_root_rejects_file_shaped_repository_runtime_path() {
+fn resolve_implicit_application_root_rejects_file_shaped_repository_runtime_path() {
     let _guard = acquire_environment_lock();
     let base_dir = unique_test_dir("implicit-runtime-file");
     let fake_exe = base_dir.join("bin").join("vulcan-agent-service.exe");
@@ -843,12 +1139,82 @@ fn resolve_implicit_runtime_root_rejects_file_shaped_repository_runtime_path() {
     std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
     std::fs::write(&runtime_file, b"not-a-directory").expect("failed to create runtime file");
 
-    let resolved = resolve_implicit_runtime_root_from_paths(&base_dir, &fake_exe);
+    let error = resolve_implicit_application_root_from_paths(&base_dir, &fake_exe)
+        .expect_err("file-shaped implicit runtime root should fail");
     assert!(
-        resolved.is_none(),
-        "file-shaped implicit runtime root should be rejected"
+        error.contains("implicit repository application root is not a directory"),
+        "unexpected error: {error}"
     );
     let _ = std::fs::remove_dir_all(&base_dir);
+}
+
+/// File-shaped hosted runtime markers should fail instead of silently falling through to another layout.
+/// 文件形态的托管运行根标记应失败，而不是静默落入其它布局。
+#[test]
+fn resolve_implicit_application_root_rejects_file_shaped_hosted_lua_runtime_marker() {
+    let _guard = acquire_environment_lock();
+    let runtime_root = unique_test_dir("implicit-runtime-hosted-file-marker");
+    let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
+    std::fs::create_dir_all(fake_exe.parent().expect("fake exe parent should exist"))
+        .expect("failed to create fake exe parent");
+    std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
+    std::fs::write(runtime_root.join("lua_runtime"), b"not-a-directory")
+        .expect("failed to create file-shaped hosted LuaSkills runtime marker");
+
+    let error = resolve_implicit_application_root_from_paths(&std::env::temp_dir(), &fake_exe)
+        .expect_err("file-shaped hosted LuaSkills runtime marker should fail");
+    assert!(
+        error.contains("hosted LuaSkills runtime path is not a directory"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&runtime_root);
+}
+
+/// Hosted executable layouts should resolve the parent runtime root when it contains a skills directory.
+/// 托管式可执行文件布局在父级运行根包含 skills 目录时应解析该运行根。
+#[test]
+fn resolve_implicit_application_root_accepts_hosted_parent_layout() {
+    let _guard = acquire_environment_lock();
+    let runtime_root = unique_test_dir("implicit-runtime-hosted");
+    let fake_exe = runtime_root.join("bin").join("vulcan-agent-service.exe");
+    std::fs::create_dir_all(runtime_root.join("lua_runtime").join("skills"))
+        .expect("failed to create hosted LuaSkills directory");
+    std::fs::create_dir_all(fake_exe.parent().expect("fake exe parent should exist"))
+        .expect("failed to create fake exe parent");
+    std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
+
+    let resolved = resolve_implicit_application_root_from_paths(&std::env::temp_dir(), &fake_exe)
+        .expect("hosted runtime root inspection should succeed")
+        .expect("hosted runtime root should resolve");
+
+    assert_eq!(
+        normalize_skill_root_key(&resolved),
+        normalize_skill_root_key(&runtime_root)
+    );
+    let _ = std::fs::remove_dir_all(&runtime_root);
+}
+
+/// Relative executable paths without a stable absolute grandparent should not establish a hosted runtime root.
+/// 没有稳定绝对祖父目录的相对可执行文件路径不应建立宿主运行根。
+#[test]
+fn resolve_implicit_application_root_rejects_relative_executable_without_hosted_parent() {
+    // Build an isolated repository path without runtime markers; the explicit inputs fully determine discovery.
+    // 构建一个不含运行时标记的隔离仓库路径；发现结果完全由显式输入决定。
+    let base_dir = unique_test_dir("implicit-runtime-relative-exe");
+    let repository_cwd = base_dir.join("repo");
+    std::fs::create_dir_all(&repository_cwd).expect("repository cwd should be created");
+
+    let resolved = resolve_implicit_application_root_from_paths(
+        &repository_cwd,
+        Path::new("vulcan-agent-service.exe"),
+    )
+    .expect("relative executable inspection should succeed");
+
+    assert!(
+        resolved.is_none(),
+        "relative executable without hosted parent should not resolve a runtime root"
+    );
+    std::fs::remove_dir_all(&base_dir).expect("test runtime root should be removed");
 }
 
 /// Runtime entry mapping should not expose IDE-only project-environment routing in the MCP product surface.
@@ -866,8 +1232,8 @@ fn map_runtime_entry_to_mcp_tool_omits_environment_id_parameter() {
     assert!(!schema.contains_key("environment_id"));
 }
 
-/// MCP tool mapping should preserve the normalized tool and parameter descriptions exported by LuaSkills 0.4.3.
-/// MCP 工具映射应保留 LuaSkills 0.4.3 导出的规范化工具说明与参数说明文本。
+/// MCP tool mapping should preserve the normalized tool and parameter descriptions exported by LuaSkills 0.5.4.
+/// MCP 工具映射应保留 LuaSkills 0.5.4 导出的规范化工具说明与参数说明文本。
 #[test]
 fn map_runtime_entry_to_mcp_tool_preserves_luaskills_normalized_descriptions() {
     let entry = RuntimeEntryDescriptor {
@@ -1131,7 +1497,7 @@ fn build_engine_options_rejects_file_shaped_runtime_ffi_root() {
     let _guard = acquire_environment_lock();
     let root = unique_test_dir("runtime-ffi-root-file");
     create_runtime_root_for_test(&root);
-    let ffi_root = root.join("libs");
+    let ffi_root = root.join("lua_runtime").join("libs");
     std::fs::write(&ffi_root, b"not-a-directory")
         .expect("failed to create file-shaped ffi root path");
     let config = Config {
@@ -1149,7 +1515,7 @@ fn build_engine_options_rejects_file_shaped_runtime_ffi_root() {
     assert!(
         error
             .to_string()
-            .contains("runtime ffi root is not a directory"),
+            .contains("LuaSkills runtime libs path is not a directory"),
         "unexpected error: {error}"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -1162,7 +1528,7 @@ fn build_engine_options_rejects_file_shaped_runtime_resources_dir() {
     let _guard = acquire_environment_lock();
     let root = unique_test_dir("runtime-resources-file");
     create_runtime_root_for_test(&root);
-    let resources_file = root.join("resources");
+    let resources_file = root.join("lua_runtime").join("resources");
     std::fs::write(&resources_file, b"not-a-directory")
         .expect("failed to create file-shaped resources path");
     let config = Config {
@@ -1180,7 +1546,7 @@ fn build_engine_options_rejects_file_shaped_runtime_resources_dir() {
     assert!(
         error
             .to_string()
-            .contains("runtime resources path is not a directory"),
+            .contains("LuaSkills runtime resources path is not a directory"),
         "unexpected error: {error}"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -1193,7 +1559,7 @@ fn build_engine_options_rejects_file_shaped_runtime_lua_packages_dir() {
     let _guard = acquire_environment_lock();
     let root = unique_test_dir("runtime-lua-packages-file");
     create_runtime_root_for_test(&root);
-    let lua_packages_file = root.join("lua_packages");
+    let lua_packages_file = root.join("lua_runtime").join("lua_packages");
     std::fs::write(&lua_packages_file, b"not-a-directory")
         .expect("failed to create file-shaped lua_packages path");
     let config = Config {
@@ -1211,7 +1577,7 @@ fn build_engine_options_rejects_file_shaped_runtime_lua_packages_dir() {
     assert!(
         error
             .to_string()
-            .contains("runtime lua_packages path is not a directory"),
+            .contains("LuaSkills runtime lua_packages path is not a directory"),
         "unexpected error: {error}"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -1225,9 +1591,10 @@ fn build_engine_options_strips_windows_verbatim_prefix_from_lua_package_paths() 
     let _guard = acquire_environment_lock();
     let root = unique_test_dir("runtime-lua-packages-verbatim");
     create_runtime_root_for_test(&root);
-    std::fs::create_dir_all(root.join("lua_packages"))
+    std::fs::create_dir_all(root.join("lua_runtime").join("lua_packages"))
         .expect("failed to create lua_packages directory");
     let copied_executable = root
+        .join("lua_runtime")
         .join("bin")
         .join(space_controller_executable_file_name());
     std::fs::write(&copied_executable, b"test-controller")
@@ -1249,7 +1616,7 @@ fn build_engine_options_strips_windows_verbatim_prefix_from_lua_package_paths() 
         .expect("verbatim runtime root should build engine options");
     // Expected Lua package root keeps the normal drive-letter spelling so Lua's `?` placeholder remains unambiguous.
     // 期望的 Lua 包根目录保留普通盘符写法，避免 Lua 的 `?` 占位符产生歧义。
-    let expected_lua_packages_dir = root.join("lua_packages");
+    let expected_lua_packages_dir = root.join("lua_runtime").join("lua_packages");
     assert_eq!(
         options.host_options.lua_packages_dir.as_ref(),
         Some(&expected_lua_packages_dir)
@@ -1268,8 +1635,8 @@ fn build_engine_options_rejects_file_shaped_host_provided_tool_root() {
     let _guard = acquire_environment_lock();
     let root = unique_test_dir("runtime-host-tools-file");
     create_runtime_root_for_test(&root);
-    let tool_root = root.join("bin").join("tools");
-    std::fs::remove_dir_all(&tool_root).expect("failed to clear tools directory");
+    let tool_root = root.join("lua_runtime").join("bin");
+    std::fs::remove_dir_all(&tool_root).expect("failed to clear runtime bin directory");
     std::fs::write(&tool_root, b"not-a-directory")
         .expect("failed to create file-shaped tools path");
     let config = Config {
@@ -1287,7 +1654,7 @@ fn build_engine_options_rejects_file_shaped_host_provided_tool_root() {
     assert!(
         error
             .to_string()
-            .contains("host-provided tool root is not a directory"),
+            .contains("LuaSkills runtime bin path is not a directory"),
         "unexpected error: {error}"
     );
     let _ = std::fs::remove_dir_all(&root);

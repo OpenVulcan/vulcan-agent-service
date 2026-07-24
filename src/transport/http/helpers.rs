@@ -26,22 +26,27 @@ pub(super) enum JsonRpcMessageKind<'a> {
     Response,
 }
 
-/// Validate Origin header according to the local-server deployment model.
-/// 按本地服务部署模型校验 Origin 请求头。
-pub(super) fn validate_origin(headers: &HeaderMap) -> Result<(), Response> {
-    if let Some(origin) = headers.get("origin").and_then(|value| value.to_str().ok()) {
-        if origin != "null"
-            && !origin.starts_with("http://localhost")
-            && !origin.starts_with("http://127.0.0.1")
-            && !origin.starts_with("http://[::1]")
-        {
-            return Err(plain_response(
-                StatusCode::FORBIDDEN,
-                "Forbidden origin for local MCP server",
-            ));
+/// Check whether the Origin header is allowed for the local-server deployment model.
+/// 判断 Origin 请求头是否符合本地服务部署模型。
+pub(super) fn is_allowed_local_origin(headers: &HeaderMap) -> bool {
+    match headers.get("origin").and_then(|value| value.to_str().ok()) {
+        Some(origin) => {
+            origin == "null"
+                || origin.starts_with("http://localhost")
+                || origin.starts_with("http://127.0.0.1")
+                || origin.starts_with("http://[::1]")
         }
+        None => true,
     }
-    Ok(())
+}
+
+/// Build the forbidden-Origin response for streamable HTTP endpoints.
+/// 构造 streamable HTTP 端点的 Origin 拒绝响应。
+pub(super) fn forbidden_origin_response() -> Response {
+    plain_response(
+        StatusCode::FORBIDDEN,
+        "Forbidden origin for local MCP server",
+    )
 }
 
 /// Extract the negotiated protocol version from initialize response.
@@ -73,7 +78,7 @@ pub(super) fn classify_jsonrpc_message(msg: &Value) -> Option<JsonRpcMessageKind
 
 /// Read MCP-Protocol-Version header.
 /// 读取 MCP-Protocol-Version 请求头。
-pub(super) fn protocol_header_value<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
+pub(super) fn protocol_header_value(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("MCP-Protocol-Version")
         .and_then(|value| value.to_str().ok())
@@ -178,10 +183,44 @@ pub(super) fn sse_event_stream(
     .map(|_| Ok::<_, Infallible>(Event::default().event("ping")));
 
     let message_stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|val| {
-        let data = serde_json::to_string(&val).unwrap_or_default();
+        let data = sse_message_data(&val);
         Ok::<_, Infallible>(Event::default().event("message").data(data))
     });
 
     stream::once(async move { Ok(endpoint_event) })
         .chain(stream::select(ping_stream, message_stream))
+}
+
+/// Render one queued JSON-RPC payload as the SSE message `data` field.
+/// 将一个排队的 JSON-RPC 载荷渲染为 SSE message 的 `data` 字段。
+fn sse_message_data(value: &Value) -> String {
+    value.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Render SSE message payloads as valid JSON instead of falling back to an empty data field.
+    /// 验证 SSE message 载荷会渲染为合法 JSON，而不是回退为空 data 字段。
+    #[test]
+    fn sse_message_data_renders_valid_json_payload() {
+        // Define one queued JSON-RPC response payload like the legacy session channel carries.
+        // 定义一份旧版 session 通道会承载的排队 JSON-RPC 响应载荷。
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "ok": true
+            }
+        });
+
+        // Render through the SSE helper used by the message stream.
+        // 通过 message stream 使用的 SSE helper 进行渲染。
+        let data = sse_message_data(&payload);
+        let parsed: Value = serde_json::from_str(&data).expect("SSE data should be valid JSON");
+
+        assert_eq!(parsed["jsonrpc"].as_str(), Some("2.0"));
+        assert_eq!(parsed["result"]["ok"].as_bool(), Some(true));
+    }
 }

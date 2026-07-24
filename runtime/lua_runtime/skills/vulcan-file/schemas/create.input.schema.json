@@ -1,0 +1,59 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "PWD": {
+      "type": "string",
+      "description": "Optional project or workspace root used by the PWD convention. Accepts absolute POSIX, drive-letter, UNC, and translated Windows device paths such as /repo, D:\\work, D:/work, or //?/D:/work. Empty or non-directory values are treated as absent; when absent, every file path must already be absolute."
+    },
+    "file": {
+      "type": "string",
+      "description": "Use the exact file path to create. Supports ${env:NAME} placeholders. When PWD resolves to an existing directory, relative file values are resolved from that root; otherwise file must already be absolute."
+    },
+    "content": {
+      "type": "string",
+      "description": "Use the complete content for the brand-new file. Empty content is allowed and creates an empty file."
+    },
+    "files": {
+      "type": "array",
+      "description": "Use for batch file creation. Provide up to 10 items, each with file and content. Do not send this field together with root-level file/content.",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Use the exact file path to create for this batch item. Supports ${env:NAME} placeholders. Relative paths require a valid root-level PWD."
+          },
+          "content": {
+            "type": "string",
+            "description": "Use the complete content for this brand-new file. Empty content is allowed and creates an empty file."
+          }
+        },
+        "required": [
+          "file",
+          "content"
+        ]
+      }
+    },
+    "no_apply": {
+      "type": "boolean",
+      "description": "Leave false or omit to create files immediately. Set true only when you need a preview without writing. In batch mode this no_apply flag is shared by all files."
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "file",
+        "content"
+      ]
+    },
+    {
+      "required": [
+        "files"
+      ]
+    }
+  ]
+}

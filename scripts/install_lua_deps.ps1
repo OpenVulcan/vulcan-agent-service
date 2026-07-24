@@ -227,7 +227,7 @@ function Resolve-LuaRuntimePackagesTag {
             return $LegacyTag
         }
     } catch {
-        throw "Unsupported LUA_RUNTIME_VERSION value '$LegacyRuntimeVersion'. Use a semantic version such as 0.4.3, or set LUA_RUNTIME_PACKAGES_VERSION for an exact luaskills-packages tag."
+        throw "Unsupported LUA_RUNTIME_VERSION value '$LegacyRuntimeVersion'. Use a semantic version such as 0.5.4, or set LUA_RUNTIME_PACKAGES_VERSION for an exact luaskills-packages tag."
     }
 
     Write-Host "==> LUA_RUNTIME_VERSION=$LegacyRuntimeVersion detected as legacy luaskills crate version; resolving compatible luaskills-packages tag from series $Series."

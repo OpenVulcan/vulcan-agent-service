@@ -1,14 +1,12 @@
 use crate::config;
 use crate::config::Config;
-use crate::config::client_budget::{
-    initialize_client_budget_runtime_root, preload_client_budget_config,
-};
-use crate::config::model_config::{initialize_model_config_runtime_root, preload_model_config};
-use crate::config::tool_config::{initialize_tool_config_runtime_root, preload_tool_configs};
+use crate::config::client_budget::initialize_client_budget_runtime_root;
+use crate::config::model_config::initialize_model_config_runtime_root;
+use crate::config::reload_runtime_configs;
+use crate::config::tool_config::initialize_tool_config_runtime_root;
+use crate::luaskills_adapter::resolve_application_root_from_config;
 use crate::model_provider::install_luaskills_model_callbacks;
 use crate::support::runtime_logging::info as log_info;
-
-use super::runtime_init::resolve_runtime_root_for_host;
 
 /// Format the resolved client-budget preview into startup logs that are easy for humans to read directly.
 /// 把客户端预算预解析摘要格式化成人可直接阅读的启动日志。
@@ -103,24 +101,25 @@ fn print_model_config_preload_log(report: &config::model_config::ModelConfigLoad
 /// Preload hot-reloadable runtime config files before the host starts so configuration issues surface early.
 /// 在宿主启动前预加载可热重载运行时配置，让配置问题尽早暴露。
 pub(super) fn preload_runtime_mcp_configs(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let runtime_root = resolve_runtime_root_for_host(cfg)?;
+    // ApplicationRoot owns all host configuration files and remains separate from the LuaSkills package.
+    // ApplicationRoot 拥有全部宿主配置文件，并与 LuaSkills 包保持分离。
+    let runtime_root = resolve_application_root_from_config(cfg)?;
     initialize_client_budget_runtime_root(runtime_root.as_deref())
         .map_err(|error| format!("failed to initialize client-budget runtime root: {error}"))?;
     initialize_tool_config_runtime_root(runtime_root.as_deref())
         .map_err(|error| format!("failed to initialize tool-config runtime root: {error}"))?;
     initialize_model_config_runtime_root(runtime_root.as_deref())
         .map_err(|error| format!("failed to initialize model-config runtime root: {error}"))?;
-    let client_budget_report = preload_client_budget_config()
-        .map_err(|error| format!("failed to preload client budget config: {error}"))?;
-    let tool_config_report = preload_tool_configs()
-        .map_err(|error| format!("failed to preload tool configs: {error}"))?;
-    let model_config_report = preload_model_config()
-        .map_err(|error| format!("failed to preload model configs: {error}"))?;
+    // Stage every runtime config before committing any cache so startup also avoids mixed versions.
+    // 在提交任何缓存前分阶段加载全部运行时配置，使启动流程同样避免混合版本。
+    let reports = reload_runtime_configs()
+        .map_err(|error| format!("failed to preload runtime configs: {error}"))?;
     // Model callbacks must be refreshed after preload so runtime calls see the latest provider settings.
     // 模型配置预载后必须刷新模型回调，确保运行时调用使用最新供应商设置。
-    install_luaskills_model_callbacks();
-    print_client_budget_preload_log(&client_budget_report);
-    print_tool_config_preload_log(&tool_config_report);
-    print_model_config_preload_log(&model_config_report);
+    install_luaskills_model_callbacks()
+        .map_err(|error| format!("failed to install model callbacks: {}", error.message))?;
+    print_client_budget_preload_log(&reports.client_budget);
+    print_tool_config_preload_log(&reports.tool_config);
+    print_model_config_preload_log(&reports.model_config);
     Ok(())
 }

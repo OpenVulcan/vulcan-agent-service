@@ -13,7 +13,7 @@ impl Config {
     /// Load configuration from the given YAML file path.
     /// 从指定 YAML 文件路径加载配置。
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let normalized_path = normalize_cli_config_path(path).unwrap_or_else(|| path.into());
+        let normalized_path = normalize_cli_config_path(path)?;
         let content = fs::read_to_string(&normalized_path)?;
         let mut config: Config = serde_yaml::from_str(&content)?;
         config.loaded_config_path = Some(normalized_path.to_string_lossy().to_string());
@@ -30,18 +30,16 @@ impl Config {
         let runtime_root_arg =
             parse_cli_path_flag_from_args(&args, &["-runtime-root", "--runtime-root"])?;
         let config_path = if let Some(runtime_root) = runtime_root_arg.as_deref() {
-            find_runtime_root_config(runtime_root)
+            find_runtime_root_config(runtime_root)?
         } else {
-            find_exe_parent_config()
+            find_exe_parent_config()?
         };
 
         match config_path {
             Some(path) => {
                 let mut config = Self::from_file(&path)?;
-                if let Some(runtime_root) = runtime_root_arg
-                    .as_deref()
-                    .and_then(normalize_cli_runtime_root_arg)
-                {
+                if let Some(runtime_root) = runtime_root_arg.as_deref() {
+                    let runtime_root = normalize_cli_runtime_root_arg(runtime_root)?;
                     config.runtime_root = Some(runtime_root.to_string_lossy().to_string());
                 }
                 eprintln!("[Config] Loaded from: {}", path);

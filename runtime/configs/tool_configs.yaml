@@ -5,6 +5,8 @@
 # English: Each tool config may only contain one level of fields, and values may be scalars or scalar arrays only.
 
 vulcan-codekit:
+  # 中文：预算估算保留字段必须使用 YAML 无符号整数，不接受字符串、负数或浮点数。
+  # English: Reserved budget-estimation fields must be YAML unsigned integers; strings, negative values, and floats are rejected.
   bytes_per_token: 3
   unlimited_bytes_cap: 204800
   budget_scope: "tool_result"

@@ -11,7 +11,7 @@ use super::runtime_init::{
 use super::runtime_init::{
     build_root_skill_manager_for_cli, collect_managed_root_skill_ids,
     ensure_root_skill_manager_root, ensure_skill_manager_runtime_roots,
-    select_root_skill_manager_root,
+    select_root_skill_manager_root, sort_skill_manager_formal_roots,
 };
 use super::runtime_preload::preload_runtime_mcp_configs;
 use crate::config::Config;
@@ -64,20 +64,20 @@ fn print_call_tools_result(
     tool_name: Option<&str>,
     request_context: Option<&RuntimeRequestContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client_budget = client_budget_snapshot_for_render(request_context, tool_name, skill_name);
+    let client_budget = client_budget_snapshot_for_render(request_context, tool_name, skill_name)
+        .map_err(|error| format!("resolve client budget failed: {error}"))?;
     let spill_root = ensure_runtime_temp_dir()?.join("mcp").join("cache");
-    println!(
-        "{}",
-        render_tool_result_text(
-            value,
-            skill_name,
-            Some(&client_budget),
-            &HostRenderOptions {
-                spill_root: Some(spill_root),
-                ..HostRenderOptions::default()
-            },
-        )
-    );
+    let rendered = render_tool_result_text(
+        value,
+        skill_name,
+        Some(&client_budget),
+        &HostRenderOptions {
+            spill_root: Some(spill_root),
+            ..HostRenderOptions::default()
+        },
+    )
+    .map_err(|error| format!("render call-tools result failed: {error}"))?;
+    println!("{}", rendered);
     Ok(())
 }
 
@@ -163,18 +163,25 @@ pub(crate) fn run_service_host_for_runtime_root(
         .enable_all()
         .build()?;
     let server = runtime.block_on(async_build_stdio_server(cfg.clone()))?;
+    #[cfg(not(windows))]
     let shutdown_rx = match shutdown_mode {
-        #[cfg(not(windows))]
         ProcessShutdownMode::ProcessSignals => {
             let (shutdown_tx, shutdown_rx) = watch::channel(false);
             runtime.spawn(async move {
-                wait_for_process_shutdown_signal().await;
-                let _ = shutdown_tx.send(true);
+                if let Err(error) = wait_for_process_shutdown_signal().await {
+                    eprintln!("[shutdown] {error}; requesting process shutdown");
+                }
+                if !request_process_shutdown(&shutdown_tx) {
+                    eprintln!("[shutdown] process shutdown receiver was already dropped");
+                }
             });
             shutdown_rx
         }
         ProcessShutdownMode::External(shutdown_rx) => shutdown_rx,
     };
+    #[cfg(windows)]
+    let ProcessShutdownMode::External(shutdown_rx) = shutdown_mode;
+
     let result = runtime.block_on(async {
         spawn_cross_day_cleanup_task();
         run_network_transports_with_shutdown(server.clone(), &cfg, shutdown_rx).await
@@ -196,27 +203,47 @@ fn load_service_config_from_runtime_root(
 
 /// Wait for the current process shutdown signal in a transport-friendly async form.
 /// 以适合传输层的异步形式等待当前进程的关闭信号。
+///
+/// Returns: `Ok(())` after a shutdown signal, or a diagnostic string when signal registration/waiting fails.
+/// 返回：收到关闭信号后返回 `Ok(())`；信号注册或等待失败时返回诊断字符串。
 #[cfg(not(windows))]
-async fn wait_for_process_shutdown_signal() {
+async fn wait_for_process_shutdown_signal() -> Result<(), String> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate_signal = signal(SignalKind::terminate()).ok();
+        let mut terminate_signal = signal(SignalKind::terminate())
+            .map_err(|error| format!("failed to install SIGTERM handler: {error}"))?;
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = async {
-                if let Some(terminate_signal) = terminate_signal.as_mut() {
-                    let _ = terminate_signal.recv().await;
-                } else {
-                    std::future::pending::<()>().await;
+            result = tokio::signal::ctrl_c() => {
+                result.map_err(|error| format!("failed to wait for Ctrl+C: {error}"))
+            }
+            signal = terminate_signal.recv() => {
+                match signal {
+                    Some(()) => Ok(()),
+                    None => Err("SIGTERM signal stream closed unexpectedly".to_string()),
                 }
-            } => {}
+            }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|error| format!("failed to wait for Ctrl+C: {error}"))
     }
+}
+
+/// Request shutdown through the shared process-level watch channel.
+/// 通过共享的进程级 watch 通道请求关闭。
+///
+/// Parameters: `shutdown_tx` is the sender paired with transport shutdown receivers.
+/// 参数：`shutdown_tx` 是与传输层关闭接收器配对的发送端。
+///
+/// Returns: `true` when at least one receiver accepted the update.
+/// 返回：当至少一个接收端接受该更新时返回 `true`。
+#[cfg_attr(windows, allow(dead_code))]
+fn request_process_shutdown(shutdown_tx: &watch::Sender<bool>) -> bool {
+    shutdown_tx.send(true).is_ok()
 }
 
 /// Run the default HTTP/gRPC service mode.
@@ -326,7 +353,8 @@ fn run_call_tool_mode(
         Some(&request_context),
         Some(tool_name),
         skill_name.as_deref(),
-    );
+    )
+    .map_err(|error| format!("build Lua invocation context failed: {error}"))?;
     let result = engine
         .call_skill(tool_name, &arguments, Some(&invocation_context))
         .map_err(|error| format!("call-tools failed for {}: {}", tool_name, error))?;

@@ -37,6 +37,14 @@ $HostDepsScriptPath = Join-Path $ScriptDir "scripts\install_host_deps.ps1"
 # LuaDepsScriptPath 用于指向专用的 PowerShell Lua 依赖初始化脚本。
 $LuaDepsScriptPath = Join-Path $ScriptDir "scripts\install_lua_deps.ps1"
 
+# ManagedRuntimeDepsScriptPath points at the verified LuaSkills 0.5.4 Python/Node fetcher.
+# ManagedRuntimeDepsScriptPath 指向经过校验的 LuaSkills 0.5.4 Python/Node 拉取器。
+$ManagedRuntimeDepsScriptPath = Join-Path $ScriptDir "scripts\deps\fetch_managed_runtimes.ps1"
+
+# ManagedRuntimeLayoutCheckScriptPath points at the post-fetch manifest/layout validator.
+# ManagedRuntimeLayoutCheckScriptPath 指向拉取后的清单与布局校验器。
+$ManagedRuntimeLayoutCheckScriptPath = Join-Path $ScriptDir "scripts\debug-tools\managed_runtime_layout_check.py"
+
 # UpdateSkillsScriptPath points at the dedicated PowerShell LuaSkills update script.
 # UpdateSkillsScriptPath 用于指向专用的 PowerShell LuaSkills 更新脚本。
 $UpdateSkillsScriptPath = Join-Path $ScriptDir "scripts\update_skills.ps1"
@@ -112,13 +120,16 @@ function Invoke-Run {
 # DependencyKind 用于选择要初始化的依赖域。
 function Invoke-DependencyInstall {
     param(
-        [ValidateSet("host", "lua")]
+        [ValidateSet("host", "lua", "managed", "python", "node")]
         [string]$DependencyKind
     )
 
     $ScriptPath = switch ($DependencyKind) {
         "host" { $HostDepsScriptPath }
         "lua"  { $LuaDepsScriptPath }
+        "managed" { $ManagedRuntimeDepsScriptPath }
+        "python" { $ManagedRuntimeDepsScriptPath }
+        "node" { $ManagedRuntimeDepsScriptPath }
         default { throw "Unsupported dependency kind: $DependencyKind" }
     }
 
@@ -126,15 +137,45 @@ function Invoke-DependencyInstall {
         throw "Missing dependency script: $ScriptPath"
     }
 
+    # ScriptArguments selects the exact upstream fetch target for managed runtime subcommands.
+    # ScriptArguments 为受管运行时子命令选择精确的上游拉取目标。
+    $ScriptArguments = @()
+    if ($DependencyKind -eq "managed") {
+        $ScriptArguments = @("-Target", "all")
+    }
+    elseif ($DependencyKind -eq "python") {
+        $ScriptArguments = @("-Target", "python")
+    }
+    elseif ($DependencyKind -eq "node") {
+        $ScriptArguments = @("-Target", "node")
+    }
+
+    # PowerShellCommand prefers modern pwsh while retaining Windows PowerShell execution support.
+    # PowerShellCommand 优先使用现代 pwsh，同时保留 Windows PowerShell 执行支持。
     $PowerShellCommand = Get-Command "pwsh" -ErrorAction SilentlyContinue
     if ($PowerShellCommand) {
-        & $PowerShellCommand.Source -NoProfile -ExecutionPolicy Bypass -File $ScriptPath
+        & $PowerShellCommand.Source -NoProfile -ExecutionPolicy Bypass -File $ScriptPath @ScriptArguments
     }
     else {
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath @ScriptArguments
     }
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
+    }
+
+    if ($DependencyKind -eq "managed") {
+        # PythonCommand runs the repository validator after the complete managed fetch target.
+        # PythonCommand 在完整受管拉取目标完成后运行仓库校验器。
+        $PythonCommand = Get-Command "python" -ErrorAction SilentlyContinue
+        if (-not $PythonCommand) {
+            throw "python is required to validate the fetched managed runtime layout"
+        }
+        & $PythonCommand.Source $ManagedRuntimeLayoutCheckScriptPath `
+            (Join-Path $ScriptDir "third_party\managed_runtime_cache") `
+            --distribution-root (Join-Path $ScriptDir "third_party\luaskills_managed_runtimes")
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
     }
 }
 
@@ -170,9 +211,12 @@ function Show-Usage {
     Write-Host "  ./make release     # release build"
     Write-Host "  ./make run         # run debug build"
     Write-Host "  ./make run release # run release build"
-    Write-Host "  ./make deps        # install host + official LuaSkills runtime dependencies"
+    Write-Host "  ./make deps        # install host + Lua + managed Python/Node dependencies"
     Write-Host "  ./make deps host   # install host native dependencies only"
     Write-Host "  ./make deps lua    # install official LuaSkills runtime dependencies only"
+    Write-Host "  ./make deps managed # fetch managed Python + Node distributions"
+    Write-Host "  ./make deps python # fetch managed Python distribution only"
+    Write-Host "  ./make deps node   # fetch managed Node + pnpm distributions only"
     Write-Host "  ./make update-skills [skill-id...] # update output skills and sync them into runtime"
 }
 
@@ -202,16 +246,27 @@ switch ($NormalizedMode) {
             "" {
                 Invoke-DependencyInstall -DependencyKind "host"
                 Invoke-DependencyInstall -DependencyKind "lua"
+                Invoke-DependencyInstall -DependencyKind "managed"
             }
             "all" {
                 Invoke-DependencyInstall -DependencyKind "host"
                 Invoke-DependencyInstall -DependencyKind "lua"
+                Invoke-DependencyInstall -DependencyKind "managed"
             }
             "host" {
                 Invoke-DependencyInstall -DependencyKind "host"
             }
             "lua" {
                 Invoke-DependencyInstall -DependencyKind "lua"
+            }
+            "managed" {
+                Invoke-DependencyInstall -DependencyKind "managed"
+            }
+            "python" {
+                Invoke-DependencyInstall -DependencyKind "python"
+            }
+            "node" {
+                Invoke-DependencyInstall -DependencyKind "node"
             }
             default {
                 Write-Error "Unsupported deps command: '$CommandVariant'"

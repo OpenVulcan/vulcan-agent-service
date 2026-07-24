@@ -61,12 +61,12 @@
 
 因此运行时需要准备：
 
-- `output/bin/vldb-controller(.exe)`
+- `output/lua_runtime/bin/vldb-controller(.exe)`
   - 可通过 `make deps` 自动下载对应平台 release 产物，构建时会自动复制到这里
 
 通用宿主工具依赖则位于：
 
-- `output/bin/tools`
+- `output/lua_runtime/bin`
 
 同时建议通过 `runtime/configs/config.yaml` 中的 `space_controller` 段配置：
 
@@ -90,7 +90,7 @@ space_controller:
 
 - `auto_spawn=true` 只能和**本地可拉起**的 controller endpoint 搭配使用
 - 如果 `endpoint` 指向远端 controller，则必须改为 `auto_spawn=false`，并由外部保证 controller 已经启动
-- `output/bin/vldb-controller(.exe)` 应尽量通过 `make deps + make build` 生成；如果手工替换二进制，必须确保它与当前仓库锁定的 `vldb-controller-client` 使用同一 release tag，避免静默版本漂移
+- `output/lua_runtime/bin/vldb-controller(.exe)` 应尽量通过 `make deps + make build` 生成；如果手工替换二进制，必须确保它与当前仓库锁定的 `vldb-controller-client` 使用同一 release tag，避免静默版本漂移
 
 ## 当前对外服务面
 
@@ -161,17 +161,19 @@ LuaSkills 是当前对外的核心能力面。
 - `vulcan-lua`
 - `vulcan-codekit`
 - `vulcan-curl`
+- `vulcan-file`
 - `vulcan-ai-memory`
-- `vulcan-work-memory`
+- `vulcan-workmem`
+- `vulcan-testkit`
 
 `vulcan-ai-memory` 默认以 skill 形式加载。  
 如果显式配置 `vmm_enable=true` 且提供 `vmm` gRPC 端点，宿主会跳过 `vulcan-ai-memory`，由 VMM 接管 AI 记忆能力。  
-`vulcan-work-memory` 不属于 VMM gRPC 接管范围，会继续走 SQLite skill。
+`vulcan-workmem` 不属于 VMM gRPC 接管范围，会继续走 SQLite skill。
 
 这些 skill 已迁移到新的目录结构：
 
 ```text
-runtime/skills/<skill>/
+runtime/lua_runtime/skills/<skill>/
 ├─ skill.yaml
 ├─ help/
 ├─ runtime/
@@ -273,23 +275,35 @@ src/
 └─ support/               # 结果格式化、日志、运行时上下文与临时文件维护
 
 runtime/
-├─ configs/               # 仓库内配置模板
-├─ skills/                # 官方内建 LuaSkills 模板
-├─ resources/             # 仓库内共享资源与公共模板
-└─ examples/              # 示例 skill 与模板
+├─ configs/               # 宿主配置模板，仅供主程序读取
+└─ lua_runtime/           # 完整 LuaSkills 运行时源码镜像
+   ├─ bin/                # controller 与宿主提供工具
+   ├─ config/             # LuaSkills 统一 skill_config.json
+   ├─ skills/             # 官方内建 LuaSkills
+   ├─ dependencies/       # Skill 依赖、受管发行包与环境
+   ├─ databases/          # SQLite / LanceDB 数据目录
+   ├─ resources/          # LuaSkills 共享资源与公共模板
+   ├─ libs/               # FFI 与原生动态库
+   ├─ lua_packages/       # Lua 包目录
+   ├─ state/              # 技能状态与安装记录
+   └─ temp/               # LuaSkills 临时文件
 
 output/
-├─ configs/               # 构建同步后的运行配置
-├─ skills/                # 实际运行使用的技能目录
-├─ dependencies/          # 运行期共享/私有依赖
-├─ databases/             # SQLite / LanceDB 数据目录
-├─ resources/             # 实际运行使用的共享资源
-├─ bin/                   # 宿主主程序与 controller
-├─ libs/                  # 宿主提供通用原生动态库
-├─ lua_packages/          # 宿主提供 Lua 包目录
-├─ state/                 # 技能状态与安装状态
-├─ temp/                  # 临时下载与渲染产物
-└─ logs/                  # 日志目录
+├─ bin/                   # release 宿主主程序
+├─ debug/                 # debug 宿主主程序
+├─ configs/               # 构建同步后的宿主配置
+├─ logs/                  # 宿主日志目录
+└─ lua_runtime/           # 实际运行使用的完整 LuaSkills 包
+   ├─ bin/                # vldb-controller 与宿主提供工具
+   ├─ config/             # skill_config.json
+   ├─ skills/             # ROOT 系统技能
+   ├─ dependencies/       # Skill 依赖、runtimes 与 envs
+   ├─ databases/          # SQLite / LanceDB 数据目录
+   ├─ resources/          # LuaSkills 共享资源
+   ├─ libs/               # FFI 与原生动态库
+   ├─ lua_packages/       # Lua 包目录
+   ├─ state/              # 技能状态与安装记录
+   └─ temp/               # LuaSkills 临时文件
 ```
 
 ## 运行要求
@@ -309,8 +323,9 @@ output/
 
 - `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml`
   - 属于宿主层配置，由 `vulcan-agent-service` 自己读取
+  - `tool_configs.yaml` 的 `bytes_per_token` 与 `unlimited_bytes_cap` 必须写成 YAML 无符号整数；字符串、负数、浮点数、布尔值、`null` 与数组会在预载或热重载时被拒绝
 - `skill_config.json`
-  - 由宿主随 `runtime_root` 统一推导并传给 `luaskills`
+  - 固定由应用根推导为 `<runtime_root>/lua_runtime/config/skill_config.json` 并传给 `luaskills`
   - 当前产品不再提供单独文件路径覆盖，避免与运行根参数产生冲突
   - 当前能力会通过宿主 `luaskill-config` MCP 工具对外提供 `list/get/set/delete` 入口
   - 工具返回纯文本结果，不暴露底层配置文件物理地址
@@ -362,8 +377,21 @@ runlua_pool_config:
 ### 构建
 
 ```bash
-cargo build
+make deps
+make build
 ```
+
+依赖可按域单独准备：
+
+```bash
+make deps host       # 宿主原生依赖
+make deps lua        # 官方 LuaSkills 运行时包
+make deps managed    # 受管 Python + Node 发行包
+make deps python     # 仅受管 Python
+make deps node       # 仅受管 Node + pnpm
+```
+
+受管运行时当前锁定为 Python 3.14.6、uv 0.11.28、Node 24.18.0 与 pnpm 11.11.0。拉取脚本会验证上游校验和/完整性，并由构建流程复制到 `output/lua_runtime/dependencies/runtimes`。
 
 ### 检查
 
@@ -432,7 +460,7 @@ cargo run -- --update-root-skills --runtime-root output
 当前仓库通过 Cargo 原生版本依赖引用：
 
 ```toml
-luaskills = "0.4.3"
+luaskills = "0.5.4"
 ```
 
 相关地址：
@@ -441,11 +469,13 @@ luaskills = "0.4.3"
 - Cargo：<https://crates.io/crates/luaskills>
 - Runtime packages：<https://github.com/LuaSkills/luaskills-packages>
 
-当前 `0.4.3` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
+当前 `0.5.4` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
 Lua runtime packages 与原生依赖包已经独立到 `luaskills-packages` 发布，
 本仓库里的依赖拉取脚本也按这个拆分后的发布模型工作。
 
-同时，`0.4.3` 已修复 LuaSkills 工具说明文本不够规范的问题；
+`0.5.4` 保持固定 `runtime_root`、受管 Python/Node 发行根、可写环境根与 Worker/持久会话资源策略，并将 Rust controller client 与受管 VLDB 运行时统一对齐到 `vldb-controller 0.2.3` 和 `vldb-sqlite 0.1.6`。宿主不再手工拼接历史目录字段，而是把 `output/lua_runtime` 作为唯一 LuaSkills 根交给上游规范化。
+
+同时，宿主直接复用 LuaSkills 导出的工具说明文本；
 `vulcan-agent-service` 现在直接复用 `luaskills` 导出的 entry description、
 parameter description 与 final AI-facing `input_schema`，
 不再额外做宿主侧二次拼接或格式修正。
@@ -457,19 +487,13 @@ parameter description 与 final AI-facing `input_schema`，
 
 ## 运行目录约定
 
-- `runtime/` 用于存放仓库内的基础模板文件
-- `output/` 是实际运行根，构建时会把 `runtime/configs`、`runtime/resources`、`runtime/skills` 同步进去
-- 运行期产生的：
-  - `dependencies`
-  - `databases`
-  - `temp`
-  - `logs`
-  - `libs`
-  都应位于 `output/` 下
-- `output/bin` 只用于宿主级主程序与 controller 这类系统可执行文件
-- `output/bin/tools` 用于共享命令行工具依赖，例如 `rg`、`ast-grep`
-- `output/bin/tools` 不是数据库 controller 目录；`vldb-controller(.exe)` 固定放在 `output/bin/`
-- `output/libs` 用于宿主提供通用原生依赖
+- `runtime/configs` 只保存宿主配置模板；`runtime/lua_runtime` 保存完整 LuaSkills 源码运行时镜像
+- `output/` 是应用根，只允许保留宿主主程序、`configs`、`logs` 与 `lua_runtime` 容器
+- `output/bin` 与 `output/debug` 只保存宿主主程序，不再承载 controller 或 Lua 工具
+- `output/lua_runtime` 是唯一 LuaSkills 根；`skills`、`dependencies`、`databases`、`temp`、`libs`、`lua_packages`、`resources`、`state` 全部位于其下
+- `vldb-controller(.exe)` 与共享宿主工具固定放在 `output/lua_runtime/bin`
+- 受管 Python/Node 发行包固定放在 `output/lua_runtime/dependencies/runtimes`，可写环境固定放在 `output/lua_runtime/dependencies/envs`
+- 构建会删除 `output` 下已经废弃的旧同级 Lua 目录，不提供旧布局兼容
 
 ## 后续方向
 

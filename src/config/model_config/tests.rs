@@ -4,8 +4,7 @@ use std::sync::{Mutex, OnceLock};
 /// Return one shared mutex used to serialize runtime-root override tests for model-config loading.
 /// 返回一个共享互斥锁，用于串行化模型配置加载中的运行根覆盖测试。
 fn runtime_root_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::config::runtime_config_test_lock()
 }
 
 /// Return one shared mutex used to serialize environment-variable tests for model-config loading.
@@ -27,6 +26,24 @@ fn unique_test_dir(name: &str) -> PathBuf {
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     ))
+}
+
+/// Cached model-config load errors should be returned instead of replaced with defaults.
+/// 缓存的模型配置加载错误应被返回，而不是被默认配置替代。
+#[test]
+fn effective_model_config_from_runtime_state_reports_cached_error() {
+    // Build a local cached error state without mutating the global OnceLock.
+    // 构造局部缓存错误状态，避免修改全局 OnceLock。
+    let runtime_state: ModelConfigRuntimeState =
+        Err("Failed to parse model config YAML test-path: invalid yaml".to_string());
+
+    // Read the effective config through the same helper used by provider-facing access.
+    // 通过供应商访问路径复用的同一 helper 读取生效配置。
+    let error = effective_model_config_from_runtime_state(&runtime_state)
+        .expect_err("cached load error should surface");
+
+    assert!(error.contains("Failed to parse model config YAML"));
+    assert!(error.contains("invalid yaml"));
 }
 
 /// Verify that the repository model-config template stays parseable.

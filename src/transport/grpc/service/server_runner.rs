@@ -1,4 +1,5 @@
 use super::*;
+use crate::transport::shutdown::wait_for_shutdown_requested;
 
 // gRPC server runner
 // ============================================================
@@ -32,7 +33,7 @@ pub async fn run_grpc_with_shutdown(
         .add_service(HostAdapterServiceServer::new(service.clone()))
         .add_service(VmmServiceServer::new(service))
         .serve_with_shutdown(addr, async move {
-            let _ = shutdown_rx.changed().await;
+            wait_for_shutdown_requested(&mut shutdown_rx).await;
         })
         .await?;
 

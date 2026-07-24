@@ -4,10 +4,8 @@ use super::*;
 /// 构建全部稳定的 VMM 记忆工具描述。
 pub fn vmm_memory_tool_descriptors() -> Vec<VmmMemoryToolDescriptor> {
     vec![
-        canonical_memory_search_descriptor(),
-        canonical_memory_get_descriptor(),
-        compat_memory_search_descriptor(),
-        compat_memory_get_descriptor(),
+        vulcan_memory_search_descriptor(),
+        vulcan_memory_get_descriptor(),
         vmm_memory_search_descriptor(),
         vmm_turn_details_descriptor(),
         vmm_memory_write_descriptor(),
@@ -15,83 +13,9 @@ pub fn vmm_memory_tool_descriptors() -> Vec<VmmMemoryToolDescriptor> {
     ]
 }
 
-/// Build the legacy bridge search descriptor used by hosts that still need the canonical memory_search name.
-/// 构建供仍需要 canonical memory_search 名称的宿主使用的旧式桥接搜索描述。
-fn canonical_memory_search_descriptor() -> VmmMemoryToolDescriptor {
-    let schema = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["query"],
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query for prior project facts, source-turn context, user preferences, or decisions."
-            },
-            "maxResults": {
-                "type": "number",
-                "description": "Optional maximum hit count. Prefer 3 to 8 for targeted recall."
-            },
-            "minScore": {
-                "type": "number",
-                "description": "Optional minimum synthetic score threshold between 0 and 1."
-            },
-            "corpus": {
-                "type": "string",
-                "enum": ["memory", "sessions", "all", "wiki"],
-                "description": "Restrict results to durable VMM memories or session-backed hits. `all` currently behaves like Vulcan memory-only recall, and `wiki` is unsupported."
-            }
-        }
-    });
-    let description = "Legacy bridge surface for hosts that still require the canonical `memory_search` name. Search durable VMM memories and session-backed source turns before answering when prior project facts, preferences, requirements, bugs, or decisions may matter. Hosts with a stronger Vulcan-native tool surface may choose to hide this bridge and prefer `vulcan_memory_search` instead.";
-    build_memory_descriptor(
-        "memory_search",
-        description,
-        schema,
-        VMM_MEMORY_SURFACE_CANONICAL,
-        VMM_TOOL_VISIBILITY_PUBLIC,
-    )
-}
-
-/// Build the legacy bridge read descriptor used by hosts that still need the canonical memory_get name.
-/// 构建供仍需要 canonical memory_get 名称的宿主使用的旧式桥接读取描述。
-fn canonical_memory_get_descriptor() -> VmmMemoryToolDescriptor {
-    let schema = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["path"],
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Pseudo-path returned by memory_search, such as `vulcan-turns/123.md` or `vulcan-memories/456.md`."
-            },
-            "from": {
-                "type": "number",
-                "description": "Optional 1-based start line for paged reads."
-            },
-            "lines": {
-                "type": "number",
-                "description": "Optional line count for paged reads."
-            },
-            "corpus": {
-                "type": "string",
-                "enum": ["memory", "all", "wiki"],
-                "description": "`wiki` is unsupported by Vulcan memory and will return an unavailable result."
-            }
-        }
-    });
-    let description = "Legacy bridge surface for hosts that still require the canonical `memory_get` name. Read one exact Vulcan memory pseudo-document returned by `memory_search`, including source turn documents and durable memory previews. Hosts with a stronger Vulcan-native tool surface may choose to hide this bridge and prefer `vulcan_memory_get` instead.";
-    build_memory_descriptor(
-        "memory_get",
-        description,
-        schema,
-        VMM_MEMORY_SURFACE_CANONICAL,
-        VMM_TOOL_VISIBILITY_PUBLIC,
-    )
-}
-
-/// Build the primary Vulcan-native grouped search descriptor used by hosts that prefer explicit Vulcan memory tools.
-/// 构建供偏好显式 Vulcan 记忆工具的宿主使用的主分组搜索描述。
-fn compat_memory_search_descriptor() -> VmmMemoryToolDescriptor {
+/// Build the primary public Vulcan-native grouped search descriptor.
+/// 构建主要公开的 Vulcan 原生分组搜索描述。
+fn vulcan_memory_search_descriptor() -> VmmMemoryToolDescriptor {
     let schema = json!({
         "type": "object",
         "additionalProperties": false,
@@ -115,14 +39,14 @@ fn compat_memory_search_descriptor() -> VmmMemoryToolDescriptor {
         "vulcan_memory_search",
         description,
         schema,
-        VMM_MEMORY_SURFACE_COMPAT,
+        VMM_MEMORY_SURFACE_PUBLIC,
         VMM_TOOL_VISIBILITY_PUBLIC,
     )
 }
 
-/// Build the primary Vulcan-native grouped read descriptor used by hosts that prefer explicit Vulcan memory tools.
-/// 构建供偏好显式 Vulcan 记忆工具的宿主使用的主分组读取描述。
-fn compat_memory_get_descriptor() -> VmmMemoryToolDescriptor {
+/// Build the primary public Vulcan-native grouped read descriptor.
+/// 构建主要公开的 Vulcan 原生分组读取描述。
+fn vulcan_memory_get_descriptor() -> VmmMemoryToolDescriptor {
     let schema = json!({
         "type": "object",
         "additionalProperties": false,
@@ -141,7 +65,7 @@ fn compat_memory_get_descriptor() -> VmmMemoryToolDescriptor {
         "vulcan_memory_get",
         description,
         schema,
-        VMM_MEMORY_SURFACE_COMPAT,
+        VMM_MEMORY_SURFACE_PUBLIC,
         VMM_TOOL_VISIBILITY_PUBLIC,
     )
 }

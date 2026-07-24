@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::host_core::HostRuntime;
 use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallRequest, RuntimeToolCallResult};
@@ -11,6 +11,18 @@ use crate::support::RuntimeRequestContext;
 use crate::support::temp_maintenance::ensure_runtime_temp_dir;
 use crate::support::tool_result_format::{HostRenderOptions, render_tool_result_text};
 
+/// Convert an optional protocol arguments field into the runtime JSON object contract.
+/// 将协议层可选 arguments 字段转换为运行时 JSON 对象契约。
+///
+/// Parameters: `arguments` is the optional tool arguments payload parsed from the transport request.
+/// 参数：`arguments` 是从传输层请求解析出的可选工具参数载荷。
+///
+/// Returns: the caller-supplied JSON value, or an empty object when the field was omitted.
+/// 返回：调用方提供的 JSON 值；当字段被省略时返回空对象。
+fn runtime_tool_arguments_or_empty_object(arguments: Option<Value>) -> Value {
+    arguments.unwrap_or_else(|| json!({}))
+}
+
 impl HostRuntime {
     /// Invoke one runtime tool and return a transport-neutral tool-call result.
     /// 调用单个运行时工具并返回传输无关的工具调用结果。
@@ -20,7 +32,7 @@ impl HostRuntime {
         request_context: &RuntimeRequestContext,
     ) -> Result<RuntimeToolCallResult, (i64, String)> {
         let tool = self.resolve_tool_descriptor(&req.name).await?;
-        let args = req.arguments.unwrap_or_default();
+        let args = runtime_tool_arguments_or_empty_object(req.arguments);
 
         let result = match tool.name.as_str() {
             "vulcan-help-list" => RuntimeToolCallResult {
@@ -136,7 +148,13 @@ impl HostRuntime {
             Some(&request_context),
             Some(&invocation_tool_name),
             skill_name.as_deref(),
-        );
+        )
+        .map_err(|error| {
+            (
+                -32603,
+                format!("build Lua invocation context failed: {error}"),
+            )
+        })?;
         let result = tokio::task::spawn_blocking(move || {
             let engine = engine_clone
                 .read()
@@ -156,7 +174,8 @@ impl HostRuntime {
                     Some(&budget_request_context),
                     Some(&tool_name),
                     skill_name.as_deref(),
-                );
+                )
+                .map_err(|error| (-32603, format!("resolve client budget failed: {error}")))?;
                 let spill_root = ensure_runtime_temp_dir()
                     .map_err(|error| {
                         (
@@ -166,20 +185,22 @@ impl HostRuntime {
                     })?
                     .join("mcp")
                     .join("cache");
+                let rendered = render_tool_result_text(
+                    &value,
+                    skill_name.as_deref(),
+                    Some(&client_budget),
+                    &HostRenderOptions {
+                        spill_root: Some(spill_root),
+                        template_skill_roots: target_skill_roots
+                            .iter()
+                            .map(|root| root.skills_dir.clone())
+                            .collect(),
+                        template_resources_root: self.tool_result_template_resources_root(),
+                    },
+                )
+                .map_err(|error| (-32603, format!("render Lua skill result failed: {error}")))?;
                 Ok(RuntimeToolCallResult {
-                    content: vec![RuntimeTextContent::text(&render_tool_result_text(
-                        &value,
-                        skill_name.as_deref(),
-                        Some(&client_budget),
-                        &HostRenderOptions {
-                            spill_root: Some(spill_root),
-                            template_skill_roots: target_skill_roots
-                                .iter()
-                                .map(|root| root.skills_dir.clone())
-                                .collect(),
-                            template_resources_root: self.tool_result_template_resources_root(),
-                        },
-                    ))],
+                    content: vec![RuntimeTextContent::text(&rendered)],
                     is_error: None,
                 })
             }
@@ -188,5 +209,31 @@ impl HostRuntime {
                 is_error: Some(true),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Missing transport arguments should become the empty object expected by runtime tools.
+    /// 缺省的传输层 arguments 应转换为运行时工具期望的空对象。
+    #[test]
+    fn runtime_tool_arguments_or_empty_object_defaults_missing_arguments_to_object() {
+        let arguments = runtime_tool_arguments_or_empty_object(None);
+
+        assert_eq!(arguments, json!({}));
+    }
+
+    /// Explicit caller JSON should pass through unchanged so invalid payloads remain visible to tool parsers.
+    /// 显式调用方 JSON 应原样透传，确保无效载荷仍能被工具解析器看见。
+    #[test]
+    fn runtime_tool_arguments_or_empty_object_preserves_explicit_payloads() {
+        let explicit_null = runtime_tool_arguments_or_empty_object(Some(Value::Null));
+        let explicit_object =
+            runtime_tool_arguments_or_empty_object(Some(json!({ "action": "list" })));
+
+        assert_eq!(explicit_null, Value::Null);
+        assert_eq!(explicit_object, json!({ "action": "list" }));
     }
 }

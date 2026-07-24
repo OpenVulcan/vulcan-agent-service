@@ -17,12 +17,15 @@ use std::convert::Infallible;
 
 use crate::transport::http::helpers::{
     JsonRpcMessageKind, McpQuery, accepts_sse, classify_jsonrpc_message,
-    client_match_name_override_header_value, extract_session_id, json_with_status,
-    jsonrpc_error_response, merge_header_client_match_name_override,
-    negotiated_protocol_from_initialize, plain_response, protocol_header_value, validate_origin,
+    client_match_name_override_header_value, extract_session_id, forbidden_origin_response,
+    is_allowed_local_origin, json_with_status, jsonrpc_error_response,
+    merge_header_client_match_name_override, negotiated_protocol_from_initialize, plain_response,
+    protocol_header_value,
 };
 use crate::transport::mcp::McpDispatcher;
-use crate::transport::mcp::protocol::{InitializeRequest, RequestContext, negotiate_version};
+use crate::transport::mcp::protocol::{
+    InitializeRequest, RequestContext, negotiate_version, parse_required_params,
+};
 
 use super::AppState;
 
@@ -40,8 +43,8 @@ pub(super) async fn handle_streamable_post(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Err(resp) = validate_origin(&headers) {
-        return resp;
+    if !is_allowed_local_origin(&headers) {
+        return forbidden_origin_response();
     }
 
     let body_str = match std::str::from_utf8(&body) {
@@ -88,9 +91,9 @@ pub(super) async fn handle_streamable_post(
     let session_id = extract_session_id(&query, &headers);
 
     match kind {
-        JsonRpcMessageKind::Request { method } if method == "initialize" => {
-            handle_initialize_request(state, headers, msg, session_id).await
-        }
+        JsonRpcMessageKind::Request {
+            method: "initialize",
+        } => handle_initialize_request(state, headers, msg, session_id).await,
         JsonRpcMessageKind::Request { .. } => {
             handle_streamable_request(state, headers, msg, session_id).await
         }
@@ -119,8 +122,8 @@ pub(super) async fn handle_streamable_get(
     query: Query<McpQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = validate_origin(&headers) {
-        return resp;
+    if !is_allowed_local_origin(&headers) {
+        return forbidden_origin_response();
     }
     if !accepts_sse(&headers) {
         return plain_response(
@@ -140,38 +143,52 @@ pub(super) async fn handle_streamable_get(
         return plain_response(StatusCode::NOT_FOUND, "Session not found.");
     }
 
-    if let Err(resp) = validate_session_protocol(&state, &headers, &session_id).await {
-        return resp;
+    if let Err(rejection) = validate_session_protocol(&state, &headers, &session_id).await {
+        return rejection.into_response();
     }
-
-    let Some(rx) = state.sessions.attach_stream(&session_id).await else {
-        return plain_response(StatusCode::NOT_FOUND, "Session not found.");
-    };
 
     // Send a comment-only prelude so the stream flushes without emitting an empty default `message` event.
     // 发送仅注释的前导帧，在刷新流的同时避免产出空的默认 `message` 事件。
     let priming_stream =
         stream::once(async move { Ok::<_, Infallible>(Event::default().comment("stream-ready")) });
 
-    let message_stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|value| {
-        let data = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-        Ok::<_, Infallible>(
-            Event::default()
-                .id(uuid::Uuid::new_v4().to_string())
-                .data(data),
-        )
-    });
+    // Emit comment keepalives because this transport currently returns request responses on POST rather than this GET stream.
+    // 发送注释保活帧，因为当前传输会在 POST 上返回请求响应，而不是通过该 GET 流投递响应。
+    let keepalive_stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+        std::time::Duration::from_secs(30),
+    ))
+    .map(|_| Ok::<_, Infallible>(Event::default().comment("stream-keepalive")));
 
-    let event_stream = priming_stream.chain(message_stream);
+    // Chain the priming frame with long-lived keepalives so clients can keep one session-bound listener open.
+    // 将启动帧与长连接保活帧串联，使客户端可以保持一个绑定会话的监听连接。
+    let event_stream = priming_stream.chain(keepalive_stream);
     let mut resp = Sse::new(event_stream).into_response();
-    resp.headers_mut().insert(
-        "Mcp-Session-Id",
-        HeaderValue::from_str(&session_id).unwrap(),
-    );
+    if !insert_session_id_header(&mut resp, &session_id) {
+        return invalid_session_id_header_response();
+    }
     resp.headers_mut()
         .insert("Cache-Control", HeaderValue::from_static("no-cache"));
 
     resp
+}
+
+/// Insert one validated MCP session id header into a streamable HTTP response.
+/// 向 streamable HTTP 响应写入经过校验的 MCP session id 请求头。
+fn insert_session_id_header(resp: &mut Response, session_id: &str) -> bool {
+    let Ok(header_value) = HeaderValue::from_str(session_id) else {
+        return false;
+    };
+    resp.headers_mut().insert("Mcp-Session-Id", header_value);
+    true
+}
+
+/// Build the response used when a stored MCP session id cannot be represented as a response header.
+/// 构造存储的 MCP session id 无法表示为响应头时使用的响应。
+fn invalid_session_id_header_response() -> Response {
+    plain_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "MCP session id could not be encoded as a response header.",
+    )
 }
 
 /// Handle DELETE
@@ -182,8 +199,8 @@ pub(super) async fn handle_streamable_delete(
     query: Query<McpQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = validate_origin(&headers) {
-        return resp;
+    if !is_allowed_local_origin(&headers) {
+        return forbidden_origin_response();
     }
 
     let Some(session_id) = extract_session_id(&query, &headers) else {
@@ -217,13 +234,13 @@ async fn handle_initialize_request(
         );
     }
 
-    if let Some(version) = protocol_header_value(&headers) {
-        if negotiate_version(version).is_none() {
-            return plain_response(
-                StatusCode::BAD_REQUEST,
-                &format!("Unsupported MCP-Protocol-Version header: {}", version),
-            );
-        }
+    if let Some(version) = protocol_header_value(&headers)
+        && negotiate_version(version).is_none()
+    {
+        return plain_response(
+            StatusCode::BAD_REQUEST,
+            &format!("Unsupported MCP-Protocol-Version header: {}", version),
+        );
     }
 
     let Some(response) = state.dispatcher.handle_message(&msg).await else {
@@ -233,6 +250,10 @@ async fn handle_initialize_request(
         );
     };
 
+    if response.get("error").is_some() {
+        return json_with_status(jsonrpc_initialize_error_status(&response), response);
+    }
+
     let Some(protocol_version) = negotiated_protocol_from_initialize(&response) else {
         return plain_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -241,7 +262,7 @@ async fn handle_initialize_request(
     };
 
     let initialize_request: InitializeRequest =
-        match serde_json::from_value(msg.get("params").cloned().unwrap_or_default()) {
+        match parse_required_params("initialize", msg.get("params").cloned()) {
             Ok(request) => request,
             Err(error) => {
                 return plain_response(
@@ -254,7 +275,7 @@ async fn handle_initialize_request(
             }
         };
 
-    let new_session_id = state
+    let new_session_id = match state
         .sessions
         .create(RequestContext {
             transport: Some("streamable_http".to_string()),
@@ -266,13 +287,35 @@ async fn handle_initialize_request(
             disable_client_match_overrides: false,
             client_capabilities: initialize_request.capabilities,
         })
-        .await;
+        .await
+    {
+        Ok(session_id) => session_id,
+        Err(error) => return plain_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    };
     let mut resp = Json(response).into_response();
-    resp.headers_mut().insert(
-        "Mcp-Session-Id",
-        HeaderValue::from_str(&new_session_id).unwrap(),
-    );
+    if !insert_session_id_header(&mut resp, &new_session_id) {
+        return invalid_session_id_header_response();
+    }
     resp
+}
+
+/// Map an initialize JSON-RPC error response to the streamable HTTP status code.
+/// 将 initialize 的 JSON-RPC 错误响应映射为 streamable HTTP 状态码。
+///
+/// Parameters: `response` is the dispatcher-produced JSON-RPC error response.
+/// 参数：`response` 是 dispatcher 产出的 JSON-RPC 错误响应。
+///
+/// Returns: `500` for internal JSON-RPC errors and `400` for client-side request errors.
+/// 返回：内部 JSON-RPC 错误返回 `500`，客户端请求错误返回 `400`。
+fn jsonrpc_initialize_error_status(response: &Value) -> StatusCode {
+    match response
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_i64)
+    {
+        Some(-32603) => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::BAD_REQUEST,
+    }
 }
 
 /// Handle post-initialize JSON-RPC requests
@@ -293,8 +336,8 @@ async fn handle_streamable_request(
     if !state.sessions.exists(&session_id).await {
         return plain_response(StatusCode::NOT_FOUND, "Session not found.");
     }
-    if let Err(resp) = validate_session_protocol(&state, &headers, &session_id).await {
-        return resp;
+    if let Err(rejection) = validate_session_protocol(&state, &headers, &session_id).await {
+        return rejection.into_response();
     }
 
     let request_context = match state.sessions.request_context(&session_id).await {
@@ -318,10 +361,9 @@ async fn handle_streamable_request(
     };
 
     let mut resp = Json(response).into_response();
-    resp.headers_mut().insert(
-        "Mcp-Session-Id",
-        HeaderValue::from_str(&session_id).unwrap(),
-    );
+    if !insert_session_id_header(&mut resp, &session_id) {
+        return invalid_session_id_header_response();
+    }
     resp
 }
 
@@ -343,8 +385,8 @@ async fn handle_streamable_notification(
     if !state.sessions.exists(&session_id).await {
         return plain_response(StatusCode::NOT_FOUND, "Session not found.");
     }
-    if let Err(resp) = validate_session_protocol(&state, &headers, &session_id).await {
-        return resp;
+    if let Err(rejection) = validate_session_protocol(&state, &headers, &session_id).await {
+        return rejection.into_response();
     }
 
     if let Some(request_context) = state.sessions.request_context(&session_id).await {
@@ -365,7 +407,7 @@ async fn handle_streamable_notification(
 async fn handle_streamable_client_response(
     state: AppState,
     headers: HeaderMap,
-    msg: Value,
+    _msg: Value,
     session_id: Option<String>,
 ) -> Response {
     let Some(session_id) = session_id else {
@@ -378,21 +420,48 @@ async fn handle_streamable_client_response(
     if !state.sessions.exists(&session_id).await {
         return plain_response(StatusCode::NOT_FOUND, "Session not found.");
     }
-    if let Err(resp) = validate_session_protocol(&state, &headers, &session_id).await {
-        return resp;
+    if let Err(rejection) = validate_session_protocol(&state, &headers, &session_id).await {
+        return rejection.into_response();
     }
 
-    if let Some(request_context) = state.sessions.request_context(&session_id).await {
-        let request_context = merge_header_client_match_name_override(
-            request_context,
-            client_match_name_override_header_value(&headers),
-        );
-        let _ = state
-            .dispatcher
-            .handle_message_with_context(&msg, request_context)
-            .await;
-    }
+    // JSON-RPC response bodies terminate at the HTTP transport boundary because this server has no outstanding server-originated requests.
+    // JSON-RPC response body 终止在 HTTP 传输边界，因为当前服务没有待完成的服务端发起请求。
     StatusCode::ACCEPTED.into_response()
+}
+
+/// Session protocol validation rejection.
+/// 会话协议版本校验拒绝原因。
+enum SessionProtocolRejection {
+    /// The session id is no longer known.
+    /// 会话 ID 已不存在。
+    NotFound,
+    /// The header carries a protocol version outside the supported MCP set.
+    /// 请求头携带了不在 MCP 支持集合内的协议版本。
+    UnsupportedVersion(String),
+    /// The header version differs from the version negotiated during initialize.
+    /// 请求头版本与 initialize 阶段协商出的版本不一致。
+    VersionMismatch { expected: String, actual: String },
+}
+
+impl SessionProtocolRejection {
+    /// Convert a protocol validation rejection into the streamable HTTP response contract.
+    /// 将协议校验拒绝原因转换为 streamable HTTP 响应契约。
+    fn into_response(self) -> Response {
+        match self {
+            Self::NotFound => plain_response(StatusCode::NOT_FOUND, "Session not found."),
+            Self::UnsupportedVersion(version) => plain_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Unsupported MCP-Protocol-Version header: {}", version),
+            ),
+            Self::VersionMismatch { expected, actual } => plain_response(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "MCP-Protocol-Version header mismatch. Expected {}, got {}.",
+                    expected, actual
+                ),
+            ),
+        }
+    }
 }
 
 /// Validate protocol version for an existing session.
@@ -401,30 +470,25 @@ async fn validate_session_protocol(
     state: &AppState,
     headers: &HeaderMap,
     session_id: &str,
-) -> Result<(), Response> {
+) -> Result<(), SessionProtocolRejection> {
     let Some(session_version) = state.sessions.protocol_version(session_id).await else {
-        return Err(plain_response(StatusCode::NOT_FOUND, "Session not found."));
+        return Err(SessionProtocolRejection::NotFound);
     };
 
-    if let Some(header_version) = protocol_header_value(headers) {
-        if negotiate_version(header_version).is_none() {
-            return Err(plain_response(
-                StatusCode::BAD_REQUEST,
-                &format!(
-                    "Unsupported MCP-Protocol-Version header: {}",
-                    header_version
-                ),
-            ));
-        }
-        if header_version != session_version {
-            return Err(plain_response(
-                StatusCode::BAD_REQUEST,
-                &format!(
-                    "MCP-Protocol-Version header mismatch. Expected {}, got {}.",
-                    session_version, header_version
-                ),
-            ));
-        }
+    let Some(header_version) = protocol_header_value(headers) else {
+        return Ok(());
+    };
+
+    if negotiate_version(header_version).is_none() {
+        return Err(SessionProtocolRejection::UnsupportedVersion(
+            header_version.to_string(),
+        ));
+    }
+    if header_version != session_version {
+        return Err(SessionProtocolRejection::VersionMismatch {
+            expected: session_version,
+            actual: header_version.to_string(),
+        });
     }
 
     Ok(())

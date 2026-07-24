@@ -110,6 +110,27 @@ pub struct RunLuaPoolConfigSection {
     pub idle_ttl_secs: Option<u64>,
 }
 
+/// Optional host overrides for managed Python and Node worker/session resource policy.
+/// 受管 Python 与 Node Worker/会话资源策略的可选宿主覆盖配置。
+#[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ManagedRuntimeConfigSection {
+    /// Maximum live workers for one exact environment and package-owner pool key.
+    /// 单个精确环境与包所有者池键允许的最大活动 Worker 数量。
+    pub worker_pool_max_size_per_environment: Option<usize>,
+    /// Idle seconds after which an unused managed worker may be retired.
+    /// 未使用受管 Worker 可被回收前的空闲秒数。
+    pub worker_idle_ttl_secs: Option<u64>,
+    /// Maximum launching or live persistent sessions retained by one engine.
+    /// 单个引擎允许保留的启动中或活动持久会话最大数量。
+    pub persistent_session_limit_per_engine: Option<usize>,
+    /// Retained byte limit for each persistent-session stdout or stderr stream.
+    /// 每个持久会话 stdout 或 stderr 流的保留字节上限。
+    pub persistent_session_default_buffer_limit_bytes_per_stream: Option<usize>,
+    /// Positive default invoke timeout in milliseconds; omission keeps the upstream unlimited default.
+    /// 正数默认 invoke 超时毫秒数；省略时保留上游无限制默认值。
+    pub invoke_default_timeout_ms: Option<u64>,
+}
+
 // ============================================================
 // Configuration (loaded from YAML)
 // ============================================================
@@ -139,9 +160,22 @@ pub struct Config {
     /// 默认运行环境使用的正式技能根目录，仅限 ROOT、PROJECT 与 USER。
     pub skill_roots: Option<Vec<SkillRootConfigEntry>>,
 
-    /// Optional runtime root directory that owns configs, skills, dependencies, databases, temp, libs, and lua_packages.
-    /// 宿主完整运行根目录，可统一承载 configs、skills、dependencies、databases、temp、libs 与 lua_packages。
+    /// Optional application root that owns host binaries, configs, logs, and the isolated `lua_runtime` package.
+    /// 可选应用根目录，承载宿主二进制、配置、日志与隔离的 `lua_runtime` 包。
     pub runtime_root: Option<String>,
+
+    /// Optional absolute or application-root-relative managed Python/Node distribution root.
+    /// 可选的绝对路径或相对应用根的受管 Python/Node 发行根目录。
+    pub managed_runtime_distribution_root: Option<String>,
+
+    /// Optional absolute or application-root-relative writable managed environment root.
+    /// 可选的绝对路径或相对应用根的可写受管环境根目录。
+    pub managed_runtime_environment_root: Option<String>,
+
+    /// Optional managed Python/Node worker and persistent-session policy overrides.
+    /// 可选的受管 Python/Node Worker 与持久会话策略覆盖配置。
+    #[serde(default)]
+    pub managed_runtime_config: ManagedRuntimeConfigSection,
 
     /// Maximum number of entries in the shared tool cache. Defaults to 1000.
     /// 共享工具缓存最大条目数，默认 1000。
@@ -176,17 +210,6 @@ pub struct Config {
     /// 宿主需要在依赖与数据库初始化前跳过的技能标识符列表。
     pub ignored_skill_ids: Option<Vec<String>>,
 
-    /// Dependency directory name, fixed as a sibling of the skills root under the same parent. Defaults to `dependencies`.
-    /// 依赖目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `dependencies`。
-    pub dependency_dir_name: Option<String>,
-
-    /// State directory name, fixed as a sibling of the skills root under the same parent. Defaults to `state`.
-    /// 状态目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `state`。
-    pub state_dir_name: Option<String>,
-
-    /// Database directory name, fixed as a sibling of the skills root under the same parent. Defaults to `databases`.
-    /// 数据库目录名称，固定作为技能根父目录下的同级兄弟目录，默认 `databases`。
-    pub database_dir_name: Option<String>,
     /// Shared controller configuration used by the MCP host runtime.
     /// MCP 宿主运行时使用的共享控制器配置。
     #[serde(default)]

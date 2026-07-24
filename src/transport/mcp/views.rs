@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::host_core::{HostRuntime, RuntimeSurfaceSummary};
 use crate::transport::mcp::protocol::{
     InitializeRequest, InitializeResult, PROTOCOL_VERSION_COMPATIBLE, PROTOCOL_VERSION_LATEST,
-    ServerCapabilities, ServerInfo, ToolCapability, negotiate_version,
+    ServerCapabilities, ServerInfo, ToolCapability, negotiate_version, parse_required_params,
 };
 
 /// Mark the MCP session initialized through the host runtime boundary.
@@ -18,7 +18,7 @@ pub(super) fn initialize_value(
     runtime: &HostRuntime,
     params: Option<Value>,
 ) -> Result<Value, (i64, String)> {
-    let req: InitializeRequest = serde_json::from_value(params.unwrap_or_default())
+    let req: InitializeRequest = parse_required_params("initialize", params)
         .map_err(|error| (-32602, format!("Invalid initialize params: {}", error)))?;
 
     let negotiated = negotiate_version(&req.protocol_version).ok_or_else(|| {

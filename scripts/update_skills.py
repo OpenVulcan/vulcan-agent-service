@@ -1,6 +1,6 @@
 """
-Update managed LuaSkills from output/ and sync them back into runtime/.
-从 output/ 更新受管 LuaSkills，并同步回 runtime/。
+Update managed LuaSkills from output/lua_runtime and sync them back into runtime/lua_runtime.
+从 output/lua_runtime 更新受管 LuaSkills，并同步回 runtime/lua_runtime。
 """
 
 from __future__ import annotations
@@ -90,8 +90,11 @@ def ensure_runtime_layout(root: Path) -> None:
         "temp",
         "resources",
         "lua_packages",
-        "bin/tools",
+        "bin",
         "libs",
+        "config",
+        "system_lua_lib",
+        "licenses",
     ]:
         (root / relative_path).mkdir(parents=True, exist_ok=True)
 
@@ -282,10 +285,20 @@ def build_engine_options(runtime_root: Path) -> dict:
             "idle_ttl_secs": 30,
         },
         "host_options": {
+            "runtime_root": normalized_path(runtime_root),
+            "managed_runtime_distribution_root": None,
+            "managed_runtime_environment_root": None,
+            "managed_runtime_config": {
+                "worker_pool_max_size_per_environment": 4,
+                "worker_idle_ttl_secs": 60,
+                "persistent_session_limit_per_engine": 256,
+                "persistent_session_default_buffer_limit_bytes_per_stream": 1048576,
+                "invoke_default_timeout_ms": None,
+            },
             "temp_dir": normalized_path(runtime_root / "temp"),
             "resources_dir": normalized_path(runtime_root / "resources"),
             "lua_packages_dir": normalized_path(runtime_root / "lua_packages"),
-            "host_provided_tool_root": normalized_path(runtime_root / "bin" / "tools"),
+            "host_provided_tool_root": normalized_path(runtime_root / "bin"),
             "host_provided_lua_root": normalized_path(runtime_root / "lua_packages"),
             "host_provided_ffi_root": normalized_path(runtime_root / "libs"),
             "system_lua_lib_dir": normalized_path(runtime_root / "system_lua_lib"),
@@ -293,7 +306,7 @@ def build_engine_options(runtime_root: Path) -> dict:
             "dependency_dir_name": "dependencies",
             "state_dir_name": "state",
             "database_dir_name": "databases",
-            "skill_config_file_path": normalized_path(runtime_root / "configs" / "skill_config.json"),
+            "skill_config_file_path": normalized_path(runtime_root / "config" / "skill_config.json"),
             "allow_network_download": True,
             "github_base_url": None,
             "github_api_base_url": None,
@@ -337,8 +350,8 @@ def build_engine_options(runtime_root: Path) -> dict:
 
 def discover_skill_ids(output_runtime_root: Path) -> list[str]:
     """
-    Discover managed skill ids from output/state/installs records.
-    从 output/state/installs 安装记录发现受管技能标识。
+    Discover managed skill ids from output/lua_runtime/state/installs records.
+    从 output/lua_runtime/state/installs 安装记录发现受管技能标识。
     """
 
     install_root = output_runtime_root / "state" / "installs"
@@ -468,13 +481,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-runtime-root",
-        default="output",
-        help="Runtime root used as the update staging area. Defaults to ./output.",
+        default="output/lua_runtime",
+        help="LuaSkills runtime root used as the update staging area. Defaults to ./output/lua_runtime.",
     )
     parser.add_argument(
         "--target-runtime-root",
-        default="runtime",
-        help="Runtime root that receives updated skills and install records. Defaults to ./runtime.",
+        default="runtime/lua_runtime",
+        help="LuaSkills source root that receives updated skills and install records. Defaults to ./runtime/lua_runtime.",
     )
     parser.add_argument(
         "--skill-id",

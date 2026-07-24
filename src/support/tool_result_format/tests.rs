@@ -63,7 +63,8 @@ fn plain_result_defaults_to_truncate_policy() {
         Some("vulcan-codekit"),
         Some(&sample_budget()),
         &HostRenderOptions::default(),
-    );
+    )
+    .expect("plain result should render");
     assert_eq!(rendered, "short");
 }
 
@@ -81,8 +82,44 @@ fn truncate_mode_returns_notice_when_overflowed() {
         Some("vulcan-codekit"),
         Some(&sample_budget()),
         &HostRenderOptions::default(),
-    );
+    )
+    .expect("truncate result should render");
     assert!(rendered.contains("Content has been truncated"));
+}
+
+/// Directory-shaped template paths should surface as render errors instead of falling back silently.
+/// 目录形态模板路径应显式返回渲染错误，而不是静默回退。
+#[test]
+fn render_tool_result_reports_directory_shaped_template_path() {
+    let root = unique_test_dir("directory-template");
+    let skill_root = root.join("skills");
+    let template_path = skill_root
+        .join("vulcan-codekit")
+        .join("overflow_templates")
+        .join("overflow_truncate.md");
+    std::fs::create_dir_all(&template_path).expect("failed to create directory-shaped template");
+
+    let error = render_tool_result_text(
+        &RuntimeInvocationResult::from_content_parts(
+            "line1\nline2\nline3".to_string(),
+            Some(ToolOverflowMode::Truncate),
+            None,
+            None,
+        ),
+        Some("vulcan-codekit"),
+        Some(&sample_budget()),
+        &HostRenderOptions {
+            template_skill_roots: vec![skill_root],
+            ..HostRenderOptions::default()
+        },
+    )
+    .expect_err("directory-shaped template should fail rendering");
+
+    assert!(
+        error.contains("overflow template path is not a file"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Verify page mode writes an overflow pointer block when content must be paged.
@@ -102,10 +139,32 @@ fn page_mode_returns_pointer_block_when_overflowed() {
             spill_root: Some(PathBuf::from("target/test-runtime-page-output")),
             ..HostRenderOptions::default()
         },
-    );
+    )
+    .expect("page result should render");
     assert!(rendered.contains("# LARGE RESULT POINTER"));
     assert!(rendered.contains("raw_file:"));
     assert!(rendered.contains("read_01:"));
+    assert!(rendered.contains("read_02:"));
+}
+
+/// Page mode should report a render error when overflow content needs a spill file but no spill root is available.
+/// 分页模式需要写出超限文件但缺少 spill root 时应返回渲染错误。
+#[test]
+fn page_mode_requires_spill_root_when_overflowed() {
+    let error = render_tool_result_text(
+        &RuntimeInvocationResult::from_content_parts(
+            "line1\nline2\nline3\nline4".to_string(),
+            Some(ToolOverflowMode::Page),
+            None,
+            None,
+        ),
+        Some("vulcan-codekit"),
+        Some(&sample_budget()),
+        &HostRenderOptions::default(),
+    )
+    .expect_err("page overflow without spill root should fail rendering");
+
+    assert!(error.contains("spill_root"), "unexpected error: {error}");
 }
 
 /// Verify page mode returns the unified error when one line exceeds the file-read budget.
@@ -129,7 +188,8 @@ fn page_tool_returns_error_when_single_line_exceeds_file_read_limit() {
             spill_root: Some(PathBuf::from("target/test-runtime-page-error")),
             ..HostRenderOptions::default()
         },
-    );
+    )
+    .expect("page overflow error text should render");
     assert_eq!(
         rendered,
         "Tool output exceeds the current MCP client limit."
@@ -182,7 +242,8 @@ fn render_tool_result_prefers_initialized_skill_root_templates() {
         Some("vulcan-codekit"),
         Some(&sample_budget()),
         &HostRenderOptions::default(),
-    );
+    )
+    .expect("initialized template result should render");
 
     assert!(rendered.contains("SKILL TEMPLATE"));
 
@@ -238,7 +299,8 @@ fn render_tool_result_prefers_per_call_template_roots_for_project_environment() 
             template_resources_root: Some(resources_root.clone()),
             ..HostRenderOptions::default()
         },
-    );
+    )
+    .expect("per-call template result should render");
 
     assert!(rendered.contains("PROJECT TEMPLATE"));
     assert!(!rendered.contains("DEFAULT TEMPLATE"));
@@ -257,26 +319,71 @@ fn implicit_template_roots_reject_file_shaped_skills_and_resources_paths() {
     std::fs::create_dir_all(&exe_dir).expect("failed to create fake exe directory");
     std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");
     std::fs::create_dir_all(root.join("output")).expect("failed to create hosted root parent");
-    std::fs::write(root.join("output").join("skills"), b"not-a-directory")
-        .expect("failed to create file-shaped hosted skills path");
-    std::fs::create_dir_all(root.join("runtime"))
+    std::fs::create_dir_all(root.join("output").join("lua_runtime"))
+        .expect("failed to create hosted LuaSkills root");
+    std::fs::write(
+        root.join("output").join("lua_runtime").join("skills"),
+        b"not-a-directory",
+    )
+    .expect("failed to create file-shaped hosted skills path");
+    std::fs::create_dir_all(root.join("runtime").join("lua_runtime"))
         .expect("failed to create repository runtime parent");
-    std::fs::write(root.join("runtime").join("resources"), b"not-a-directory")
-        .expect("failed to create file-shaped repository resources path");
+    std::fs::write(
+        root.join("runtime").join("lua_runtime").join("resources"),
+        b"not-a-directory",
+    )
+    .expect("failed to create file-shaped repository resources path");
 
+    // The hosted executable-side skills marker is a file and should now fail explicitly.
+    // 宿主可执行文件侧的 skills 标记为文件，现在应显式失败。
     let hosted_cwd = root.join("repo");
     std::fs::create_dir_all(&hosted_cwd).expect("failed to create cwd");
+    let hosted_error = resolve_runtime_skills_root_from_paths(&hosted_cwd, &fake_exe)
+        .expect_err("file-shaped hosted skills path should fail");
     assert!(
-        resolve_runtime_skills_root_from_paths(&hosted_cwd, &fake_exe).is_none(),
-        "file-shaped fallback skills path should be rejected"
+        hosted_error.contains("hosted template skills root is not a directory"),
+        "unexpected error: {hosted_error}"
     );
 
-    let repo_cwd = root.join("repo-two");
-    std::fs::create_dir_all(&repo_cwd).expect("failed to create repository cwd");
+    // The repository resources marker is a file and should fail after the missing hosted resources path is skipped.
+    // 仓库 resources 标记为文件，应在缺失的宿主 resources 路径被跳过后失败。
+    let repo_cwd = root.clone();
+    let repository_error = resolve_runtime_resources_root_from_paths(&repo_cwd, &fake_exe)
+        .expect_err("file-shaped repository resources path should fail");
     assert!(
-        resolve_runtime_resources_root_from_paths(&repo_cwd, &fake_exe).is_none(),
-        "file-shaped fallback resources path should be rejected"
+        repository_error.contains("repository template resources root is not a directory"),
+        "unexpected error: {repository_error}"
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Relative executable paths without a stable absolute grandparent should not establish hosted template roots.
+/// 没有稳定绝对祖父目录的相对可执行文件路径不应建立宿主模板根。
+#[test]
+fn implicit_template_roots_reject_relative_executable_without_hosted_parent() {
+    // Build an isolated repository path without template markers; the explicit inputs fully determine discovery.
+    // 构建一个不含模板标记的隔离仓库路径；发现结果完全由显式输入决定。
+    let root = unique_test_dir("template-runtime-relative-exe");
+    let repository_cwd = root.join("repo");
+    std::fs::create_dir_all(&repository_cwd).expect("repository cwd should be created");
+
+    let skills_root =
+        resolve_runtime_skills_root_from_paths(&repository_cwd, std::path::Path::new("host.exe"))
+            .expect("relative executable skills inspection should succeed");
+    let resources_root = resolve_runtime_resources_root_from_paths(
+        &repository_cwd,
+        std::path::Path::new("host.exe"),
+    )
+    .expect("relative executable resources inspection should succeed");
+
+    assert!(
+        skills_root.is_none(),
+        "relative executable without hosted parent should not resolve template skills"
+    );
+    assert!(
+        resources_root.is_none(),
+        "relative executable without hosted parent should not resolve template resources"
+    );
+    std::fs::remove_dir_all(&root).expect("test runtime root should be removed");
 }

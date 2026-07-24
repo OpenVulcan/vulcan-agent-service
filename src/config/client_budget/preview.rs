@@ -7,16 +7,20 @@ use super::resolution::{
 use super::{
     BudgetScopesConfig, ClientBudgetConfig, DEFAULT_INLINE_BYTES_LIMIT, EffectiveBudgetEstimation,
 };
+use crate::config::tool_config::ToolEstimationOverride;
 
 /// Build a preview of the pre-resolved client budgets so startup and reload can print the actual loaded values directly.
 /// 构建预解析后的客户端预算摘要，便于启动和热重载时直接输出实际读取值。
 pub(super) fn build_resolved_preview_map(config: &ClientBudgetConfig) -> BTreeMap<String, Value> {
     let mut previews = BTreeMap::new();
+    // Client-rule previews intentionally exclude request-time skill-specific overrides.
+    // 客户端规则预览有意排除请求期的 skill 专用覆盖。
+    let default_tool_override = ToolEstimationOverride::default();
     for client_rule in &config.clients {
         let estimation = merge_effective_estimation(
             &config.defaults.estimation,
             Some(&client_rule.estimation),
-            None,
+            &default_tool_override,
         );
         previews.insert(
             client_rule.pattern.clone(),
@@ -27,7 +31,7 @@ pub(super) fn build_resolved_preview_map(config: &ClientBudgetConfig) -> BTreeMa
         let estimation = merge_effective_estimation(
             &config.defaults.estimation,
             Some(&client_rule.estimation),
-            None,
+            &default_tool_override,
         );
         previews.insert(
             format!("grpc:{}", client_name),

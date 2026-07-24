@@ -33,7 +33,7 @@ tar = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libloading = "0.8"
 base64 = "0.22"
-luaskills = "0.4.3"
+luaskills = "0.5.4"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]

@@ -131,6 +131,8 @@ message HealthzResponse {
   string status = 1;
   string version = 2;
   string protocol_version = 3;
+  int64 uptime_sec = 4; // service uptime in seconds
+                        // 服务运行时长，单位为秒。
 }
 
 // ============================================================

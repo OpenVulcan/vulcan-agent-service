@@ -7,9 +7,6 @@
 //! 本模块属于 VMM 后端适配层。宿主插件会先通过 gRPC HostAdapterService
 //! 获取这些描述，再注册自身面向模型的工具。
 
-use serde_json::{Value, json};
-
-/// Maximum hit count accepted by the public memory search tool.
 mod binding;
 mod memory;
 mod profile;
@@ -17,7 +14,9 @@ mod profile;
 pub use binding::vmm_binding_tool_descriptors;
 pub use memory::vmm_memory_tool_descriptors;
 pub use profile::vmm_profile_tool_descriptors;
+use serde_json::{Value, json};
 
+/// Maximum hit count accepted by the public memory search tool.
 /// 公开记忆搜索工具接受的最大召回数量。
 const MAX_MEMORY_SEARCH_TOP_K: u64 = 64;
 
@@ -45,17 +44,13 @@ const VMM_MEMORY_TOOL_GROUP: &str = "vmm-memory";
 /// 全部稳定 VMM 记忆描述共用的执行模式注解。
 const VMM_MEMORY_EXECUTION_MODE: &str = "remote";
 
-/// Registration surface annotation used to distinguish canonical host-memory tools from compat and raw VMM tools.
-/// 用于区分 canonical 宿主记忆工具、兼容工具与原始 VMM 工具的注册面注解。
+/// Registration surface annotation used to distinguish public Vulcan memory tools from raw VMM helpers.
+/// 用于区分公开 Vulcan 记忆工具与原始 VMM 辅助工具的注册面注解。
 const VMM_MEMORY_REGISTRATION_SURFACE: &str = "registration_surface";
 
-/// Registration surface value used by canonical host-memory tools.
-/// canonical 宿主记忆工具使用的注册面取值。
-const VMM_MEMORY_SURFACE_CANONICAL: &str = "host-memory-canonical";
-
-/// Registration surface value used by Vulcan compatibility memory tools.
-/// Vulcan 兼容记忆工具使用的注册面取值。
-const VMM_MEMORY_SURFACE_COMPAT: &str = "host-memory-compat";
+/// Registration surface value used by public Vulcan-native memory tools.
+/// 公开 Vulcan 原生记忆工具使用的注册面取值。
+const VMM_MEMORY_SURFACE_PUBLIC: &str = "vulcan-memory-public";
 
 /// Registration surface value used by raw VMM helper tools that are not part of the default host memory manifest.
 /// 默认宿主记忆 manifest 不直接注册的原始 VMM 辅助工具使用的注册面取值。
@@ -100,10 +95,6 @@ const VMM_BINDING_REGISTRATION_SURFACE: &str = "registration_surface";
 /// Consolidated binding surface used by hosts that want one compact binding tool.
 /// 希望使用单一精简绑定工具的宿主使用的聚合注册面取值。
 const VMM_BINDING_SURFACE_CONSOLIDATED: &str = "host-binding-consolidated";
-
-/// Legacy binding surface used by hosts that still materialize one tool per binding action.
-/// 仍按单动作拆分绑定工具的宿主使用的旧式注册面取值。
-const VMM_BINDING_SURFACE_LEGACY: &str = "host-binding-legacy";
 
 /// Registration-surface annotation key used by stable VMM profile descriptors.
 /// 稳定 VMM 画像描述使用的注册面注解键。
@@ -260,20 +251,18 @@ fn build_profile_descriptor(
     )
 }
 
-/// Build the compact host-facing binding tool descriptor used by hosts that want one parameterized binding surface.
-
-/// Serialize one JSON value for transport, falling back to an empty object.
-/// 序列化一段传输用 JSON，失败时回退为空对象。
+/// Serialize one JSON value for transport in compact form.
+/// 将一个 JSON 值以紧凑形式序列化用于传输。
 fn compact_json_string(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+    value.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Verify the public descriptor list keeps the stable tool ids.
-    /// 验证公开描述列表保持稳定工具标识。
+    /// Verify the public descriptor list keeps only the long-term Vulcan-native tool ids.
+    /// 验证公开描述列表仅保留长期 Vulcan 原生工具标识。
     #[test]
     fn vmm_memory_tool_metadata_lists_stable_tools() {
         let tools = vmm_memory_tool_descriptors();
@@ -285,8 +274,6 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "memory_search",
-                "memory_get",
                 "vulcan_memory_search",
                 "vulcan_memory_get",
                 "vmm_memory_search",
@@ -345,15 +332,15 @@ mod tests {
         assert_eq!(delete_tool.source, VMM_MEMORY_TOOL_METADATA_SOURCE);
     }
 
-    /// Verify canonical memory descriptors expose the host-facing names and common annotations.
-    /// 验证 canonical 记忆描述暴露宿主可见名称与通用注解。
+    /// Verify public Vulcan memory descriptors expose host-facing annotations.
+    /// 验证公开 Vulcan 记忆描述暴露宿主可见注解。
     #[test]
-    fn canonical_memory_metadata_carries_host_visible_annotations() {
+    fn vulcan_memory_metadata_carries_host_visible_annotations() {
         let tools = vmm_memory_tool_descriptors();
         let search_tool = tools
             .iter()
-            .find(|tool| tool.name == "memory_search")
-            .expect("canonical memory_search descriptor should exist");
+            .find(|tool| tool.name == "vulcan_memory_search")
+            .expect("public Vulcan memory_search descriptor should exist");
         let annotations: Value = serde_json::from_str(&search_tool.annotations_json)
             .expect("annotations should be valid JSON");
         let schema: Value = serde_json::from_str(&search_tool.input_schema_json)
@@ -364,37 +351,37 @@ mod tests {
         assert_eq!(annotations["visibility"].as_str(), Some("public"));
         assert_eq!(
             annotations["registration_surface"].as_str(),
-            Some("host-memory-canonical")
+            Some("vulcan-memory-public")
         );
         assert_eq!(
-            schema["properties"]["query"]["type"].as_str(),
-            Some("string")
+            schema["properties"]["queries"]["type"].as_str(),
+            Some("array")
         );
     }
 
-    /// Verify raw and compat descriptors keep distinct registration surfaces so hosts can derive manifests without hard-coded tool names.
-    /// 验证原始与兼容 descriptor 保持不同注册面取值，让宿主无需硬编码工具名也能推导 manifest。
+    /// Verify raw and public descriptors keep distinct registration surfaces for host manifest derivation.
+    /// 验证原始与公开 descriptor 保持不同注册面取值，供宿主推导 manifest。
     #[test]
     fn memory_descriptor_registration_surfaces_stay_distinct() {
         let tools = vmm_memory_tool_descriptors();
-        let compat_tool = tools
+        let public_tool = tools
             .iter()
             .find(|tool| tool.name == "vulcan_memory_search")
-            .expect("compat memory_search descriptor should exist");
+            .expect("public memory_search descriptor should exist");
         let raw_tool = tools
             .iter()
             .find(|tool| tool.name == "vmm_memory_search")
             .expect("raw vmm_memory_search descriptor should exist");
-        let compat_annotations: Value = serde_json::from_str(&compat_tool.annotations_json)
-            .expect("compat annotations should be valid JSON");
+        let public_annotations: Value = serde_json::from_str(&public_tool.annotations_json)
+            .expect("public annotations should be valid JSON");
         let raw_annotations: Value = serde_json::from_str(&raw_tool.annotations_json)
             .expect("raw annotations should be valid JSON");
 
         assert_eq!(
-            compat_annotations["registration_surface"].as_str(),
-            Some("host-memory-compat")
+            public_annotations["registration_surface"].as_str(),
+            Some("vulcan-memory-public")
         );
-        assert_eq!(compat_annotations["visibility"].as_str(), Some("public"));
+        assert_eq!(public_annotations["visibility"].as_str(), Some("public"));
         assert_eq!(
             raw_annotations["registration_surface"].as_str(),
             Some("vmm-raw")
@@ -402,8 +389,8 @@ mod tests {
         assert_eq!(raw_annotations["visibility"].as_str(), Some("advanced"));
     }
 
-    /// Verify binding/admin metadata keeps stable tool ids and execution-mode hints for host wrappers.
-    /// 验证绑定与管理工具元信息保持稳定工具标识与宿主包装器所需的执行模式提示。
+    /// Verify binding/admin metadata keeps one consolidated tool id and operation enums for host wrappers.
+    /// 验证绑定与管理工具元信息保留单一聚合工具标识与宿主包装器所需的操作枚举。
     #[test]
     fn vmm_binding_tool_metadata_lists_stable_tools() {
         let tools = vmm_binding_tool_descriptors();
@@ -415,28 +402,12 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "vulcan_bind")
             .expect("compact bind descriptor should exist");
-        let bind_agent_tool = tools
-            .iter()
-            .find(|tool| tool.name == "vulcan_vmm_bind_agent_project")
-            .expect("bind-agent descriptor should exist");
+        let compact_schema: Value = serde_json::from_str(&compact_bind_tool.input_schema_json)
+            .expect("compact bind schema should be valid JSON");
         let compact_annotations: Value = serde_json::from_str(&compact_bind_tool.annotations_json)
             .expect("compact bind annotations should be valid JSON");
-        let annotations: Value = serde_json::from_str(&bind_agent_tool.annotations_json)
-            .expect("annotations should be valid JSON");
 
-        assert_eq!(
-            names,
-            vec![
-                "vulcan_bind",
-                "vulcan_vmm_get_bindings",
-                "vulcan_vmm_list_users",
-                "vulcan_vmm_bind_default_user",
-                "vulcan_vmm_list_projects",
-                "vulcan_vmm_bind_default_project",
-                "vulcan_vmm_bind_agent_project",
-                "vulcan_vmm_clear_agent_project"
-            ]
-        );
+        assert_eq!(names, vec!["vulcan_bind"]);
         assert_eq!(
             compact_annotations["execution_mode"].as_str(),
             Some("hybrid")
@@ -445,13 +416,22 @@ mod tests {
             compact_annotations["registration_surface"].as_str(),
             Some("host-binding-consolidated")
         );
-        assert_eq!(annotations["execution_mode"].as_str(), Some("hybrid"));
-        assert_eq!(annotations["visibility"].as_str(), Some("admin"));
         assert_eq!(
-            annotations["registration_surface"].as_str(),
-            Some("host-binding-legacy")
+            compact_annotations["optional_context"][0].as_str(),
+            Some("agent")
         );
-        assert_eq!(annotations["optional_context"][0].as_str(), Some("agent"));
+        assert_eq!(
+            compact_schema["properties"]["action"]["enum"]
+                .as_array()
+                .map(|items| { items.iter().filter_map(Value::as_str).collect::<Vec<_>>() }),
+            Some(vec!["inspect", "list", "bind", "clear"])
+        );
+        assert_eq!(
+            compact_schema["properties"]["resource"]["enum"]
+                .as_array()
+                .map(|items| { items.iter().filter_map(Value::as_str).collect::<Vec<_>>() }),
+            Some(vec!["bindings", "user", "project"])
+        );
     }
 
     /// Verify profile-adjust metadata keeps one stable tool id plus the expected profile annotations.

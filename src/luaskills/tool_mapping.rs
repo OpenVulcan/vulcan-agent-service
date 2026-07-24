@@ -49,8 +49,8 @@ pub fn map_runtime_entry_to_mcp_tool_with_projection(
     }
 }
 
-/// Build one host-neutral input schema by preferring the LuaSkills 0.4.3 exported AI-facing schema and falling back to legacy parameter synthesis when needed.
-/// 优先使用 LuaSkills 0.4.3 导出的 AI-facing schema 构建宿主中立输入 schema，并在缺失时回退到旧版参数合成路径。
+/// Build one host-neutral input schema by preferring the LuaSkills 0.5.4 exported AI-facing schema and using its parameter descriptors when the schema is absent.
+/// 优先使用 LuaSkills 0.5.4 导出的 AI-facing schema 构建宿主中立输入 schema，并在 schema 缺失时使用其参数描述。
 fn build_runtime_input_schema(
     entry: &RuntimeEntryDescriptor,
     projection: &LuaSkillToolProjectionOptions,
@@ -87,8 +87,8 @@ fn build_runtime_input_schema(
     build_runtime_input_schema_from_parameters(entry, projection)
 }
 
-/// Build one compatibility input schema from legacy entry parameter descriptors when the exported AI-facing schema is absent.
-/// 当导出的 AI-facing schema 缺失时，根据旧版入口参数描述构建兼容输入 schema。
+/// Build one input schema from exported entry parameter descriptors when the AI-facing schema is absent.
+/// 当导出的 AI-facing schema 缺失时，根据入口参数描述构建输入 schema。
 fn build_runtime_input_schema_from_parameters(
     entry: &RuntimeEntryDescriptor,
     projection: &LuaSkillToolProjectionOptions,

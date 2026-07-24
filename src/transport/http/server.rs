@@ -10,6 +10,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::host_core::HostRuntime;
 use crate::transport::http::session::{SessionManager, SseSessionManager};
 use crate::transport::mcp::McpDispatcher;
+use crate::transport::shutdown::wait_for_shutdown_requested;
 
 mod legacy_sse;
 mod streamable;
@@ -93,7 +94,7 @@ pub async fn run_http_with_shutdown(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
+            wait_for_shutdown_requested(&mut shutdown_rx).await;
         })
         .await?;
     Ok(())

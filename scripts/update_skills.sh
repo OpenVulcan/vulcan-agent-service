@@ -14,11 +14,11 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # OUTPUT_RUNTIME_ROOT is the update staging runtime root.
 # OUTPUT_RUNTIME_ROOT 是更新暂存运行根。
-OUTPUT_RUNTIME_ROOT="${OUTPUT_RUNTIME_ROOT:-output}"
+OUTPUT_RUNTIME_ROOT="${OUTPUT_RUNTIME_ROOT:-output/lua_runtime}"
 
 # TARGET_RUNTIME_ROOT receives updated skills and install records.
 # TARGET_RUNTIME_ROOT 接收已更新技能与安装记录。
-TARGET_RUNTIME_ROOT="${TARGET_RUNTIME_ROOT:-runtime}"
+TARGET_RUNTIME_ROOT="${TARGET_RUNTIME_ROOT:-runtime/lua_runtime}"
 
 LUASKILLS_LIB_ARG=()
 if [[ -n "${LUASKILLS_LIB:-}" ]]; then

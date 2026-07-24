@@ -42,7 +42,7 @@ define route-command
 endef
 endif
 
-.PHONY: build build-release release run run-release deps deps-all host lua deps-host deps-lua
+.PHONY: build build-release release run run-release deps deps-all host lua managed python node deps-host deps-lua deps-managed deps-python deps-node
 
 # build routes debug by default, or release when the release companion goal is present.
 # build 默认路由 debug，存在 release 伴随目标时路由 release。
@@ -76,7 +76,7 @@ run-release:
 # deps installs all dependencies unless a specific dependency target is also requested.
 # deps 用于安装全部依赖；如果同时指定了具体依赖目标，则保持分组兼容语义。
 deps:
-ifeq ($(filter host lua,$(MAKECMDGOALS)),)
+ifeq ($(filter host lua managed python node,$(MAKECMDGOALS)),)
 	$(call route-command,deps)
 else
 	@:
@@ -97,6 +97,21 @@ host:
 lua:
 	$(call route-command,deps lua)
 
+# managed maps to the complete managed Python and Node distribution fetch flow.
+# managed 映射到完整的受管 Python 与 Node 发行包拉取流程。
+managed:
+	$(call route-command,deps managed)
+
+# python maps to the managed Python distribution fetch flow.
+# python 映射到受管 Python 发行包拉取流程。
+python:
+	$(call route-command,deps python)
+
+# node maps to the managed Node and pnpm distribution fetch flow.
+# node 映射到受管 Node 与 pnpm 发行包拉取流程。
+node:
+	$(call route-command,deps node)
+
 # deps-host routes the explicit host dependency bootstrap flow.
 # deps-host 路由显式宿主依赖初始化流程。
 deps-host:
@@ -106,3 +121,18 @@ deps-host:
 # deps-lua 路由显式 Lua runtime 依赖初始化流程。
 deps-lua:
 	$(call route-command,deps lua)
+
+# deps-managed routes the complete managed runtime fetch flow.
+# deps-managed 路由完整受管运行时拉取流程。
+deps-managed:
+	$(call route-command,deps managed)
+
+# deps-python routes only the managed Python fetch flow.
+# deps-python 仅路由受管 Python 拉取流程。
+deps-python:
+	$(call route-command,deps python)
+
+# deps-node routes only the managed Node and pnpm fetch flow.
+# deps-node 仅路由受管 Node 与 pnpm 拉取流程。
+deps-node:
+	$(call route-command,deps node)

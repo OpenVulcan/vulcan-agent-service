@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::fmt::Write as _;
 
 use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallResult};
+use crate::support::append_rendered_line;
 use luaskills::{
     InstalledSkillRecord, LuaRuntimeHostOptions, RuntimeSkillRoot, SkillApplyResult,
     SkillInstallSourceType, SkillManager, SkillManagerConfig, SkillUninstallResult,
@@ -198,24 +198,23 @@ pub(super) fn build_skill_manager_for_root(
 /// Render one managed install record into the skill-manager list output.
 /// 将单条受管安装记录渲染到 skill-manager 列表输出中。
 pub(super) fn render_skill_install_record(rendered: &mut String, record: &InstalledSkillRecord) {
-    writeln!(rendered, "- managed: {}", record.managed).expect("writing to String should not fail");
-    writeln!(rendered, "- version: {}", record.version).expect("writing to String should not fail");
-    writeln!(
+    append_rendered_line(rendered, format_args!("- managed: {}", record.managed));
+    append_rendered_line(rendered, format_args!("- version: {}", record.version));
+    append_rendered_line(
         rendered,
-        "- source: {} {}",
-        render_skill_install_source_type(record.source.source_type),
-        record.source.locator
-    )
-    .expect("writing to String should not fail");
+        format_args!(
+            "- source: {} {}",
+            render_skill_install_source_type(record.source.source_type),
+            record.source.locator
+        ),
+    );
     if let Some(tag) = record.source.tag.as_deref() {
-        writeln!(rendered, "- source_tag: {}", tag).expect("writing to String should not fail");
+        append_rendered_line(rendered, format_args!("- source_tag: {}", tag));
     }
-    writeln!(
+    append_rendered_line(
         rendered,
-        "- installed_at_unix_ms: {}",
-        record.installed_at_unix_ms
-    )
-    .expect("writing to String should not fail");
+        format_args!("- installed_at_unix_ms: {}", record.installed_at_unix_ms),
+    );
 }
 
 /// Render one skill install source type as a stable snake-case string.
@@ -267,31 +266,29 @@ pub(super) fn render_skill_apply_tool_result(
 /// 将单个成功安装或更新操作结果渲染为紧凑 Markdown。
 fn render_skill_apply_result(action: &str, result: &SkillApplyResult) -> String {
     let mut rendered = String::new();
-    writeln!(&mut rendered, "# skill-manager {}", action)
-        .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- layer: USER").expect("writing to String should not fail");
-    writeln!(&mut rendered, "- skill_id: {}", result.skill_id)
-        .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- status: {}", result.status)
-        .expect("writing to String should not fail");
+    append_rendered_line(&mut rendered, format_args!("# skill-manager {}", action));
+    append_rendered_line(&mut rendered, format_args!("- layer: USER"));
+    append_rendered_line(
+        &mut rendered,
+        format_args!("- skill_id: {}", result.skill_id),
+    );
+    append_rendered_line(&mut rendered, format_args!("- status: {}", result.status));
     if let Some(version) = result.version.as_deref() {
-        writeln!(&mut rendered, "- version: {}", version)
-            .expect("writing to String should not fail");
+        append_rendered_line(&mut rendered, format_args!("- version: {}", version));
     }
     if let Some(source_type) = result.source_type {
-        writeln!(
+        append_rendered_line(
             &mut rendered,
-            "- source_type: {}",
-            render_skill_install_source_type(source_type)
-        )
-        .expect("writing to String should not fail");
+            format_args!(
+                "- source_type: {}",
+                render_skill_install_source_type(source_type)
+            ),
+        );
     }
     if let Some(source_locator) = result.source_locator.as_deref() {
-        writeln!(&mut rendered, "- source: {}", source_locator)
-            .expect("writing to String should not fail");
+        append_rendered_line(&mut rendered, format_args!("- source: {}", source_locator));
     }
-    writeln!(&mut rendered, "- message: {}", result.message)
-        .expect("writing to String should not fail");
+    append_rendered_line(&mut rendered, format_args!("- message: {}", result.message));
     rendered
 }
 
@@ -321,34 +318,32 @@ pub(super) fn render_skill_uninstall_tool_result(
 /// 将单个成功卸载操作结果渲染为紧凑 Markdown。
 fn render_skill_uninstall_result(result: &SkillUninstallResult) -> String {
     let mut rendered = String::new();
-    writeln!(&mut rendered, "# skill-manager uninstall")
-        .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- layer: USER").expect("writing to String should not fail");
-    writeln!(&mut rendered, "- skill_id: {}", result.skill_id)
-        .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- skill_removed: {}", result.skill_removed)
-        .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- sqlite_removed: {}", result.sqlite_removed)
-        .expect("writing to String should not fail");
-    writeln!(
+    append_rendered_line(&mut rendered, format_args!("# skill-manager uninstall"));
+    append_rendered_line(&mut rendered, format_args!("- layer: USER"));
+    append_rendered_line(
         &mut rendered,
-        "- lancedb_removed: {}",
-        result.lancedb_removed
-    )
-    .expect("writing to String should not fail");
-    writeln!(
+        format_args!("- skill_id: {}", result.skill_id),
+    );
+    append_rendered_line(
         &mut rendered,
-        "- sqlite_retained: {}",
-        result.sqlite_retained
-    )
-    .expect("writing to String should not fail");
-    writeln!(
+        format_args!("- skill_removed: {}", result.skill_removed),
+    );
+    append_rendered_line(
         &mut rendered,
-        "- lancedb_retained: {}",
-        result.lancedb_retained
-    )
-    .expect("writing to String should not fail");
-    writeln!(&mut rendered, "- message: {}", result.message)
-        .expect("writing to String should not fail");
+        format_args!("- sqlite_removed: {}", result.sqlite_removed),
+    );
+    append_rendered_line(
+        &mut rendered,
+        format_args!("- lancedb_removed: {}", result.lancedb_removed),
+    );
+    append_rendered_line(
+        &mut rendered,
+        format_args!("- sqlite_retained: {}", result.sqlite_retained),
+    );
+    append_rendered_line(
+        &mut rendered,
+        format_args!("- lancedb_retained: {}", result.lancedb_retained),
+    );
+    append_rendered_line(&mut rendered, format_args!("- message: {}", result.message));
     rendered
 }

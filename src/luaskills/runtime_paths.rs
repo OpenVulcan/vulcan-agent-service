@@ -1,6 +1,8 @@
 use crate::config::{Config, SkillRootConfigEntry};
+use crate::support::{hosted_application_root_from_executable, luaskills_runtime_root};
 use luaskills::RuntimeSkillRoot;
 use std::collections::HashSet;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 /// Normalize one path before it is exposed to Lua package search templates.
@@ -27,14 +29,9 @@ pub(super) fn normalize_lua_visible_path(path: PathBuf) -> PathBuf {
 /// Resolve the unified skill-config file path strictly from the runtime root using the fixed product layout.
 /// 严格基于运行根与固定产品目录结构解析统一 Skill 配置文件路径。
 pub fn resolve_skill_config_file_path(runtime_root: &std::path::Path) -> Result<PathBuf, String> {
-    let resolved_path = runtime_root.join("configs").join("skill_config.json");
+    let resolved_path = runtime_root.join("config").join("skill_config.json");
 
-    if resolved_path.exists() && !resolved_path.is_file() {
-        return Err(format!(
-            "runtime skill config path is not a file: {}",
-            resolved_path.display()
-        ));
-    }
+    optional_file_present(&resolved_path, "runtime skill config path")?;
 
     Ok(resolved_path)
 }
@@ -61,9 +58,13 @@ fn resolve_config_base_dir(config: &Config) -> Option<PathBuf> {
         })
 }
 
-/// Resolve the runtime root directory according to host configuration first and fallback layouts second.
-/// 优先按宿主配置、其次按回退布局解析运行根目录。
-pub fn resolve_runtime_root_from_config(config: &Config) -> Result<Option<PathBuf>, String> {
+/// Resolve the application root directory according to host configuration first and fallback layouts second.
+/// 优先按宿主配置、其次按回退布局解析应用根目录。
+/// Parameters: `config` contains the optional application-root override and loaded config path.
+/// 参数：`config` 包含可选的应用根覆盖值与已加载配置路径。
+/// Returns the canonical application root, `None` when no layout exists, or an explicit discovery error.
+/// 返回规范应用根、布局不存在时的 `None`，或显式发现错误。
+pub fn resolve_application_root_from_config(config: &Config) -> Result<Option<PathBuf>, String> {
     if let Some(configured_root) = config
         .runtime_root
         .as_ref()
@@ -85,56 +86,89 @@ pub fn resolve_runtime_root_from_config(config: &Config) -> Result<Option<PathBu
                 })?
                 .join(candidate_root)
         };
-        if !normalized_root.exists() {
+        if !optional_directory_present(&normalized_root, "configured application runtime_root")? {
             return Err(format!(
-                "configured runtime_root does not exist: {}",
+                "configured application runtime_root does not exist: {}",
                 normalized_root.display()
             ));
         }
-        if !normalized_root.is_dir() {
-            return Err(format!(
-                "configured runtime_root is not a directory: {}",
-                normalized_root.display()
-            ));
-        }
-        return Ok(Some(normalize_lua_visible_path(normalized_root)));
+        return Ok(Some(canonicalize_lua_visible_directory(
+            &normalized_root,
+            "configured application runtime_root",
+        )?));
     }
 
-    let Some(exe_path) = std::env::current_exe().ok() else {
-        return Ok(None);
-    };
-    let Some(current_dir) = std::env::current_dir().ok() else {
-        return Ok(None);
-    };
-    Ok(resolve_implicit_runtime_root_from_paths(
-        &current_dir,
-        &exe_path,
-    ))
+    let exe_path = std::env::current_exe().map_err(|error| {
+        format!("failed to resolve current executable while resolving runtime_root: {error}")
+    })?;
+    let current_dir = std::env::current_dir().map_err(|error| {
+        format!("failed to resolve current directory while resolving runtime_root: {error}")
+    })?;
+    resolve_implicit_application_root_from_paths(&current_dir, &exe_path)
 }
 
-/// Resolve one implicit runtime root from the current directory and executable path fallback chain.
-/// 基于当前工作目录与可执行文件路径的回退链解析一份隐式运行根。
-pub(super) fn resolve_implicit_runtime_root_from_paths(
+/// Resolve one implicit application root from the current directory and executable path fallback chain.
+/// 基于当前工作目录与可执行文件路径的回退链解析一份隐式应用根。
+pub(super) fn resolve_implicit_application_root_from_paths(
     current_dir: &std::path::Path,
     exe_path: &std::path::Path,
-) -> Option<PathBuf> {
-    let exe_dir = exe_path.parent()?;
-    let exe_parent = exe_dir.parent().unwrap_or(exe_dir);
-    let hosted_root = exe_parent.to_path_buf();
-    let hosted_skills_dir = hosted_root.join("skills");
-    let hosted_configs_dir = hosted_root.join("configs");
-    if (hosted_skills_dir.exists() && hosted_skills_dir.is_dir())
-        || (hosted_configs_dir.exists() && hosted_configs_dir.is_dir())
-    {
-        return Some(normalize_lua_visible_path(hosted_root));
+) -> Result<Option<PathBuf>, String> {
+    // Hosted binaries are expected below one application binary directory, so the executable grandparent is the application root candidate.
+    // 宿主二进制应位于应用二进制目录下，因此可执行文件祖父目录是应用根候选位置。
+    if let Some(hosted_root) = hosted_application_root_from_executable(exe_path) {
+        // The application root is authoritative only when it owns either host configs or the isolated LuaSkills package.
+        // 仅当应用根拥有宿主配置或隔离的 LuaSkills 包时，才将其视为权威位置。
+        let hosted_root = hosted_root.to_path_buf();
+        let hosted_lua_runtime_dir = luaskills_runtime_root(&hosted_root);
+        let hosted_configs_dir = hosted_root.join("configs");
+        if optional_directory_present(&hosted_lua_runtime_dir, "hosted LuaSkills runtime path")?
+            || optional_directory_present(&hosted_configs_dir, "hosted application configs path")?
+        {
+            return Ok(Some(canonicalize_lua_visible_directory(
+                &hosted_root,
+                "hosted application runtime_root",
+            )?));
+        }
     }
 
     let repository_root = current_dir.join("runtime");
-    if repository_root.exists() && repository_root.is_dir() {
-        return Some(normalize_lua_visible_path(repository_root));
+    if optional_directory_present(&repository_root, "implicit repository application root")? {
+        return Ok(Some(canonicalize_lua_visible_directory(
+            &repository_root,
+            "implicit repository application root",
+        )?));
     }
 
-    None
+    Ok(None)
+}
+
+/// Resolve the isolated LuaSkills root owned by the selected application root.
+/// 解析由已选应用根拥有的隔离 LuaSkills 根目录。
+/// Parameters: `config` contains application-root selection and relative-path context.
+/// 参数：`config` 包含应用根选择信息与相对路径上下文。
+/// Returns the canonical `<application_root>/lua_runtime` directory, `None` when no application layout exists, or an error when the child is missing or invalid.
+/// 返回规范的 `<application_root>/lua_runtime` 目录、应用布局不存在时的 `None`，或子目录缺失/无效时的错误。
+pub fn resolve_luaskills_runtime_root_from_config(
+    config: &Config,
+) -> Result<Option<PathBuf>, String> {
+    // ApplicationRoot remains the host-facing root for binaries, configs, and logs.
+    // ApplicationRoot 仍是承载二进制、配置与日志的宿主根目录。
+    let Some(application_root) = resolve_application_root_from_config(config)? else {
+        return Ok(None);
+    };
+    // RuntimeRoot is the only directory passed to LuaSkills.
+    // RuntimeRoot 是唯一传递给 LuaSkills 的目录。
+    let runtime_root = luaskills_runtime_root(&application_root);
+    if !optional_directory_present(&runtime_root, "LuaSkills runtime_root")? {
+        return Err(format!(
+            "LuaSkills runtime_root does not exist: {}",
+            runtime_root.display()
+        ));
+    }
+    Ok(Some(canonicalize_lua_visible_directory(
+        &runtime_root,
+        "LuaSkills runtime_root",
+    )?))
 }
 
 /// Resolve the ordered formal skill roots from host configuration and runtime layout.
@@ -145,7 +179,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     let mut seen_root_names = HashSet::new();
     let mut synthesized_index = 1usize;
     let config_base_dir = resolve_config_base_dir(config);
-    let runtime_root = resolve_runtime_root_from_config(config)?;
+    let runtime_root = resolve_luaskills_runtime_root_from_config(config)?;
 
     let resolve_configured_path = |raw_path: &str| -> PathBuf {
         let candidate_path = PathBuf::from(raw_path);
@@ -167,7 +201,7 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
             ));
         }
         let normalized_storage_path = normalize_skill_root_path(&path)?;
-        let normalized_path = normalize_skill_root_key(&normalized_storage_path);
+        let normalized_path = render_skill_root_key(&normalized_storage_path);
         if !seen_roots.insert(normalized_path) {
             return Err(format!(
                 "duplicate skill root '{}' at {} is not allowed",
@@ -229,7 +263,10 @@ pub fn resolve_skill_roots_from_config(config: &Config) -> Result<Vec<RuntimeSki
     }
     let mut implicit_roots = Vec::new();
     for root in ordered_roots {
-        if !root.skills_dir.exists() {
+        if !optional_directory_present(
+            &root.skills_dir,
+            &format!("implicit skill root '{}'", root.name),
+        )? {
             continue;
         }
         validate_skill_root_directory(&root, false)?;
@@ -278,10 +315,15 @@ fn formal_skill_root_rank(name: &str) -> Result<usize, String> {
 
 /// Sort formal skill roots into the runtime-required ROOT -> PROJECT -> USER order.
 /// 将正式技能根排序为运行时要求的 ROOT -> PROJECT -> USER 顺序。
-fn sort_formal_skill_roots(skill_roots: &mut [RuntimeSkillRoot]) -> Result<(), String> {
-    skill_roots.sort_by_key(|root| formal_skill_root_rank(&root.name).unwrap_or(usize::MAX));
-    for root in skill_roots {
-        formal_skill_root_rank(&root.name)?;
+pub(super) fn sort_formal_skill_roots(skill_roots: &mut [RuntimeSkillRoot]) -> Result<(), String> {
+    let mut ranked_roots = Vec::with_capacity(skill_roots.len());
+    for root in skill_roots.iter() {
+        let rank = formal_skill_root_rank(&root.name)?;
+        ranked_roots.push((rank, root.clone()));
+    }
+    ranked_roots.sort_by_key(|(rank, _root)| *rank);
+    for (target_root, (_rank, sorted_root)) in skill_roots.iter_mut().zip(ranked_roots) {
+        *target_root = sorted_root;
     }
     Ok(())
 }
@@ -292,7 +334,7 @@ fn validate_skill_root_directory(
     root: &RuntimeSkillRoot,
     strict_missing: bool,
 ) -> Result<(), String> {
-    if !root.skills_dir.exists() {
+    if !optional_directory_present(&root.skills_dir, &format!("skill root '{}'", root.name))? {
         if strict_missing {
             return Err(format!(
                 "configured skill root '{}' does not exist: {}",
@@ -302,14 +344,6 @@ fn validate_skill_root_directory(
         }
         return Err(format!(
             "implicit skill root '{}' does not exist: {}",
-            root.name,
-            root.skills_dir.display()
-        ));
-    }
-
-    if !root.skills_dir.is_dir() {
-        return Err(format!(
-            "skill root '{}' is not a directory: {}",
             root.name,
             root.skills_dir.display()
         ));
@@ -334,13 +368,44 @@ pub fn normalize_skill_root_path(path: &std::path::Path) -> Result<PathBuf, Stri
             })?
             .join(path)
     };
-    Ok(normalize_lua_visible_path(
-        std::fs::canonicalize(&absolute_path).unwrap_or(absolute_path),
-    ))
+    let normalized_path = match std::fs::canonicalize(&absolute_path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == ErrorKind::NotFound => absolute_path,
+        Err(error) => {
+            return Err(format!(
+                "failed to canonicalize skill root '{}': {}",
+                absolute_path.display(),
+                error
+            ));
+        }
+    };
+    Ok(normalize_lua_visible_path(normalized_path))
 }
 
+#[cfg(test)]
 pub fn normalize_skill_root_key(path: &std::path::Path) -> String {
     let normalized_path = normalize_skill_root_path(path).unwrap_or_else(|_| path.to_path_buf());
+    render_skill_root_key(&normalized_path)
+}
+
+/// Normalize one skill-root key while preserving path normalization errors for production callers.
+/// 规范化一个技能根键，并为生产调用方保留路径规范化错误。
+/// Parameters: `path` is the skill-root path that should be converted into a comparison key.
+/// 参数：`path` 是需要转换为比较键的技能根路径。
+/// Returns the normalized comparison key or a path normalization error.
+/// 返回规范化后的比较键，或路径规范化错误。
+pub fn try_normalize_skill_root_key(path: &std::path::Path) -> Result<String, String> {
+    let normalized_path = normalize_skill_root_path(path)?;
+    Ok(render_skill_root_key(&normalized_path))
+}
+
+/// Render one already-normalized skill-root path into a platform-stable comparison key.
+/// 将一个已经规范化的技能根路径渲染为平台稳定的比较键。
+/// Parameters: `normalized_path` is the normalized skill-root path to render.
+/// 参数：`normalized_path` 是需要渲染的已规范化技能根路径。
+/// Returns the stable string key used for duplicate detection and root replacement.
+/// 返回用于重复检测与根替换的稳定字符串键。
+fn render_skill_root_key(normalized_path: &std::path::Path) -> String {
     let rendered = normalized_path.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
     {
@@ -370,7 +435,7 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| root.skills_dir.clone());
-        let normalized_parent = normalize_skill_root_key(&parent);
+        let normalized_parent = try_normalize_skill_root_key(&parent)?;
         if !seen_space_parents.insert(normalized_parent) {
             return Err(format!(
                 "skill root '{}' at {} shares the same sibling runtime space with another root; each root must use a unique parent directory",
@@ -382,89 +447,95 @@ pub fn validate_unique_skill_root_spaces(skill_roots: &[RuntimeSkillRoot]) -> Re
     Ok(())
 }
 
-/// Resolve the Lua resources directory according to the current MCP host layout.
-/// 按当前 MCP 宿主布局解析 Lua 资源目录。
-pub(super) fn resolve_runtime_resources_dir(
-    runtime_root: &std::path::Path,
-) -> Result<Option<PathBuf>, String> {
-    let runtime_resources_dir = runtime_root.join("resources");
-    if runtime_resources_dir.exists() {
-        if !runtime_resources_dir.is_dir() {
-            return Err(format!(
-                "runtime resources path is not a directory: {}",
-                runtime_resources_dir.display()
-            ));
-        }
-        return Ok(Some(runtime_resources_dir));
+/// Inspect one optional runtime path without hiding metadata errors.
+/// 检查一个可选运行时路径，且不隐藏元数据错误。
+/// Parameters: `path` is the runtime-managed file or directory path to inspect.
+/// 参数：`path` 是需要检查的运行时托管文件或目录路径。
+/// Parameters: `path_label` names the path kind in diagnostics.
+/// 参数：`path_label` 用于在诊断中标识路径类型。
+/// Returns metadata when present, `None` when absent, or an inspection error.
+/// 路径存在时返回元数据，缺失时返回 `None`，否则返回检查错误。
+fn optional_path_metadata(
+    path: &std::path::Path,
+    path_label: &str,
+) -> Result<Option<std::fs::Metadata>, String> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to inspect {} {}: {}",
+            path_label,
+            path.display(),
+            error
+        )),
     }
-
-    Ok(None)
 }
 
-/// Resolve the host-provided tool root and reject file-shaped runtime bin/tools paths early.
-/// 解析宿主提供工具根目录，并在 runtime bin/tools 为文件形态时尽早拒绝。
-pub(super) fn resolve_host_provided_tool_root(
-    runtime_root: &std::path::Path,
-) -> Result<Option<PathBuf>, String> {
-    let tool_root = runtime_root.join("bin").join("tools");
-    if tool_root.exists() && !tool_root.is_dir() {
+/// Return whether one optional runtime directory exists and reject non-directory shapes.
+/// 返回一个可选运行时目录是否存在，并拒绝非目录形态。
+/// Parameters: `path` is the runtime-managed directory path to inspect.
+/// 参数：`path` 是需要检查的运行时托管目录路径。
+/// Parameters: `directory_label` names the directory kind in diagnostics.
+/// 参数：`directory_label` 用于在诊断中标识目录类型。
+/// Returns `true` when present, `false` when absent, or an inspection/shape error.
+/// 目录存在时返回 `true`，缺失时返回 `false`，否则返回检查/形态错误。
+fn optional_directory_present(
+    path: &std::path::Path,
+    directory_label: &str,
+) -> Result<bool, String> {
+    let Some(metadata) = optional_path_metadata(path, directory_label)? else {
+        return Ok(false);
+    };
+    if !metadata.is_dir() {
         return Err(format!(
-            "host-provided tool root is not a directory: {}",
-            tool_root.display()
+            "{} is not a directory: {}",
+            directory_label,
+            path.display()
         ));
     }
-    Ok(Some(tool_root))
+    Ok(true)
 }
 
-/// Resolve the generic host-provided native library root used by Lua C modules and other runtime FFI payloads.
-/// 解析 Lua C 模块及其他运行时 FFI 载荷使用的通用宿主原生库根目录。
-pub(super) fn resolve_host_ffi_root(
-    runtime_root: &std::path::Path,
-) -> Result<Option<PathBuf>, String> {
-    let ffi_root = runtime_root.join("libs");
-    if ffi_root.exists() {
-        if !ffi_root.is_dir() {
-            return Err(format!(
-                "runtime ffi root is not a directory: {}",
-                ffi_root.display()
-            ));
-        }
-        return Ok(Some(ffi_root));
+/// Return whether one optional runtime file exists and reject non-file shapes.
+/// 返回一个可选运行时文件是否存在，并拒绝非文件形态。
+/// Parameters: `path` is the runtime-managed file path to inspect.
+/// 参数：`path` 是需要检查的运行时托管文件路径。
+/// Parameters: `file_label` names the file kind in diagnostics.
+/// 参数：`file_label` 用于在诊断中标识文件类型。
+/// Returns `true` when present, `false` when absent, or an inspection/shape error.
+/// 文件存在时返回 `true`，缺失时返回 `false`，否则返回检查/形态错误。
+fn optional_file_present(path: &std::path::Path, file_label: &str) -> Result<bool, String> {
+    let Some(metadata) = optional_path_metadata(path, file_label)? else {
+        return Ok(false);
+    };
+    if !metadata.is_file() {
+        return Err(format!("{} is not a file: {}", file_label, path.display()));
     }
-    Ok(None)
+    Ok(true)
 }
 
-/// Resolve the fixed host-owned `system_lua_lib` directory used by LuaSkills `system_lua_lib` runtime leases.
-/// 解析 LuaSkills `system_lua_lib` 运行时租约使用的固定宿主自有 `system_lua_lib` 目录。
-pub(super) fn resolve_system_lua_lib_dir(
-    runtime_root: &std::path::Path,
-) -> Result<Option<PathBuf>, String> {
-    let system_lua_lib_dir = runtime_root.join("system_lua_lib");
-    if system_lua_lib_dir.exists() && !system_lua_lib_dir.is_dir() {
-        return Err(format!(
-            "runtime system_lua_lib path is not a directory: {}",
-            system_lua_lib_dir.display()
-        ));
-    }
-    Ok(Some(system_lua_lib_dir))
-}
-
-/// Resolve the host-managed lua_packages directory according to runtime output first and repository output second.
-/// 先按运行时输出目录、再按仓库输出目录解析宿主管理的 lua_packages 目录。
-pub(super) fn resolve_lua_packages_dir(
-    runtime_root: &std::path::Path,
-) -> Result<Option<PathBuf>, String> {
-    let runtime_path = runtime_root.join("lua_packages");
-    if runtime_path.exists() {
-        if !runtime_path.is_dir() {
-            return Err(format!(
-                "runtime lua_packages path is not a directory: {}",
-                runtime_path.display()
-            ));
-        }
-        return Ok(Some(runtime_path));
-    }
-    Ok(None)
+/// Canonicalize one known runtime directory and normalize it for Lua-visible path templates.
+/// 规范化一个已确认存在的运行时目录，并转换为 Lua 可见路径模板可用的形式。
+/// Parameters: `path` is the runtime directory path that has already passed metadata inspection.
+/// 参数：`path` 是已经通过元数据检查的运行时目录路径。
+/// Parameters: `path_label` names the directory kind in diagnostics.
+/// 参数：`path_label` 用于在诊断中标识目录类型。
+/// Returns the canonical Lua-visible directory path or a canonicalization error.
+/// 返回规范化后的 Lua 可见目录路径，或规范化错误。
+fn canonicalize_lua_visible_directory(
+    path: &std::path::Path,
+    path_label: &str,
+) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path)
+        .map(normalize_lua_visible_path)
+        .map_err(|error| {
+            format!(
+                "failed to canonicalize {} {}: {}",
+                path_label,
+                path.display(),
+                error
+            )
+        })
 }
 
 /// Resolve the current user's home directory when a default skill override root needs to be derived.

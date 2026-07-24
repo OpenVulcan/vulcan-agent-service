@@ -14,10 +14,6 @@ pub struct Session {
     /// Request-scoped client registration context
     /// 请求级客户端注册上下文。
     pub request_context: RequestContext,
-    /// Optional sender bound to the active GET
-    /// mcp SSE stream
-    /// 绑定到当前 GET /mcp SSE 流的可选发送器。
-    pub tx: Option<mpsc::Sender<Value>>,
 }
 
 #[derive(Clone)]
@@ -34,63 +30,32 @@ impl SessionManager {
         }
     }
 
-    /// Create a stateful session after initialize
-    /// 在 initialize 成功后创建状态化会话。
-    pub async fn create(&self, mut request_context: RequestContext) -> String {
+    /// Create a stateful session after initialize with a negotiated protocol version.
+    /// 在 initialize 成功且已获得协商协议版本后创建状态化会话。
+    ///
+    /// Parameters: `request_context` is the initialized client context that must include `protocol_version`.
+    /// 参数：`request_context` 是已初始化客户端上下文，必须包含 `protocol_version`。
+    ///
+    /// Returns: the new session id, or an error when the negotiated protocol version is missing or empty.
+    /// 返回：新会话 ID；当协商协议版本缺失或为空时返回错误。
+    pub async fn create(&self, mut request_context: RequestContext) -> Result<String, String> {
+        let Some(protocol_version) = request_context.protocol_version.clone() else {
+            return Err("streamable session requires negotiated protocol version".to_string());
+        };
+        if protocol_version.trim().is_empty() {
+            return Err("streamable session requires negotiated protocol version".to_string());
+        }
+
         let session_id = uuid::Uuid::new_v4().to_string();
-        let protocol_version = request_context.protocol_version.clone().unwrap_or_default();
         request_context.session_id = Some(session_id.clone());
         self.sessions.lock().await.insert(
             session_id.clone(),
             Session {
                 protocol_version,
                 request_context,
-                tx: None,
             },
         );
-        session_id
-    }
-
-    /// Attach a single active SSE stream to the session
-    /// 为会话附加一个唯一活动 SSE 流。
-    pub async fn attach_stream(&self, session_id: &str) -> Option<mpsc::Receiver<Value>> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions.get_mut(session_id)?;
-        let (tx, rx) = mpsc::channel::<Value>(256);
-        session.tx = Some(tx);
-        Some(rx)
-    }
-
-    /// Detach the active SSE stream from the session
-    /// 从会话上卸载当前活动 SSE 流。
-    pub async fn detach_stream(&self, session_id: &str) {
-        if let Some(session) = self.sessions.lock().await.get_mut(session_id) {
-            session.tx = None;
-        }
-    }
-
-    /// Send a server-originated message into the active stream
-    /// 向当前活动流推送服务端消息。
-    pub async fn send(&self, session_id: &str, value: Value) -> Result<(), ()> {
-        let sender = {
-            let sessions = self.sessions.lock().await;
-            sessions
-                .get(session_id)
-                .and_then(|session| session.tx.clone())
-        };
-
-        let Some(tx) = sender else {
-            return Err(());
-        };
-
-        if tx.send(value).await.is_ok() {
-            return Ok(());
-        }
-
-        if let Some(session) = self.sessions.lock().await.get_mut(session_id) {
-            session.tx = None;
-        }
-        Err(())
+        Ok(session_id)
     }
 
     /// Remove a session entirely
@@ -123,6 +88,90 @@ impl SessionManager {
             .await
             .get(session_id)
             .map(|session| session.request_context.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Streamable session creation should reject contexts without negotiated protocol versions.
+    /// Streamable 会话创建应拒绝缺少协商协议版本的上下文。
+    #[tokio::test]
+    async fn session_manager_create_rejects_missing_protocol_version() {
+        // Build one empty manager so the test isolates session creation validation.
+        // 构造空管理器，使测试只聚焦会话创建校验。
+        let manager = SessionManager::new();
+        // Build a request context that simulates a caller skipping initialize negotiation.
+        // 构造模拟调用方跳过 initialize 协商的请求上下文。
+        let request_context = RequestContext::default();
+
+        let error = manager
+            .create(request_context)
+            .await
+            .expect_err("missing protocol version should be rejected");
+
+        assert_eq!(
+            error,
+            "streamable session requires negotiated protocol version"
+        );
+    }
+
+    /// Streamable session creation should reject empty negotiated protocol versions.
+    /// Streamable 会话创建应拒绝空的协商协议版本。
+    #[tokio::test]
+    async fn session_manager_create_rejects_empty_protocol_version() {
+        // Build one empty manager so no existing session state can affect validation.
+        // 构造空管理器，避免既有会话状态影响校验。
+        let manager = SessionManager::new();
+        // Build a request context whose protocol version is present but empty.
+        // 构造协议版本字段存在但为空的请求上下文。
+        let request_context = RequestContext {
+            protocol_version: Some(String::new()),
+            ..RequestContext::default()
+        };
+
+        let error = manager
+            .create(request_context)
+            .await
+            .expect_err("empty protocol version should be rejected");
+
+        assert_eq!(
+            error,
+            "streamable session requires negotiated protocol version"
+        );
+    }
+
+    /// Streamable session creation should persist the negotiated protocol version and generated session id.
+    /// Streamable 会话创建应持久化协商协议版本与生成的会话 ID。
+    #[tokio::test]
+    async fn session_manager_create_persists_protocol_version_and_session_id() {
+        // Build one empty manager to verify the first created streamable session.
+        // 构造空管理器，用于验证第一个创建的 streamable 会话。
+        let manager = SessionManager::new();
+        // Build a request context matching the post-initialize production path.
+        // 构造与生产 initialize 后路径一致的请求上下文。
+        let request_context = RequestContext {
+            protocol_version: Some("2025-06-18".to_string()),
+            ..RequestContext::default()
+        };
+
+        let session_id = manager
+            .create(request_context)
+            .await
+            .expect("valid protocol version should create a session");
+
+        assert_eq!(
+            manager.protocol_version(&session_id).await.as_deref(),
+            Some("2025-06-18")
+        );
+        assert_eq!(
+            manager
+                .request_context(&session_id)
+                .await
+                .and_then(|context| context.session_id),
+            Some(session_id)
+        );
     }
 }
 
@@ -164,37 +213,40 @@ impl SseSessionManager {
         (session_id, rx)
     }
 
-    /// Get the POST message endpoint URL for a session
-    /// 获取会话对应的 POST 消息端点。
-    pub fn message_endpoint(&self, session_id: &str, base_url: &str) -> String {
-        format!("{}/message?sessionId={}", base_url, session_id)
-    }
-
     /// Send a message into a legacy SSE session
     /// 向旧版 SSE 会话推送消息。
     pub async fn send(&self, session_id: &str, value: Value) -> Result<(), ()> {
-        let sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get(session_id) {
-            session.tx.send(value).await.map_err(|_| ())?;
+        // Clone the sender before awaiting so a slow or closed receiver never holds the session map lock.
+        // 在 await 前克隆发送器，避免慢速或已关闭的接收端长期占用会话表锁。
+        let tx = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(session_id).map(|session| session.tx.clone())
+        };
+        // Missing session IDs are explicit delivery failures for legacy POST /message.
+        // 缺失的会话 ID 对旧版 POST /message 来说是明确的投递失败。
+        let Some(tx) = tx else {
+            return Err(());
+        };
+        if tx.send(value).await.is_ok() {
             return Ok(());
         }
+        self.remove(session_id).await;
         Err(())
+    }
+
+    /// Check whether a legacy SSE session exists.
+    /// 检查旧版 SSE 会话是否存在。
+    /// Parameters: `session_id` is the legacy SSE session identifier to look up.
+    /// 参数：`session_id` 是要查询的旧版 SSE 会话标识。
+    /// Returns true when the session is still registered.
+    /// 当会话仍被注册时返回 true。
+    pub async fn exists(&self, session_id: &str) -> bool {
+        self.sessions.lock().await.contains_key(session_id)
     }
 
     /// Remove a legacy SSE session
     /// 移除旧版 SSE 会话。
     pub async fn remove(&self, session_id: &str) {
         self.sessions.lock().await.remove(session_id);
-    }
-
-    /// Get session ID from query params (for legacy POST /message) /
-    /// 从查询参数中提取旧版 POST /message 使用的 sessionId。
-    pub fn session_id_from_query(query: &str) -> Option<String> {
-        query
-            .trim_start_matches('?')
-            .split('&')
-            .find(|p| p.starts_with("sessionId="))
-            .map(|p| p.strip_prefix("sessionId=").unwrap_or("").to_string())
-            .filter(|s| !s.is_empty())
     }
 }

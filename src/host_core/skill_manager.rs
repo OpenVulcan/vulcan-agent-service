@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallResult};
 use crate::host_core::runtime::HostRuntime;
 use crate::host_core::skill_tools::{
@@ -9,6 +7,7 @@ use crate::host_core::skill_tools::{
     render_skill_uninstall_tool_result, render_skill_url_install_not_implemented_result,
     require_skill_manager_skill_id, require_skill_manager_source, select_skill_manager_user_root,
 };
+use crate::support::{append_blank_rendered_line, append_rendered_line};
 use luaskills::skill::manager::collect_effective_skill_instances_from_roots;
 use luaskills::{
     RuntimeSkillRoot, SkillInstallRequest, SkillInstallSourceType, SkillUninstallOptions,
@@ -92,7 +91,7 @@ impl HostRuntime {
         }
 
         let mut rendered = String::new();
-        writeln!(&mut rendered, "# LuaSkills (USER)").expect("writing to String should not fail");
+        append_rendered_line(&mut rendered, format_args!("# LuaSkills (USER)"));
         for instance in instances {
             let root = RuntimeSkillRoot {
                 name: instance.root_name.clone(),
@@ -121,34 +120,37 @@ impl HostRuntime {
                         ),
                     )
                 })?;
-            writeln!(&mut rendered).expect("writing to String should not fail");
-            writeln!(&mut rendered, "## {}", instance.skill_id)
-                .expect("writing to String should not fail");
-            writeln!(&mut rendered, "- root: {}", instance.root_name)
-                .expect("writing to String should not fail");
-            writeln!(&mut rendered, "- path: {}", instance.actual_dir.display())
-                .expect("writing to String should not fail");
-            writeln!(&mut rendered, "- enabled: {}", disabled_record.is_none())
-                .expect("writing to String should not fail");
+            append_blank_rendered_line(&mut rendered);
+            append_rendered_line(&mut rendered, format_args!("## {}", instance.skill_id));
+            append_rendered_line(
+                &mut rendered,
+                format_args!("- root: {}", instance.root_name),
+            );
+            append_rendered_line(
+                &mut rendered,
+                format_args!("- path: {}", instance.actual_dir.display()),
+            );
+            append_rendered_line(
+                &mut rendered,
+                format_args!("- enabled: {}", disabled_record.is_none()),
+            );
             if let Some(record) = install_record {
                 render_skill_install_record(&mut rendered, &record);
             } else {
-                writeln!(&mut rendered, "- managed: false")
-                    .expect("writing to String should not fail");
+                append_rendered_line(&mut rendered, format_args!("- managed: false"));
             }
             if let Some(record) = disabled_record {
-                writeln!(
+                append_rendered_line(
                     &mut rendered,
-                    "- disabled_reason: {}",
-                    record.reason.as_deref().unwrap_or("")
-                )
-                .expect("writing to String should not fail");
-                writeln!(
+                    format_args!(
+                        "- disabled_reason: {}",
+                        record.reason.as_deref().unwrap_or("")
+                    ),
+                );
+                append_rendered_line(
                     &mut rendered,
-                    "- disabled_at_unix_ms: {}",
-                    record.disabled_at_unix_ms
-                )
-                .expect("writing to String should not fail");
+                    format_args!("- disabled_at_unix_ms: {}", record.disabled_at_unix_ms),
+                );
             }
         }
         Ok(rendered)

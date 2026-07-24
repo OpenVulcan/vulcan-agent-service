@@ -1,9 +1,7 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::config::client_budget::reload_client_budget_config;
-use crate::config::model_config::reload_model_config;
-use crate::config::tool_config::reload_tool_configs;
+use crate::config::reload_runtime_configs;
 use crate::host_core::model::{RuntimeTextContent, RuntimeToolCallResult};
 use crate::host_core::projections::{
     build_luaskill_tool_descriptor, render_help_detail_markdown, render_help_list_markdown,
@@ -149,7 +147,13 @@ impl HostRuntime {
             request_id,
             Some(&tool_name_for_call),
             skill_name.as_deref(),
-        );
+        )
+        .map_err(|error| {
+            (
+                -32603,
+                format!("build Lua invocation context failed: {error}"),
+            )
+        })?;
         let result = tokio::task::spawn_blocking(move || {
             let engine = engine_clone
                 .read()
@@ -165,7 +169,8 @@ impl HostRuntime {
                     &client_name,
                     Some(&tool.name),
                     skill_name.as_deref(),
-                );
+                )
+                .map_err(|error| (-32603, format!("resolve client budget failed: {error}")))?;
                 let spill_root = ensure_runtime_temp_dir()
                     .map_err(|error| {
                         (
@@ -175,23 +180,25 @@ impl HostRuntime {
                     })?
                     .join("mcp")
                     .join("cache");
+                let rendered = render_tool_result_text(
+                    &value,
+                    skill_name.as_deref(),
+                    Some(&client_budget),
+                    &HostRenderOptions {
+                        spill_root: Some(spill_root),
+                        template_skill_roots: target_skill_roots
+                            .iter()
+                            .map(|root| root.skills_dir.clone())
+                            .collect(),
+                        template_resources_root: self
+                            .lua_engine_options
+                            .as_ref()
+                            .and_then(|options| options.host_options.resources_dir.clone()),
+                    },
+                )
+                .map_err(|error| (-32603, format!("render Lua skill result failed: {error}")))?;
                 Ok(RuntimeToolCallResult {
-                    content: vec![RuntimeTextContent::text(&render_tool_result_text(
-                        &value,
-                        skill_name.as_deref(),
-                        Some(&client_budget),
-                        &HostRenderOptions {
-                            spill_root: Some(spill_root),
-                            template_skill_roots: target_skill_roots
-                                .iter()
-                                .map(|root| root.skills_dir.clone())
-                                .collect(),
-                            template_resources_root: self
-                                .lua_engine_options
-                                .as_ref()
-                                .and_then(|options| options.host_options.resources_dir.clone()),
-                        },
-                    ))],
+                    content: vec![RuntimeTextContent::text(&rendered)],
                     is_error: None,
                 })
             }
@@ -209,7 +216,8 @@ impl HostRuntime {
         let help_tree = engine
             .read()
             .map_err(|_| (-32603, "Lua engine lock poisoned.".to_string()))?
-            .list_skill_help();
+            .list_skill_help()
+            .map_err(|error| (-32603, error))?;
         Ok(render_help_list_markdown(&help_tree))
     }
 
@@ -376,35 +384,41 @@ impl HostRuntime {
     /// Reload hot-reloadable runtime configs through a stable gRPC method.
     /// 通过稳定 gRPC 方法重载可热重载运行时配置。
     pub fn reload_luaskill_runtime_configs(&self) -> Result<String, (i64, String)> {
-        let client_budget_report = reload_client_budget_config()
-            .map_err(|error| (-32603, format!("reload client budgets failed: {}", error)))?;
-        let tool_config_report = reload_tool_configs()
-            .map_err(|error| (-32603, format!("reload tool configs failed: {}", error)))?;
-        let model_config_report = reload_model_config()
-            .map_err(|error| (-32603, format!("reload model configs failed: {}", error)))?;
-        install_luaskills_model_callbacks();
+        // Stage and commit all hot-reloadable configs together so failures cannot expose mixed versions.
+        // 将全部可热重载配置一起分阶段加载并提交，避免失败时暴露混合版本。
+        let reports = reload_runtime_configs()
+            .map_err(|error| (-32603, format!("reload runtime configs failed: {}", error)))?;
+        install_luaskills_model_callbacks().map_err(|error| {
+            (
+                -32603,
+                format!("reload model callbacks failed: {}", error.message),
+            )
+        })?;
 
         Ok(format!(
             "Runtime MCP configs reloaded successfully.\n- client_budgets: patterns={}, grpc_clients={}, source={}\n- tool_configs: tools={}, source={}\n- model_config: provider_enabled={}, embed={}, embed_api_key={}, embed_base_url={}, llm={}, llm_api_key={}, llm_base_url={}, source={}\n- config.yaml: not reloaded",
-            client_budget_report.client_count,
-            client_budget_report.grpc_client_count,
-            client_budget_report
+            reports.client_budget.client_count,
+            reports.client_budget.grpc_client_count,
+            reports
+                .client_budget
                 .source_path
                 .as_deref()
                 .unwrap_or("unavailable"),
-            tool_config_report.tool_count,
-            tool_config_report
+            reports.tool_config.tool_count,
+            reports
+                .tool_config
                 .source_path
                 .as_deref()
                 .unwrap_or("unavailable"),
-            model_config_report.provider_enabled,
-            model_config_report.embedding_enabled,
-            model_config_report.embedding_api_key_configured,
-            model_config_report.embedding_base_url_configured,
-            model_config_report.llm_enabled,
-            model_config_report.llm_api_key_configured,
-            model_config_report.llm_base_url_configured,
-            model_config_report
+            reports.model_config.provider_enabled,
+            reports.model_config.embedding_enabled,
+            reports.model_config.embedding_api_key_configured,
+            reports.model_config.embedding_base_url_configured,
+            reports.model_config.llm_enabled,
+            reports.model_config.llm_api_key_configured,
+            reports.model_config.llm_base_url_configured,
+            reports
+                .model_config
                 .source_path
                 .as_deref()
                 .unwrap_or("unavailable")

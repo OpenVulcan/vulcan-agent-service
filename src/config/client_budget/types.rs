@@ -6,7 +6,7 @@ use std::path::PathBuf;
 /// Runtime cache state for client budgets, containing the parsed config and its source path.
 /// 客户端预算运行时缓存状态，包含已解析配置与来源路径。
 #[derive(Debug, Clone, Default)]
-pub(super) struct ClientBudgetRuntime {
+pub(crate) struct ClientBudgetRuntime {
     pub(super) config: ClientBudgetConfig,
     pub(super) source_path: Option<PathBuf>,
 }

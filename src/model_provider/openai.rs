@@ -192,10 +192,7 @@ fn merge_request_overrides(body: &mut Value, overrides: &Value, reserved_keys: &
         return;
     };
     for (key, value) in override_map {
-        if reserved_keys
-            .iter()
-            .any(|reserved| *reserved == key.as_str())
-        {
+        if reserved_keys.contains(&key.as_str()) {
             continue;
         }
         body_map.insert(key.clone(), value.clone());
@@ -290,17 +287,29 @@ pub(super) fn provider_error_from_http_status(
     api_key: &str,
 ) -> ModelError {
     let sanitized_body = sanitize_provider_text(body, api_key);
-    let parsed_body = serde_json::from_str::<Value>(&sanitized_body).ok();
+    let parsed_body_result = serde_json::from_str::<Value>(&sanitized_body);
+    let (parsed_body, parse_error) = match parsed_body_result {
+        Ok(value) => (Some(value), None),
+        Err(error) => (None, Some(error)),
+    };
     let provider_message = parsed_body
         .as_ref()
         .and_then(extract_provider_message)
         .or_else(|| normalized_optional_text(Some(&sanitized_body)));
     let provider_code = parsed_body.as_ref().and_then(extract_provider_code);
-    ModelError::new(
-        ModelErrorCode::ProviderError,
-        format!("model provider returned HTTP {}", status.as_u16()),
+    let message = match parse_error {
+        Some(error) => format!(
+            "model provider returned HTTP {} with non-JSON error body: {}",
+            status.as_u16(),
+            error
+        ),
+        None => format!("model provider returned HTTP {}", status.as_u16()),
+    };
+    ModelError::new(ModelErrorCode::ProviderError, message).with_provider(
+        provider_message,
+        provider_code,
+        Some(status.as_u16()),
     )
-    .with_provider(provider_message, provider_code, Some(status.as_u16()))
 }
 
 /// Extract a provider message from common OpenAI-compatible error shapes.

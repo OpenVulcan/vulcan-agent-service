@@ -307,7 +307,7 @@ fn stable_json_value(value: &Value) -> Value {
         Value::Array(values) => Value::Array(values.iter().map(stable_json_value).collect()),
         Value::Object(map) => {
             let mut entries = map.iter().collect::<Vec<_>>();
-            entries.sort_by(|(left_key, _), (right_key, _)| left_key.cmp(right_key));
+            entries.sort_by_key(|(key, _)| *key);
             let mut stable = serde_json::Map::new();
             for (key, value) in entries {
                 stable.insert(key.clone(), stable_json_value(value));

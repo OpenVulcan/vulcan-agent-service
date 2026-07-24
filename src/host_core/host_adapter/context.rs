@@ -49,7 +49,7 @@ pub fn build_host_runtime_context(input: HostRuntimeContextInput) -> HostRuntime
     let user_message = normalize_context_text(input.user_message.as_deref());
     let (workmem_id, workmem_source) = resolve_workmem_identity(
         host_kind,
-        session_id.as_deref(),
+        session_id,
         explicit_workmem_id,
         workspace.as_deref(),
     );

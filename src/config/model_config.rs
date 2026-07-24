@@ -1,3 +1,4 @@
+use super::runtime_root::{clone_runtime_root_override, find_optional_runtime_config_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(test)]
@@ -6,9 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
-/// Runtime model-config cache that stores the parsed host-owned model settings and resolved API keys.
-/// 运行时模型配置缓存，保存已解析的宿主管理模型设置与已解析 API key。
-static MODEL_CONFIG_RUNTIME: OnceLock<RwLock<ModelConfigRuntime>> = OnceLock::new();
+/// Runtime model-config cache that stores the explicitly committed state or a not-preloaded error.
+/// 运行时模型配置缓存，保存显式提交的状态或未预载错误。
+static MODEL_CONFIG_RUNTIME: OnceLock<RwLock<ModelConfigRuntimeState>> = OnceLock::new();
 /// Optional explicit runtime-root override used to keep model-config discovery aligned with one selected runtime.
 /// 可选的显式 runtime_root 覆盖，用于让模型配置发现链与当前选中的运行根保持一致。
 static MODEL_CONFIG_RUNTIME_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
@@ -121,11 +122,15 @@ pub(crate) struct EffectiveModelConfig {
 /// Internal runtime state for the cached model configuration store.
 /// 模型配置缓存的内部运行时状态。
 #[derive(Debug, Clone, Default)]
-struct ModelConfigRuntime {
+pub(super) struct ModelConfigRuntime {
     /// Effective model configuration snapshot.
     /// 当前生效的模型配置快照。
     effective: EffectiveModelConfig,
 }
+
+/// Cached model-config runtime state with explicit load-error preservation.
+/// 带显式加载错误保留能力的模型配置运行时缓存状态。
+pub(super) type ModelConfigRuntimeState = Result<ModelConfigRuntime, String>;
 
 /// Model-config load report used by startup logging and hot-reload results.
 /// 模型配置加载结果，便于启动日志与热重载结果输出。
@@ -172,12 +177,15 @@ pub struct ModelConfigLoadReport {
     pub llm_model: Option<String>,
 }
 
-/// Ensure the model-config cache has been initialized, loading it from disk immediately on the first access.
-/// 确保模型配置缓存已经初始化；若尚未初始化则立即从磁盘加载一次。
-fn model_config_runtime() -> &'static RwLock<ModelConfigRuntime> {
+/// Return the explicitly preloaded model-config cache without request-time disk or environment I/O.
+/// 返回显式预载的模型配置缓存，且不在请求期执行磁盘或环境变量 I/O。
+/// Returns the shared cache lock, initialized to an explicit not-preloaded error when necessary.
+/// 返回共享缓存锁；必要时以显式的未预载错误初始化。
+pub(super) fn model_config_runtime() -> &'static RwLock<ModelConfigRuntimeState> {
     MODEL_CONFIG_RUNTIME.get_or_init(|| {
-        let runtime = load_model_config_runtime().unwrap_or_default();
-        RwLock::new(runtime)
+        RwLock::new(Err(
+            "model config runtime has not been preloaded".to_string()
+        ))
     })
 }
 
@@ -199,44 +207,61 @@ pub fn initialize_model_config_runtime_root(runtime_root: Option<&Path>) -> Resu
 
 /// Read the current runtime-root override used by model-config discovery.
 /// 读取当前模型配置发现链使用的运行根覆盖值。
-fn current_model_config_runtime_root() -> Option<PathBuf> {
-    model_config_runtime_root()
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone())
+fn current_model_config_runtime_root() -> Result<Option<PathBuf>, String> {
+    clone_runtime_root_override(
+        model_config_runtime_root().read(),
+        "model config runtime-root lock poisoned",
+    )
 }
 
 /// Preload model config during startup so format and required-field issues are discovered early.
 /// 启动时预载模型配置，便于尽早发现配置格式与必填字段问题。
-pub fn preload_model_config() -> Result<ModelConfigLoadReport, String> {
-    let runtime = load_model_config_runtime()?;
-    let report = build_model_config_load_report(&runtime.effective);
+#[cfg(test)]
+pub(crate) fn preload_model_config() -> Result<ModelConfigLoadReport, String> {
+    let (runtime, report) = stage_model_config_runtime()?;
+    // Serialize standalone preload commits with aggregate reloads and request-time readers.
+    // 将独立预载提交与聚合重载及请求期读取串行化。
+    let _transaction_guard = super::runtime_config_write_guard()?;
     let mut guard = model_config_runtime()
         .write()
         .map_err(|_| "model config runtime lock poisoned".to_string())?;
-    *guard = runtime;
+    *guard = Ok(runtime);
     Ok(report)
-}
-
-/// Explicitly hot-reload model config without reloading foundational runtime configs such as `config.yaml`.
-/// 显式热重载模型配置，不会重新加载 `config.yaml` 等基础运行配置。
-pub fn reload_model_config() -> Result<ModelConfigLoadReport, String> {
-    preload_model_config()
 }
 
 /// Return a cloned effective model configuration for the provider layer.
 /// 返回一份供供应商调用层使用的生效模型配置快照。
-pub(crate) fn current_effective_model_config() -> EffectiveModelConfig {
-    match model_config_runtime().read() {
-        Ok(guard) => guard.effective.clone(),
-        Err(_) => EffectiveModelConfig::default(),
-    }
+pub(crate) fn current_effective_model_config() -> Result<EffectiveModelConfig, String> {
+    // Hold the shared generation while cloning the committed model configuration.
+    // 克隆已提交模型配置期间持有共享版本。
+    let _transaction_guard = super::runtime_config_read_guard()?;
+    // Clone the cached state so provider calls never hold the model-config lock.
+    // 克隆缓存状态，避免供应商调用期间持有模型配置锁。
+    let runtime_state = model_config_runtime()
+        .read()
+        .map_err(|_| "model config runtime lock poisoned".to_string())?;
+    effective_model_config_from_runtime_state(&runtime_state)
+}
+
+/// Clone the effective config from one cached runtime state without hiding load errors.
+/// 从单个缓存运行时状态克隆生效配置，且不隐藏加载错误。
+/// Parameters: `runtime_state` is the cached model-config state to inspect.
+/// 参数：`runtime_state` 是待检查的模型配置缓存状态。
+/// Returns the cloned effective config or the cached load error.
+/// 返回克隆后的生效配置或缓存的加载错误。
+fn effective_model_config_from_runtime_state(
+    runtime_state: &ModelConfigRuntimeState,
+) -> Result<EffectiveModelConfig, String> {
+    runtime_state
+        .as_ref()
+        .map(|runtime| runtime.effective.clone())
+        .map_err(|error| error.clone())
 }
 
 /// Load the model-config runtime state from disk.
 /// 从磁盘加载模型配置运行时状态。
 fn load_model_config_runtime() -> Result<ModelConfigRuntime, String> {
-    let source_path = find_model_config_path();
+    let source_path = find_model_config_path()?;
     let Some(path) = source_path else {
         return Ok(ModelConfigRuntime::default());
     };
@@ -268,6 +293,17 @@ fn load_model_config_runtime() -> Result<ModelConfigRuntime, String> {
         .map_err(|error| format!("Invalid model config file {}: {}", path.display(), error))?;
 
     Ok(ModelConfigRuntime { effective })
+}
+
+/// Stage one validated model-config runtime and report without mutating the shared cache.
+/// 分阶段加载一份已校验模型配置运行时及报告，不修改共享缓存。
+/// Returns the staged runtime/report pair or the first discovery, parse, secret, or validation error.
+/// 返回分阶段运行时与报告，或首个发现、解析、密钥或校验错误。
+pub(super) fn stage_model_config_runtime()
+-> Result<(ModelConfigRuntime, ModelConfigLoadReport), String> {
+    let runtime = load_model_config_runtime()?;
+    let report = build_model_config_load_report(&runtime.effective);
+    Ok((runtime, report))
 }
 
 /// Validate provider-level required fields only for enabled capabilities.
@@ -417,30 +453,12 @@ fn normalized_optional_text(value: Option<&str>) -> Option<String> {
 
 /// Find the model-config file, preferring the runtime output directory and then falling back to the repository template directory.
 /// 查找模型配置文件；优先使用运行时输出目录，其次回退到仓库模板目录。
-fn find_model_config_path() -> Option<PathBuf> {
-    if let Some(runtime_root) = current_model_config_runtime_root() {
-        let runtime_path = runtime_root.join("configs").join("model_config.yaml");
-        if runtime_path.exists() && runtime_path.is_file() {
-            return Some(runtime_path);
-        }
-        return None;
-    }
-
-    let exe_path = std::env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
-    let parent_dir = exe_dir.parent()?;
-    let runtime_path = parent_dir.join("configs").join("model_config.yaml");
-    if runtime_path.exists() && runtime_path.is_file() {
-        return Some(runtime_path);
-    }
-
-    let repository_path = Path::new("runtime")
-        .join("configs")
-        .join("model_config.yaml");
-    if repository_path.exists() && repository_path.is_file() {
-        return Some(repository_path);
-    }
-    None
+fn find_model_config_path() -> Result<Option<PathBuf>, String> {
+    find_optional_runtime_config_file(
+        current_model_config_runtime_root()?,
+        "model_config.yaml",
+        "model config",
+    )
 }
 
 /// Build a normalized load report from the current effective model configuration.

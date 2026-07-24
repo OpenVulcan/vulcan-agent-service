@@ -1,0 +1,3112 @@
+# TASK_LOG
+
+本文件用于记录长期循环代码治理任务。每轮任务需先确认问题执行流程与事实来源，再实施长期可维护性优先的优化；修改后必须完成验证、针对修改部分的代码审核与必要修复。
+
+## 记录格式
+
+### YYYY-MM-DD 第 N 轮：主题
+
+- 问题定位：
+- 执行流程：
+- 优化方案：
+- 文件变更：
+- 验证结果：
+- 修改部分代码审核：
+- 遗留问题：
+
+### 2026-07-05 第 1 轮：消除 HostRuntime 构建期锁 panic 风险
+
+- 问题定位：
+  - 通过 CodeKit 先扫描 `src` 的 Rust AST 结构，再结构化搜索 `unwrap/expect/panic` 与 `try_lock().unwrap()`。
+  - 确认生产路径中 [src/host_core/runtime.rs](src/host_core/runtime.rs) 存在 4 处 `self.inner.try_lock().unwrap()`，分别位于 `with_lua_skills`、`register_defaults`、`register_runtime_config_tool`、`register_lua_help_tools`。
+  - 这些路径属于 `HostRuntime` 构建期工具注册逻辑，一旦运行时被提前克隆或出现重入锁竞争，会以 panic 方式终止进程。
+- 执行流程：
+  - `bootstrap/runtime_init.rs::build_server` 调用 `build_host_tool_surface_server` 创建 `HostRuntime::new()`。
+  - `HostRuntime::new()` 注册默认宿主工具：`reload_vulcan_mcp_configs` 与 `skill-manager`。
+  - 当运行根可解析时，`with_runtime_skill_config_file_path` 注册 `luaskill-config`。
+  - 当存在技能根时，`with_lua_skills` 初始化 LuaSkills 引擎、注册 Lua help 工具、写入动态 skill entry，并安装后续 entry registry callback。
+  - 运行时随后交给 stdio/http/grpc/MCP dispatcher 对外服务。
+- 优化方案：
+  - 将构建期注册从 `tokio::sync::Mutex::try_lock().unwrap()` 改为 `Arc::get_mut(...).get_mut()` 的唯一可变访问。
+  - 新增 `builder_inner_mut`，把“运行时已被克隆后仍尝试构建期变更”的隐含 panic 改成显式错误。
+  - 拆分 `insert_default_host_tools`、`insert_runtime_config_tool`、`insert_lua_help_tools`，让工具注册语义从锁操作中分离出来。
+  - `with_runtime_skill_config_file_path` 返回值从 `Self` 调整为 `Result<Self, Box<dyn std::error::Error>>`，由构建入口显式向上传播错误。
+- 文件变更：
+  - 新增：`TASK_LOG.md`
+  - 修改：`src/host_core/runtime.rs`
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 修改：`src/host_core/runtime/tests.rs`
+  - 删除：无
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test host_core::runtime`：通过，17 passed。
+  - `rtk cargo test`：通过，168 passed。
+  - `rtk cargo check`：通过，0 errors；剩余 4 个 dead_code warnings 均来自既有 VMM/HTTP 未使用项，不属于本轮新增问题。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查 `try_lock().unwrap()`：目标生产代码残留为 0。
+- 修改部分代码审核：
+  - 已确认 `with_lua_skills` 在 clone `self.inner` 安装 callback 之前完成构建期直接写入，避免 `Arc::get_mut` 被自身 callback clone 破坏。
+  - 已确认 `build_host_tool_surface_server` 对新的 `Result` 返回值使用 `?` 传播，不吞掉配置期错误。
+  - 已补充 `builder_mutation_rejects_shared_runtime_after_clone` 回归测试，覆盖运行时已共享后继续构建期变更的错误分支。
+  - 已修复测试中 `expect_err` 需要 `HostRuntime: Debug` 的问题，改为显式 `match`，避免为了测试污染运行时类型。
+- 遗留问题：
+  - `cargo check` 仍报告既有 `VmmClient` 与 HTTP session 部分未使用项，可作为后续循环任务继续评估是否删除、收敛或接入真实调用链。
+
+### 2026-07-05 第 2 轮：收敛 VMM 客户端遗留字符串包装 API
+
+- 问题定位：
+  - 第 1 轮 `cargo check` 暴露 `src/backends/vmm/grpc_client.rs` 中 `VmmClient.endpoint` 字段与 19 个 VMM 客户端方法未使用。
+  - 通过 CodeKit 追踪 `VmmClient` AST 与引用，确认当前真实调用链是 `transport/grpc/service/vmm.rs` 的 gRPC service 方法调用 `VmmClient::forward_*`。
+  - 通过 `proto/v1/vmm.proto` 复查 VMM RPC 定义，确认 VMM 协议面由 protobuf/gRPC relay 承载，而不是旧的 `Result<String, String>` 字符串格式化方法承载。
+- 执行流程：
+  - `bootstrap/runtime_init.rs::build_server` 在 `vmm_enable=true` 且 endpoint 非空时调用 `HostRuntime::with_vmm`。
+  - `HostRuntime::with_vmm` 调用 `VmmClient::connect` 创建底层 `VmmServiceClient<Channel>`。
+  - `transport/grpc/service/mod.rs::require_vmm_backend` 从 `HostRuntime` 解析已连接的 `VmmClient`。
+  - `transport/grpc/service/vmm.rs` 的 19 个 VMM RPC 实现逐个调用对应的 `forward_*` 方法，并直接返回原始 protobuf response。
+  - 旧字符串方法只在 `grpc_client.rs` 内部定义，没有外部调用点，也没有协议入口。
+- 优化方案：
+  - 删除 `VmmClient.endpoint` 公开字段，避免维护一个写入后从未读取的伪诊断状态。
+  - 删除 19 个未使用的旧字符串包装方法，包括项目、用户、画像、记忆、压缩、PreCheck 与 PostAction 包装。
+  - 保留并明确当前真实服务面所需的 19 个 `forward_*` 方法，使 VMM 客户端只负责 protobuf/gRPC relay。
+  - 为 `client` 字段补充中英文注释，说明使用 `Mutex` 的原因。
+- 文件变更：
+  - 修改：`src/backends/vmm/grpc_client.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo check`：通过，0 errors；VMM 客户端相关 dead_code warning 已消失，剩余 2 组 warning 均来自既有 HTTP session 未使用方法。
+  - `rtk cargo test host_adapter_grpc_hides_vmm_tools_when_backend_disabled`：通过，1 passed。
+  - `rtk cargo test`：通过，168 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查 `forward_*`：`transport/grpc/service/vmm.rs` 仍逐个调用保留的 protobuf relay 方法。
+- 修改部分代码审核：
+  - 已确认删除的旧方法没有外部引用，且其职责与现有 gRPC service 层重复。
+  - 已确认 `VmmClient::connect` 仍只负责建立 tonic client，调用方日志仍使用传入 endpoint，不依赖被删除字段。
+  - 已确认 `PostActionTimelineItem` 与 `WriteMemoryItem` 导入随旧方法删除后不再需要，避免残留未使用导入。
+  - 已确认真实 VMM RPC 服务层没有被改动，协议行为仍由原始 protobuf request/response 透传。
+- 遗留问题：
+  - `cargo check` 仍报告 `src/transport/http/session.rs` 中 `detach_stream`、`send`、`message_endpoint`、`remove` 未使用，可作为第 3 轮继续追踪 HTTP session 生命周期后决定删除或接入。
+
+### 2026-07-05 第 3 轮：清理 HTTP Session 悬空流通道并保留真实长连接语义
+
+- 问题定位：
+  - 第 2 轮 `cargo check` 暴露 `src/transport/http/session.rs` 中 `SessionManager::detach_stream`、`SessionManager::send`、`SseSessionManager::message_endpoint`、`SseSessionManager::remove` 未使用。
+  - 通过 CodeKit 追踪 `transport/http` AST 与引用，确认 `SessionManager::remove` 被 streamable DELETE 使用，`SseSessionManager::send` 被 legacy SSE POST 使用。
+  - 进一步读取 `streamable.rs` 后确认 streamable POST 请求会同步返回 JSON-RPC response，GET `/mcp` 当前没有真实服务端消息投递来源，`Session.tx`、`attach_stream`、`detach_stream`、`send` 形成了悬空通道抽象。
+  - 读取 `legacy_sse.rs` 与 `helpers.rs` 后确认 legacy SSE 的 endpoint 事件由 `sse_event_stream` 直接生成，`SseSessionManager::message_endpoint` 是重复遗留方法。
+- 执行流程：
+  - streamable initialize 成功后，`SessionManager::create` 保存协议版本与请求上下文。
+  - streamable POST 普通请求通过 `dispatcher.handle_message_with_context` 同步产生 response，并直接写回当前 POST response。
+  - streamable GET 只校验会话与协议版本，作为会话绑定的 SSE 监听连接存在，不接收 POST 响应投递。
+  - streamable DELETE 调用 `SessionManager::remove` 删除会话。
+  - legacy SSE GET 调用 `SseSessionManager::create` 创建带 `mpsc::Sender` 的会话，并由 `helpers::sse_event_stream` 输出 `/message?sessionId=...` endpoint 事件。
+  - legacy SSE POST 调用 `SseSessionManager::send` 把 dispatcher response 推回对应 SSE 会话。
+- 优化方案：
+  - 删除 streamable `Session.tx` 字段以及 `attach_stream`、`detach_stream`、`send` 三个无真实生产调用链的方法。
+  - 将 streamable GET 从“创建永远无人投递的 receiver stream”改为“启动注释帧 + 周期 keepalive 注释帧”，保留长连接监听语义并消除悬空状态。
+  - 删除 `SseSessionManager::message_endpoint`，避免和 `helpers::sse_event_stream` 中真实 endpoint 生成逻辑重复。
+  - 优化 `SseSessionManager::send`，在 await 前克隆 sender，不持锁等待；发送失败时调用 `remove` 清理失效 legacy SSE 会话。
+- 文件变更：
+  - 修改：`src/transport/http/session.rs`
+  - 修改：`src/transport/http/server/streamable.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo check`：通过，0 errors，0 warnings。
+  - `rtk cargo test streamable_get_primes_with_comment_frame_instead_of_empty_message_event`：通过，1 passed。
+  - `rtk cargo test legacy_sse_keepalive_uses_ping_event_without_data_payload`：通过，1 passed。
+  - `rtk cargo test`：通过，168 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：`attach_stream`、`detach_stream`、`message_endpoint` 已无残留；streamable DELETE 仍调用 `SessionManager::remove`；legacy SSE POST 仍调用 `SseSessionManager::send`。
+- 修改部分代码审核：
+  - 已确认 streamable POST 仍直接返回 JSON response，删除 streamable session sender 不会切断现有响应路径。
+  - 已确认 streamable GET 仍保留 `Mcp-Session-Id` header、`Cache-Control: no-cache` 与首帧 `stream-ready` 行为。
+  - 已确认新增 keepalive 使用 comment event，不会制造空 `message` 事件。
+  - 已确认 legacy SSE 发送失败会清理已断开的 session，避免原先 `remove` 方法悬空且死 session 长期残留。
+- 遗留问题：
+  - 当前 `cargo check` 已无 warning；下一轮可重新从源码结构与复杂度热点中选择新的治理目标，而不是继续围绕编译器 warning。
+
+### 2026-07-05 第 4 轮：命名 HostRuntime Lua 运行目标并清理已触碰分支告警
+
+- 问题定位：
+  - 在 `cargo check` 已无 warning 后，执行 `rtk cargo clippy --all-targets` 获取新的质量热点，基线为 37 个 clippy warnings。
+  - clippy 指出 `src/host_core/runtime.rs` 中 `resolve_lua_runtime_target` 与 `resolve_lua_runtime_user_target` 使用复杂元组返回类型，并指出上一轮新增 rustdoc 中存在列表格式问题。
+  - 通过 CodeKit 追踪调用链，确认 `resolve_lua_runtime_target` 服务于动态 LuaSkill 调用路径，`resolve_lua_runtime_user_target` 服务于 skill-manager install/update/uninstall 的 USER 目标根变更路径。
+  - 同轮复查已触碰的 `src/transport/http/server/streamable.rs`，clippy 指出 initialize request 分支存在冗余 guard。
+- 执行流程：
+  - `luaskills_api.rs::call_luaskill_tool` 与 `tool_dispatch.rs::call_dynamic_luaskill_tool_for_mcp` 调用 `resolve_lua_runtime_target`，拿到 Lua 引擎与生效技能根链后执行动态工具。
+  - `skill_manager.rs::execute_skill_install`、`execute_skill_update`、`execute_skill_uninstall` 调用 `resolve_lua_runtime_user_target`，拿到 Lua 引擎、根链与 USER 目标根后进入阻塞任务执行变更。
+  - `streamable.rs::handle_streamable_post` 先按 JSON-RPC message kind 分流，initialize request 进入 `handle_initialize_request`，其他 request 进入普通请求处理。
+- 优化方案：
+  - 新增 `LuaRuntimeTarget` 私有类型别名，表达“Lua 引擎 + 生效技能根链”这一动态工具执行目标。
+  - 新增 `LuaRuntimeUserTarget` 私有类型别名，表达“Lua 运行目标 + 宿主强制 USER 根”这一 skill-manager 变更目标。
+  - 将 `HostRuntime` 构建器方法 rustdoc 从列表项改成普通参数/返回描述，避免 rustdoc 列表缩进噪音。
+  - 将 streamable initialize request 的 `method == "initialize"` guard 改成直接模式匹配，减少分支噪音。
+- 文件变更：
+  - 修改：`src/host_core/runtime.rs`
+  - 修改：`src/transport/http/server/streamable.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 37 降到 25，本轮目标告警已消失。
+  - `rtk cargo test host_core::runtime`：通过，17 passed。
+  - `rtk cargo test streamable_get_primes_with_comment_frame_instead_of_empty_message_event`：通过，1 passed。
+  - `rtk cargo check`：通过，0 errors，0 warnings。
+  - `rtk cargo test`：通过，168 passed。
+  - `rtk git diff --check`：通过。
+- 修改部分代码审核：
+  - 已确认新增类型别名仅命名既有事实结构，不改变 `luaskills_api`、`tool_dispatch`、`skill_manager` 的解构和执行语义。
+  - 已确认 `LuaRuntimeUserTarget` 仍通过 `select_skill_manager_user_root` 唯一确定 USER 目标根，没有引入候选式 fallback。
+  - 已确认 streamable initialize 分支只改变匹配写法，不改变 initialize 与普通 request 的分流结果。
+  - 已确认 `runtime.rs` 中 `/// -` 列表项已清理，避免后续 clippy 文档格式噪音。
+- 遗留问题：
+  - clippy 仍有 25 个非本轮目标 warnings，主要集中在 `config/client_budget`、`service/platform`、`transport/http/helpers`、`transport/mcp/protocol/version` 等位置；下一轮可继续按执行流程逐项筛选治理。
+
+### 2026-07-05 第 5 轮：收敛 client_budget 预算解析条件流噪音
+
+- 问题定位：
+  - 在第 4 轮遗留 clippy 基线中，`config/client_budget` 路径存在多处条件流噪音：`collapsible_if`、冗余 `Some(value) if value == -1` 守卫，以及廉价默认值使用 `unwrap_or_else`。
+  - 通过 CodeKit 复查 `src/config/client_budget.rs`、`src/config/client_budget/resolution.rs` 与 `src/config/client_budget/tests.rs` 的 AST，确认目标集中在预算快照构建、指标解析和测试辅助镜像逻辑。
+  - 通过结构化搜索确认 `file_read` 回退只在 `build_client_budget_snapshot` 与对应测试中出现，`-1` 无限值语义只在 `effective_metric_value` 中落地，`~/` 展开只由 `expand_user_home` 负责。
+- 执行流程：
+  - `resolve_client_budget_snapshot` 与 `resolve_grpc_client_budget_snapshot` 读取运行时配置后进入 `build_client_budget_snapshot`。
+  - `build_client_budget_snapshot` 合并默认预算、客户端规则预算与技能预算后，如果未显式配置 `file_read`，则复用 `tool_result` 的预算范围。
+  - `resolve_scope_sources_in_place` 会通过 `read_metric_from_source` 读取外部来源，再由 `effective_metric_value` 解释普通数值、`-1` 无限值和无效值。
+  - `read_metric_from_source` 读取文件来源时由 `expand_user_home` 处理 `~/` 前缀，随后再读取文本或 JSON 字段。
+- 优化方案：
+  - 将 `file_read` 回退从嵌套 `if` 改为 let-chain 条件，明确表达“缺少 file_read 且存在 tool_result 时复用”的单一路径。
+  - 将廉价的 `EffectiveBudgetScope` 默认值从 `unwrap_or_else` 改为 `unwrap_or`，避免制造无意义闭包。
+  - 将 `Some(value) if value == -1` 改为 `Some(-1)`，让无限值语义直接体现在模式匹配中。
+  - 将 `expand_user_home` 的双层 `if let` 改为 let-chain，保留“只有 `~/` 且能解析 home 时才展开”的既有语义。
+  - 同步调整测试中的 `file_read` 回退镜像逻辑，保持测试断言路径与生产路径一致。
+- 文件变更：
+  - 修改：`src/config/client_budget.rs`
+  - 修改：`src/config/client_budget/resolution.rs`
+  - 修改：`src/config/client_budget/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 25 降到 20，本轮 `client_budget` 目标告警已消失。
+  - `rtk cargo test resolve_client_budget_snapshot_falls_back_file_read_to_tool_result`：通过，1 passed。
+  - `rtk cargo test read_metric_from_source_reads_nested_json_fields`：通过，1 passed。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，168 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：旧的 `Some(value) if value == -1`、嵌套 `~/` 展开和嵌套 `file_read` 回退形态已从目标范围消失。
+- 修改部分代码审核：
+  - 已确认 `file_read` 回退仍只依赖已解析出的 `tool_result` 预算，没有引入候选式字段或多来源 fallback。
+  - 已确认 `Some(-1)` 只改变匹配表达方式，不改变 bytes/tokens 按安全上限暴露、lines 保持无限语义的结果。
+  - 已确认 `expand_user_home` 仍在无法解析 home 时返回原始路径，未扩大路径解析范围。
+  - 已确认测试辅助逻辑与生产回退逻辑保持一致，聚焦测试覆盖了本轮触碰的预算回退与 JSON 指标读取路径。
+- 遗留问题：
+  - clippy 仍有 20 个非本轮目标 warnings，集中在 `service`、`support/tool_result_format`、`transport/http/helpers`、`transport/mcp/protocol/version`、`model_provider` 与若干测试文件；下一轮继续按执行流程选择最合适的长期治理点。
+
+### 2026-07-05 第 6 轮：收敛 streamable HTTP 校验返回语义
+
+- 问题定位：
+  - 第 5 轮后 clippy 剩余 20 个 warnings，其中 `src/transport/http/helpers.rs` 的 `validate_origin` 返回 `Result<(), Response>`，`Response` 作为错误变体过大，并伴随嵌套条件和显式生命周期噪音。
+  - 通过 CodeKit 追踪确认 `validate_origin` 只被 `streamable` HTTP 的 POST、GET、DELETE 三个入口调用，legacy SSE 不依赖该 origin 校验。
+  - 同一执行链中，`protocol_header_value` 只负责读取 `MCP-Protocol-Version`，后续 initialize 与既有 session 校验分别处理“不支持版本”和“版本不匹配”。
+  - 深入复查后发现 `validate_session_protocol` 虽未被 clippy 点名，但同样把 HTTP `Response` 作为校验错误返回，属于同一类校验逻辑与响应渲染耦合问题。
+- 执行流程：
+  - streamable POST、GET、DELETE 进入处理器后，最先检查 Origin；非法来源应立即返回 403，不进入 body 解析、SSE accept 校验或 session 查找。
+  - initialize request 会读取 `MCP-Protocol-Version` 请求头，若请求头版本不在协议支持集合内，则返回 400。
+  - 已建立 session 的 request、notification 和 client response 会调用 `validate_session_protocol`，先读取会话协商版本，再校验请求头版本是否受支持并与会话版本一致。
+  - 合法 GET SSE 路径仍保持首帧 comment priming 与后续 keepalive，不通过该 GET 流投递 POST 响应。
+- 优化方案：
+  - 将 `validate_origin` 拆成 `is_allowed_local_origin` 与 `forbidden_origin_response`，用纯布尔判断承载策略，用专用函数构造 403 响应，避免大 `Response` 进入 `Result` 错误分支。
+  - 移除 `protocol_header_value` 的显式生命周期，让函数签名直接表达“从 HeaderMap 借出 str”。
+  - 将 initialize 的协议头检查改成 let-chain，消除嵌套分支。
+  - 将 `validate_session_protocol` 的错误类型改为私有 `SessionProtocolRejection` 枚举，并通过 `into_response` 在入口边界统一渲染 HTTP 响应。
+  - 新增 origin 白名单、非法 Origin 入口拒绝、不支持协议头拒绝三条聚焦测试。
+- 文件变更：
+  - 修改：`src/transport/http/helpers.rs`
+  - 修改：`src/transport/http/server/streamable.rs`
+  - 修改：`src/transport/http/server/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test is_allowed_local_origin_rejects_non_loopback_origin`：通过，1 passed。
+  - `rtk cargo test streamable_get_rejects_forbidden_origin_before_session_lookup`：通过，1 passed。
+  - `rtk cargo test streamable_get_rejects_unsupported_protocol_header`：通过，1 passed。
+  - `rtk cargo test streamable_get_primes_with_comment_frame_instead_of_empty_message_event`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 20 降到 16，本轮 HTTP 目标告警已消失。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，171 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：`validate_origin`、`protocol_header_value<'a>`、HTTP 目标范围内的 `Result<(), Response>` 以及旧协议头嵌套形态均已消失。
+- 修改部分代码审核：
+  - 已确认 Origin 策略仍只允许缺失 Origin、`null`、localhost、127.0.0.1 与 `[::1]`，没有扩大远程来源白名单。
+  - 已确认 POST、GET、DELETE 三个入口仍在最前置位置拒绝非法 Origin，不改变后续请求处理顺序。
+  - 已确认 `SessionProtocolRejection` 只表达已查明的三种拒绝原因：会话不存在、不支持版本、版本不匹配，没有引入模糊 fallback。
+  - 已确认正常 streamable GET SSE 路径仍通过原有首帧 comment 测试，未被协议校验返回类型重构影响。
+- 遗留问题：
+  - clippy 仍有 16 个非本轮目标 warnings，主要集中在 `service`、`support/tool_result_format`、`model_provider`、`transport/mcp/protocol/version`、`bootstrap` 与部分测试辅助；下一轮继续按影响面筛选治理。
+
+### 2026-07-05 第 7 轮：拆清工具结果分页 chunk 累积逻辑
+
+- 问题定位：
+  - 第 6 轮后 clippy 剩余 16 个 warnings，其中 `support/tool_result_format` 路径集中暴露 4 个 `collapsible_if`，分布在模板根解析、模板文件加载和分页 chunk flush 逻辑。
+  - 通过 CodeKit 追踪确认 `render_tool_result_text` 是 LuaSkill 调用、动态 MCP 工具调用和启动命令行输出的统一渲染入口。
+  - `templates.rs` 负责按“单次渲染选项、运行时初始化根、隐式运行目录”解析模板根；`tool_result_format.rs::build_chunk_plan` 负责在 page 模式下生成安全读取目录。
+  - 深入阅读后确认 `build_chunk_plan` 的本地 `flush_chunk` 闭包接收 4 个可变引用，虽然行为正确，但把 chunk 状态、flush 条件和 reset 行为揉在一起，不利于长期维护。
+- 执行流程：
+  - 启动阶段通过 `initialize_tool_result_template_roots` 写入运行时技能根与资源根。
+  - 工具执行结果进入 `render_tool_result_text` 后，按 `ToolOverflowMode` 选择 truncate 或 page 策略。
+  - page 模式先依据 `file_read` 预算调用 `build_chunk_plan`，再用 `render_chunk_lines` 生成可供客户端后续读取的 chunk 列表。
+  - 模板查找优先使用 skill 本地 `overflow_templates`，再回退到共享 resources 的 `overflow_templates`。
+- 优化方案：
+  - 将模板技能根、资源根和模板文件读取中的嵌套 `if` 改为 let-chain 条件，保持查找优先级不变。
+  - 新增私有 `OverflowChunkBuilder`，显式持有当前 chunk 的起始行、字节数和行数。
+  - 将“追加行前是否需要 flush”“追加一行”“flush 并 reset”拆成 builder 方法，替代原先带 4 个可变引用的本地闭包。
+  - 在 page-mode 测试中补充 `read_02` 断言，确认按 `file_read.lines` 分块的第二个 chunk 仍被输出。
+- 文件变更：
+  - 修改：`src/support/tool_result_format.rs`
+  - 修改：`src/support/tool_result_format/templates.rs`
+  - 修改：`src/support/tool_result_format/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test page_mode_returns_pointer_block_when_overflowed`：通过，1 passed。
+  - `rtk cargo test render_tool_result_prefers_initialized_skill_root_templates`：通过，1 passed。
+  - `rtk cargo test render_tool_result_prefers_per_call_template_roots_for_project_environment`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 16 降到 12，本轮 support 目标告警已消失。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，171 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：旧的 `flush_chunk` 闭包、模板根嵌套读锁条件、模板文件嵌套读取条件均已从目标范围消失。
+- 修改部分代码审核：
+  - 已确认模板根优先级仍是单次渲染选项优先、运行时初始化根次之、隐式目录兜底。
+  - 已确认 `OverflowChunkBuilder` 只封装原有 chunk 累积状态，不改变单行超限报错、字节预算和行数预算判断。
+  - 已确认 flush 的 `end_line` 仍使用当前行前一行或总行数，保持原有 offset/limit/start/end 计算语义。
+  - 已确认 page-mode 输出仍包含多 chunk 读取目录，避免 builder 重构造成只输出首块的回归。
+- 遗留问题：
+  - clippy 仍有 12 个非本轮目标 warnings，集中在 `service`、`bootstrap`、`model_provider`、`transport/mcp/protocol/version`、`host_core` 与测试辅助；下一轮继续按调用链和风险选择治理点。
+
+### 2026-07-05 第 8 轮：收敛 service 运行根与入口错误传播噪音
+
+- 问题定位：
+  - 第 7 轮后 clippy 剩余 12 个 warnings，其中 `service` 路径包含悬空 doc comment、`bin` 工作目录父级候选的嵌套条件，以及 Windows service run 分支的手写错误传播和冗余 `return`。
+  - 通过 CodeKit 追踪确认 CLI 会解析为 `ServiceCommand`，再由 `run_service_command` 分发到安装、卸载、状态、运行等 platform 函数。
+  - `current_runtime_layout_candidates` 只负责按稳定顺序枚举当前目录、`bin` 父级和 `output` 候选；已有测试覆盖从 `bin/` 工作目录推导运行根。
+  - `run_service_entrypoint` 在 Windows 下进入 `windows::run_windows_service_dispatcher`，非 Windows 下进入 `run_service_host_for_runtime_root`。
+- 执行流程：
+  - 服务命令从 CLI 进入 `run_service_command`，根据 `ServiceCommand` 变体分发到对应平台函数。
+  - 未显式传入 `runtime_root` 时，`resolve_service_runtime_root` 读取当前目录与可执行文件路径，并调用 `resolve_service_runtime_root_from_layout` 推导运行根。
+  - 当前目录候选先检查当前目录自身，再在当前目录名为 `bin` 时追加父目录，最后追加 `output`。
+  - Windows service run 需要把规范化后的运行根写回 `ServiceRunOptions`，再交给 SCM dispatcher；dispatcher 错误应原样向上返回。
+- 优化方案：
+  - 删除 `current_service_manager` 前方错误遗留的单行 doc comment，避免它错误附着到后续函数。
+  - 将 `bin` 父目录候选追加逻辑改为 let-chain，保留候选顺序不变。
+  - 将 Windows dispatcher 的手写 `if let Err(error)` 改为 `?`，并用 `Ok(())` 作为 Windows 分支返回值，消除冗余 `return`。
+- 文件变更：
+  - 修改：`src/service/mod.rs`
+  - 修改：`src/service/platform.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test resolve_service_runtime_root_from_layout_accepts_bin_working_directory`：通过，1 passed。
+  - `rtk cargo test resolve_service_runtime_root_from_layout_prefers_executable_layout`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 12 降到 8，本轮 service 目标告警已消失。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，171 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：悬空 service doc comment、旧 `bin` 嵌套候选判断、Windows dispatcher 手写错误传播和冗余 `return Ok(())` 已从目标位置消失。
+- 修改部分代码审核：
+  - 已确认 service 命令分发枚举与平台函数入口未改变。
+  - 已确认 `bin` 父目录候选仍只在当前目录名等于 `bin` 且存在父目录时追加，没有引入候选式路径猜测。
+  - 已确认 Windows dispatcher 仍接收规范化后的运行根与原 service name，错误传播内容由原函数保持不变。
+  - 已确认非 Windows 分支未改动，仍使用 `ProcessShutdownMode::ProcessSignals` 前台运行服务宿主。
+- 遗留问题：
+  - clippy 仍有 8 个非本轮目标 warnings，集中在 `bootstrap`、`model_provider`、`transport/mcp/protocol/version`、`host_core`、`backends/vmm/tool_metadata` 与测试辅助；下一轮继续治理。
+
+### 2026-07-05 第 9 轮：收敛 OpenAI-compatible 请求覆盖与测试解析噪音
+
+- 问题定位：
+  - 第 8 轮后 clippy 剩余 8 个 warnings，其中 `model_provider` 同时包含生产代码的 `manual_contains` 与测试代码的 `redundant_closure`。
+  - 通过 CodeKit 追踪确认生产目标位于 `openai.rs::merge_request_overrides`，该函数负责合并 provider `request_overrides`，同时保护 `model`、`input`、`messages`、`stream` 等宿主保留字段。
+  - 测试目标位于 `tests.rs::expected_http_request_len`，用于 mock provider TCP server 根据 `Content-Length` 判断请求是否完整读完。
+  - 同文件中 Authorization header 解析已经使用 `find_map(parse_authorization_header)`，因此 Content-Length 解析应采用同一风格。
+- 执行流程：
+  - embedding 和 llm 请求体先由宿主写入模型、输入、消息、stream 等协议字段。
+  - `merge_request_overrides` 遍历配置中的 provider 扩展字段，遇到保留字段时跳过，避免配置覆盖宿主协议字段。
+  - mock provider 测试 server 读取 TCP 字节流，先定位 HTTP header 结束符，再通过 `parse_content_length_header` 得到 body 长度，最终解析请求体 JSON。
+- 优化方案：
+  - 将 `reserved_keys.iter().any(...)` 改为 `reserved_keys.contains(&key.as_str())`，直接表达“当前 key 是否在保留字段集合中”。
+  - 将 `find_map(|line| parse_content_length_header(line))` 改为 `find_map(parse_content_length_header)`，与 Authorization header 解析风格一致。
+- 文件变更：
+  - 修改：`src/model_provider/openai.rs`
+  - 修改：`src/model_provider/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test embedding_request_body_preserves_reserved_fields`：通过，1 passed。
+  - `rtk cargo test llm_request_body_forces_non_streaming_and_reserved_fields`：通过，1 passed。
+  - `rtk cargo test model_embed_posts_to_openai_compatible_endpoint`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 8 降到 6，本轮 model_provider 目标告警已消失。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，171 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：旧的保留字段 `iter().any` 形态和 Content-Length `find_map` 闭包形态已从目标范围消失。
+- 修改部分代码审核：
+  - 已确认保留字段集合仍由调用点显式传入，没有增加新的字段来源或候选 fallback。
+  - 已确认 `contains(&key.as_str())` 与旧逻辑比较同一组 `&str`，只改变表达方式，不改变跳过字段集合。
+  - 已确认 mock provider 的 Content-Length 解析仍调用同一个 `parse_content_length_header` 函数，与请求读取终止条件保持一致。
+- 遗留问题：
+  - clippy 仍有 6 个非本轮目标 warnings，集中在 `bootstrap`、`host_core`、`transport/mcp/protocol/version`、`backends/vmm/tool_metadata` 与 `luaskills` 测试辅助；下一轮继续治理。
+
+### 2026-07-05 第 10 轮：收敛 MCP 协议版本协商查找逻辑
+
+- 问题定位：
+  - 第 9 轮后 clippy 剩余 6 个 warnings，其中 `src/transport/mcp/protocol/version.rs` 存在手写 `Iterator::find` 逻辑。
+  - 通过 CodeKit 追踪确认 `negotiate_version` 被 MCP initialize 响应、stdio 初始化上下文构建、streamable HTTP 协议头校验复用。
+  - gRPC 路径只直接使用 `PROTOCOL_VERSION_LATEST` 常量，不走协商函数。
+  - 版本列表的顺序表达兼容版本优先级，优化必须保持 latest 优先和兼容列表顺序不变。
+- 执行流程：
+  - `initialize_value` 从客户端 initialize 参数读取 `protocolVersion`，调用 `negotiate_version` 得到协商版本。
+  - stdio 初始化回读会从 initialize response 解析 `result.protocolVersion`，并用 `negotiate_version` 判断是否属于服务端支持集合。
+  - streamable HTTP initialize 和后续 session 请求会用 `negotiate_version` 拒绝不支持的 `MCP-Protocol-Version` 请求头。
+- 优化方案：
+  - 将兼容版本的手写 `for` 循环替换为 `iter().copied().find(...)`，保留返回静态版本字符串的语义。
+  - 补齐被触碰常量与函数的中英文双语文档注释。
+  - 新增聚焦测试覆盖 latest、兼容版本和未知版本三种协商结果。
+- 文件变更：
+  - 修改：`src/transport/mcp/protocol/version.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test negotiate_version_accepts_latest_compatible_and_rejects_unknown`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 6 降到 5，本轮协议协商目标告警已消失。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，172 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：旧的手写兼容版本循环已消失，当前命中为迭代器 `find` 和新增聚焦测试。
+- 修改部分代码审核：
+  - 已确认 latest 仍在兼容版本列表前优先匹配。
+  - 已确认兼容版本列表内容和顺序未改变。
+  - 已确认返回值仍来自静态常量或静态兼容列表，不返回借用自客户端输入的临时字符串。
+- 遗留问题：
+  - clippy 仍有 5 个非本轮目标 warnings，集中在 `bootstrap`、`host_core`、`backends/vmm/tool_metadata` 与 `luaskills` 测试辅助；下一轮继续治理。
+
+### 2026-07-05 第 11 轮：移除 HostAdapter 上下文中的冗余 Option 解引用
+
+- 问题定位：
+  - 第 10 轮后 clippy 剩余 5 个 warnings，其中 `src/host_core/host_adapter/context.rs` 指出 `session_id.as_deref()` 对 `Option<&str>` 没有实际转换价值。
+  - 通过 CodeKit 追踪确认 `build_host_runtime_context` 先从 `session_id`、`root_session_id`、`conversation_id` 中选择第一条非空文本，`first_normalized_text` 的返回类型已经是 `Option<&str>`。
+  - `resolve_workmem_identity` 接收的 `session_id` 参数同样是 `Option<&str>`，因此无需再次 `as_deref()`。
+- 执行流程：
+  - Host adapter 输入先归一化 host kind 和 capability profile。
+  - `first_normalized_text` 从候选 session 字段中裁剪并返回第一条非空 `&str`。
+  - `resolve_workmem_identity` 优先使用显式 workmem id，其次使用 session id，最后才基于 workspace 生成 fallback。
+  - 输出的 `HostRuntimeContext` 再将同一 `session_id` 映射为 owned `String` 保存。
+- 优化方案：
+  - 将传给 `resolve_workmem_identity` 的参数从 `session_id.as_deref()` 改为直接传入 `session_id`。
+  - 保留 `input.session_id.as_deref()` 等输入归一化处的真实 `Option<String>` 到 `Option<&str>` 转换。
+- 文件变更：
+  - 修改：`src/host_core/host_adapter/context.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test context_uses_session_as_workmem_identity`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 5 降到 4，本轮 host_core 目标告警已消失。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，172 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：剩余 `session_id.as_deref()` 均位于 `Option<String>` 输入归一化或测试断言处，目标冗余转换已消失。
+- 修改部分代码审核：
+  - 已确认 WorkMem 身份优先级仍是显式 workmem id、session id、workspace fallback、missing。
+  - 已确认 `session_id` 仍在输出上下文中保存为裁剪后的字符串。
+  - 已确认没有新增字段候选或 fallback，仍只使用既有三条 session 候选输入。
+- 遗留问题：
+  - clippy 仍有 4 个非本轮目标 warnings，集中在 `bootstrap`、`backends/vmm/tool_metadata` 与 `luaskills` 测试辅助；下一轮继续治理。
+
+### 2026-07-05 第 12 轮：拆分 bootstrap 服务宿主 shutdown 模式与技能根借用
+
+- 问题定位：
+  - 第 11 轮后 clippy 剩余 4 个 warnings，其中 `bootstrap/runtime_init.rs` 存在对 `cfg` 的多余借用，`bootstrap/startup.rs` 在 Windows 编译目标下存在不可失败 `match` 解构。
+  - 通过 CodeKit 追踪确认 `build_server` 接收的 `cfg` 已经是 `&Config`，`find_skill_roots` 也接收 `&config::Config`，因此 `&cfg` 会形成多余引用。
+  - `ProcessShutdownMode::ProcessSignals` 只在非 Windows 编译目标存在；Windows 下该枚举只剩 `External`，因此 `match shutdown_mode` 对当前目标来说是不可失败解构。
+- 执行流程：
+  - `build_server` 构建宿主工具 surface 后，解析 runtime root、读取技能根、补齐 skill-manager ROOT/USER 层，再初始化模板根与 LuaSkills runtime。
+  - service 宿主入口切换到指定 runtime root，加载配置，构建 Tokio runtime 和 HostRuntime。
+  - 非 Windows service 模式通过进程信号生成 shutdown receiver；Windows SCM 模式由 `service/windows.rs` 注册控制回调并传入外部 watch receiver。
+- 优化方案：
+  - 将 `find_skill_roots(&cfg)` 改为 `find_skill_roots(cfg)`，消除多余引用。
+  - 将 shutdown receiver 构建按 cfg 拆分：非 Windows 保留 `ProcessSignals`/`External` match，Windows 使用 `let ProcessShutdownMode::External(shutdown_rx) = shutdown_mode`。
+  - 删除非 Windows match 内重复的 cfg arm 标注，让平台分支更清晰。
+- 文件变更：
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 修改：`src/bootstrap/startup.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test build_server_exposes_luaskill_config_without_skill_roots`：通过，1 passed。
+  - `rtk cargo test build_server_exposes_skill_manager_without_existing_skills`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，0 errors；告警从 4 降到 2，本轮 bootstrap 目标告警已消失。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，172 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：`find_skill_roots(&cfg)` 已消失；`match shutdown_mode` 仅保留在非 Windows cfg 分支，Windows 分支使用不可失败解构。
+- 修改部分代码审核：
+  - 已确认技能根解析仍使用同一份 `Config` 引用，没有改变 runtime root 或 skill root 解析顺序。
+  - 已确认非 Windows 分支仍会为 `ProcessSignals` 创建 watch channel 并注册进程信号任务。
+  - 已确认 Windows 分支仍只接受 `External` receiver，与 `service/windows.rs` 的 SCM 控制回调输入一致。
+- 遗留问题：
+  - clippy 仍有 2 个非本轮目标 warnings，分别位于 `backends/vmm/tool_metadata` 文档注释空行和 `luaskills` 测试辅助 `&PathBuf` 参数；下一轮继续治理。
+
+### 2026-07-05 第 13 轮：清零剩余 clippy 告警
+
+- 问题定位：
+  - 第 12 轮后 clippy 仅剩 2 个 warnings：`backends/vmm/tool_metadata` 中的空 doc comment 行，以及 `luaskills` 测试辅助函数使用 `&PathBuf` 参数。
+  - 通过 CodeKit 追踪确认 VMM 目标是 `compact_json_string` 前方遗留的一行英文 doc comment，该行描述的是早前 binding descriptor 逻辑，已经不属于当前函数。
+  - `luaskills/tests.rs::create_runtime_root_for_test` 只调用 `join` 创建测试目录，不需要 `PathBuf` 所有权或 `PathBuf` 专属 API，使用 `&Path` 更准确。
+- 执行流程：
+  - VMM metadata 构建时通过 `compact_json_string` 将 input schema 与 annotations 序列化为紧凑 JSON 字符串。
+  - luaskills 多个配置测试先调用 `unique_test_dir` 得到临时 `PathBuf`，再传给 `create_runtime_root_for_test` 创建 `skills` 与 `bin/tools` 目录。
+- 优化方案：
+  - 删除 `compact_json_string` 前方误挂的旧英文 doc comment，只保留当前函数真实的双语说明。
+  - 将 `create_runtime_root_for_test` 参数类型从 `&PathBuf` 改为 `&Path`，并补充 `Path` 导入。
+  - 保持所有调用点不变，利用 `&PathBuf` 到 `&Path` 的自动退化完成调用。
+- 文件变更：
+  - 修改：`src/backends/vmm/tool_metadata/mod.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test vmm_memory_tool_metadata_lists_stable_tools`：通过，1 passed。
+  - `rtk cargo test build_engine_options_defaults_skill_config_path_under_runtime_configs`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，172 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：旧的误挂 doc comment 与 `&PathBuf` 参数签名已消失，当前只命中新的 `&Path` 签名。
+- 修改部分代码审核：
+  - 已确认 VMM metadata 运行时代码未改变，只删除了错误附着的文档行。
+  - 已确认 `create_runtime_root_for_test` 仍创建同一组测试目录，调用点传入的临时 `PathBuf` 未改变。
+  - 已确认 clippy 已从本轮开始清零，后续治理需要转向非 clippy 的结构热点。
+- 遗留问题：
+  - 当前 `rtk cargo clippy --all-targets` 已无 issue；下一轮将重新从源码复杂度、重复逻辑、unwrap/expect 风险或长期维护成本中筛选新的治理目标。
+
+### 2026-07-05 第 14 轮：显式化 streamable HTTP session header 编码失败
+
+- 问题定位：
+  - 在 clippy 清零后重新扫描生产路径 `.unwrap()`，确认 `streamable.rs` 中三处 `HeaderValue::from_str(...).unwrap()` 用于写入 `Mcp-Session-Id` 响应头。
+  - 通过 CodeKit 追踪确认 session id 正常来源是 `SessionManager::create` 生成的 UUID；后续 GET/POST 请求会先校验 session 是否存在，再把同一个 id 写回响应头。
+  - 虽然当前 UUID session id 不应编码失败，但响应头编码属于边界操作，不应以 panic 作为长期表达方式。
+- 执行流程：
+  - initialize 成功后创建新 session，并在 JSON 响应中写入 `Mcp-Session-Id`。
+  - streamable GET 作为绑定会话的 SSE 监听流，校验 session 后写回 `Mcp-Session-Id` 与 `Cache-Control`。
+  - 普通 post-initialize request 校验 session 和协议版本后，在 JSON 响应中写回同一 session id。
+- 优化方案：
+  - 新增 `insert_session_id_header`，使用 `HeaderValue::from_str` 校验并插入 session id，返回小型 `bool` 结果，避免把大 `Response` 放进 `Result` 错误分支。
+  - 新增 `invalid_session_id_header_response`，在内部 session id 无法编码为响应头时返回 500。
+  - 三处响应头插入统一走 helper，不再使用 `unwrap()`。
+  - 在 streamable GET 测试中增加 `Mcp-Session-Id` 响应头断言，锁住正常成功路径。
+- 文件变更：
+  - 修改：`src/transport/http/server/streamable.rs`
+  - 修改：`src/transport/http/server/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test streamable_get_primes_with_comment_frame_instead_of_empty_message_event`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，172 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：streamable HTTP server 目标范围内的 `HeaderValue::from_str(...).unwrap()` 已消失，三处调用均改为 `insert_session_id_header`。
+- 修改部分代码审核：
+  - 已确认 SessionManager 仍生成 UUID session id，正常响应头值不变。
+  - 已确认 GET 成功路径仍返回同一 `Mcp-Session-Id`，测试已覆盖。
+  - 已确认编码失败分支返回 500，而不是让请求处理线程 panic。
+  - 已确认 clippy 仍保持无 issue，没有引入 `result_large_err` 之类的新噪音。
+- 遗留问题：
+  - `rtk cargo clippy --all-targets` 仍无 issue；下一轮继续从生产路径 `.unwrap()`、`expect("writing to String should not fail")` 聚集区或重复渲染逻辑中筛选新目标。
+
+### 2026-07-05 第 15 轮：移除 gRPC dispatch 空响应 fallback 的最后生产 unwrap
+
+- 问题定位：
+  - 第 14 轮后重新扫描 `.unwrap()`，确认剩余生产路径中只有 `transport/grpc/service/mod.rs::dispatch_method` 的 `serde_json::to_string(&json!({})).unwrap()`。
+  - 通过 CodeKit 追踪确认该分支只在 dispatcher 未返回 JSON-RPC response 时使用，语义是返回一个空 JSON 对象字符串。
+  - 该路径不需要依赖 serde 序列化；静态 `{}` 字面量即可表达相同响应体。
+- 执行流程：
+  - gRPC MCP `call` 请求进入 `dispatch_method`，把 method 和 arguments 组装成模拟 JSON-RPC message。
+  - dispatcher 返回 response 时序列化 response；没有 response 时，gRPC 返回空 JSON 对象、`is_error=false` 和空错误消息。
+  - 原先 None 分支为了得到 `{}` 走了一次静态 JSON 序列化并 unwrap。
+- 优化方案：
+  - 将 None 分支从 `serde_json::to_string(&json!({})).unwrap()` 改为 `"{}".to_string()`。
+  - 保持返回元组的 `is_error=false` 与空 message 不变。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/mod.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test host_adapter_grpc_hides_vmm_tools_when_backend_disabled`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，172 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：生产 `.unwrap()` 已从 gRPC dispatch 目标路径消失，剩余 `.unwrap()` 命中仅位于测试断言或显式 `unwrap_or_else` fallback。
+- 修改部分代码审核：
+  - 已确认 None 分支响应体仍是精确 `{}`。
+  - 已确认 dispatcher 正常 response 分支未改动，错误标记和错误消息提取逻辑不变。
+  - 已确认 clippy 继续保持无 issue。
+- 遗留问题：
+  - 生产路径显式 `.unwrap()` 已基本清空；下一轮继续评估 `expect("writing to String should not fail")` 聚集区是否值得通过统一渲染写入 helper 消除重复噪音。
+
+### 2026-07-05 第 16 轮：收敛 USER skill-manager 渲染写入样板
+
+- 问题定位：
+  - 在 clippy 清零且生产 `.unwrap()` 基本清空后，继续扫描 `expect("writing to String should not fail")` 聚集区，确认密集命中集中在 ROOT CLI 与 USER skill-manager 两条渲染路径。
+  - 本轮选择 USER skill-manager，因为它是 MCP 工具返回给客户端的生产输出路径，涉及 list/install/update/uninstall 结果渲染。
+  - 通过 CodeKit 追踪确认 `skill_manager.rs` 负责 USER list 输出，`skill_tools.rs` 负责 USER install/update/uninstall 结果输出，二者都只是向 `String` 追加 Markdown 文本。
+- 执行流程：
+  - `execute_skill_manager_tool` 根据 action 分发到 list/install/update/uninstall。
+  - list 路径调用 `render_skill_manager_list`，枚举 USER 层技能实例并输出路径、启用状态、受管安装记录与禁用记录。
+  - install/update 路径执行 LuaSkills 变更后调用 `render_skill_apply_tool_result`，成功时进入 `render_skill_apply_result`。
+  - uninstall 路径执行 LuaSkills 卸载后调用 `render_skill_uninstall_tool_result`，成功时进入 `render_skill_uninstall_result`。
+- 优化方案：
+  - 在 `skill_tools.rs` 新增 `append_rendered_line` 与 `append_blank_rendered_line`，统一表达“向 String 追加 Markdown 行”。
+  - 将 USER install record、apply result、uninstall result 的重复 `writeln!(...).expect(...)` 改为 helper 调用。
+  - 将 `skill_manager.rs` 的 USER list 输出同步改为复用同一 helper，并移除 `std::fmt::Write` 导入。
+  - 保持 ROOT CLI 渲染暂不改动，作为后续同类治理候选，避免本轮范围扩大。
+- 文件变更：
+  - 修改：`src/host_core/skill_tools.rs`
+  - 修改：`src/host_core/skill_manager.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test build_server_exposes_skill_manager_without_existing_skills`：通过，1 passed。
+  - `rtk cargo test skill_manager_update_missing_skill_returns_tool_error`：通过，1 passed。
+  - `rtk cargo test skill_manager_uninstall_forces_user_target_when_root_shadows_skill`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，172 passed。
+  - `rtk git diff --check`：通过。
+  - CodeKit 复查：`src/host_core` 目标范围内的 `writing to String should not fail` 与 `writeln!` 旧写法已消失，USER 渲染统一命中 `append_rendered_line`/`append_blank_rendered_line`。
+- 修改部分代码审核：
+  - 已确认 USER list 输出仍按原顺序渲染标题、技能分组、root、path、enabled、managed 与 disabled 字段。
+  - 已确认 install/update 成功输出仍包含原有 action、layer、skill_id、status、version、source_type、source 与 message 字段。
+  - 已确认 uninstall 成功输出仍包含原有 layer、skill_id、删除/保留状态与 message 字段。
+  - 已确认错误分支未改动，仍直接返回原有错误文本与 `is_error=true`。
+- 遗留问题：
+  - ROOT CLI 渲染路径仍有同类 `expect("writing to String should not fail")` 样板，下一轮可按 ROOT install/update 执行流程继续治理。
+### 2026-07-05 第 17 轮：共享 ROOT/USER skill 渲染写入辅助并清理 ROOT CLI 样板
+
+- 问题定位：
+  - 延续第 16 轮遗留项，继续扫描 `expect("writing to String should not fail")` 聚集区，确认剩余目标集中在 `src/bootstrap/root_skill_cli.rs` 的 ROOT install/update CLI Markdown 渲染路径。
+  - 通过 CodeKit 追踪确认 ROOT install 由 `run_root_skill_install_mode` 执行本地 ROOT 生命周期上下文、调用 `system_install_skill_in_root` 后进入 `render_root_skill_apply_result`。
+  - ROOT update-all 由 `run_root_skills_update_mode` 读取 ROOT 受管技能记录，逐个调用 `system_update_skill_in_root`，成功进入 `append_root_skill_update_result`，失败进入 `append_root_skill_update_error`。
+  - 第 16 轮 USER 渲染 helper 仍位于 `skill_tools.rs` 私有作用域，ROOT 若复制一套 helper 会继续制造重复渲染规则，因此本轮选择抽到 `support` 共享层。
+- 执行流程：
+  - ROOT install CLI 初始化配置、临时目录、LuaSkills 日志回调与 ROOT lifecycle context 后，根据来源推导 `SkillInstallSourceType` 并执行 ROOT 安装。
+  - ROOT update-all CLI 初始化同一运行上下文后，使用 `build_root_skill_manager_for_cli` 与 `collect_managed_root_skill_ids` 获取受管 ROOT 技能集合。
+  - update-all 先渲染命令级标题、ROOT layer 与 target_root，再按每个 skill 追加成功结果或失败结果，最终打印完整摘要并按失败数量决定是否返回错误。
+  - USER skill-manager list/install/update/uninstall 继续通过同一行渲染 helper 构造 MCP 工具返回文本。
+- 优化方案：
+  - 新增 `src/support/text_render.rs`，提供 `append_rendered_line` 与 `append_blank_rendered_line`，统一表达“向渲染文本缓冲区追加 Markdown 行”。
+  - 将 `support/mod.rs` 暴露 crate 内共享 helper，ROOT CLI 与 USER skill-manager 均从 `crate::support` 引入。
+  - 移除 ROOT CLI 中 `std::fmt::Write` 依赖与所有 `writeln!(...).expect("writing to String should not fail")` 样板，改为共享 helper。
+  - 将第 16 轮 USER 本地 helper 从 `skill_tools.rs` 移出，避免 USER 与 ROOT 分叉维护。
+  - 补充 ROOT CLI 渲染局部单测，覆盖完整 apply 输出字段与 update-error 失败段落格式。
+- 文件变更：
+  - 新增：`src/support/text_render.rs`
+  - 修改：`src/support/mod.rs`
+  - 修改：`src/bootstrap/root_skill_cli.rs`
+  - 修改：`src/host_core/skill_tools.rs`
+  - 修改：`src/host_core/skill_manager.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test root_skill`：通过，4 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，174 passed。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/bootstrap`、`src/host_core` 与 `src/support` 范围内已无 `writing to String should not fail`、`writeln!(&mut rendered` 或 `writeln!(rendered` 残留。
+- 修改部分代码审核：
+  - 已确认 ROOT install 输出仍包含原有 action、layer、skill_id、status、version、source_type、source 与 message 字段，新增测试锁定完整字段顺序。
+  - 已确认 ROOT update-all 的命令级摘要、无受管技能提示、逐技能成功段落与失败段落的换行语义保持不变。
+  - 已确认 ROOT 更新失败分支仍把失败 skill_id、`failed` 状态与原始错误文本渲染进摘要，并保持失败计数决定非零错误返回。
+  - 已确认 USER skill-manager 渲染只是更换 helper 来源，list/install/update/uninstall 输出字段与顺序不变。
+  - 已确认共享 helper 只对 `String` 执行 `push_str` 与 `push('\n')`，不再把不可达的格式化写入错误伪装成运行时 panic。
+- 遗留问题：
+  - 当前 `rtk cargo clippy --all-targets` 仍保持无 issue；下一轮可继续从结构重复、生产路径 `expect`、重复边界渲染或高复杂度函数中重新筛选治理目标。
+### 2026-07-05 第 18 轮：恢复 LuaSkills lifecycle callback 安装锁的 poisoned 状态
+
+- 问题定位：
+  - 第 18 轮重新扫描生产路径 `.expect()`/`.unwrap()`/`panic!` 聚集点，过滤同文件测试模块后，确认生产目标集中在 `src/host_core/runtime.rs::with_lua_skills` 的 `luaskills_lifecycle_callback_lock().lock().expect(...)`。
+  - 通过 CodeKit 追踪确认该锁由 `src/host_core/lifecycle.rs` 提供，只保护 LuaSkills 全局 lifecycle callback 的安装顺序，锁内状态为 `()`，不存在需要防止读取损坏业务数据的内部状态。
+  - `with_lua_skills` 是 `bootstrap/runtime_init.rs::build_server` 在解析 runtime root、skill roots、模板根之后初始化 LuaSkills 引擎时进入的生产启动路径。
+  - 对该 unit-valued 锁使用 `expect` 会把一次 callback 安装期间的 panic 残留 poison 扩大为后续启动路径 panic，不符合长期稳定性要求。
+- 执行流程：
+  - `build_server` 构建宿主工具 surface，解析 runtime root 与 skill roots，并在存在技能根时调用 `HostRuntime::with_lua_skills`。
+  - `with_lua_skills` 构建 LuaSkills engine options、加载 runtime entries、写入 Lua 引擎状态、注册 Lua help 工具与动态 entry registry callback。
+  - 随后构造 `RuntimeSkillLifecycleCallback`，获取 lifecycle callback 安装锁，并调用 `set_skill_lifecycle_callback(Some(...))` 安装全局回调。
+  - 测试中的 USER uninstall 覆盖路径会在安装 runtime 后临时替换 lifecycle callback，以观察 skill-manager USER 目标是否走普通 Skills plane。
+- 优化方案：
+  - 在 `lifecycle.rs` 新增 `lock_luaskills_lifecycle_callback`，集中封装 callback 安装锁获取策略。
+  - 将原来的公开锁访问函数收窄为私有 `luaskills_lifecycle_callback_lock`，避免调用方继续直接 `.lock().expect(...)`。
+  - 新增 `recover_luaskills_lifecycle_callback_guard`，当锁被标记为 poisoned 时输出明确日志、调用 `clear_poison()` 清除 poison 标记，并通过 `into_inner()` 恢复 guard。
+  - 将 `runtime.rs` 和相关测试改为使用 `lock_luaskills_lifecycle_callback`，生产路径不再因该 unit-valued 锁 poison 而 panic。
+  - 新增局部单测，用人工构造的 `PoisonError<MutexGuard>` 覆盖恢复分支，同时不真实污染进程级互斥锁。
+- 文件变更：
+  - 修改：`src/host_core/lifecycle.rs`
+  - 修改：`src/host_core/runtime.rs`
+  - 修改：`src/host_core/runtime/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test recover_luaskills_lifecycle_callback_guard_accepts_poisoned_unit_guard`：通过，1 passed。
+  - `rtk cargo test skill_manager_uninstall_forces_user_target_when_root_shadows_skill`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，175 passed。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`LuaSkills lifecycle callback lock should not be poisoned` 旧 panic 文案已消失，目标范围内只剩 helper 内部私有锁访问和测试断言类 `expect`。
+- 修改部分代码审核：
+  - 已确认锁作用域仍只包住 `set_skill_lifecycle_callback(Some(...))`，不会扩大到 LuaSkills engine 初始化或动态 entry registry 更新。
+  - 已确认 poisoned 恢复只针对锁内状态为 `()` 的互斥锁，不会掩盖携带业务数据的锁损坏。
+  - 已确认恢复时调用 `clear_poison()`，避免一次可恢复 poison 让后续每次安装都重复进入 poisoned 分支。
+  - 已确认 USER uninstall lifecycle 观察测试继续通过，说明测试替换 callback 与 skill-manager 触发 lifecycle event 的流程未被破坏。
+  - 已确认新增单测没有通过真实线程 panic 污染全局锁，而是用构造的 `PoisonError` 覆盖恢复分支。
+- 遗留问题：
+  - 当前质量门仍为全绿；下一轮可继续从剩余生产 `expect`、全局 callback 资源生命周期、或重复测试辅助中挑选新的长期治理点。
+### 2026-07-05 第 19 轮：收敛 VMM memory metadata 的 legacy/compat 工具面
+
+- 问题定位：
+  - 第 19 轮从 `legacy`、`compat`、`fallback` 与重复工具面关键词重新筛选，确认 `src/backends/vmm/tool_metadata/memory.rs` 同时暴露 `memory_search/get` 旧桥接、`vulcan_memory_search/get` 兼容面与 `vmm_*` raw 辅助面。
+  - 通过 CodeKit 与 `rg` 追踪确认 `vmm_memory_tool_descriptors()` 只被 `transport/grpc/service/host_adapter.rs::list_vmm_memory_tools` 调用，用于 host adapter metadata endpoint 透传 descriptor，不参与实际 VMM RPC dispatch。
+  - 精确搜索 `memory_search`、`memory_get`、`host-memory-compat`、`host-memory-canonical` 后确认旧桥接名称和兼容注册面只存在于 metadata 构建与测试中，没有 proto、docs 或执行层硬依赖。
+  - 当前任务原则明确“不考虑历史兼容”，因此保留旧桥接会扩大宿主插件选择面、增加 manifest 推导分支，并让 public memory surface 语义长期分裂。
+- 执行流程：
+  - VMM 后端启用时，host adapter gRPC `list_vmm_memory_tools` 调用 `vmm_memory_tool_descriptors()` 获取 descriptor 列表。
+  - gRPC 层将每个 descriptor 的 name、description、input_schema_json、annotations_json 与 source 原样映射为 `HostAdapterToolDescriptor`。
+  - 宿主插件再根据 descriptor 注册面与 visibility 选择默认模型工具面；本仓库执行层不直接按 `memory_search` 或 `vulcan_memory_search` 名称分发。
+  - 原测试固定 8 个 memory tool id，并专门断言 compat/raw 注册面不同，证明兼容层是元信息层冗余而不是执行必需。
+- 优化方案：
+  - 删除 `canonical_memory_search_descriptor` 与 `canonical_memory_get_descriptor`，不再输出 `memory_search`/`memory_get` 旧桥接工具。
+  - 将 `compat_memory_search_descriptor` 与 `compat_memory_get_descriptor` 重命名为 `vulcan_memory_search_descriptor` 与 `vulcan_memory_get_descriptor`，使函数名与实际 public Vulcan-native 工具名一致。
+  - 移除 `VMM_MEMORY_SURFACE_CANONICAL` 与 `VMM_MEMORY_SURFACE_COMPAT`，新增单一 `VMM_MEMORY_SURFACE_PUBLIC = "vulcan-memory-public"`。
+  - 保留 `vmm_memory_search`、`vmm_turn_details`、`vmm_memory_write`、`vmm_memory_delete` 作为 raw/advanced 辅助面，不改动 gRPC 透传和执行 RPC。
+  - 更新 metadata 测试，从“兼容面存在”改为“public Vulcan-native 面与 raw advanced 面保持分离”。
+- 文件变更：
+  - 修改：`src/backends/vmm/tool_metadata/memory.rs`
+  - 修改：`src/backends/vmm/tool_metadata/mod.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test vmm_memory`：通过，3 passed。
+  - `rtk cargo test vulcan_memory_metadata_carries_host_visible_annotations`：通过，1 passed。
+  - `rtk cargo test memory_descriptor_registration_surfaces_stay_distinct`：通过，1 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，175 passed。
+  - `rtk git diff --check`：通过。
+  - 精确复查：`"memory_search"`、`"memory_get"`、`host-memory-compat`、`host-memory-canonical`、`compat_memory_`、`canonical_memory_` 在 VMM metadata、proto、docs 与 README 范围内无残留。
+- 修改部分代码审核：
+  - 已确认 gRPC `list_vmm_memory_tools` 仍只做 descriptor 透传，删除旧桥接不会改变服务端执行分支。
+  - 已确认 public 默认面只剩 `vulcan_memory_search` 与 `vulcan_memory_get`，schema 仍使用分组查询与 turnIds 的 Vulcan-native 入参。
+  - 已确认 raw advanced 面仍保留 `vmm_memory_search` 与 `vmm_turn_details`，供需要低层细节的宿主插件使用。
+  - 已确认写入与删除工具未被移除，且删除说明中仍允许使用 `vmm_memory_search`、`vulcan_memory_search` 或 PreCheck VMM_ID 提供的明确 memory_id。
+  - 已确认原本错挂在 `mod binding` 前的 memory search 常量英文注释已移回常量本身，并保持中英文注释顺序。
+- 遗留问题：
+  - VMM binding metadata 仍保留 `host-binding-legacy` 单动作绑定工具面；下一轮可继续按“不考虑历史兼容”原则追踪绑定工具执行与 metadata 消费路径后决定是否收敛。
+### 2026-07-05 第 20 轮：收敛 VMM binding metadata 的单动作 legacy 工具面
+
+- 问题定位：
+  - 延续第 19 轮遗留项，追踪 `src/backends/vmm/tool_metadata/binding.rs` 后确认 binding metadata 同时暴露一个 `vulcan_bind` 聚合工具和 7 个 `vulcan_vmm_*` 单动作 legacy 工具。
+  - `vulcan_bind` schema 已覆盖 `inspect/list/bind/clear` 四类 action、`bindings/user/project` 三类 resource、`global/agent` scope、`ref`、`agentId` 与 `createIfMissing`，能表达旧单动作工具的完整操作集合。
+  - `transport/grpc/service/host_adapter.rs::list_vmm_binding_tools` 与 memory metadata 一样只透传 descriptor 字段，不直接按单动作工具名进行执行分发。
+  - 当前任务目标明确“不考虑历史兼容”，继续保留单动作 legacy 工具会让 host manifest 同时面对聚合面和拆分面，增加默认工具面噪音与长期维护成本。
+- 执行流程：
+  - host adapter gRPC `list_vmm_binding_tools` 在收到请求后读取 VMM backend 状态，并调用 `vmm_binding_tool_descriptors()` 获取 binding/admin descriptor 列表。
+  - gRPC 层将每个 descriptor 映射为 `HostAdapterToolDescriptor`，字段包括 name、description、input_schema_json、annotations_json 与 source。
+  - 宿主插件基于 descriptor 注册工具；本仓库内没有额外代码按 `vulcan_vmm_get_bindings` 等旧工具名分支执行。
+  - 原测试固定 8 个 binding 工具 id，并断言 `vulcan_vmm_bind_agent_project` 属于 `host-binding-legacy`，证明 legacy 面存在于 metadata 选择层。
+- 优化方案：
+  - 将 `vmm_binding_tool_descriptors()` 收敛为只返回 `vulcan_bind_descriptor()`。
+  - 删除 7 个单动作 legacy descriptor：`vulcan_vmm_get_bindings`、`vulcan_vmm_list_users`、`vulcan_vmm_bind_default_user`、`vulcan_vmm_list_projects`、`vulcan_vmm_bind_default_project`、`vulcan_vmm_bind_agent_project`、`vulcan_vmm_clear_agent_project`。
+  - 删除 `VMM_BINDING_SURFACE_LEGACY`，保留单一 `host-binding-consolidated` 注册面。
+  - 更新 binding metadata 测试，断言仅剩 `vulcan_bind`，并验证 action/resource 枚举仍覆盖旧操作集合。
+- 文件变更：
+  - 修改：`src/backends/vmm/tool_metadata/binding.rs`
+  - 修改：`src/backends/vmm/tool_metadata/mod.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test vmm_binding_tool_metadata_lists_stable_tools`：通过，1 passed。
+  - `rtk cargo test host_adapter_grpc`：通过，4 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，175 passed。
+  - `rtk git diff --check`：通过。
+  - 精确复查：`host-binding-legacy`、`VMM_BINDING_SURFACE_LEGACY` 与 7 个 `vulcan_vmm_*` 单动作 binding 工具名在 VMM metadata、proto、docs 与 README 范围内无残留。
+- 修改部分代码审核：
+  - 已确认 `vulcan_bind` 仍声明 `execution_mode=hybrid`、`registration_surface=host-binding-consolidated` 与 `optional_context=["agent"]`。
+  - 已确认 action enum 保留 `inspect/list/bind/clear`，resource enum 保留 `bindings/user/project`，覆盖旧单动作 descriptor 的能力范围。
+  - 已确认 gRPC binding metadata endpoint 仍只做 descriptor 透传，不需要同步执行层分支修改。
+  - 已确认 profile metadata 未改动，`vulcan_profile_adjust` 仍是独立 optional surface。
+- 遗留问题：
+  - memory 与 binding 的 legacy/compat metadata 已收敛；下一轮可继续扫描 VMM/profile、runtime path fallback、或 host adapter fallback 语义中的长期维护噪音。
+### 2026-07-05 第 21 轮：移除 VMM metadata JSON 序列化的空对象兜底
+
+- 问题定位：
+  - 第 21 轮继续扫描 VMM metadata 中的兜底逻辑，确认 `src/backends/vmm/tool_metadata/mod.rs::compact_json_string` 使用 `serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())`。
+  - 通过 CodeKit 追踪确认该函数只接收本模块用 `json!` 构造出的 `serde_json::Value`，用于 descriptor 的 `input_schema_json` 与 `annotations_json` 字段。
+  - 这些字段随后由 `transport/grpc/service/host_adapter.rs` 的 memory/binding/profile metadata endpoint 原样透传给宿主插件。
+  - 对 `serde_json::Value` 进行传输用紧凑序列化不需要吞掉理论错误；回退 `{}` 会在元信息构造异常时隐藏 schema 或 annotations 的真实结构问题。
+- 执行流程：
+  - memory、binding、profile descriptor builder 构造 schema 与 annotations 的 `Value`。
+  - `build_descriptor_with_annotations` 调用 `compact_json_string` 生成 `input_schema_json` 与 `annotations_json`。
+  - host adapter gRPC metadata endpoint 将这些字符串复制到 `HostAdapterToolDescriptor`。
+  - 现有 metadata 测试会把这些字符串重新解析为 `Value`，并断言 schema、registration_surface、visibility 与 enum 信息。
+- 优化方案：
+  - 将 `compact_json_string` 改为直接调用 `Value::to_string()`，保留紧凑 JSON 输出语义。
+  - 更新函数注释，去掉“失败时回退为空对象”的错误表达。
+  - 继续依赖现有 metadata 测试解析 schema/annotations，验证输出仍是合法且结构完整的 JSON。
+- 文件变更：
+  - 修改：`src/backends/vmm/tool_metadata/mod.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test tool_metadata`：通过，7 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，175 passed。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`serde_json::to_string(value)`、`fallback` 与“回退为空对象”在目标文件无残留。
+- 修改部分代码审核：
+  - 已确认 `compact_json_string` 调用点仍只有 `input_schema_json` 与 `annotations_json` 两处。
+  - 已确认 `Value::to_string()` 输出仍可被现有 tests 重新解析，memory/binding/profile metadata 结构断言全部通过。
+  - 已确认没有新增多来源 fallback，也没有把元信息构建异常伪装成 `{}` 空对象。
+- 遗留问题：
+  - gRPC tool result 转换中仍存在 `serde_json::to_string(...).unwrap_or_else(|_| "{}".to_string())` 一类兜底；后续可按具体结果类型事实链决定是否同样收敛。
+### 2026-07-05 第 22 轮：显式构造 gRPC CallTool result_json 并移除空对象兜底
+
+- 问题定位：
+  - 延续第 21 轮遗留项，追踪 `src/transport/grpc/service/helpers.rs::tool_call_result_to_call_response`，确认 `result_json` 使用 `serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string())`。
+  - 通过源码追踪确认 `RuntimeToolCallResult` 仅包含 `content: Vec<RuntimeTextContent>` 与可选 `is_error: Option<bool>`，其中 `RuntimeTextContent` 仅携带 `text: String`。
+  - `proto/v1/mcp_service.proto` 将 `LuaSkillCallToolResponse.result_json` 定义为 JSON 编码的 MCP-compatible ToolCallResult，`text`、`is_error`、`message` 只是便利字段。
+  - 空对象兜底会在结果 JSON 构造异常或结构演进不匹配时静默丢失 `content` 与 `is_error`，不符合长期稳定性与零猜测原则。
+- 执行流程：
+  - gRPC `LuaSkillsService::call_tool` 接收请求后通过 runtime dispatcher 执行动态 LuaSkill 工具。
+  - dispatcher 返回传输无关的 `RuntimeToolCallResult`。
+  - `tool_call_result_to_call_response` 将结果转换为 `LuaSkillCallToolResponse`，同时填充 `result_json`、聚合文本、错误标记与错误消息。
+  - 原实现依赖整体 serde 序列化并在失败时返回 `{}`，正常便利字段仍会存在，但 JSON 主字段可能被静默清空。
+- 优化方案：
+  - 新增 `tool_call_result_json`，按 `RuntimeToolCallResult` 的已确认字段显式构造 JSON 对象。
+  - `content` 由每个 `RuntimeTextContent.text` 构造成文本块数组，`is_error` 仅在运行时结果提供该字段时输出，保持原 `skip_serializing_if` 语义。
+  - `tool_call_result_to_call_response` 改为调用显式 JSON 构造 helper，不再通过 `{}` 掩盖异常。
+  - 新增两个局部单测，分别覆盖 `is_error=None` 时字段省略，以及 `is_error=Some(true)` 时字段保留与 `message` 派生。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/helpers.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test tool_call_result_json_omits_absent_error_flag`：通过，1 passed。
+  - `rtk cargo test tool_call_result_json_preserves_error_flag`：通过，1 passed。
+  - `rtk cargo test luaskill`：通过，42 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过，0 errors。
+  - `rtk cargo test`：通过，177 passed。
+  - `rtk git diff --check`：通过。
+  - 定向复查：旧的 `result_json: serde_json::to_string(result)` 已消失；目标文件剩余两个 `unwrap_or_else` 属于 `lua_skill_tool_to_pb` 的 descriptor schema/annotations 序列化，不属于本轮 CallTool result_json 路径。
+- 修改部分代码审核：
+  - 已确认显式 JSON 结构与当前 `RuntimeToolCallResult` serde 形态一致，普通结果输出 `content`，错误结果额外输出 `is_error`。
+  - 已确认 `text` 仍由 `tool_call_result_text` 聚合，`is_error` 便利字段仍按 `unwrap_or(false)` 输出，`message` 仍只在错误结果中填充。
+  - 已确认新增测试通过 public gRPC response helper 验证 JSON 与便利字段的耦合行为，而不是只测试私有 helper。
+  - 已确认没有引入多来源字段猜测、候选路径轮询或兼容性 fallback。
+- 遗留问题：
+  - `lua_skill_tool_to_pb` 仍对 `input_schema_json` 与 `annotations_json` 使用 `{}`/`null` 兜底；下一轮可沿工具描述符来源、protobuf 字段语义与调用链继续判断是否收敛。
+### 2026-07-05 第 23 轮：显式构造 LuaSkill tool descriptor JSON 字段
+
+- 问题定位：
+  - 延续第 22 轮遗留项，确认 `src/transport/grpc/service/helpers.rs::lua_skill_tool_to_pb` 对 `descriptor.tool.input_schema` 使用 `serde_json::to_string(...).unwrap_or_else(|_| "{}".to_string())`。
+  - 同一函数还对 `descriptor.tool.annotations` 使用 `serde_json::to_string(...).unwrap_or_else(|_| "null".to_string())`。
+  - 通过 `RuntimeToolDescriptor`、`RuntimeInputSchema` 与 `RuntimeToolAnnotations` 定义确认，schema 与 annotations 都是 host core 内部强类型字段，不是多来源不确定 JSON blob。
+  - 通过 gRPC `list_tools` 与 `get_tool` 调用链确认，这两个字段只是在 LuaSkill tool descriptor 映射阶段编码成 proto 的 JSON 字符串，proto 契约没有要求失败时伪装为空对象或 null。
+- 执行流程：
+  - LuaSkills runtime entry 先由 `map_runtime_entry_to_mcp_tool` 映射成 `RuntimeToolDescriptor`。
+  - `HostRuntime::list_luaskill_tools` 与 `HostRuntime::get_luaskill_tool` 通过 `build_luaskill_tool_descriptor` 组合 runtime tool schema 与 runtime entry 元信息。
+  - gRPC `LuaSkillsService::list_tools` 和 `get_tool` 在必要时先投影隐藏 `LUASKILL_SID`，再调用 `lua_skill_tool_to_pb` 输出 `LuaSkillToolDescriptor`。
+  - 原实现如果 JSON 编码路径异常，会让宿主看到 `{}` schema 或 `null` annotations，掩盖真实 descriptor 结构问题。
+- 优化方案：
+  - 新增 `runtime_input_schema_json`，按 `RuntimeInputSchema` 的 `type`、`properties`、`required` 字段显式构造 JSON 对象字符串。
+  - 新增 `runtime_tool_annotations_json`，按 `RuntimeToolAnnotations` 的 camelCase 字段名显式构造 JSON；`None` 保持输出 `null`，字段为 `None` 时继续省略。
+  - `lua_skill_tool_to_pb` 改为调用两个显式渲染 helper，不再使用 `serde_json::to_string(...).unwrap_or_else(...)` 兜底。
+  - 新增两个局部单测，分别覆盖 schema JSON 输出和 annotations JSON 输出，确保 proto 字段仍可解析且字段名保持正确。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/helpers.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test lua_skill_tool_to_pb_renders_schema_json_from_descriptor`：通过，1 passed。
+  - `rtk cargo test lua_skill_tool_to_pb_renders_annotations_json_from_descriptor`：通过，1 passed。
+  - `rtk cargo test luaskill`：通过，42 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test`：通过，179 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/transport/grpc/service/helpers.rs` 中旧的 descriptor `serde_json::to_string(&descriptor.tool...)` 与 `unwrap_or_else` 兜底已无命中。
+- 修改部分代码审核：
+  - 已确认 schema JSON 始终输出 `type`，并仅在对应字段存在时输出 `properties` 与 `required`，与 `RuntimeInputSchema` 的 serde 语义一致。
+  - 已确认 annotations JSON 在 `None` 时输出 `null`，在 `Some` 时使用 `readOnlyHint`、`destructiveHint`、`userConfirmationRequired`、`idempotentHint` 四个已定义字段名。
+  - 已确认 `list_tools` 与 `get_tool` 的投影流程未改变，`LUASKILL_SID` 隐藏逻辑仍在 JSON 编码前完成。
+  - 已确认没有新增多候选字段、兼容性 fallback 或不确定对象路径。
+- 遗留问题：
+  - `description.unwrap_or_default()` 仍是可选描述字段到 proto 字符串的常规映射；当前依据类型定义属于明确可选字段，不作为本轮问题处理。
+  - 后续可继续从 `fallback`、`compat`、重复 JSON 渲染或过宽测试辅助函数中筛选新的长期治理点。
+### 2026-07-05 第 24 轮：移除 LuaSkills client_budget 注入的空对象兜底
+
+- 问题定位：
+  - 第 24 轮重新扫描生产路径中的 `fallback/unwrap_or_else`，确认 `src/luaskills/context.rs` 在 MCP 与 gRPC 两条 LuaSkills 调用上下文构造路径中都使用 `serde_json::to_value(&client_budget).unwrap_or_else(|_| json!({}))`。
+  - 通过 `ClientBudgetSnapshot` 定义确认，快照字段为 `Option<String>`、`EffectiveBudgetScope` 与 `serde_json::Value` 类型的 `tool_config`，整体是确定的强类型结构。
+  - 通过 LuaSkills 依赖源码确认 `LuaInvocationContext::new` 接收 `client_budget: Value`，并注入 `vulcan.context.client_budget`。
+  - 空对象兜底会在预算快照结构演进或编码逻辑异常时把完整预算伪装成 `{}`，导致 Lua 侧看到缺失预算而不是暴露真实问题。
+- 执行流程：
+  - MCP 动态 LuaSkill 调用从 `HostRuntime::call_dynamic_luaskill_tool_for_mcp` 进入，调用 `build_runtime_invocation_context` 构造 `LuaInvocationContext`。
+  - gRPC 动态 LuaSkill 调用从 `HostRuntime::call_luaskill_tool` 进入，调用 `build_grpc_runtime_invocation_context` 构造 `LuaInvocationContext`。
+  - 两条路径都会先解析 `ClientBudgetSnapshot`，再把 `client_budget` 与 `tool_config` 注入 LuaSkills。
+  - 原实现把 `client_budget` 转换为 JSON `Value` 时带空对象兜底，而 `tool_config` 继续作为独立字段传入。
+- 优化方案：
+  - 新增 `client_budget_snapshot_value`，按 `ClientBudgetSnapshot` 的确定字段显式构造 JSON 对象。
+  - 新增 `optional_string_value` 与 `budget_scope_value`，分别渲染可选字符串字段和 `tool_result/file_read` 预算 scope。
+  - MCP 与 gRPC 两条调用上下文构造路径都改用 `client_budget_snapshot_value`，不再把编码问题吞成 `{}`。
+  - 新增两条局部单测，分别覆盖 MCP 与 gRPC invocation context 中的结构化 `client_budget` 注入。
+- 文件变更：
+  - 修改：`src/luaskills/context.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test build_runtime_invocation_context_injects_structured_client_budget`：通过，1 passed。
+  - `rtk cargo test build_grpc_runtime_invocation_context_injects_structured_client_budget`：通过，1 passed。
+  - `rtk cargo test luaskill`：通过，44 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test`：通过，181 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/luaskills/context.rs` 中 `serde_json::to_value(&client_budget)` 与 `unwrap_or_else(|_| json!({}))` 已无残留。
+- 修改部分代码审核：
+  - 已确认预算解析函数 `resolve_client_budget_snapshot` 与 `resolve_grpc_client_budget_snapshot` 未改动。
+  - 已确认注入对象仍包含 `client_name`、`tool_name`、`skill_name`、`matched_client_pattern`、`tool_result`、`file_read` 与 `tool_config` 字段。
+  - 已确认 `tool_config` 仍按原逻辑克隆注入，未改变工具配置解析和 LuaSkills 独立 `tool_config` 参数。
+  - 已确认没有新增候选字段兼容、随机 fallback 或多路径猜测。
+- 遗留问题：
+  - `config::tool_config::resolve_tool_config_value` 在配置缺失或锁读失败时仍返回空对象，这是明确设计为 Lua 稳定消费的配置缺省语义，本轮不处理。
+  - 后续可继续审视 `transport/http/helpers.rs`、`transport/grpc/service/mod.rs` 等剩余 JSON 字符串/参数兜底路径。
+### 2026-07-05 第 25 轮：移除旧版 HTTP SSE message data 的空字符串兜底
+
+- 问题定位：
+  - 第 25 轮从传输层 JSON fallback 中筛选目标，确认 `src/transport/http/helpers.rs::sse_event_stream` 在旧版 SSE message 流中使用 `serde_json::to_string(&val).unwrap_or_default()`。
+  - `sse_event_stream` 接收 `tokio::sync::mpsc::Receiver<Value>`，队列消息已经是 `serde_json::Value` 类型的 JSON-RPC 载荷。
+  - 该函数负责把 queued session message 渲染为 SSE `message` 事件的 `data` 字段；endpoint 事件与 ping 事件不依赖该 JSON 渲染。
+  - 空字符串兜底会把消息数据编码异常伪装成空 `data`，对旧版 SSE 客户端而言比显式结构更难排查。
+- 执行流程：
+  - 旧版 HTTP SSE GET 通过 `handle_sse_get` 创建 session，并把 session id 与 receiver 传给 `sse_event_stream`。
+  - `sse_event_stream` 先发 endpoint 事件，再在 ping stream 与 message stream 之间 select。
+  - message stream 从 receiver 取得 `serde_json::Value`，原先通过 `serde_json::to_string(...).unwrap_or_default()` 写入 SSE `data`。
+  - 对 `serde_json::Value` 的 JSON 字符串输出可以直接使用 `Value::to_string()`，不需要失败兜底。
+- 优化方案：
+  - 新增 `sse_message_data`，明确把排队 JSON-RPC payload 渲染为 SSE message `data` 字段。
+  - 将 message stream 改为调用 `sse_message_data(&val)`，移除 `unwrap_or_default()`。
+  - 新增局部单测 `sse_message_data_renders_valid_json_payload`，验证输出能重新解析为 JSON 且保留 result 字段。
+  - 保持旧版 SSE endpoint 事件、ping 事件和 session 消息流结构不变。
+- 文件变更：
+  - 修改：`src/transport/http/helpers.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test sse_message_data_renders_valid_json_payload`：通过，1 passed。
+  - `rtk cargo test transport::http`：通过，8 passed。
+  - `rtk cargo test streamable`：通过，3 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test`：通过，182 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/transport/http/helpers.rs` 中 `serde_json::to_string(&val)` 与目标 `unwrap_or_default()` 已无残留。
+- 修改部分代码审核：
+  - 已确认 `sse_event_stream` 的 endpoint 事件仍输出 `/message?sessionId=...`。
+  - 已确认 ping stream 仍保留旧版具名 `ping` 事件且不发送空 data 字段。
+  - 已确认 message stream 仍输出 `event("message").data(data)`，仅改变 data 的构造方式。
+  - 已确认本轮没有调整 streamable HTTP 路径、session manager 或 JSON-RPC dispatcher。
+- 遗留问题：
+  - `transport/grpc/service/mod.rs::dispatch_method` 仍有泛用 gRPC MCP 兼容入口的 JSON 参数/响应兜底；后续可继续追踪该兼容入口的协议语义后收敛。
+### 2026-07-05 第 26 轮：显式化泛用 gRPC Call 的 arguments JSON 边界
+
+- 问题定位：
+  - 延续第 25 轮遗留项，确认 `src/transport/grpc/service/mod.rs::dispatch_method` 使用 `serde_json::from_str(arguments).unwrap_or(json!({}))` 解析 `McpCallRequest.arguments`。
+  - 同一函数还使用 `serde_json::to_string(&resp).unwrap_or_default()` 把 dispatcher 响应转为 `McpCallResponse.result`。
+  - proto 明确 `McpCallRequest.arguments` 是 method arguments 的 JSON 字符串，`McpCallResponse.result` 是 JSON result 字符串。
+  - 当前实现会把非空非法 JSON 参数吞成 `{}` 继续分发，导致调用方无法区分“没有参数”和“参数格式错误”。
+- 执行流程：
+  - gRPC `McpService::call` 读取 `McpCallRequest` 后构造 request context，并调用 `dispatch_method`。
+  - `dispatch_method` 把 method 与 arguments 构造成一条伪 JSON-RPC message，再交给 `McpDispatcher::handle_message_with_context`。
+  - `McpDispatcher` 对 `tools/call` 会继续把 params 解析为 `ToolCallRequest`，并在 params 结构无效时返回 `-32602`。
+  - 原实现的边界问题发生在进入 dispatcher 之前：`arguments` 字符串本身无效时被静默替换成 `{}`。
+- 优化方案：
+  - 新增 `parse_grpc_call_arguments`，保留空字符串等价于 `{}` 的 proto 默认行为，但对非空无效 JSON 返回明确错误。
+  - 新增 `grpc_call_error_response`，把参数边界错误转为 JSON-RPC 风格 error result，并同步设置 `is_error=true` 与 message。
+  - 将 dispatcher response 序列化改为 `Value::to_string()`，移除空字符串兜底。
+  - 新增三条测试，覆盖空参数保留、非法参数结构化错误、合法 dispatcher 响应 JSON 输出。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/mod.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test parse_grpc_call_arguments_accepts_empty_string_as_empty_object`：通过，1 passed。
+  - `rtk cargo test dispatch_method_rejects_invalid_arguments_json`：通过，1 passed。
+  - `rtk cargo test dispatch_method_serializes_dispatcher_response_json`：通过，1 passed。
+  - `rtk cargo test grpc`：通过，14 passed。
+  - `rtk cargo test host_adapter_grpc`：通过，4 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test`：通过，185 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：目标文件中 `serde_json::from_str(arguments).unwrap_or(...)`、`serde_json::to_string(&resp).unwrap_or_default()` 与 `serde_json::to_string(&json!({})).unwrap()` 已无残留。
+- 修改部分代码审核：
+  - 已确认空 `arguments` 仍解析为 `{}`，避免破坏省略 arguments 的 proto 默认调用。
+  - 已确认非空非法 JSON 会返回 `-32602` JSON-RPC error，并且 `McpCallResponse.is_error=true`。
+  - 已确认合法 dispatcher response 仍返回 JSON-RPC 包装对象，且 `tools/list` 成功路径保持 `is_error=false` 与空 message。
+  - 已确认没有改变 `tools/call` 内部 `name/arguments` params 结构解析规则，该规则仍由 dispatcher 的 `ToolCallRequest` 解析负责。
+- 遗留问题：
+  - `dispatch_method` 内部 `tools/call` 对缺失 `name` 仍会构造空名称并交由 dispatcher/host runtime 返回工具不存在；后续如需治理，应单独追踪泛用 gRPC Call 对 `tools/call` params 的兼容契约。
+### 2026-07-05 第 27 轮：显式化泛用 gRPC tools/call 的 name 参数边界
+
+- 问题定位：
+  - 延续第 26 轮遗留项，确认 `src/transport/grpc/service/mod.rs::dispatch_method` 在 `method == "tools/call"` 时使用 `args.get("name").and_then(|v| v.as_str()).unwrap_or("")`。
+  - `proto/v1/mcp_service.proto` 将 `McpCallRequest.arguments` 定义为 method arguments 的 JSON 字符串，`dispatch_method` 会把该字符串转换成模拟 JSON-RPC message 后交给 dispatcher。
+  - `src/transport/mcp/protocol/tools.rs::ToolCallRequest` 明确要求 `name: String`，dispatcher 的 `handle_tools_call` 会在 params 缺失 `name` 时返回 `Invalid tools/call params` 与 `-32602`。
+  - 原 gRPC 兼容层在进入 dispatcher 前把缺失、非字符串或空 `name` 改写成空字符串，导致错误从“参数无效”漂移到 runtime 工具查找失败，削弱了协议边界诊断。
+- 执行流程：
+  - gRPC `McpService::call` 接收泛用 `McpCallRequest` 后构造 request context，并调用 `dispatch_method`。
+  - `dispatch_method` 先解析 `arguments` JSON，再构造模拟 MCP JSON-RPC message。
+  - `tools/call` 进入 dispatcher 后由 `handle_tools_call` 将 params 解析为 `ToolCallRequest`。
+  - dispatcher 随后调用 runtime tool dispatch；旧逻辑会在这一步才暴露空工具名造成的查找失败，而不是在 params 边界返回结构化参数错误。
+- 优化方案：
+  - 新增 `build_grpc_tools_call_params`，在 gRPC 兼容层显式构造 dispatcher 可消费的 `tools/call` params。
+  - `tools/call` 缺失、非字符串或空 `name` 时立即返回 `grpc_call_error_response(-32602, ...)`，阻止空名称继续进入 runtime 工具查找。
+  - 保留缺失 `arguments` 时默认为 `{}` 的既有语义，因为 `ToolCallRequest.arguments` 是 `Option<Value>`，runtime 侧也按可选参数处理。
+  - 新增聚焦测试覆盖缺失 `name` 拒绝、合法 `name/arguments` 保留，以及 `dispatch_method` 对缺失名称返回结构化 JSON-RPC 错误。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/mod.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test build_grpc_tools_call_params_rejects_missing_name`：通过，1 passed。
+  - `rtk cargo test build_grpc_tools_call_params_preserves_name_and_arguments`：通过，1 passed。
+  - `rtk cargo test dispatch_method_rejects_tools_call_without_name`：通过，1 passed。
+  - `rtk cargo test grpc`：通过，17 passed。
+  - `rtk cargo test dispatch_method`：通过，3 passed。
+  - `rtk cargo test build_grpc_tools_call_params`：通过，2 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test`：通过，188 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：目标 `unwrap_or("")` 已无命中，当前只剩新 helper、错误文案和测试命中。
+- 修改部分代码审核：
+  - 已确认 `tools/list` 等非 `tools/call` 泛用方法仍直接使用解析后的 `args`，不受新 helper 影响。
+  - 已确认 `tools/call` 的 `name` 只从 `args.name` 的字符串值读取，没有新增候选字段、兼容字段或多路径猜测。
+  - 已确认缺失 `arguments` 仍按可选字段默认为 `{}`，该行为与 `ToolCallRequest.arguments: Option<Value>` 和 runtime 参数默认语义一致。
+  - 已确认非法 `arguments` JSON 的 `-32602` 错误路径、dispatcher response JSON 输出路径和 None response `{}` 路径未被本轮破坏。
+  - 已按新增变量定义补齐中英文注释，并重新通过格式、聚焦测试和全量门禁。
+- 遗留问题：
+  - `build_grpc_tools_call_params` 仍允许 `arguments` 为任意 JSON 值，这是因为 `ToolCallRequest.arguments` 类型事实为 `Option<Value>`；如果后续要强制 object-only，需要继续追踪具体 runtime tool schema 与 dispatcher 契约后单独治理。
+### 2026-07-05 第 28 轮：显式化模型配置缓存读取失败并移除死能力 API
+
+- 问题定位：
+  - 从生产路径 fallback 扫描中确认 `src/config/model_config.rs::model_config_runtime` 使用 `load_model_config_runtime().unwrap_or_default()`，首次懒加载失败会被替换成默认 disabled 配置。
+  - 同一模块的 `current_effective_model_config` 在 `RwLock` 读锁 poisoned 时返回 `EffectiveModelConfig::default()`，会把缓存异常伪装成“模型供应商未启用”。
+  - `src/model_provider/mod.rs` 的 `model_status`、`model_embed`、`model_llm` 和 `install_luaskills_model_callbacks` 都依赖该 effective config；错误一旦被默认配置吞掉，启动预加载、热重载和 LuaSkills callback 注册都无法看到真实失败。
+  - 调整 callback 安装逻辑后，原 `has_model_capability` 与 `ModelCapability` 只剩死代码引用，继续保留会制造无用 API 与编译警告。
+- 执行流程：
+  - 启动路径 `bootstrap/runtime_preload.rs::preload_runtime_mcp_configs` 先 preload model config，再安装 LuaSkills model callbacks。
+  - 热重载路径 `HostRuntime::reload_luaskill_runtime_configs` 重新加载 client budget、tool config、model config 后，也会刷新 LuaSkills model callbacks。
+  - 模型调用路径 `model_embed` 与 `model_llm` 从缓存读取 effective config，校验 provider/capability/base_url/api_key/model 后发起 OpenAI-compatible 请求。
+  - 原实现中，缓存懒加载失败或读锁异常都会变成默认 disabled 状态，最终表现为 callback 被清空或模型不可用，而不是暴露缓存/配置错误。
+- 优化方案：
+  - 将 `MODEL_CONFIG_RUNTIME` 从 `RwLock<ModelConfigRuntime>` 调整为 `RwLock<Result<ModelConfigRuntime, String>>`，缓存成功状态或首次懒加载错误。
+  - 新增 `initialize_model_config_runtime`，让首次 `preload_model_config` 用已成功加载的 runtime 初始化缓存，避免同一次 preload 触发第二次磁盘读取。
+  - 将 `current_effective_model_config` 改为返回 `Result<EffectiveModelConfig, String>`，并通过 `effective_model_config_from_runtime_state` 显式传播缓存中的加载错误。
+  - 将 `model_status`、`install_luaskills_model_callbacks`、`model_embed`、`model_llm` 接入显式错误传播；provider 层用 `ModelErrorCode::InternalError` 表达模型配置缓存失败。
+  - 启动预加载与 `luaskill-config` 热重载路径现在会把 callback 安装失败向上返回，而不是静默清空能力。
+  - 删除已无调用点的 `has_model_capability` 和 `ModelCapability`，避免为旧能力查询 API 保留死代码。
+- 文件变更：
+  - 修改：`src/config/model_config.rs`
+  - 修改：`src/config/model_config/tests.rs`
+  - 修改：`src/model_provider/mod.rs`
+  - 修改：`src/model_provider/types.rs`
+  - 修改：`src/model_provider/tests.rs`
+  - 修改：`src/bootstrap/runtime_preload.rs`
+  - 修改：`src/host_core/luaskills_api.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test effective_model_config_from_runtime_state_reports_cached_error`：通过，1 passed。
+  - `rtk cargo test model_config_runtime_error_uses_internal_error_code`：通过，1 passed。
+  - `rtk cargo test model_provider`：通过，11 passed。
+  - `rtk cargo test model_config`：通过，8 passed。
+  - `rtk cargo check`：通过，无 warning。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，190 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`load_model_config_runtime().unwrap_or_default`、旧 `current_effective_model_config() -> EffectiveModelConfig`、`has_model_capability`、`ModelCapability` 均无命中。
+- 修改部分代码审核：
+  - 已确认模型配置文件解析、secret 解析、enabled capability 校验逻辑未改动；本轮只改变缓存错误的表达与传播。
+  - 已确认成功 preload 会写入 `Ok(runtime)`，失败 reload 不会覆盖已有成功缓存，符合热重载保留上一份可用配置的行为。
+  - 已确认 callback 安装使用单次 `model_status()` 快照同时决定 embedding 与 LLM，避免同一次安装读取两份不同配置状态。
+  - 已确认模型调用错误码使用已有 `ModelErrorCode::InternalError`，并能继续映射到 LuaSkills runtime 的 `InternalError`。
+  - 已确认删除的 `ModelCapability` 与 `has_model_capability` 没有剩余调用点，删除后 `cargo check` 不再产生 dead_code warning。
+- 遗留问题：
+  - `current_model_config_runtime_root` 读取 runtime-root override 时仍使用 `.read().ok()`；这属于 runtime-root 覆盖锁的独立错误表达问题，本轮未扩大范围处理，后续可沿配置发现链单独追踪。
+### 2026-07-05 第 29 轮：显式化配置发现链 runtime-root override 锁错误
+
+- 问题定位：
+  - 延续第 28 轮遗留项，确认 `client_budget`、`tool_config`、`model_config` 三条配置发现链的 `current_*_runtime_root` 都使用 `.read().ok().and_then(...)`。
+  - 当 runtime-root override 的 `RwLock` 读锁 poisoned 时，原实现会返回 `None`，随后 `find_*_config_path` 继续走 exe 布局或仓库模板 fallback。
+  - 这会把“显式 runtime_root 覆盖存储异常”伪装成“没有配置 runtime_root”，导致预加载/热重载可能读取错误位置的配置文件。
+  - 三条链的预加载入口本身都是 `Result`，适合直接显式传播锁错误，不需要用 fallback 兜底。
+- 执行流程：
+  - 启动路径 `preload_runtime_mcp_configs` 先初始化三类 runtime-root override，再分别调用 `preload_client_budget_config`、`preload_tool_configs`、`preload_model_config`。
+  - 每个 preload 进入 `load_*_runtime`，再通过 `find_*_config_path` 查找显式 runtime_root 下的 `configs/*.yaml`。
+  - 若没有显式 runtime_root，发现链才会继续尝试可执行文件父目录和仓库模板路径。
+  - 原实现中，runtime-root override 锁异常也会被折叠成“没有显式 runtime_root”，从而错误进入 fallback 分支。
+- 优化方案：
+  - 新增 `src/config/runtime_root.rs`，提供 `clone_runtime_root_override` 共享 helper，统一把 poisoned 读锁转换为调用方专用错误消息。
+  - 将 `current_client_budget_runtime_root`、`current_tool_config_runtime_root`、`current_model_config_runtime_root` 改为 `Result<Option<PathBuf>, String>`。
+  - 将 `find_client_budget_config_path`、`find_tool_config_path`、`find_model_config_path` 改为 `Result<Option<PathBuf>, String>`，并在 `load_*_runtime` 中使用 `?` 传播发现链错误。
+  - 保持“显式 runtime_root 下缺少对应配置文件”返回 `Ok(None)` 的语义，不把缺失配置文件误报为错误。
+  - 保持“未设置显式 runtime_root”时的 exe 布局与仓库模板 fallback 语义，仅禁止锁异常走 fallback。
+- 文件变更：
+  - 新增：`src/config/runtime_root.rs`
+  - 修改：`src/config/mod.rs`
+  - 修改：`src/config/client_budget.rs`
+  - 修改：`src/config/tool_config.rs`
+  - 修改：`src/config/model_config.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test clone_runtime_root_override_reports_poisoned_lock`：通过，1 passed。
+  - `rtk cargo test preload_client_budget_config_prefers_explicit_runtime_root`：通过，1 passed。
+  - `rtk cargo test preload_tool_configs_prefers_explicit_runtime_root`：通过，1 passed。
+  - `rtk cargo test preload_model_config_prefers_explicit_runtime_root`：通过，1 passed。
+  - `rtk cargo test preload_runtime_mcp_configs_rejects_invalid_explicit_runtime_root`：通过，1 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，191 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：配置模块内旧的 `.read().ok()`、旧 `find_*_config_path() -> Option<PathBuf>` 签名均无命中；三条发现链均命中新 `Result<Option<PathBuf>, String>` 签名。
+- 修改部分代码审核：
+  - 已确认显式 runtime_root 存在但对应配置文件不存在时仍返回 `Ok(None)`，不会把可选配置缺失改成启动错误。
+  - 已确认未设置显式 runtime_root 时仍保留 exe 布局路径和仓库 `runtime/configs` 模板 fallback。
+  - 已确认 poisoned lock 测试使用局部 `RwLock` 与合成 `PoisonError`，不会污染进程级全局配置锁。
+  - 已确认三条 `load_*_runtime` 只新增发现链错误传播，未改变 YAML 读取、解析、校验和报告构造逻辑。
+  - 已确认 `preload_runtime_mcp_configs` 的现有显式 runtime root 测试继续通过，说明启动预加载路径仍能正确区分无效 runtime root 与缺失可选配置。
+- 遗留问题：
+  - `client_budget_runtime()` 与 `tool_config_runtime()` 的首次懒加载仍使用 `load_*_runtime().unwrap_or_default()`，请求期读取也仍有默认配置语义；这属于缓存状态表达的独立治理点，后续可按第 28 轮模型配置缓存方案继续评估。
+### 2026-07-05 第 30 轮：移除 legacy SSE POST 的 query 字符串回环解析
+
+- 问题定位：
+  - 扫描剩余 `unwrap_or_default()` 后确认 `src/transport/http/server/legacy_sse.rs::handle_sse_post` 已经通过 Axum `Query<HashMap<String, String>>` 拿到解析后的查询参数。
+  - 原实现却先调用 `serde_urlencoded::to_string(&query.0).unwrap_or_default()` 把 map 重新序列化为 query string，再调用 `SseSessionManager::session_id_from_query` 重新解析 `sessionId`。
+  - 该回环制造了不必要的序列化失败兜底，也让 `sessionId` 的唯一真实来源变得不直接。
+  - `SseSessionManager::session_id_from_query` 只被 legacy SSE POST 使用，删除不会影响其他会话管理能力。
+- 执行流程：
+  - 旧版 SSE GET 通过 `handle_sse_get` 创建 `sse-*` 会话，并由 `sse_event_stream` 输出 `/message?sessionId=...` endpoint。
+  - 旧版 SSE POST `/message` 由 Axum 将查询参数解析为 `HashMap<String, String>`，请求体解析为 JSON-RPC message。
+  - POST 处理器构造 `RequestContext` 后调用 MCP dispatcher，并把 response 投递到对应 SSE session。
+  - 原实现的问题发生在 POST 入口：已解析的 query map 被重新编码再解析，且编码失败会被吞成空字符串。
+- 优化方案：
+  - 新增 `legacy_sse_session_id_from_params`，直接从已解析的 query map 读取 `sessionId`，并拒绝缺失或空白值。
+  - `handle_sse_post` 改为直接调用该 helper；缺失或空白 `sessionId` 仍返回 `400 BAD_REQUEST`。
+  - 删除 `SseSessionManager::session_id_from_query`，移除旧字符串解析函数和 `serde_urlencoded::to_string(...).unwrap_or_default()` 兜底。
+  - 新增三条聚焦测试覆盖缺失 `sessionId`、空白 `sessionId`、已解码并带首尾空白的正常 `sessionId`。
+- 文件变更：
+  - 修改：`src/transport/http/server/legacy_sse.rs`
+  - 修改：`src/transport/http/session.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test legacy_sse_session_id_from_params`：通过，3 passed。
+  - `rtk cargo test legacy_sse`：通过，4 passed。
+  - `rtk cargo test transport::http`：通过，11 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，194 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`session_id_from_query`、`serde_urlencoded::to_string(&query.0)`、`SseSessionManager::session_id_from_query` 均无命中。
+- 修改部分代码审核：
+  - 已确认 legacy SSE GET endpoint 输出仍是 `/message?sessionId=...`，本轮只改变 POST 入口读取参数的方式。
+  - 已确认 POST 请求体 JSON 解析、`RequestContext` 构造、dispatcher 调用和 SSE session 投递逻辑未改变。
+  - 已确认 helper 读取的是 Axum 已解码的 `sessionId` 参数，不再引入二次编码/解析或空字符串兜底。
+  - 已确认缺失和空白 `sessionId` 仍映射为 `BAD_REQUEST`，正常值会 trim 后传递给 session 投递。
+- 遗留问题：
+  - `handle_sse_post` 对 dispatcher response 投递失败仍忽略 `send` 返回值并最终返回 `202 ACCEPTED`；若后续要区分 session 已断开与已接受处理，可单独追踪 legacy SSE 投递语义。
+### 2026-07-05 第 31 轮：显式化 legacy SSE POST 的会话投递失败
+
+- 问题定位：
+  - 延续第 30 轮遗留项，确认 `src/transport/http/server/legacy_sse.rs::handle_sse_post` 在拿到 `sessionId` 后没有先校验旧版 SSE session 是否仍存在。
+  - 当 dispatcher 产生 response 时，原实现使用 `let _ = state.sse_sessions.send(&session_id, resp).await;` 忽略投递失败，并最终返回 `202 ACCEPTED`。
+  - `SseSessionManager::send` 已把缺失 session 和 receiver 关闭都表达为 `Err(())`，且 receiver 关闭时会清理 session；POST 入口继续忽略该结果会让调用方误以为消息已被接受。
+  - streamable HTTP 路径已经对 session 缺失返回 `404 Session not found`，legacy SSE POST 应保持同类边界语义。
+- 执行流程：
+  - legacy SSE GET 创建 `SseSessionManager` session，并把 receiver 绑定到 SSE response stream。
+  - legacy SSE POST `/message` 读取 `sessionId`，解析 JSON-RPC body，构造 `RequestContext` 后进入 MCP dispatcher。
+  - dispatcher 对 request 可能返回 response；该 response 需要通过 `SseSessionManager::send` 投递回对应 SSE stream。
+  - 原实现只要 dispatcher 处理完成就返回 `202`，即使 session 不存在或 receiver 已关闭。
+- 优化方案：
+  - 为 `SseSessionManager` 新增 `exists` 只读方法，用于 legacy POST 在解析 body 前确认 session 仍注册。
+  - `handle_sse_post` 在 session 不存在时立即返回 `404 NOT_FOUND`。
+  - dispatcher 产生 response 时，若 `send` 返回错误，则返回 `404 NOT_FOUND`，不再把投递失败伪装为已接受。
+  - 新增两条 handler 级测试：未知 session 返回 404；已注册 session 的 receiver 关闭后，POST 返回 404 且 session 被清理。
+- 文件变更：
+  - 修改：`src/transport/http/server/legacy_sse.rs`
+  - 修改：`src/transport/http/session.rs`
+  - 修改：`src/transport/http/server/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test legacy_sse_post_rejects_unknown_session`：通过，1 passed。
+  - `rtk cargo test legacy_sse_post_rejects_closed_receiver_delivery`：通过，1 passed。
+  - `rtk cargo test legacy_sse`：通过，6 passed。
+  - `rtk cargo test transport::http`：通过，13 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，196 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：旧的 `let _ = state.sse_sessions.send(...)` 忽略投递结果模式无命中，legacy SSE POST 的未知 session 与投递失败均返回 `NOT_FOUND`。
+- 修改部分代码审核：
+  - 已确认缺失或空白 `sessionId` 仍由第 30 轮 helper 返回 `400 BAD_REQUEST`，本轮只处理“sessionId 有值但会话不可投递”的生命周期错误。
+  - 已确认 POST 请求体解析、`RequestContext` 构造和 dispatcher 调用顺序不变，只在 dispatcher 前增加 session 存在性校验。
+  - 已确认 response 投递失败沿用 `SseSessionManager::send` 的既有清理行为，receiver 关闭后 session 会被移除。
+  - 已确认 notification 等无 response 的 dispatcher 结果仍在 session 存在时返回 `202 ACCEPTED`，因为没有 SSE response 需要投递。
+- 遗留问题：
+  - legacy SSE POST 在 session 存在性校验和后续 send 之间仍可能遇到并发断开；该竞态已由 send 失败分支返回 404 并清理 session，暂不需要额外锁定整个请求生命周期。
+
+### 2026-07-05 第 32 轮：收敛 space controller auto-spawn endpoint authority 解析
+
+- 问题定位：
+  - 扫描剩余 `unwrap_or_default()` 与 endpoint 解析路径后，确认 `src/luaskills/engine_options.rs::endpoint_supports_local_auto_spawn` 在已经判断 `http://` / `https://` 后仍使用 `split_once("://").map(...).unwrap_or(trimmed)`。
+  - 同一函数通过 `split(['/', '?', '#']).next().unwrap_or_default()` 截取 URL authority，而 `split().next()` 对非空迭代器本身必然返回首段，该 fallback 只会掩盖解析边界。
+  - 本地 IPv4 与 IPv6 端口分支还使用手写 `split(':').nth(1).map(...).unwrap_or(false)` / `split("]:").nth(1).map(...).unwrap_or(false)`，把已由前缀判断确认的结构重新拆分。
+  - 该函数由 `validate_space_controller_endpoint` 调用，用于 `space_controller.auto_spawn=true` 时在宿主选项构建阶段拒绝远端 controller endpoint。
+- 执行流程：
+  - `build_luaskills_engine_options` 构建 LuaSkills 宿主选项时调用 `resolve_space_controller_options`。
+  - `resolve_space_controller_options` 先进入 `validate_space_controller_endpoint`，确认自动拉起策略与 endpoint 是否匹配。
+  - `validate_space_controller_endpoint` 在 `auto_spawn=true` 且 endpoint 非空时调用 `endpoint_supports_local_auto_spawn`。
+  - 合法的本地端口、`localhost`、`127.0.0.1`、`0.0.0.0` 或 `[::1]` endpoint 才允许自动拉起；远端 authority 必须在宿主选项构建阶段失败。
+- 优化方案：
+  - 新增 `endpoint_authority`，仅对文档确认的 `http://` / `https://` endpoint 去除 scheme，并用 `find(['/', '?', '#'])` 显式截取 path/query/fragment 前的 authority。
+  - 裸端口或裸 host endpoint 不做 URL path 截取，继续要求精确的端口或 host:port 形态，避免把 `localhost:29801/api` 误当成本地可绑定地址。
+  - 新增 `is_numeric_port` 统一表达“非空 ASCII 数字端口”规则，删除重复端口判断样板。
+  - 本地 IPv4/IPv6 分支改用 `strip_prefix` 得到已确认的端口片段，不再用二次 `split/nth` 与布尔 fallback。
+  - 补充测试覆盖本地 HTTP URL 带 path/query/fragment 仍允许、远端 authority 的 path 含 localhost 仍拒绝、未知 scheme 拒绝、裸 localhost path 拒绝。
+- 文件变更：
+  - 修改：`src/luaskills/engine_options.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test build_engine_options_`：通过，21 passed。
+  - `rtk cargo test luaskills`：通过，42 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，200 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/luaskills/engine_options.rs` 中旧的 `split_once("://")` 与 `unwrap_or_default()` 解析残留已无命中；新增测试函数均已命中聚焦测试组。
+- 修改部分代码审核：
+  - 已确认 `:29801`、`29801`、`localhost:29801`、`127.0.0.1:29801`、`0.0.0.0:29801`、`[::1]:29801` 的既有本地绑定语义仍由同一入口判断。
+  - 已确认 path/query/fragment 只在 `http://` / `https://` URL 中参与 authority 截取，裸 host endpoint 不引入额外宽松语义。
+  - 已确认远端 authority 不会因为 URL path 中出现 `localhost` 被误判为本地 endpoint。
+  - 已确认未知 scheme 不会被剥离 authority 后放行，避免把未确认协议伪装成本地自动拉起地址。
+  - 已确认本轮没有新增候选字段、兼容字段轮询或多来源 fallback。
+- 遗留问题：
+  - `endpoint_authority` 仍是针对当前 controller endpoint 约束的轻量字符串解析，而不是完整 URL 语义校验器；当前 auto-spawn 判断只需要 authority 与本地端口白名单。如后续支持更多 endpoint 形态，应在确认协议事实后单独引入严格 parser 或扩展白名单。
+
+### 2026-07-05 第 33 轮：显式化 tool_config 与 client_budget 缓存加载失败
+
+- 问题定位：
+  - 延续第 29 轮遗留问题，确认 `src/config/tool_config.rs::tool_config_runtime` 使用 `load_tool_config_runtime().unwrap_or_default()`，首次懒加载失败会被伪装成空工具配置。
+  - 同类问题存在于 `src/config/client_budget.rs::client_budget_runtime`，首次懒加载失败会被伪装成默认预算配置。
+  - `resolve_tool_config_value` 不只把 tool config 注入 Lua invocation，还会通过 client-budget 的估算覆盖影响预算计算；因此只修注入值无法闭合执行链。
+  - 启动预载路径先执行 `load_*_runtime()?`，随后写入 `*_runtime()`；旧实现会在 `*_runtime()` 首次初始化时再次读盘并吞掉错误，和第 28 轮已修复的 model config 缓存问题同源。
+- 执行流程：
+  - 启动路径 `preload_runtime_mcp_configs` 依次初始化 runtime_root override，并调用 `preload_client_budget_config`、`preload_tool_configs`、`preload_model_config`。
+  - 动态 LuaSkill 调用路径通过 `build_runtime_invocation_context` 或 `build_grpc_runtime_invocation_context` 解析 client budget 与 tool config，再传给 LuaSkills runtime。
+  - 渲染路径在技能调用成功后通过 `client_budget_snapshot_for_render` 或 `grpc_client_budget_snapshot_for_render` 生成溢出渲染预算。
+  - 旧实现中 tool_config 或 client_budget 缓存加载失败后，请求期仍会继续生成 `{}` tool_config 或默认预算，技能侧无法区分“确实无配置”和“配置加载失败”。
+- 优化方案：
+  - 将 `TOOL_CONFIG_RUNTIME` 改为 `RwLock<Result<ToolConfigRuntime, String>>`，保存成功状态或首次懒加载错误。
+  - 将 `CLIENT_BUDGET_RUNTIME` 改为 `RwLock<Result<ClientBudgetRuntime, String>>`，保存成功状态或首次懒加载错误。
+  - `preload_tool_configs` 与 `preload_client_budget_config` 改为先读盘、再用成功状态初始化缓存、最后显式写入 `Ok(runtime)`，避免首次预载重复读盘。
+  - `resolve_tool_config_value`、`resolve_client_budget_snapshot`、`resolve_grpc_client_budget_snapshot`、Lua invocation context 构建与渲染预算函数全部改为 `Result`，把缓存错误传播到现有 CLI / JSON-RPC / gRPC 错误通道。
+  - `merge_effective_estimation` 改为接收已经解析出的 tool config 值，避免同一次预算快照构建重复读取 tool_config 缓存。
+  - 删除无调用点的 `resolve_tool_estimation_override` 旧 API，避免保留死分支。
+- 文件变更：
+  - 修改：`src/config/tool_config.rs`
+  - 修改：`src/config/client_budget.rs`
+  - 修改：`src/config/client_budget/resolution.rs`
+  - 修改：`src/config/client_budget/preview.rs`
+  - 修改：`src/config/client_budget/tests.rs`
+  - 修改：`src/luaskills/context.rs`
+  - 修改：`src/bootstrap/startup.rs`
+  - 修改：`src/host_core/tool_dispatch.rs`
+  - 修改：`src/host_core/luaskills_api.rs`
+  - 删除：无独立文件删除；移除死函数 `resolve_tool_estimation_override`
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test resolve_tool_config_value_from_runtime_state_reports_cached_error`：通过，1 passed。
+  - `rtk cargo test client_budget_config_from_runtime_state_reports_cached_error`：通过，1 passed。
+  - `rtk cargo test tool_config`：通过，4 passed。
+  - `rtk cargo test client_budget`：通过，19 passed。
+  - `rtk cargo test luaskills`：通过，42 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，202 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`load_client_budget_runtime().unwrap_or_default()`、`load_tool_config_runtime().unwrap_or_default()` 与死 API `resolve_tool_estimation_override` 均无命中。
+- 修改部分代码审核：
+  - 已确认缺失配置文件仍是合法的 `Ok(default runtime)`，不会把“未配置”误报成错误；本轮只显式化读取、解析、runtime-root 锁等真实加载错误。
+  - 已确认失败的 reload 不会覆盖已有成功缓存，因为读盘发生在写锁之前，写缓存只发生在成功加载之后。
+  - 已确认动态 LuaSkill 调用前构建 invocation context 失败会映射为现有 `-32603` 内部错误；CLI `--call-tools` 路径会返回本地调试错误。
+  - 已确认技能调用成功后的渲染预算解析失败同样返回错误，不再用默认预算继续渲染。
+  - 已确认 client-budget 报告与预览路径没有具体 skill，因此传入明确空 tool_config，不额外触发请求期 tool_config 读取。
+- 遗留问题：
+  - 其他配置发现或请求边界中仍存在面向可选字段的 `unwrap_or_default` / `ok()`，其中一部分属于明确的缺省语义；后续轮次应继续按调用链逐个确认，优先处理仍会吞掉真实 I/O、解析或锁错误的路径。
+
+### 2026-07-05 第 34 轮：显式化 Config::load 配置发现路径解析错误
+
+- 问题定位：
+  - 扫描系统路径与配置发现错误吞噬点后，确认 `src/config/app_config/paths.rs::normalize_cli_runtime_root_arg` 与 `normalize_cli_config_path` 使用 `std::env::current_dir().ok()`。
+  - 同一文件的 `find_exe_parent_config` 使用 `std::env::current_exe().ok()?`，会把可执行文件路径解析失败伪装成“没有找到配置文件”。
+  - `Config::load` 已经返回 `Result`，并且调用方 `startup`、`root_skill_cli`、service 平台路径都有错误传播能力，因此没有必要用 `Option` 吞掉系统路径错误。
+  - 真正需要保留的缺省语义只有“目标 `<runtime_root>/configs/config.yaml` 或 `<exe_parent>/configs/config.yaml` 文件不存在”，这应继续表示为 `Ok(None)`。
+- 执行流程：
+  - `Config::load` 读取 argv，拒绝已移除的 `--config`，再解析 `--runtime-root`。
+  - 当提供 `--runtime-root` 时，`find_runtime_root_config` 会先规范化运行根路径，再查找 `configs/config.yaml`。
+  - 当未提供 `--runtime-root` 时，`find_exe_parent_config` 会基于当前可执行文件父目录查找 `configs/config.yaml`。
+  - `Config::from_file` 对最终配置路径做归一化后读取 YAML，并记录 `loaded_config_path`。
+- 优化方案：
+  - 新增 `ConfigPathResult<T>` 作为配置路径发现 helper 的统一结果类型。
+  - 将 `find_runtime_root_config`、`normalize_cli_runtime_root_arg`、`normalize_cli_config_path`、`find_exe_parent_config` 从 `Option` 改为 `Result`。
+  - 新增 `normalize_cli_path_arg`，统一处理相对 CLI 路径，并在 `current_dir()` 失败时返回带上下文的错误。
+  - 将 `find_exe_parent_config` 改为显式传播 `current_exe()` 错误，并拆出 `find_exe_parent_config_from_exe_path` 保持布局判断清晰。
+  - 更新 `Config::load` 与 `Config::from_file`，用 `?` 传播路径解析错误；缺失配置文件仍进入既有“未找到配置文件”提示分支。
+  - 新增 runtime-root 配置发现测试，覆盖文件存在返回路径、文件缺失返回 `None` 的边界。
+- 文件变更：
+  - 修改：`src/config/app_config/paths.rs`
+  - 修改：`src/config/app_config/loading.rs`
+  - 修改：`src/config/app_config/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test find_runtime_root_config_returns_existing_config_path`：通过，1 passed。
+  - `rtk cargo test find_runtime_root_config_returns_none_for_missing_config_file`：通过，1 passed。
+  - `rtk cargo test app_config`：通过，10 passed。
+  - `rtk cargo test startup`：通过，28 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，204 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/config/app_config` 目标路径中 `current_dir().ok()`、`current_exe().ok()` 与 `normalize_cli_config_path(...).unwrap_or_else(...)` 均无命中。
+- 修改部分代码审核：
+  - 已确认缺失配置文件仍返回 `Ok(None)`，不会把“未部署配置文件”误报成系统错误。
+  - 已确认 `--runtime-root` 成功加载后仍会把规范化后的 runtime_root 写回 `Config.runtime_root`。
+  - 已确认 `Config::from_file` 对相对路径仍锚定当前工作目录，只是不再吞掉 `current_dir()` 错误。
+  - 已确认未提供 `--runtime-root` 时仍只搜索 `<exe_parent>/configs/config.yaml`，没有重新引入仓库模板 fallback。
+  - 已确认 startup 与 app_config 相关测试覆盖既有 CLI 解析、配置反序列化与启动预载入口。
+- 遗留问题：
+  - `luaskills/runtime_paths.rs` 和 tool-result 模板发现路径中仍存在 `current_exe().ok()` / `current_dir().ok()`，但它们属于独立运行根或模板发现链，后续轮次需要分别追踪调用方错误通道后再治理。
+
+### 2026-07-05 第 35 轮：显式化 LuaSkills 隐式 runtime_root 系统路径错误
+
+- 问题定位：
+  - 延续第 34 轮遗留项，确认 `src/luaskills/runtime_paths.rs::resolve_runtime_root_from_config` 在没有显式 `runtime_root` 时使用 `std::env::current_exe().ok()` 与 `std::env::current_dir().ok()`。
+  - 该函数已经返回 `Result<Option<PathBuf>, String>`，调用方 `build_luaskills_engine_options` 与 `bootstrap/runtime_init` 都有错误传播通道。
+  - 旧实现会把“无法解析当前可执行文件或当前工作目录”的系统错误伪装成 `Ok(None)`，再由上层表现为“未能解析 runtime root”。
+  - 真正应保留的 `Ok(None)` 语义是“系统路径可读，但隐式 hosted/repository 布局没有命中”。
+- 执行流程：
+  - `build_luaskills_engine_options` 通过 `resolve_runtime_root_from_config(config)?.ok_or("Failed to resolve runtime root")?` 获取 LuaSkills 运行根。
+  - 启动预载与服务构建路径也通过 `bootstrap/runtime_init` 调用同一运行根解析函数。
+  - 显式 `runtime_root` 存在时，函数优先校验配置路径是否存在且为目录。
+  - 显式 `runtime_root` 缺失时，函数基于当前可执行文件路径与当前工作目录进入 `resolve_implicit_runtime_root_from_paths`。
+- 优化方案：
+  - 将隐式布局分支的 `current_exe().ok()` 改为 `map_err(...)?`，可执行文件路径解析失败直接返回明确错误。
+  - 将隐式布局分支的 `current_dir().ok()` 改为 `map_err(...)?`，当前目录解析失败直接返回明确错误。
+  - 保持 `resolve_implicit_runtime_root_from_paths` 的布局判断语义不变：hosted 父级包含 `skills` 或 `configs` 时命中，当前目录下 `runtime` 为目录时命中，否则返回 `None`。
+  - 新增 hosted 父级布局正向测试，补齐隐式运行根成功识别的覆盖。
+- 文件变更：
+  - 修改：`src/luaskills/runtime_paths.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test resolve_implicit_runtime_root_accepts_hosted_parent_layout`：通过，1 passed。
+  - `rtk cargo test resolve_implicit_runtime_root_rejects_file_shaped_repository_runtime_path`：通过，1 passed。
+  - `rtk cargo test luaskills`：通过，43 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，205 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/luaskills/runtime_paths.rs` 中目标 `current_exe().ok()` 与 `current_dir().ok()` 已无命中。
+- 修改部分代码审核：
+  - 已确认显式 `runtime_root` 路径校验逻辑未改变，缺失路径与文件路径仍返回明确配置错误。
+  - 已确认隐式 hosted 布局仍基于可执行文件父级目录判断 `skills` / `configs` 目录。
+  - 已确认隐式 repository 布局仍只接受当前目录下的 `runtime` 目录，文件形态继续被拒绝。
+  - 已确认上层 `Failed to resolve runtime root` 只会用于“布局未命中”的 `Ok(None)`，不再覆盖系统路径解析错误。
+- 遗留问题：
+  - `support/tool_result_format/templates.rs` 仍有模板发现链的 `current_exe().ok()` / `current_dir().ok()`，后续应单独追踪模板渲染调用方错误通道后再决定是否显式化。
+
+### 2026-07-05 第 36 轮：显式化 tool-result 模板发现与渲染错误
+
+- 问题定位：
+  - 延续第 35 轮遗留项，确认 `src/support/tool_result_format/templates.rs` 的模板技能根与资源根发现使用 `current_exe().ok()` / `current_dir().ok()`。
+  - `load_template_text` 对存在的模板路径使用 `fs::read_to_string(...).ok()` 式逻辑，读取失败会静默跳过并回退到内置模板。
+  - 顶层 `render_tool_result_text` 返回 `String`，没有错误通道，导致模板发现失败、模板文件形态错误、分页 spill 写入失败只能被伪装成普通渲染文本。
+  - CLI、MCP 动态工具和 gRPC LuaSkills 调用点都已经有错误返回通道，适合把渲染失败显式传播出去。
+- 执行流程：
+  - LuaSkills 调用成功后，宿主调用 `render_tool_result_text`，根据 overflow mode 决定 truncate 或 page 渲染。
+  - truncate/page 分支调用 `load_template_text`，优先查 skill-local overflow template，再查共享 resources template。
+  - page 分支还需要 `spill_root`，并通过 `write_overflow_text_file` 写出原始超限内容供后续读取。
+  - 旧实现中模板发现或读取失败会静默回退，page 写文件失败也会被伪装成统一超限文案。
+- 优化方案：
+  - 将 `render_tool_result_text`、`render_truncate_text`、`render_page_text` 改为 `Result<String, String>`。
+  - 将模板技能根、资源根发现改为 `Result`，显式传播 `current_exe/current_dir` 与模板运行时锁错误。
+  - 将 `load_template_text` 改为 `Result<Option<String>, String>`；候选模板不存在仍为 `Ok(None)`，但模板路径存在且不是文件或读取失败时返回错误。
+  - page 分支缺少 `spill_root` 或写出 spill 文件失败时返回渲染错误，不再伪装成“工具输出超过当前客户端限制”。
+  - CLI `--call-tools`、MCP 动态工具、gRPC LuaSkills 调用点接入渲染错误传播，分别映射到本地调试错误或 `-32603` 内部错误。
+  - 新增测试覆盖目录形态模板路径错误与 page overflow 缺少 `spill_root` 错误。
+- 文件变更：
+  - 修改：`src/support/tool_result_format.rs`
+  - 修改：`src/support/tool_result_format/templates.rs`
+  - 修改：`src/support/tool_result_format/tests.rs`
+  - 修改：`src/bootstrap/startup.rs`
+  - 修改：`src/host_core/tool_dispatch.rs`
+  - 修改：`src/host_core/luaskills_api.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test render_tool_result_reports_directory_shaped_template_path`：通过，1 passed。
+  - `rtk cargo test page_mode_requires_spill_root_when_overflowed`：通过，1 passed。
+  - `rtk cargo test tool_result_format`：通过，10 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，207 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/support/tool_result_format/templates.rs` 中目标 `current_exe().ok()` 与 `current_dir().ok()` 已无命中，渲染调用点均接入 `Result`。
+- 修改部分代码审核：
+  - 已确认模板不存在仍回退内置模板，只有存在但不可用的模板路径才报错。
+  - 已确认内容本身无法在 file-read 预算内安全切块时，仍返回统一用户可见超限文案，而不是宿主错误。
+  - 已确认 page 模式正常写出 spill 文件后仍返回原有 LARGE RESULT POINTER 结构。
+  - 已确认动态工具与 gRPC LuaSkills 渲染失败会走 `-32603`，不会被包装成成功的文本结果。
+  - 已确认 CLI `--call-tools` 渲染失败会返回本地错误，不再打印误导性渲染文本。
+- 遗留问题：
+  - `support/temp_maintenance.rs` 中仍存在文件时间读取 fallback，后续可继续沿临时目录清理链确认哪些时间异常应显式化、哪些属于可恢复的清理容错。
+
+### 2026-07-05 第 37 轮：显式化运行时临时目录清理的时间与删除错误
+
+- 问题定位：
+  - 延续第 36 轮遗留项，确认 `src/support/temp_maintenance.rs` 的递归清理函数对 `metadata.modified()` 使用 `unwrap_or(now)`，会把平台元数据读取失败伪装成“刚修改的临时文件”。
+  - 同一函数对 `now.duration_since(modified_time)` 使用 `unwrap_or_default()`，会把未来时间戳或系统时间回拨静默折算为 0 秒文件年龄。
+  - 过期文件删除与空目录删除使用 `let _ = ...`，删除失败没有错误通道和路径上下文，导致启动清理和后台跨日清理都无法定位残留原因。
+- 执行流程：
+  - `initialize_runtime_temp_root_from_config` 先根据配置注册运行根，随后多个启动入口调用 `maintain_runtime_temp_dir(CleanupTrigger::Startup)`。
+  - 启动清理通过 `?` 向上返回错误，会阻止 stdio、网络服务、ROOT skill CLI、`--call-tools` 与内部 luaexec 模式继续启动。
+  - 运行中的服务通过 `spawn_cross_day_cleanup_task` 每小时检查跨日状态，并调用 `maintain_runtime_temp_dir(CleanupTrigger::DayBoundary)`；该后台路径会把清理错误打印到 stderr。
+  - 实际清理由 `cleanup_directory_recursive` 遍历运行时 temp 根目录，递归进入目录，删除超过 24 小时保留窗口的普通文件，并尝试移除空目录。
+- 优化方案：
+  - 将 `metadata.modified().unwrap_or(now)` 改为显式 `map_err(...)?`，错误消息包含目标临时文件路径与底层错误。
+  - 将 `duration_since(...).unwrap_or_default()` 改为显式 `match`；若文件修改时间晚于当前清理时间，则按“未超过保留窗口”跳过，而不是通过默认值掩盖判断来源。
+  - 将过期文件删除失败改为带路径上下文的错误返回。
+  - 将空目录删除失败改为带路径上下文的错误返回。
+  - 新增私有单测覆盖过期普通文件删除，以及未来时间戳文件不会被误删。
+- 文件变更：
+  - 修改：`src/support/temp_maintenance.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test temp_maintenance -- --nocapture`：通过，3 passed，206 filtered out。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，209 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/support/temp_maintenance.rs` 中目标 `metadata.modified().unwrap_or(now)` 与 `duration_since(...).unwrap_or_default()` 已无命中。
+- 修改部分代码审核：
+  - 已确认启动清理仍通过既有 `Result` 通道向上失败，不需要新增架构或日志依赖。
+  - 已确认后台跨日清理仍使用既有 stderr 错误通道，不会把失败伪装成成功状态。
+  - 已确认未来时间戳文件不被删除，这是基于保留窗口定义的显式分支，而非投机性 fallback。
+  - 已确认过期文件和空目录删除失败现在包含具体路径，便于定位权限、锁文件或并发写入导致的残留。
+  - 已确认新增测试不依赖修改平台文件时间，而是利用私有函数可注入清理时间的事实来稳定覆盖文件年龄判断。
+- 遗留问题：
+  - `src/support/temp_maintenance.rs` 的 `derive_runtime_temp_dir` 仍有 `exe_dir.parent().unwrap_or(exe_dir)`，后续应单独追踪无显式运行根时的可执行文件布局语义，确认根目录可执行文件是否应显式报错。
+
+### 2026-07-05 第 38 轮：收紧运行时 temp 根目录隐式布局推导
+
+- 问题定位：
+  - 延续第 37 轮遗留项，确认 `src/support/temp_maintenance.rs` 的 `derive_runtime_temp_dir` 在无显式运行根时使用 `exe_dir.parent().unwrap_or(exe_dir)`。
+  - 该回退没有验证父级目录是否是运行根，会在任意可执行文件父级下创建 `temp`，尤其测试环境会落到 `target/debug` 的父级路径。
+  - `build_luaskills_engine_options` 已经通过配置解析出确定的 `runtime_root`，却仍调用全局 `ensure_runtime_temp_dir()`，隐藏了对全局 temp 根初始化顺序的依赖。
+- 执行流程：
+  - 正常启动路径先通过 `Config::load` 和 `resolve_runtime_root_for_host` 解析运行根，再调用 `initialize_runtime_temp_root_from_config` 注册共享 temp 根。
+  - `build_luaskills_engine_options` 自身会再次通过 `resolve_runtime_root_from_config` 得到 `runtime_root`，随后为 LuaSkills host options 生成 `temp_dir` 与 `download_cache_root`。
+  - 旧实现此处未使用已解析 `runtime_root`，而是转向全局 `ensure_runtime_temp_dir()`；当测试或局部构造路径没有先注册共享运行根时，会落入可执行文件隐式回退。
+  - README 与服务运行根解析均确认标准运行布局是 `<runtime_root>/{configs,skills,resources,bin,temp,...}`，隐式可执行文件路径应只接受 `<runtime_root>/bin/<exe>` 这类可识别宿主布局。
+- 优化方案：
+  - 新增 `ensure_runtime_temp_dir_for_root`，让持有确定运行根的调用方直接创建并返回 `<runtime_root>/temp`，不再查询全局 fallback。
+  - 将 `build_luaskills_engine_options` 改为使用 `ensure_runtime_temp_dir_for_root(&runtime_root)`，使 LuaSkills 临时目录唯一归属于已解析运行根。
+  - 拆分 `derive_runtime_temp_dir_from_exe_path`，无显式运行根时只接受父级目录包含 `configs` 或 `skills` 标记的宿主运行根。
+  - 删除 `exe_dir.parent().unwrap_or(exe_dir)` 式回退；找不到父级或父级不是运行根时返回明确错误。
+  - 新增测试覆盖已知运行根创建 temp、宿主 `bin` 布局可推导、无运行根标记父目录会被拒绝。
+- 文件变更：
+  - 修改：`src/support/temp_maintenance.rs`
+  - 修改：`src/luaskills/engine_options.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test temp_maintenance -- --nocapture`：通过，6 passed，206 filtered out。
+  - `rtk cargo test build_engine_options_`：通过，21 passed，191 filtered out。
+  - `rtk cargo test build_server_exposes`：通过，2 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，212 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/luaskills/engine_options.rs` 不再调用全局 `ensure_runtime_temp_dir()`；`src/support/temp_maintenance.rs` 中目标 `parent().unwrap_or(...)` 已无命中。
+- 修改部分代码审核：
+  - 已确认解析函数 `derive_runtime_temp_dir` 保持纯路径推导，不会因为新增 helper 而产生创建目录副作用。
+  - 已确认持有确定 `runtime_root` 的 LuaSkills builder 不再依赖全局 temp 根初始化顺序。
+  - 已确认隐式可执行文件布局必须具备 `configs` 或 `skills` 运行根标记，避免在任意父目录下创建 temp。
+  - 已确认显式运行根仍直接使用 `<runtime_root>/temp`，不受可执行文件布局检查影响。
+  - 已确认全量测试中此前暴露的 `target/debug` 隐式回退失败已被 builder 改造消除，而不是通过放宽运行根识别掩盖。
+- 遗留问题：
+  - `src/luaskills/runtime_paths.rs` 与 `src/support/tool_result_format/templates.rs` 仍各自存在 `exe_dir.parent().unwrap_or(exe_dir)` 风格的运行布局推导，后续应分别追踪其调用方和缺省布局语义后再收紧。
+
+### 2026-07-05 第 39 轮：清理剩余运行布局 parent 回退误判
+
+- 问题定位：
+  - 延续第 38 轮遗留项，确认 `src/luaskills/runtime_paths.rs` 与 `src/support/tool_result_format/templates.rs` 仍存在 `exe_dir.parent().unwrap_or(exe_dir)` 风格的隐式运行布局推导。
+  - 这两处虽然会检查 `skills`、`configs` 或 `resources` 标记是否存在，但当可执行文件路径没有宿主父级时，旧逻辑会把 `exe_dir` 自己当作运行根候选。
+  - 对相对可执行文件路径来说，这类自目录回退可能通过进程当前目录下的相对 `skills/resources` 标记误命中，属于路径归属不清的隐式 fallback。
+- 执行流程：
+  - `resolve_runtime_root_from_config` 在配置没有显式 `runtime_root` 时，会取 `current_exe` 与 `current_dir`，再调用 `resolve_implicit_runtime_root_from_paths`。
+  - 该隐式运行根解析先尝试宿主可执行文件布局，再尝试仓库布局 `current_dir/runtime`。
+  - 模板发现路径在没有 per-call 或已初始化模板根时，会分别通过 `resolve_runtime_skills_root_from_paths` 与 `resolve_runtime_resources_root_from_paths` 推导宿主 `skills/resources`，再回退仓库 `runtime/skills` 与 `runtime/resources`。
+  - README 与服务运行根解析均表明宿主二进制应位于 `<runtime_root>/bin` 下，因此真正的宿主运行根只能是可执行文件目录的父级，而不是可执行文件目录自身。
+- 优化方案：
+  - 将 LuaSkills 隐式运行根推导改为只在 `exe_path.parent().and_then(Path::parent)` 存在时检查宿主根。
+  - 将模板 skills 根与 resources 根推导改为同样只检查可执行文件祖父目录。
+  - 保留仓库布局 fallback：宿主布局未命中时仍按 `current_dir/runtime`、`current_dir/runtime/skills`、`current_dir/runtime/resources` 判断。
+  - 新增 LuaSkills 测试，构造带相对 `skills` 的进程当前目录和无父级相对 exe，确认不会误解析为宿主运行根。
+  - 新增模板测试，构造带相对 `skills/resources` 的进程当前目录和无父级相对 exe，确认不会误解析为模板根。
+- 文件变更：
+  - 修改：`src/luaskills/runtime_paths.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 修改：`src/support/tool_result_format/templates.rs`
+  - 修改：`src/support/tool_result_format/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test resolve_implicit_runtime_root_rejects_relative_executable_without_hosted_parent -- --nocapture`：通过，1 passed。
+  - `rtk cargo test implicit_template_roots_reject_relative_executable_without_hosted_parent -- --nocapture`：通过，1 passed。
+  - `rtk cargo test tool_result_format -- --nocapture`：通过，11 passed。
+  - `rtk cargo test luaskills`：通过，44 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，214 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src` 下 `parent().unwrap_or(...)`、`exe_dir.parent().unwrap_or(...)` 与 `let parent = exe_dir.parent()` 同类目标模式已无命中。
+- 修改部分代码审核：
+  - 已确认宿主布局只接受 `<runtime_root>/bin/<exe>` 反推到 `<runtime_root>`，不会再把二进制所在目录自身当作运行根。
+  - 已确认仓库布局 fallback 未被移除，仍在宿主布局未命中后按当前目录下 `runtime` 结构判断。
+  - 已确认新增测试在断言前恢复进程当前目录，避免污染后续依赖当前目录的测试。
+  - 已确认模板 skills 与 resources 发现使用相同祖父目录规则，避免两个资源类型产生不同布局归属。
+  - 已确认本轮没有改变模板读取错误通道与渲染错误映射，那部分仍归属于前序第 36 轮记录。
+- 遗留问题：
+  - 继续扫描其他静默 fallback、全局状态依赖或错误吞噬模式；当前 `parent().unwrap_or(...)` 这一类运行布局坏味道已清空。
+
+### 2026-07-05 第 40 轮：显式化客户端预算外部源解析错误
+
+- 问题定位：
+  - 扫描生产代码中的 `.ok()` 与 `unwrap_or_default()` 后，确认 `src/config/client_budget/resolution.rs` 的 `read_metric_from_source` 对 env/json/toml 外部预算源使用多处 `.ok()?`。
+  - 旧逻辑会把环境变量存在但值非法、JSON/TOML 文件存在但格式错误、来源条目缺少 `path/field/key`、未知来源类型等情况全部折叠成 `None`。
+  - `resolve_scope_sources_in_place` 使用 `find_map(read_metric_from_source)`，因此坏来源会被当成“没有来源”继续尝试下一个来源或回退 YAML 默认值。
+- 执行流程：
+  - `load_client_budget_runtime` 读取 `client_budgets.yaml` 后调用 `resolve_budget_sources_in_place`，在启动或热重载阶段预解析所有外部来源。
+  - 预解析结果写入 `BudgetMetricConfig.resolved_source_value`，请求期只读取缓存，不再访问环境变量或用户配置文件。
+  - 运行时模板配置中 qwen/codex/opencode/claude 等外部源是可选客户端配置；文件或环境变量不存在应允许回退默认值。
+  - 但只要外部源实际存在且格式坏掉，就属于用户配置错误，应在预载阶段失败，而不是静默套用默认预算。
+- 优化方案：
+  - 将 `read_metric_from_source` 从 `Option<ResolvedMetricValue>` 改为 `Result<Option<ResolvedMetricValue>, String>`。
+  - 明确语义边界：缺失环境变量、缺失外部 JSON/TOML 文件、缺失字段返回 `Ok(None)`；缺少必填来源属性、未知 type、文件存在但不可读/解析失败、值非法返回 `Err`。
+  - 将 `resolve_budget_sources_in_place` 与 `resolve_scope_sources_in_place` 改为返回 `Result`，遇到坏来源立即中断 `load_client_budget_runtime`。
+  - 保留默认预算 fallback，只用于外部源缺席，而不是用于掩盖已存在坏配置。
+  - 删除不再被生产路径使用的宽松 JSON 解析 helper；旧 `parse_metric_literal` 仅保留为测试专用。
+- 文件变更：
+  - 修改：`src/config/client_budget.rs`
+  - 修改：`src/config/client_budget/resolution.rs`
+  - 修改：`src/config/client_budget/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test read_metric_from_source -- --nocapture`：通过，4 passed。
+  - `rtk cargo test preload_client_budget_config_reports_malformed_external_source -- --nocapture`：通过，1 passed。
+  - `rtk cargo test client_budget`：通过，23 passed。
+  - `rtk cargo check`：通过且无 warning。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，218 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/config/client_budget/resolution.rs` 中 `read_to_string(...).ok()`、`serde_json::from_str(...).ok()`、`toml::from_str(...).ok()`、`serde_json::to_value(...).ok()` 与 `std::env::var(...).ok()?` 目标模式已无命中。
+- 修改部分代码审核：
+  - 已确认 qwen/codex/opencode 等可选客户端配置文件不存在时仍回退默认预算，不会破坏未安装客户端的默认运行。
+  - 已确认外部 JSON 文件存在但格式错误时，`preload_client_budget_config` 会返回明确错误，且不会覆盖已有成功缓存。
+  - 已确认环境变量存在但不是 `-1` 或非负整数时会返回错误，不再被当成未配置。
+  - 已确认字段缺失和 JSON null 仍表示来源缺席，避免旧客户端配置缺少某个可选字段时被误判为坏配置。
+  - 已确认请求期仍只消费预解析缓存，不会重新读取外部文件或环境变量。
+- 遗留问题：
+  - `client_budget` 的运行根配置发现仍有 `current_exe` 回退返回 `Ok(None)` 的容错路径；后续可单独追踪它是否应与 app_config/runtime_root 的显式错误策略对齐。
+
+### 2026-07-05 第 41 轮：统一可选运行时配置文件发现错误策略
+
+- 问题定位：
+  - 延续第 40 轮遗留项，确认 `client_budget` 的配置发现中 `std::env::current_exe()` 失败会被折叠成 `Ok(None)`。
+  - 进一步对照后发现 `tool_config` 与 `model_config` 也有相同逻辑：可选运行时配置发现重复实现，并把 `current_exe` 失败、路径 metadata 错误、目录形态配置文件都伪装成“配置缺席”。
+  - 三套配置均属于宿主运行时可选配置，缺文件可以缺席，但系统路径解析失败或配置路径存在但不是文件应显式报错。
+- 执行流程：
+  - 启动预载分别调用 `preload_client_budget_config`、`preload_runtime_mcp_configs` 间接覆盖 `tool_config`，以及 `preload_model_config`。
+  - 三套配置在没有显式 runtime_root 时，会尝试可执行文件父级运行根下的 `configs/<file>`，再回退仓库 `runtime/configs/<file>`。
+  - 旧实现使用 `exists/is_file` 和 `current_exe().ok()` 风格逻辑，导致路径检查异常无法进入错误通道。
+- 优化方案：
+  - 在 `src/config/runtime_root.rs` 中新增 `find_optional_runtime_config_file` 共享 helper。
+  - 共享 helper 保留“缺文件 = `Ok(None)`”语义，但对 `current_exe` 解析失败、metadata 检查失败、路径存在但不是文件统一返回 `Err`。
+  - `client_budget`、`tool_config`、`model_config` 的各自 `find_*_config_path` 改为调用共享 helper，避免三套规则继续分叉。
+  - 新增 helper 单测覆盖显式运行根文件存在与目录形态配置路径报错。
+- 文件变更：
+  - 修改：`src/config/runtime_root.rs`
+  - 修改：`src/config/client_budget.rs`
+  - 修改：`src/config/tool_config.rs`
+  - 修改：`src/config/model_config.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo check`：通过。
+  - `rtk cargo test runtime_root`：通过，31 passed。
+  - `rtk cargo test client_budget`：通过，23 passed。
+  - `rtk cargo test tool_config`：通过，4 passed。
+  - `rtk cargo test model_config`：通过，8 passed。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，220 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/config/client_budget.rs`、`src/config/tool_config.rs`、`src/config/model_config.rs` 中旧式 `let Ok(exe_path) = std::env::current_exe()` 与 `return Ok(None)` 系统路径吞错模式已无命中；共享 helper 中使用 `map_err` 显式上抛。
+- 修改部分代码审核：
+  - 已确认显式 runtime_root 下缺少可选配置文件仍返回 `Ok(None)`，不会强制要求三套可选配置都存在。
+  - 已确认目录形态的 `client_budgets.yaml`、`tool_configs.yaml`、`model_config.yaml` 现在会报“config path is not a file”。
+  - 已确认无显式 runtime_root 时仍保留可执行文件侧运行根与仓库模板两级查找顺序。
+  - 已确认共享 helper 使用 metadata 检查，避免 `exists/is_file` 静默吞掉路径检查错误。
+  - 已确认本轮没有改变三套配置的解析内容，只统一文件发现错误策略。
+- 遗留问题：
+  - `service/platform.rs` 中仍有多处服务卸载/停止命令使用 `let _ =` 吞掉失败；后续可追踪服务安装/卸载链路，区分幂等清理与应上报错误。
+
+### 2026-07-05 第 42 轮：收紧服务管理清理命令错误处理
+
+- 问题定位：
+  - 延续第 41 轮遗留项，确认 `src/service/platform.rs` 在服务安装 `--force`、卸载 `--force`、Windows restart、systemd uninstall、launchd uninstall 等路径中使用 `let _ =` 吞掉服务管理命令失败。
+  - 服务清理确实需要幂等：服务不存在、unit 未加载、launchd job 未加载、Windows 服务已停止等状态应允许继续。
+  - 但旧实现没有区分幂等缺席与真实失败，权限错误、命令失败、服务管理器异常都会被吞掉，可能导致安装/卸载表面成功但系统状态未变。
+- 执行流程：
+  - `install_service --force` 会在写入新定义前调用 `remove_existing_service_if_possible` 清理旧服务。
+  - `uninstall_service --force` 会先停止服务，再调用平台卸载。
+  - Windows restart 先 stop 后 start；systemd uninstall 会 disable/stop、删除 unit 文件、daemon-reload；launchd uninstall 会 bootout 后删除 plist。
+  - 外部命令统一通过 `capture_command_outcome` / `run_command_checked` 获取 stdout/stderr/exit code，已有 launchd not-loaded 与 systemd status 归一化逻辑可作为诊断分类依据。
+- 优化方案：
+  - 将 `install_service --force` 从无条件忽略旧服务卸载错误改为调用 `remove_existing_service_if_possible(...) ?`。
+  - 将 `remove_existing_service_if_possible` 改为只忽略明确的服务缺席/未运行诊断，其他错误上抛。
+  - 新增 `stop_service_if_running`，用于 `uninstall --force`，按平台只接受幂等 not-running / absent 状态。
+  - Windows stop/delete 改为捕获命令 outcome，只允许 SCM 的服务不存在或未启动诊断。
+  - systemd disable/stop 改为捕获 outcome，只允许 unit 不存在或未加载诊断。
+  - launchd uninstall 改为 `run_launchctl_bootout_if_loaded`，只允许 not-loaded/not-found 诊断。
+  - 新增诊断分类单测，覆盖 Windows 缺席、Windows 已停止、systemd 缺席，以及权限类错误不得被当作幂等缺席。
+- 文件变更：
+  - 修改：`src/service/platform.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test service`：通过，37 passed。
+  - `rtk cargo test idempotent -- --nocapture`：通过，4 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，224 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：`src/service/platform.rs` 中针对 `remove_existing_service_if_possible`、`stop_service`、`run_windows_service_action`、`run_systemd_manager_command`、`run_launchctl_bootout`、`uninstall_service` 的目标 `let _ =` 吞错模式已无命中。
+- 修改部分代码审核：
+  - 已确认 force reinstall 仍允许“旧服务不存在”这种幂等状态，但不再吞掉权限错误或服务管理器异常。
+  - 已确认 Windows restart 的 stop 阶段只允许“服务不存在/未启动”继续；后续 start 仍严格失败上抛。
+  - 已确认 systemd uninstall 对 disable/stop 的缺席诊断做幂等处理，但其他非零退出仍带命令与诊断文本返回。
+  - 已确认 launchd uninstall 只把 not-loaded/not-found 视为幂等成功。
+  - 已确认本轮没有执行真实系统服务命令，测试只验证诊断分类；真实命令路径通过既有 command outcome 封装接入。
+- 遗留问题：
+  - `service/manifest.rs` 仍使用 `Path::exists()` 判断 manifest 文件是否存在，后续可追踪 manifest 读写链路并评估是否应改为 metadata/NotFound 显式区分。
+
+### 2026-07-05 第 43 轮：收紧服务 manifest 文件检查与测试隔离
+
+- 问题定位：
+  - 延续第 42 轮遗留项，确认 `src/service/manifest.rs` 在 `HostServiceManifest::load_best_effort` 与 `remove_manifest_file` 中使用 `Path::exists()` 判断 manifest 是否存在。
+  - 服务 manifest 是安装后卸载/生命周期操作的状态来源，缺文件可以表示未安装或无历史状态，但 metadata 检查失败、路径存在但不是普通文件不应被伪装成“缺失”。
+  - 旧测试通过修改进程级 `current_dir` 间接覆盖候选路径，全量并行测试时会在 Windows 上放大临时目录清理不稳定问题；同时旧“跳过其它服务 manifest”测试实际没有读到其它服务 manifest 文件，覆盖意图不精确。
+- 执行流程：
+  - `install_service` 构建安装产物后写入 `HostServiceManifest`，位置为 `<runtime_root>/state/service/host-service-<service>.json`。
+  - `uninstall_service` 先调用 `HostServiceManifest::load_best_effort` 从当前目录、`output`、用户目录以及系统默认运行根候选路径中查找 manifest。
+  - 读取到 manifest 后，卸载流程使用 manifest 中的 `runtime_root` 与 `service_name` 删除当前分服务 manifest，并兼容删除旧版 `host-service.json`。
+  - 因此候选路径缺失应继续跳过，但候选路径检查失败、目录形态 manifest、删除目标非文件都应显式失败。
+- 优化方案：
+  - 新增 `HostServiceManifest::load_from_candidate_paths`，将候选路径枚举与逐项读取逻辑分离，生产入口仍由 `load_best_effort` 负责生成标准候选路径。
+  - 新增 `HostServiceManifest::read_from_file`，为 manifest 读取与 JSON 解析补充包含路径的错误诊断。
+  - 新增 `optional_manifest_file_at`，仅将 `ErrorKind::NotFound` 视为缺失；metadata 其它错误和非文件形态统一返回错误。
+  - `remove_manifest_file` 改为通过 `remove_optional_manifest_file_at` 删除当前与旧版 manifest，缺失时幂等返回，非文件形态或删除失败时携带路径报错。
+  - 测试改为直接注入候选路径，不再修改进程级当前目录；同时补充当前 manifest 目录形态、旧版 manifest 目录形态、缺失文件幂等删除等覆盖。
+- 文件变更：
+  - 修改：`src/service/manifest.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test manifest -- --nocapture`：通过，7 passed。
+  - `rtk cargo test service -- --nocapture`：通过，41 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，228 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/service/manifest.rs` 中生产读写路径已无 `Path::exists()` 判断；剩余 `exists()` 仅为测试断言。
+- 修改部分代码审核：
+  - 已确认 `load_best_effort` 仍先调用标准 `candidate_manifest_paths`，生产候选路径顺序没有改变。
+  - 已确认 `optional_manifest_file_at` 只把 `NotFound` 转换为 `Ok(None)`，权限/元数据错误不会被吞掉。
+  - 已确认 manifest 路径存在但为目录时，读取与删除路径都会返回 “service manifest path is not a file”。
+  - 已确认当前分服务 manifest 与旧版 `host-service.json` 删除共用同一套显式路径检查策略。
+  - 已确认测试不再修改进程级当前目录，避免全量并行测试中的 Windows 临时目录占用波动。
+- 遗留问题：
+  - `src/service/platform.rs` 仍有 `config_path.exists()`、`unit_path.exists()`、`plist_path.exists()` 等路径存在性判断；后续可继续追踪服务配置预检与平台定义文件删除链路，区分缺失幂等与路径检查失败。
+
+### 2026-07-05 第 44 轮：收紧服务平台配置与定义文件路径检查
+
+- 问题定位：
+  - 延续第 43 轮遗留项，确认 `src/service/platform.rs` 中仍有三处生产路径使用 `Path::exists()`：安装前必需配置 `config.yaml` 预检、systemd unit 删除、launchd plist 删除。
+  - `config.yaml` 是服务安装前的必需文件，缺失应阻止安装；但 metadata 检查失败或路径存在但为目录，应给出不同于“缺文件”的明确诊断。
+  - systemd unit 与 launchd plist 属于卸载阶段的平台定义文件，缺失可作为幂等清理成功；但路径检查失败或清理目标不是普通文件时，不应静默跳过。
+- 执行流程：
+  - `install_service` 在创建服务目录后调用 `preflight_runtime_config`，该函数读取 `<runtime_root>/configs/config.yaml` 并把运行根注入配置用于提前暴露配置错误。
+  - `uninstall_service` 经 `uninstall_platform_service` 分发到当前平台；systemd 卸载会 disable/stop、删除 unit、daemon-reload，launchd 卸载会 bootout、删除 plist。
+  - systemd/launchd 的平台管理命令已经在第 42 轮区分了幂等缺席与真实失败，本轮补齐文件系统清理部分的同类语义。
+- 优化方案：
+  - 新增 `inspect_optional_service_file`，使用 `std::fs::metadata` 检查服务管理文件，只把 `ErrorKind::NotFound` 作为可选缺失返回。
+  - `preflight_runtime_config` 改为先调用该 helper；缺失仍返回 `config file not found`，非文件/metadata 错误改为明确路径检查错误。
+  - 新增 `remove_optional_service_file`，在删除 systemd unit 与 launchd plist 前统一执行 metadata 检查，缺失幂等返回，非文件或删除失败携带路径上抛。
+  - 新增 platform 测试临时目录 helper，并补充必需配置缺失、配置路径目录形态、可选服务文件缺失、可选服务文件删除、可选服务文件目录形态五类测试。
+- 文件变更：
+  - 修改：`src/service/platform.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test service -- --nocapture`：通过，46 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，233 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/service/platform.rs` 中生产路径已无 `.exists()` 调用；剩余文件删除通过 `remove_optional_service_file` 统一处理。
+- 修改部分代码审核：
+  - 已确认 `config.yaml` 缺失仍是安装前硬失败，不会因为 helper 名称里的 optional 语义被放宽。
+  - 已确认 `config.yaml`、systemd unit、launchd plist 路径存在但为目录时都会进入“path is not a file”错误通道。
+  - 已确认 systemd/launchd 定义文件缺失仍保持卸载幂等成功，符合第 42 轮平台命令缺席处理策略。
+  - 已确认删除失败会带上文件类型、路径和底层错误，不再只暴露裸 `remove_file` 错误。
+  - 已确认新增测试不执行真实 systemd/launchd/sc 命令，仅覆盖文件检查与删除 helper 的本地语义。
+- 遗留问题：
+  - `src/service/mod.rs::normalize_service_runtime_root_path` 仍使用 `absolute_path.exists()` 与 `is_dir()` 判断运行根，后续可追踪服务运行根解析链路，改为 metadata 显式区分缺失、非目录与检查失败。
+
+### 2026-07-05 第 45 轮：收紧服务运行根解析与标记目录检查
+
+- 问题定位：
+  - 延续第 44 轮遗留项，确认 `src/service/mod.rs::normalize_service_runtime_root_path` 使用 `absolute_path.exists()` 与 `absolute_path.is_dir()` 判断显式或推导出的服务运行根。
+  - 同一调用链上的 `looks_like_service_runtime_root` 使用 `Path::is_dir()` 判断 `configs` / `skills` 标记目录，会把 metadata 检查失败或标记路径为文件的情况折叠成“不像运行根”。
+  - `normalize_service_runtime_root_path` 还使用 `canonicalize().unwrap_or(absolute_path)`，会在规范化失败时静默降级为未规范化路径，不符合运行根入口的严格性要求。
+- 执行流程：
+  - `install_service`、`run_service_entrypoint`、`print_service_definition` 都通过 `resolve_service_runtime_root` 解析运行根。
+  - 显式传入 `runtime_root` 时直接进入 `normalize_service_runtime_root_path`。
+  - 未显式传入时，先通过当前目录和可执行文件布局调用 `resolve_service_runtime_root_from_layout` 推导候选根，再进入同一个规范化函数。
+  - 候选根是否像运行根由 `configs` 或 `skills` 标记目录决定，因此标记目录形态错误也属于运行根解析事实链的一部分。
+- 优化方案：
+  - `normalize_service_runtime_root_path` 改为使用 `std::fs::metadata`，仅将 `ErrorKind::NotFound` 映射为 `runtime_root does not exist`。
+  - metadata 其它错误返回 `failed to inspect runtime_root ...`，路径存在但不是目录返回 `runtime_root is not a directory`。
+  - `canonicalize` 失败不再降级，改为返回包含路径的 `failed to canonicalize runtime_root ...`。
+  - `resolve_service_runtime_root_from_layout` 返回类型从 `Option<PathBuf>` 改为 `Result<Option<PathBuf>, _>`，让标记目录检查错误可以上抛。
+  - 新增 `runtime_root_marker_dir_present`，对 `configs` / `skills` 标记目录执行 metadata 检查；缺失返回 `false`，非目录或检查失败返回错误。
+  - 补充运行根缺失、文件形态运行根、正常 canonicalize、无标记候选返回 None、文件形态 `configs` 标记报错等测试。
+- 文件变更：
+  - 修改：`src/service/mod.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test service -- --nocapture`：通过，51 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，238 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/service/mod.rs` 中已无 `Path::exists()`、`Path::is_dir()` 与 `canonicalize().unwrap_or(...)` 生产路径；剩余 `metadata.is_dir()` 为显式 metadata 检查后的形态判断。
+- 修改部分代码审核：
+  - 已确认显式 runtime_root 缺失、非目录、检查失败、canonicalize 失败分别进入不同错误文本。
+  - 已确认隐式布局推导在没有任何运行根标记时仍返回 `None`，保持原有“无候选匹配”的行为。
+  - 已确认 `configs` 或 `skills` 标记路径存在但不是目录时不再被当作“无标记”，而是显式报错。
+  - 已确认调用方 `resolve_service_runtime_root` 仍在无匹配候选时返回原有引导提示文案，只是额外传播标记目录检查错误。
+  - 已确认本轮没有改变候选路径顺序：当前目录、当前目录父级 bin 情况、当前目录 output、可执行文件目录、可执行文件父级、可执行文件目录 output 的优先级保持不变。
+- 遗留问题：
+  - 服务域内生产路径的 `exists()` 已基本清理，后续应重新全局扫描新的坏味道，优先关注其它模块中仍然吞掉 filesystem/metadata 错误或使用 `unwrap_or` 静默降级的路径。
+
+### 2026-07-05 第 46 轮：收紧 LuaSkills 运行路径检查与隐式运行根错误传播
+
+- 问题定位：
+  - 全局扫描发现 `src/luaskills/runtime_paths.rs` 同时存在 `exists/is_dir/is_file` 路径判断、`canonicalize(...).unwrap_or(...)` 静默降级，以及隐式运行根推断返回 `Option` 导致路径检查错误无法上抛。
+  - 该文件负责 LuaSkills 的运行根、技能根、资源目录、工具目录、FFI 目录、`system_lua_lib` 与 `lua_packages` 解析，属于引擎启动前的核心路径边界。
+  - 旧实现能拒绝一部分文件形态目录，但 metadata 检查失败会被 `exists/is_dir` 折叠为缺失或继续走默认路径。
+- 执行流程：
+  - `build_luaskills_engine_options` 先通过 `resolve_runtime_root_from_config` 获取运行根，再解析 runtime temp、lua packages、resources、host tools、FFI、system_lua_lib 与 skill_config 路径。
+  - 显式 `runtime_root` 来自宿主配置；未配置时通过当前目录与可执行文件位置调用 `resolve_implicit_runtime_root_from_paths` 推断。
+  - `resolve_skill_roots_from_config` 会基于运行根合成 ROOT/USER 技能根，随后校验目录与运行时 sibling space 唯一性。
+  - 因此“缺失的可选目录”和“路径检查失败/目录形态错误”必须区分，否则 LuaSkills 可能用错误的默认路径启动。
+- 优化方案：
+  - 新增 `optional_path_metadata`，统一把 `NotFound` 映射为缺失，其它 metadata 错误返回包含路径的错误。
+  - 新增 `optional_directory_present` 与 `optional_file_present`，分别处理可选目录/文件，缺失返回 `false`，非预期形态直接报错。
+  - 新增 `canonicalize_lua_visible_directory`，对已确认存在的运行时目录执行 canonicalize，并继续复用 Windows verbatim 前缀清理逻辑。
+  - `resolve_runtime_root_from_config` 显式 runtime_root 改为 metadata 检查并 canonicalize，不再使用 `exists/is_dir`。
+  - `resolve_implicit_runtime_root_from_paths` 从 `Option<PathBuf>` 升级为 `Result<Option<PathBuf>, String>`，托管布局与仓库布局的路径错误现在可上抛。
+  - `resolve_skill_config_file_path`、技能根校验、runtime resources、host tools、FFI、system_lua_lib、lua_packages 解析全部改为共享 helper。
+  - `normalize_skill_root_path` 仅在 `NotFound` 时保留绝对路径用于后续缺失校验，其它 canonicalize 错误不再静默降级。
+  - 补充 `skill_config.json` 目录形态、隐式 repository runtime 文件形态、托管 skills 标记文件形态等测试，并更新隐式运行根测试以断言错误传播。
+- 文件变更：
+  - 修改：`src/luaskills/runtime_paths.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test luaskills -- --nocapture`：通过，46 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，240 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`runtime_paths.rs` 中目标 `Path::exists/is_dir/is_file` 生产判断已替换为 metadata helper；剩余 `metadata.is_dir/is_file` 属于显式检查后的形态判断。
+- 修改部分代码审核：
+  - 已确认显式 runtime_root 缺失仍返回 `configured runtime_root does not exist`，非目录仍返回 `configured runtime_root is not a directory`。
+  - 已确认隐式运行根无匹配候选仍返回 `Ok(None)`，但 repository runtime 或 hosted marker 为文件时改为显式错误。
+  - 已确认缺失的 runtime resources、FFI、lua_packages 仍按 `None` 处理，host tools 与 system_lua_lib 缺失仍按默认路径返回。
+  - 已确认已有文件形态目录测试的错误文本保持兼容，新增测试覆盖 `skill_config.json` 与 hosted skills marker 的目录/文件形态边界。
+  - 已确认 `normalize_skill_root_path` 仍允许缺失路径进入后续 configured/implicit skill root 校验，但不再吞掉非 NotFound 的 canonicalize 错误。
+- 遗留问题：
+  - `normalize_skill_root_key` 仍以 `unwrap_or_else(|_| path.to_path_buf())` 折叠 `normalize_skill_root_path` 错误；该函数目前返回 `String` 并被重复用于去重/retain，后续可追踪是否需要引入可失败的 key 生成路径。
+
+### 2026-07-05 第 47 轮：将生产技能根 key 生成改为可失败路径
+
+- 问题定位：
+  - 延续第 46 轮遗留项，确认 `normalize_skill_root_key` 通过 `normalize_skill_root_path(path).unwrap_or_else(|_| path.to_path_buf())` 折叠路径规范化错误。
+  - 调用点分为两类：生产路径中的技能根去重、sibling runtime space 校验、ROOT/USER 托管根替换；以及测试中用于比较路径文本的断言。
+  - 生产路径不能继续吞掉 canonicalize 或路径检查错误；测试比较 helper 可以保留不可失败语义，但不应作为普通构建 API 暴露。
+- 执行流程：
+  - `resolve_skill_roots_from_config` 在推入每个技能根时生成路径 key，用于拒绝重复技能根。
+  - `validate_unique_skill_root_spaces` 生成父目录 key，用于拒绝多个技能根共享同一个 sibling runtime space。
+  - `ensure_user_skill_manager_root` 和 `ensure_root_skill_manager_root` 会创建托管 USER/ROOT 目录，然后从现有根链中移除相同路径的旧根，再追加托管根。
+  - 旧实现里的 `Vec::retain` 闭包无法使用 `?` 上抛 key 生成错误，因此错误被隐藏在不可失败 helper 内。
+- 优化方案：
+  - 新增 `try_normalize_skill_root_key`，返回 `Result<String, String>`，生产调用保留 `normalize_skill_root_path` 的错误。
+  - 新增内部 `render_skill_root_key`，把已经规范化的路径渲染为跨平台比较 key，避免已经规范化的路径重复 canonicalize。
+  - `resolve_skill_roots_from_config` 对已规范化的存储路径直接使用 `render_skill_root_key`。
+  - `validate_unique_skill_root_spaces` 改为调用 `try_normalize_skill_root_key`，父目录 key 生成失败时直接返回错误。
+  - `ensure_user_skill_manager_root` 与 `ensure_root_skill_manager_root` 改为使用显式循环 helper `skill_roots_without_matching_key`，替代不可上抛错误的 `retain` 闭包。
+  - 旧 `normalize_skill_root_key` 保留为 `#[cfg(test)]` 测试 helper，普通构建不再导出该降级接口。
+  - 新增测试覆盖 `try_normalize_skill_root_key` 对缺失路径仍保留延后校验语义。
+- 文件变更：
+  - 修改：`src/luaskills/runtime_paths.rs`
+  - 修改：`src/luaskills/mod.rs`
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test luaskills -- --nocapture`：通过，47 passed。
+  - `rtk cargo test skill_manager -- --nocapture`：通过，12 passed。
+  - `rtk cargo check`：通过，无警告。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，241 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/bootstrap/runtime_init.rs` 与 `src/luaskills/runtime_paths.rs` 的生产调用均使用 `try_normalize_skill_root_key` 或 `render_skill_root_key`；旧 `normalize_skill_root_key` 仅测试编译可见。
+- 修改部分代码审核：
+  - 已确认 ROOT/USER 托管根替换仍会移除相同路径旧根，只是 key 生成失败时现在显式报错。
+  - 已确认 `Vec::retain` 被替换为显式循环后，保留顺序不变，且仍克隆未匹配的原有根。
+  - 已确认缺失技能根路径仍允许生成 key，后续 configured/implicit skill root 校验继续给出领域专用缺失错误。
+  - 已确认普通构建不再导出不可失败 `normalize_skill_root_key`，避免新生产代码继续依赖降级行为。
+  - 已确认新增 helper 注释说明了参数、返回值与错误传播意图。
+- 遗留问题：
+  - 全局扫描仍显示 `bootstrap/runtime_init.rs` 中 `skill_manager_layer_rank(...).unwrap_or(usize::MAX)`、`bootstrap/runtime_init.rs` 的 `PATH` 环境变量默认值处理，以及若干 bootstrap 路径 `exists/is_dir` 判断；后续可继续从启动初始化链路中挑选高风险项追踪。
+
+### 2026-07-05 第 48 轮：收紧 ROOT update-all 技能发现路径检查
+
+- 问题定位：
+  - 延续第 47 轮遗留项，确认 `src/bootstrap/runtime_init.rs::collect_managed_root_skill_ids` 使用 `root.skills_dir.exists()` 判定 ROOT 技能目录是否存在，并使用 `entry.path().join("skill.yaml").exists()` 判定技能清单是否存在。
+  - ROOT update-all 只应在 ROOT skills 目录缺失时返回空集合；如果 ROOT skills 路径是文件、技能清单路径是目录或 metadata 检查失败，应显式失败。
+  - 该函数直接服务 `root-skill-manager update-all`，错误吞掉会导致损坏技能目录被静默跳过，运维侧误以为没有可更新技能。
+- 执行流程：
+  - `run_root_skills_update_mode` 构建 ROOT CLI 上下文与 `SkillManager` 后调用 `collect_managed_root_skill_ids`。
+  - `collect_managed_root_skill_ids` 扫描 ROOT skills 目录，只收集同时具备 `skill.yaml` 且安装记录 `managed=true` 的技能。
+  - 后续更新循环只遍历该集合；因此发现阶段的静默跳过会直接改变 update-all 的实际操作范围。
+- 优化方案：
+  - 新增 `optional_runtime_path_metadata`，只把 `NotFound` 视为缺失，metadata 其它错误携带路径上抛。
+  - 新增 `optional_runtime_directory_present` 与 `optional_runtime_file_present`，分别用于 ROOT skills 目录与技能清单文件检查。
+  - `collect_managed_root_skill_ids` 在 ROOT skills 目录缺失时仍返回空集合，但非目录形态会报错。
+  - 目录项 `file_type` 检查增加路径上下文，避免裸 IO 错误缺少定位。
+  - `skill.yaml` 缺失仍跳过该技能，目录形态或检查失败改为显式错误。
+  - 新增测试覆盖缺失 ROOT skills 目录返回空、ROOT skills 路径为文件时报错、`skill.yaml` 为目录时报错。
+- 文件变更：
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 修改：`src/bootstrap/startup/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test collect_managed_root_skill_ids -- --nocapture`：通过，4 passed。
+  - `rtk cargo test skill_manager -- --nocapture`：通过，12 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，244 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`collect_managed_root_skill_ids` 中目标 `exists()` 已无命中；ROOT discovery 文件系统检查都走 metadata helper。
+- 修改部分代码审核：
+  - 已确认缺失 ROOT skills 目录仍返回空集合，保持 update-all 在未安装 ROOT 技能时的友好行为。
+  - 已确认 ROOT skills 路径为文件会返回 `ROOT skills directory is not a directory`。
+  - 已确认单个技能缺少 `skill.yaml` 仍会跳过，`skill.yaml` 为目录则返回 `ROOT skill manifest is not a file`。
+  - 已确认目录项 `file_type` 失败时包含具体 entry 路径，便于定位损坏项。
+  - 已确认唯一生产调用点 `run_root_skills_update_mode` 会直接上抛发现阶段错误，不会继续执行部分更新。
+- 遗留问题：
+  - `add_libs_to_path` 仍使用 `libs_dir.exists()` 与 `libs_dir.is_dir()` 检查 runtime libs 目录；该路径会修改进程 `PATH`，后续应优先追踪并收紧为 metadata 检查。
+
+### 2026-07-05 第 49 轮：收紧 runtime libs PATH 修改前置检查
+
+- 问题定位：
+  - 延续第 48 轮遗留项，确认 `src/bootstrap/runtime_init.rs::add_libs_to_path` 在修改进程 `PATH` 前使用 `libs_dir.exists()` 与 `libs_dir.is_dir()` 检查 `<runtime_root>/libs`。
+  - `libs` 缺失应跳过 PATH 修改；但路径检查失败或 `libs` 为文件不应被静默当作缺失。
+  - 该函数在 call-tools、本地 ROOT 生命周期、启动入口等路径都会执行，错误处理必须发生在 `set_var("PATH", ...)` 之前。
+- 执行流程：
+  - 启动和本地 CLI 路径先解析 runtime_root，再调用 `add_libs_to_path`。
+  - 若 `<runtime_root>/libs` 存在且为目录，函数将其前置到当前 `PATH`。
+  - 若缺失，函数应无副作用返回；若路径损坏，应拒绝继续，避免把错误运行环境写入进程 PATH。
+- 优化方案：
+  - `add_libs_to_path` 改为复用第 48 轮新增的 `optional_runtime_directory_present`。
+  - 缺失 `libs` 继续 `Ok(())`，非目录或 metadata 错误直接返回错误，且不会执行 PATH 拼接与 `set_var`。
+  - 新增测试覆盖缺失 libs 不修改 PATH、存在 libs 会前置 PATH、文件形态 libs 报错且 PATH 不变。
+- 文件变更：
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 修改：`src/bootstrap/startup/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test add_libs_to_path -- --nocapture`：通过，3 passed。
+  - `rtk cargo test startup -- --nocapture`：通过，33 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，246 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`add_libs_to_path` 中 `libs_dir.exists()` / `libs_dir.is_dir()` 已无命中；另有一个复查用 `rg` 正则写法失败，但不属于验证门禁，已由前述检索与测试覆盖目标。
+- 修改部分代码审核：
+  - 已确认缺失 `<runtime_root>/libs` 时 PATH 保持原值。
+  - 已确认存在目录时 PATH 以前置 libs 目录的形式更新，分隔符仍按平台选择。
+  - 已确认文件形态 libs 会返回 `runtime libs path is not a directory`，且 PATH 不变。
+  - 已确认 PATH 修改仍只发生在 runtime_root 成功解析且 libs 目录通过 metadata 检查之后。
+  - 已确认测试保存并恢复原始 PATH，避免污染后续测试。
+- 遗留问题：
+  - `bootstrap/runtime_init.rs::sort_skill_manager_formal_roots` 仍在排序阶段使用 `skill_manager_layer_rank(...).unwrap_or(usize::MAX)`；虽然前一循环已校验标签，但后续可改成显式 rank 缓存以移除排序闭包内的降级表达。
+### 2026-07-05 第 50 轮：移除 skill-manager 根排序中的降级 rank
+- 问题定位：
+  - 延续第 49 轮遗留项，确认 `src/bootstrap/runtime_init.rs::sort_skill_manager_formal_roots` 在先行校验 root label 后，仍在 `sort_by_key` 闭包内使用 `skill_manager_layer_rank(&root.name).unwrap_or(usize::MAX)`。
+  - 该 fallback 虽然理论上被前置校验遮挡，但仍把“未知正式层级”表达成最大排序 rank，不利于长期维护，也让排序阶段继续保留投机式降级语义。
+  - 同一函数旧实现会在遍历过程中先修改部分 `root.name`，再遇到无效 label 返回错误；这意味着错误路径可能留下局部规范化后的输入状态。
+- 执行流程：
+  - `ensure_skill_manager_runtime_roots`、`ensure_user_skill_manager_root`、`ensure_root_skill_manager_root` 都会调用 `sort_skill_manager_formal_roots`。
+  - 这些入口共同维护 ROOT、PROJECT、USER 三类 skill-manager 正式根的顺序，并影响普通启动、USER 根注入、ROOT 根注入和 root-skill-manager CLI 的根链构造。
+  - 因此排序函数必须在所有 label 与 rank 都确认有效后再写回输入，避免错误路径污染调用方持有的根链。
+- 优化方案：
+  - 将排序逻辑改为先克隆并规范化每个 `RuntimeSkillRoot`，再计算显式 rank，形成 `(rank, normalized_root)` 缓存。
+  - 只有当全部 rank 计算成功后，才对缓存列表排序并写回原始切片。
+  - 删除排序闭包中的 `unwrap_or(usize::MAX)`，使未知 label 只能通过 `skill_manager_layer_rank` 的错误通道显式返回。
+  - 在测试入口中以 `#[cfg(test)]` 暴露 `sort_skill_manager_formal_roots`，补充排序规范化与错误路径不改写输入的覆盖。
+- 文件变更：
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 修改：`src/bootstrap/startup.rs`
+  - 修改：`src/bootstrap/startup/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test sort_skill_manager_formal_roots -- --nocapture`：通过，2 passed。
+  - `rtk cargo test skill_manager -- --nocapture`：通过，14 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，248 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`sort_skill_manager_formal_roots` 目标路径中旧的 `unwrap_or(usize::MAX)` 已无命中，排序逻辑只使用预计算的 `ranked_roots`。
+- 修改部分代码审核：
+  - 已确认排序函数不再使用 fallback rank，未知正式层级只会返回 `unsupported skill root label` 错误。
+  - 已确认无效 label 场景不会局部改写传入的 `skill_roots`，调用方可以安全地把该错误视为构造失败。
+  - 已确认正常路径仍会把大小写不一致的 label 规范化为 `ROOT`、`PROJECT`、`USER`，并按既有正式层级顺序排序。
+  - 已确认 `startup.rs` 的新增导入仅在测试编译下生效，没有扩大生产模块的可见调用面。
+  - 已确认本轮没有引入新的候选字段、模糊路径兼容或多来源 fallback。
+- 遗留问题：
+  - 后续继续全局扫描剩余吞错和投机式降级点；可优先关注启动路径中的 `PATH` 默认值处理、信号注册 `.ok()` / `let _ =`、可执行路径检查，以及配置/模板/引擎选项中仍可能存在的 `exists/is_dir/is_file` 或 `unwrap_or_default`。
+### 2026-07-05 第 51 轮：收紧 app_config 配置发现文件检查
+- 问题定位：
+  - 全局扫描发现 `src/config/app_config/paths.rs` 仍在 `find_runtime_root_config` 和可执行文件父目录配置发现路径中使用 `config_path.exists()`。
+  - `exists()` 只能给出布尔结果，会把 metadata 检查失败折叠成“配置文件不存在”，不符合配置加载入口已有的 `Result` 错误通道。
+  - `config.yaml` 路径存在但为目录时，旧逻辑会把它作为已发现配置传给后续 `Config::from_file`，错误暴露点滞后到读文件阶段，无法明确说明这是发现阶段的路径形态错误。
+- 执行流程：
+  - `Config::load` 解析 argv，拒绝已移除的 `--config` 后，根据是否提供 `--runtime-root` 选择配置发现路径。
+  - 提供 `--runtime-root` 时，`find_runtime_root_config` 查找 `<runtime_root>/configs/config.yaml`。
+  - 未提供 `--runtime-root` 时，`find_exe_parent_config` 基于当前可执行文件路径查找 `<exe_parent>/configs/config.yaml`。
+  - 发现到配置路径后，`Config::from_file` 负责读取 YAML 并写入 `loaded_config_path`；因此发现阶段必须区分“文件缺失”和“路径检查失败/路径形态错误”。
+- 优化方案：
+  - 新增 `optional_config_file_path`，通过 `std::fs::metadata` 检查候选配置路径。
+  - 仅将 `ErrorKind::NotFound` 映射为 `Ok(None)`，保持未部署配置文件时的既有缺席语义。
+  - 将 metadata 其它错误和非文件形态改为携带路径与来源标签的显式错误。
+  - `find_runtime_root_config` 和 `find_exe_parent_config_from_exe_path` 统一复用该 helper。
+  - 将 `find_exe_parent_config_from_exe_path` 暴露为 `pub(super)`，仅供同模块测试精确构造可执行文件父目录布局。
+  - 补充运行根目录形态配置、可执行文件父目录缺失配置、可执行文件父目录目录形态配置三类测试。
+- 文件变更：
+  - 修改：`src/config/app_config/paths.rs`
+  - 修改：`src/config/app_config/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test find_runtime_root_config_rejects_directory_shaped_config_path -- --nocapture`：通过，1 passed。
+  - `rtk cargo test find_exe_parent_config_from_exe_path -- --nocapture`：通过，2 passed。
+  - `rtk cargo test app_config -- --nocapture`：通过，13 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，251 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/config/app_config/paths.rs` 中目标 `config_path.exists()` 已无命中，两个配置发现入口均转为 `optional_config_file_path`。
+- 修改部分代码审核：
+  - 已确认缺失的 `configs/config.yaml` 仍返回 `Ok(None)`，不会把“未部署配置”误报为错误。
+  - 已确认目录形态的 `config.yaml` 现在分别返回 `runtime-root config path is not a file` 或 `executable-parent config path is not a file`。
+  - 已确认 metadata 检查失败会携带候选路径和发现来源，不再被折叠成“未找到配置文件”。
+  - 已确认 `find_exe_parent_config_from_exe_path` 仅提升到 `pub(super)`，没有暴露到 `config` 外部公共 API。
+  - 已确认 `Config::load`、服务入口和 bootstrap 调用链仍沿用原有 `Result` 错误传播方式，没有引入新兼容分支或候选路径轮询。
+- 遗留问题：
+  - `src/luaskills/engine_options.rs` 中仍有可执行路径检查使用 `exists/is_file`，后续可追踪该路径是否会把损坏的 `space-controller` 可执行文件配置误判为缺失。
+  - `src/support/tool_result_format/templates.rs` 仍有模板根发现路径使用 `exists/is_dir`，后续可结合模板加载链路继续区分缺失根与损坏根。
+### 2026-07-05 第 52 轮：收紧 space-controller 可执行文件路径检查
+- 问题定位：
+  - 延续第 51 轮遗留项，确认 `src/luaskills/engine_options.rs::resolve_space_controller_executable_path` 对显式 `space_controller.executable_path` 和约定复制产物 `<runtime_root>/bin/<controller>` 都使用 `exists/is_file` 检查。
+  - 显式配置路径缺失应立即失败；约定复制产物缺失则允许返回 `None`，表示宿主不会注入本地可执行文件路径。
+  - 旧实现能区分一部分文件/目录形态，但 metadata 检查失败仍会被布尔判断折叠成“缺失”或后续形态判断，错误语义不够闭合。
+- 执行流程：
+  - `build_luaskills_engine_options` 解析 runtime_root 后调用 `resolve_space_controller_options`。
+  - `resolve_space_controller_options` 先校验 auto-spawn endpoint，再调用 `resolve_space_controller_executable_path` 注入控制器可执行文件路径。
+  - 显式配置路径来自 `space_controller.executable_path`，相对路径需要基于 runtime_root 解析。
+  - 未配置显式路径时，函数检查 `<runtime_root>/bin/<space_controller_executable_file_name()>`，仅在该复制产物存在且为文件时注入。
+- 优化方案：
+  - 新增 `optional_controller_executable_file_path`，用 `std::fs::metadata` 检查候选控制器可执行文件路径。
+  - 仅将 `ErrorKind::NotFound` 映射为 `Ok(None)`，其余 metadata 错误携带路径与来源标签上抛。
+  - 新增 `require_controller_executable_file_path`，复用可选 helper 并把显式配置缺失转换为原有 `does not exist` 硬错误。
+  - 显式配置路径改为走 require helper，fallback 复制产物改为走 optional helper，避免用布尔参数混合两种缺失语义。
+  - 补充显式配置路径为目录时的测试，确认错误来源标签仍为 `space_controller.executable_path`。
+- 文件变更：
+  - 修改：`src/luaskills/engine_options.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test controller_config_rejects_directory_shaped_executable_path -- --nocapture`：通过，1 passed。
+  - `rtk cargo test build_engine_options_rejects_missing_controller_executable_path -- --nocapture`：通过，1 passed。
+  - `rtk cargo test build_engine_options_rejects_directory_shaped_fallback_controller_path -- --nocapture`：通过，1 passed。
+  - `rtk cargo test luaskills -- --nocapture`：通过，48 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，252 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：目标函数中旧的 `normalized_path.exists/is_file` 与 `copied_path.exists/is_file` 检查已无命中，统一转为 controller executable metadata helper。
+- 修改部分代码审核：
+  - 已确认显式 `space_controller.executable_path` 缺失仍返回 `space_controller.executable_path does not exist`，没有被放宽成 fallback 缺失。
+  - 已确认显式路径为目录时返回 `space_controller.executable_path is not a file`，fallback 路径为目录时仍返回 `space_controller fallback executable path is not a file`。
+  - 已确认 fallback 复制产物缺失仍返回 `Ok(None)`，保持默认不注入本地可执行文件路径的既有语义。
+  - 已确认 metadata 检查失败会携带路径与来源标签，不再通过 `exists()` 折叠成缺失。
+  - 已确认本轮没有改变 endpoint 校验、进程模式映射、controller 超时参数或 LuaSkills host options 的其它字段。
+- 遗留问题：
+  - `src/support/tool_result_format/templates.rs` 中模板根发现仍使用 `exists/is_dir`，后续可追踪模板技能根与资源根发现链路。
+  - `src/support/temp_maintenance.rs` 中运行时 temp 根与清理路径仍有部分 `exists/is_dir/is_file`，后续可继续区分可接受缺失、目录损坏和检查失败。
+### 2026-07-05 第 53 轮：收紧 tool-result 模板根与模板文件发现
+- 问题定位：
+  - 延续第 52 轮遗留项，确认 `src/support/tool_result_format/templates.rs` 的隐式模板技能根、资源根发现仍使用 `exists/is_dir`。
+  - 直接测试名写着“file-shaped fallback paths should be rejected”，但旧 helper 返回 `Option<PathBuf>`，实际只能把文件形态折叠成 `None`。
+  - 同一文件的 `load_template_text` 仍用 `path.exists()` 判断模板候选，再读文件或检查文件形态；metadata 检查失败也会被折叠成模板缺失。
+- 执行流程：
+  - 工具结果渲染调用 `render_tool_result_text`，溢出时进入 truncate/page 模板加载路径。
+  - `load_template_text` 先解析模板技能根链，再解析共享资源根，并按 skill-local 模板优先、resources fallback 模板兜底的顺序读取。
+  - 模板根来源优先使用 per-call `HostRenderOptions`，其次使用 `initialize_tool_result_template_roots` 初始化的运行时根，最后才使用当前可执行文件与当前目录推导的隐式根。
+  - 因此隐式根发现阶段必须保留“根缺失可继续 fallback”和“根路径损坏必须失败”的区别。
+- 优化方案：
+  - 将 `resolve_runtime_skills_root_from_paths` 与 `resolve_runtime_resources_root_from_paths` 从 `Option<PathBuf>` 改为 `Result<Option<PathBuf>, String>`。
+  - 新增 `optional_template_directory_present`，仅把 `NotFound` 视为可选缺失，非目录形态与 metadata 错误均显式上抛。
+  - `resolve_runtime_skills_root`、`resolve_runtime_resources_root` 和上层根集合解析继续使用既有 `Result` 渲染错误通道。
+  - 新增 `read_optional_template_file`，对具体 overflow template 候选使用 metadata 检查；候选缺失继续查下一个，候选存在但非文件或检查失败则报错。
+  - 更新隐式模板根测试，将文件形态 hosted skills 与 repository resources 从“返回 None”改为显式错误断言，并保留相对可执行文件无命中时 `Ok(None)` 的回归测试。
+- 文件变更：
+  - 修改：`src/support/tool_result_format/templates.rs`
+  - 修改：`src/support/tool_result_format/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test implicit_template_roots_reject_file_shaped_skills_and_resources_paths -- --nocapture`：通过，1 passed。
+  - `rtk cargo test implicit_template_roots_reject_relative_executable_without_hosted_parent -- --nocapture`：通过，1 passed。
+  - `rtk cargo test render_tool_result_reports_directory_shaped_template_path -- --nocapture`：通过，1 passed。
+  - `rtk cargo test tool_result_format -- --nocapture`：通过，11 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，252 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`templates.rs` 中旧的路径级 `exists/is_dir/is_file` 判断已移除；剩余 `metadata.is_dir/is_file` 均位于显式 metadata helper 内。
+- 修改部分代码审核：
+  - 已确认模板根缺失仍返回 `Ok(None)` 并允许继续尝试下一种根来源。
+  - 已确认 hosted skills 文件形态返回 `hosted template skills root is not a directory`，repository resources 文件形态返回 `repository template resources root is not a directory`。
+  - 已确认相对可执行文件且无宿主父级时不会回退到进程当前目录中的 `skills/resources`，仍返回 `Ok(None)`。
+  - 已确认具体 overflow template 候选缺失时继续查找后续候选，只有存在但非文件、metadata 检查失败或读取失败才中断为渲染错误。
+  - 已确认 `render_tool_result_text` 的现有 `Result` 错误传播链覆盖 CLI、MCP 动态工具和 gRPC LuaSkills 渲染调用点。
+- 遗留问题：
+  - `src/support/temp_maintenance.rs` 中 `derive_runtime_temp_dir_from_exe_path` 与清理逻辑仍有路径存在性判断，后续可继续追踪运行时 temp 根推导和目录清理链路。
+  - 全局扫描中仍有若干测试断言使用 `exists/is_dir`，属于测试检查语义；后续优先继续处理生产路径中的吞错与降级。
+### 2026-07-05 第 54 轮：收紧 runtime temp 根推导与清理根检查
+- 问题定位：
+  - 延续第 53 轮遗留项，确认 `src/support/temp_maintenance.rs::looks_like_hosted_runtime_root` 使用 `root.join("configs").is_dir() || root.join("skills").is_dir()` 判断运行根 marker。
+  - 文件形态的 `configs` 或 `skills` marker 会被旧逻辑当成“没有 marker”，进而返回“不是运行根”，无法暴露损坏布局。
+  - `cleanup_directory_recursive` 使用 `directory_path.exists()` 判断清理根是否存在，metadata 检查失败会被折叠成缺失；清理根为文件时错误也会滞后到 `read_dir`。
+- 执行流程：
+  - 启动路径通过 `initialize_runtime_temp_root_from_config` 注册 runtime_root，再在 stdio、call-tools、内部 luaexec、ROOT skill CLI 等路径调用 `maintain_runtime_temp_dir(CleanupTrigger::Startup)`。
+  - 当没有显式 runtime_root 时，`resolve_runtime_temp_dir` 会基于当前可执行文件路径进入 `derive_runtime_temp_dir_from_exe_path`。
+  - 该函数要求可执行文件位于 `<runtime_root>/bin/<exe>` 布局，并通过 `configs` 或 `skills` marker 判断父级是否为运行根。
+  - 清理阶段通过 `cleanup_directory_recursive` 遍历 temp 根，删除过期文件并清理空目录。
+- 优化方案：
+  - 新增 `optional_temp_directory_present`，统一用 `std::fs::metadata` 检查 temp 维护相关目录。
+  - 仅将 `NotFound` 映射为 `false`，非目录形态或 metadata 错误都携带路径与角色标签上抛。
+  - `looks_like_hosted_runtime_root` 改为分别检查 `configs` 与 `skills` marker，再合并布尔结果；任一 marker 损坏都会显式失败。
+  - `cleanup_directory_recursive` 的根目录检查改为复用该 helper，清理根缺失仍幂等返回，文件形态清理根立即报错。
+  - 补充文件形态 runtime marker 与文件形态 cleanup root 两条测试。
+- 文件变更：
+  - 修改：`src/support/temp_maintenance.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test derive_runtime_temp_dir_rejects_file_shaped_runtime_marker -- --nocapture`：通过，1 passed。
+  - `rtk cargo test cleanup_directory_recursive_rejects_file_shaped_cleanup_root -- --nocapture`：通过，1 passed。
+  - `rtk cargo test temp_maintenance -- --nocapture`：通过，8 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，254 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：旧的 `directory_path.exists()` 已无命中，`configs/skills` marker 检查改为 `optional_temp_directory_present`；剩余 `metadata.is_dir/is_file` 均为显式 metadata 后的形态判断。
+- 修改部分代码审核：
+  - 已确认缺失的 marker 仍只表示“不像运行根”，不会被误报为损坏。
+  - 已确认文件形态 `configs` marker 返回 `runtime temp configs marker is not a directory`，不会继续退化成“executable parent is not a runtime root”。
+  - 已确认清理根缺失仍幂等返回 `Ok(())`，文件形态清理根返回 `runtime temp cleanup directory is not a directory`。
+  - 已确认已有过期文件删除、未来时间戳保留、空目录删除错误上抛逻辑未被改变。
+  - 已确认本轮没有改变显式 runtime_root 下 `temp` 目录派生规则，也没有改变后台跨日清理触发规则。
+- 遗留问题：
+  - 全局生产路径中的 `Path::exists/is_dir/is_file` 已大幅减少；后续可重新扫描 `unwrap_or_default`、`.ok()` 和 `let _ =`，优先处理仍会吞掉真实错误的启动或运行链路。
+  - `bootstrap/startup.rs` 中信号注册与关闭通知仍有 `.ok()` / `let _ =`，后续可追踪是否需要把信号安装失败从“降级等待 ctrl-c”改为显式诊断。
+### 2026-07-05 第 55 轮：移除 LuaSkills 正式技能根排序降级 rank
+- 问题定位：
+  - 全局扫描发现 `src/luaskills/runtime_paths.rs::sort_formal_skill_roots` 仍使用 `formal_skill_root_rank(&root.name).unwrap_or(usize::MAX)`。
+  - 该函数由 `resolve_skill_roots_from_config` 调用，用于把配置中的 ROOT、PROJECT、USER 正式技能根排成运行时要求的顺序。
+  - 当前入口通常已经通过 `normalize_formal_skill_root_name` 阻止无效标签，但排序函数自身仍把未知标签表达为最大 rank，保留了投机式 fallback。
+  - 旧排序会先重排输入，再在排序后遍历校验标签；若未来有内部调用绕过前置规范化，无效标签路径可能在返回错误前改变输入顺序。
+- 执行流程：
+  - `resolve_skill_roots_from_config` 解析 `config.skill_roots`，将命名根或旧式路径槽位转换为 `RuntimeSkillRoot`。
+  - 每个根通过 `push_unique_root` 执行名称规范化、路径规范化和重复检测。
+  - 当存在显式 `skill_roots` 配置时，函数调用 `sort_formal_skill_roots` 排序，然后再执行 sibling runtime space 校验与目录存在性校验。
+  - 因此排序阶段应完全基于显式 rank 成功结果写回，不应把未知名称降级为某个排序位置。
+- 优化方案：
+  - 将 `sort_formal_skill_roots` 改为先构造 `(rank, RuntimeSkillRoot)` 缓存。
+  - 所有 rank 计算成功后才对缓存排序并写回原始切片。
+  - 删除排序闭包中的 `unwrap_or(usize::MAX)`，让无效标签只能通过 `formal_skill_root_rank` 的错误通道返回。
+  - 将该 helper 提升为 `pub(super)` 并仅在 `#[cfg(test)]` 下导入测试模块，避免扩大外部公共 API。
+  - 补充正常 ROOT/PROJECT/USER 排序测试，以及无效标签时输入顺序不变的测试。
+- 文件变更：
+  - 修改：`src/luaskills/runtime_paths.rs`
+  - 修改：`src/luaskills/mod.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test sort_formal_skill_roots -- --nocapture`：通过，2 passed。
+  - `rtk cargo test luaskills -- --nocapture`：通过，50 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets`：通过，No issues found。
+  - `rtk cargo test`：通过，256 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/luaskills/runtime_paths.rs` 中旧的 `unwrap_or(usize::MAX)` 已无命中，排序逻辑只使用预计算的 `ranked_roots`。
+- 修改部分代码审核：
+  - 已确认正常输入仍排序为 ROOT、PROJECT、USER。
+  - 已确认无效标签 `[BROKEN, ROOT]` 会返回 `unsupported skill root name`，并保持原输入顺序不变。
+  - 已确认 `resolve_skill_roots_from_config` 的前置名称规范化、重复检测、路径规范化和后续目录校验逻辑未改变。
+  - 已确认新增 `RuntimeSkillRoot` 测试导入仅用于测试，不改变生产导出面。
+  - 已确认本轮没有新增候选字段、路径 fallback 或多来源兼容逻辑。
+- 遗留问题：
+  - `bootstrap/startup.rs` 中 `signal(SignalKind::terminate()).ok()` 以及若干 `let _ =` 仍可能吞掉关闭链路错误；后续可追踪服务运行模式的信号/关闭传播语义。
+  - `transport/http/server/streamable.rs` 中 notification 与 client response 路径仍有 `let _ = state.dispatcher.handle_message_with_context(...)`，后续可确认被忽略返回值的协议语义是否需要进一步收敛。
+### 2026-07-05 第 56 轮：修正 JSON-RPC response 被误分发为空方法请求
+- 问题定位：
+  - 延续第 55 轮 streamable HTTP 遗留项追踪后，确认当前 `SessionManager` 只保存 streamable 会话元数据与 `RequestContext`，并不存在 `state.sessions.send(...)` 投递接口；上一轮遗留描述中的该点与源码事实不一致，本轮已纠偏。
+  - `handle_streamable_post` 会把带 `id` 且包含 `result` 或 `error` 的消息分类为 `JsonRpcMessageKind::Response`，随后进入 `handle_streamable_client_response`。
+  - `handle_streamable_client_response` 完成 session 与协议版本校验后仍调用 `McpDispatcher::handle_message_with_context`。
+  - `McpDispatcher::handle_single` 旧逻辑优先判断 `message.get("id")`，导致 JSON-RPC response 因携带 `id` 被误当成 request；由于没有 `method`，最终生成 `Method not found: ` 错误响应，再被 streamable handler 的 `let _ =` 忽略。
+  - notification 返回 `None` 是 JSON-RPC 与当前 dispatcher 的明确契约，本轮不把 notification 的无响应语义误判为投递失败。
+- 执行流程：
+  - streamable HTTP POST 先解析 JSON body，再通过 `classify_jsonrpc_message` 区分 initialize request、普通 request、notification 与 client response。
+  - client response 路径仅应完成会话有效性校验并接受消息，不应进入 host runtime request 分发。
+  - stdio、gRPC、legacy SSE 与 streamable HTTP 都复用 `McpDispatcher`，因此根因需要在统一 dispatcher 边界修复，而不是只在单个 HTTP handler 中绕开。
+  - batch 分发同样复用 `handle_single`，旧逻辑会把 batch 中的 response 项也误转为错误响应项。
+- 优化方案：
+  - 新增 `is_jsonrpc_response_message`，用“无 `method`、包含 `id`、且包含 `result` 或 `error`”这组确定条件识别客户端 JSON-RPC response。
+  - 在 `handle_single` 的 request 分支前先识别 response，命中后直接返回 `None`，让 response 在协议适配层显式终止。
+  - 保持未知 request 的 `Method not found` 行为不变；只有符合 JSON-RPC response 形态的消息会被忽略。
+  - 补充 success response、error response 与混合 batch 三类测试，确保 response 不再生成空方法错误，同时 batch 中真实 request 的响应仍被保留。
+- 文件变更：
+  - 修改：`src/transport/mcp/dispatcher.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test dispatcher_`：通过，4 passed。
+  - `rtk cargo test transport::mcp`：通过，4 passed。
+  - `rtk cargo test transport::http::server`：通过，12 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，259 passed。
+  - `rtk cargo fmt -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/transport/mcp/dispatcher.rs` 中 response guard 位于 request 分发之前，batch 仍沿用既有 `None` 过滤逻辑。
+- 修改部分代码审核：
+  - 已确认 response 判定条件足够窄，不会吞掉带 `method` 的 request，也不会吞掉只有 `id` 但没有 `result/error` 的无效 request 对象。
+  - 已确认 `dispatcher_ignores_jsonrpc_success_response_messages` 与 `dispatcher_ignores_jsonrpc_error_response_messages` 分别覆盖客户端成功响应和错误响应。
+  - 已确认 `dispatcher_omits_jsonrpc_response_items_from_batches` 覆盖 batch response 项过滤，并验证同批次 `ping` request 仍返回正常响应。
+  - 已确认 streamable HTTP 的 session 存在性校验、协议版本校验与 request response 返回逻辑未被改变。
+  - 已确认本轮没有新增候选字段、模糊路径兼容或投机式 fallback。
+- 遗留问题：
+  - `bootstrap/startup.rs` 中信号注册与关闭通知仍有 `.ok()` / `let _ =`，后续可继续追踪服务运行模式的关闭链路错误显式化。
+  - `handle_streamable_client_response` 目前仍调用 dispatcher，但 dispatcher 已把 JSON-RPC response 变为 no-op；后续如需进一步收敛，可在确认所有传输契约后让该 handler 在会话校验后直接终止。
+### 2026-07-05 第 57 轮：收紧 HTTP/gRPC 传输关闭信号的布尔语义
+- 问题定位：
+  - 延续第 56 轮遗留项追踪关闭链路，确认服务模式通过 `watch::Receiver<bool>` 把关闭状态传给 HTTP 与 gRPC 传输层。
+  - 发送端当前只在进程信号或 Windows service stop/shutdown 事件中发送 `true`，初始值为 `false`。
+  - HTTP `run_http_with_shutdown` 与 gRPC `run_grpc_with_shutdown` 旧逻辑均使用 `let _ = shutdown_rx.changed().await;`，只等待“任意变化”，没有读取 bool 状态。
+  - 这会让未来任何 `false` 刷新也触发 graceful shutdown，破坏 `watch::Receiver<bool>` 已表达的“关闭请求状态”语义。
+  - `changed()` 返回错误代表发送端全部断开，旧逻辑会隐式结束等待；该行为可以保留，但需要变成显式契约。
+- 执行流程：
+  - `run_service_host_for_runtime_root` 在进程信号模式或外部 service 模式下获得一个 `watch::Receiver<bool>`。
+  - `run_network_transports_with_shutdown` 克隆同一条关闭接收器，分别传给 HTTP 与 gRPC。
+  - HTTP 使用 Axum `with_graceful_shutdown`，gRPC 使用 tonic `serve_with_shutdown`，两者都在 shutdown future 完成后停止接受连接。
+  - 因此传输层等待逻辑必须等到接收器当前值为 `true`，或发送端全部关闭且不可能再收到后续关闭状态。
+- 优化方案：
+  - 新增 `src/transport/shutdown.rs`，提供共享 helper `wait_for_shutdown_requested`。
+  - helper 通过 `borrow_and_update()` 读取当前 bool 状态；只有观察到 `true` 时才结束等待。
+  - 当 `changed().await` 返回错误时结束等待，显式表达“发送端全部断开时也允许传输退出”的契约。
+  - HTTP 与 gRPC graceful shutdown future 统一改为调用该 helper，不再直接忽略 `changed()` 结果。
+  - 补充测试覆盖 `false` 更新不会结束等待、`true` 更新会结束等待、发送端断开会结束等待。
+- 文件变更：
+  - 新增：`src/transport/shutdown.rs`
+  - 修改：`src/transport/mod.rs`
+  - 修改：`src/transport/http/server.rs`
+  - 修改：`src/transport/grpc/service/server_runner.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test wait_for_shutdown_requested`：通过，2 passed。
+  - `rtk cargo test transport::shutdown`：通过，2 passed。
+  - `rtk cargo test transport::http::server`：通过，12 passed。
+  - `rtk cargo test transport::grpc`：通过，14 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，261 passed。
+  - `rtk cargo fmt -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：旧的 `shutdown_rx.changed().await` 直接等待已无命中，HTTP/gRPC 均调用 `wait_for_shutdown_requested`。
+- 修改部分代码审核：
+  - 已确认 helper 会先读取当前状态，初始值若已为 `true` 会立即触发关闭。
+  - 已确认 `false` 更新不会完成等待任务，避免将状态刷新误判为关闭请求。
+  - 已确认发送端全部断开时 helper 会结束等待，避免传输层永久挂在无人可发送的 watch 通道上。
+  - 已确认 HTTP/gRPC 地址解析、server 构建、路由注册与服务列表未被改变，本轮只替换 graceful shutdown future。
+  - 已确认本轮没有新增多来源字段猜测、兼容性轮询或投机式 fallback。
+- 遗留问题：
+  - `bootstrap/startup.rs` 中 `wait_for_process_shutdown_signal` 仍用 `.ok()` 降级处理 SIGTERM 注册失败，后续可继续确认是否应把信号安装失败显式上报。
+  - Windows service 与进程信号发送端仍使用 `let _ = shutdown_tx.send(true)`；当前语义是“接收端已结束时无需再通知”，后续若要做服务停机诊断可单独追踪。
+### 2026-07-05 第 58 轮：显式拒绝缺失或非字符串 method 的 JSON-RPC request
+- 问题定位：
+  - 第 58 轮重新扫描剩余吞错与降级候选后，确认 `src/transport/mcp/dispatcher.rs::handle_single` 对带 `id` 的消息使用 `message.get("method").and_then(...).unwrap_or("")`。
+  - 该逻辑会把“不是 response 且 method 缺失或不是字符串”的畸形 JSON-RPC request 降级为空方法 request。
+  - 降级后的请求进入 `handle_request`，最终返回 `-32601 Method not found: `，把协议结构错误误报为业务方法不存在。
+  - 第 56 轮已经让 JSON-RPC response 在 dispatcher 边界 no-op，因此本轮可以在 response guard 之后安全收紧 request method 校验。
+- 执行流程：
+  - stdio 与 legacy SSE 会把 JSON-RPC 对象直接交给 `McpDispatcher`，因此 dispatcher 是这些传输的协议结构兜底边界。
+  - streamable HTTP 入口会先用 `classify_jsonrpc_message` 拦截一部分无效对象，但统一 dispatcher 仍需要自洽处理所有调用方。
+  - gRPC 泛用 MCP call 由兼容层构造 method 字段，正常路径不会触发该错误；但 dispatcher 的公共语义仍应拒绝畸形 request。
+  - batch 分发复用 `handle_single`，因此单条 request 的 method 校验也会自然覆盖 batch 中的畸形 request 项。
+- 优化方案：
+  - 保留 `is_jsonrpc_response_message` 在 request 判断之前，确保客户端 response 仍按第 56 轮语义被忽略。
+  - 将 request 分支中的 `unwrap_or("")` 改为 `let Some(method) = ... else` 显式校验。
+  - method 缺失或非字符串时直接返回 JSON-RPC `-32600`，错误文案为 `Invalid JSON-RPC request: method must be a string.`。
+  - 保持真实未知字符串 method 的 `-32601 Method not found` 路径不变。
+  - 补充两条 dispatcher 测试，分别覆盖缺失 method 与非字符串 method。
+- 文件变更：
+  - 修改：`src/transport/mcp/dispatcher.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test dispatcher_rejects_`：通过，2 passed。
+  - `rtk cargo test dispatcher_`：通过，6 passed。
+  - `rtk cargo test transport::mcp`：通过，6 passed。
+  - `rtk cargo test transport::stdio`：通过，0 passed，263 filtered out。
+  - `rtk cargo test transport::http::server`：通过，12 passed。
+  - `rtk cargo test transport::grpc`：通过，14 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，263 passed。
+  - `rtk cargo fmt -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/transport/mcp/dispatcher.rs` 中目标 `unwrap_or("")` 已无命中；response guard 仍位于 request 分支之前。
+- 修改部分代码审核：
+  - 已确认 success/error JSON-RPC response 仍返回 `None`，不会被新的无效 request 校验拦截。
+  - 已确认缺失 method 的带 `id` 对象返回 `-32600`，并保留原始 `id`。
+  - 已确认非字符串 method 的带 `id` 对象返回 `-32600`，不会进入 unknown-method 日志与 `-32601` 路径。
+  - 已确认正常 `ping`、`tools/list`、`tools/call` 与真实未知字符串 method 的分发规则未改变。
+  - 已确认本轮没有新增候选字段、多来源兼容或模糊 fallback。
+- 遗留问题：
+  - `transport/mcp/views.rs` 与 `dispatcher::handle_tools_call` 仍使用 `params.unwrap_or_default()` 依赖 serde 必填字段报错；当前未形成成功伪装，后续如需更严格的 JSON-RPC params 缺失错误文案可单独治理。
+  - `transport/stdio/server.rs` 目前缺少专属单元测试命中，后续可考虑为 stdio pre-initialize 与 initialize 失败路径补充更直接的测试入口。
+### 2026-07-05 第 59 轮：显式校验 streamable session 的协商协议版本
+- 问题定位：
+  - 第 59 轮追踪 streamable HTTP 会话创建链路，确认 `src/transport/http/session.rs::SessionManager::create` 使用 `request_context.protocol_version.clone().unwrap_or_default()`。
+  - streamable session 的 `protocol_version` 字段用于后续 `validate_session_protocol` 校验，是 initialize 阶段协商结果，不是可缺省字段。
+  - 旧逻辑会把缺失协议版本静默保存为空字符串，使内部调用者可能创建“无协商版本”的状态化会话。
+  - 生产 `handle_initialize_request` 已先从 initialize response 提取 `result.protocolVersion`，再构造 `RequestContext { protocol_version: Some(...) }`，因此创建边界可以收紧为显式失败。
+- 执行流程：
+  - streamable initialize request 先进入 dispatcher，dispatcher 返回包含协商协议版本的 initialize response。
+  - `handle_initialize_request` 通过 `negotiated_protocol_from_initialize` 提取协商版本，并反序列化 initialize params 以保存 client info 与 capabilities。
+  - 随后 `SessionManager::create` 持久化 session id、协议版本和 request context。
+  - 后续 GET/POST/DELETE 请求通过 session id 查询协议版本，并用请求头中的 `MCP-Protocol-Version` 做支持性与一致性校验。
+- 优化方案：
+  - 将 `SessionManager::create` 返回值从 `String` 改为 `Result<String, String>`。
+  - 在创建 session 前显式要求 `request_context.protocol_version` 存在且 `trim()` 后非空。
+  - streamable initialize 调用点改为处理 `Result`；不可能状态发生时返回 `500 INTERNAL_SERVER_ERROR` 与明确错误文本。
+  - 更新 HTTP server 测试中直接创建 streamable session 的调用点，使用 `expect` 表达测试前置条件。
+  - 新增三条 session manager 单元测试，覆盖缺失协议版本、空协议版本拒绝，以及有效协议版本与 session id 持久化。
+- 文件变更：
+  - 修改：`src/transport/http/session.rs`
+  - 修改：`src/transport/http/server/streamable.rs`
+  - 修改：`src/transport/http/server/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test session_manager_create`：通过，3 passed。
+  - `rtk cargo test transport::http::session`：通过，3 passed。
+  - `rtk cargo test transport::http::server`：通过，12 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，266 passed。
+  - `rtk cargo fmt -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/transport/http/session.rs` 中旧的 `protocol_version.clone().unwrap_or_default()` 已无命中；所有 streamable session 创建调用点都处理 `Result`。
+- 修改部分代码审核：
+  - 已确认缺失协议版本会返回 `streamable session requires negotiated protocol version`，不会写入 session map。
+  - 已确认空字符串与纯空白协议版本都会被拒绝，不再保存为空协议版本。
+  - 已确认有效协议版本会持久化到 `Session.protocol_version`，同时 request context 中会写入生成的 session id。
+  - 已确认生产 initialize 路径仍只在 dispatcher 成功、协议版本提取成功、initialize params 可重建后创建 session。
+  - 已确认 GET/POST 后续 session 协议校验、legacy SSE session 创建和 streamable 响应头写入逻辑未被改变。
+- 遗留问题：
+  - `transport/http/server/streamable.rs` 中 initialize params 重建仍使用 `msg.get("params").cloned().unwrap_or_default()`；当前 dispatcher 成功已证明 params 可解析，后续可考虑抽出共享 initialize params 解析以减少重复反序列化。
+  - `transport/http/session.rs` 的 legacy SSE session 创建仍使用不可失败 ID 生成路径；当前仅依赖自增计数器，不属于本轮问题。
+### 2026-07-05 第 60 轮：显式拒绝 runtime temp root 重复初始化冲突
+- 问题定位：
+  - 第 60 轮先扫描 service manifest/platform 的默认值降级点，确认主要命中位于测试唯一目录名或显示缺省，不构成生产错误吞噬。
+  - 随后追踪 `src/support/temp_maintenance.rs::initialize_runtime_temp_root`，确认其使用 `let _ = CONFIGURED_RUNTIME_ROOT.set(root.to_path_buf())`。
+  - `CONFIGURED_RUNTIME_ROOT` 决定 `ensure_runtime_temp_dir`、tool result spill/cache 和跨日 temp 清理的运行根位置。
+  - 旧逻辑在进程内重复初始化为不同 runtime root 时会静默保留第一次的值，使后续 temp/cache 继续落到旧根而调用方没有任何诊断。
+  - 相同 runtime root 的重复初始化是兼容的；不同 root 的重复初始化才是需要显式拒绝的冲突状态。
+- 执行流程：
+  - 启动、stdio、serve、call-tools、内部 luaexec 与 ROOT skill CLI 等路径会先调用 `initialize_runtime_temp_root_from_config`。
+  - 该函数通过 `resolve_runtime_root_for_host` 解析运行根，再注册到 temp maintenance 全局状态。
+  - 后续 `ensure_runtime_temp_dir` 会读取该全局运行根并返回 `<runtime_root>/temp`。
+  - 如果第二次初始化传入不同运行根且错误被吞掉，后续调用方会认为已经切换到新根，但实际 temp 仍位于旧根。
+- 优化方案：
+  - 将 `initialize_runtime_temp_root` 改为返回 `Result<(), String>`。
+  - 新增内部 helper `initialize_runtime_temp_root_cell`，接收具体 `OnceLock<PathBuf>`，便于用测试局部单元验证行为而不污染进程全局。
+  - 缺失 runtime root 时仍返回 `Ok(())`，保持“无显式 root 则走可执行文件布局推导”的既有语义。
+  - 已注册相同 root 时返回 `Ok(())`，允许同一运行根的重复初始化。
+  - 已注册不同 root 时返回包含旧根与新根的明确冲突错误。
+  - `initialize_runtime_temp_root_from_config` 改为使用 `?` 传播初始化冲突。
+- 文件变更：
+  - 修改：`src/support/temp_maintenance.rs`
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test initialize_runtime_temp_root_cell`：通过，3 passed。
+  - `rtk cargo test temp_maintenance`：通过，11 passed。
+  - `rtk cargo test startup`：通过，35 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，269 passed。
+  - `rtk cargo fmt -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：旧的 `let _ = CONFIGURED_RUNTIME_ROOT.set(...)` 已无命中；唯一生产调用点 `initialize_runtime_temp_root_from_config` 已传播 `Result`。
+- 修改部分代码审核：
+  - 已确认 `None` runtime root 不会写入局部或全局状态，继续保留隐式布局推导语义。
+  - 已确认相同 runtime root 重复注册成功，不会误伤同一配置的重复入口。
+  - 已确认不同 runtime root 重复注册会返回 `runtime temp root already initialized as ... cannot reinitialize as ...`。
+  - 已确认测试只使用局部 `OnceLock`，不会污染全局 `CONFIGURED_RUNTIME_ROOT` 或影响全量测试顺序。
+  - 已确认 temp 目录创建、startup cleanup、跨日 cleanup 和 `<runtime_root>/temp` 派生规则未被改变。
+- 遗留问题：
+  - `service/windows.rs` 中 `WINDOWS_SERVICE_RUN_OPTIONS.set` 仍被忽略；它属于 Windows service dispatcher 的单次进程入口，后续可单独确认重复设置是否需要显式诊断。
+  - `bootstrap/startup.rs` 的进程信号安装失败仍会降级等待 Ctrl+C，后续仍可沿服务关闭链继续评估。
+### 2026-07-05 第 61 轮：显式拒绝 Windows service run options 重复初始化冲突
+- 问题定位：
+  - 延续第 60 轮遗留项，确认 `src/service/windows.rs::run_windows_service_dispatcher` 使用 `let _ = WINDOWS_SERVICE_RUN_OPTIONS.set(options.clone())`。
+  - `WINDOWS_SERVICE_RUN_OPTIONS` 是 Windows SCM 回调 `service_main_entry` 与 `run_windows_service_main` 读取服务运行根和服务名称的唯一进程内上下文。
+  - 如果同一进程内重复调用 dispatcher 且传入不同 runtime root 或 service name，旧逻辑会静默保留第一次的 options。
+  - 随后 SCM 回调会继续使用旧 options，调用方却无法知道新 options 没有生效。
+- 执行流程：
+  - `run_service_entrypoint` 先解析并规范化 runtime root，然后在 Windows 目标下调用 `run_windows_service_dispatcher`。
+  - dispatcher 启动前需要把规范化后的 `ServiceRunOptions` 写入 `WINDOWS_SERVICE_RUN_OPTIONS`。
+  - SCM 触发 `service_main_entry` 后，`run_windows_service_main` 从该 OnceLock 读取 options，并用 runtime root 启动共享 host service。
+  - 因此 options 写入失败必须在 `service_dispatcher::start` 前显式失败，避免服务主体读取旧上下文。
+- 优化方案：
+  - 新增 `set_windows_service_run_options`，统一写入进程级 `WINDOWS_SERVICE_RUN_OPTIONS`。
+  - 新增 `set_windows_service_run_options_cell`，接收具体 `OnceLock<ServiceRunOptions>`，用于局部测试且避免污染真实全局状态。
+  - 完全相同的 options 重复注册返回 `Ok(())`。
+  - runtime root 或 service name 不同的重复注册返回包含旧值与新值的冲突错误。
+  - `run_windows_service_dispatcher` 在冲突时先写入 service 错误日志，再返回错误，不再继续启动 SCM dispatcher。
+- 文件变更：
+  - 修改：`src/service/windows.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test set_windows_service_run_options_cell`：通过，3 passed。
+  - `rtk cargo test service`：通过，54 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，272 passed。
+  - `rtk cargo fmt -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：旧的 `let _ = WINDOWS_SERVICE_RUN_OPTIONS.set(...)` 已无命中；冲突检查发生在 `service_dispatcher::start` 之前。
+- 修改部分代码审核：
+  - 已确认相同 service name 与 runtime root 的重复 options 可兼容通过。
+  - 已确认同一 service name 下的不同 runtime root 会被拒绝，并在错误中包含两个 root。
+  - 已确认同一 runtime root 下的不同 service name 会被拒绝，并在错误中包含两个 service name。
+  - 已确认测试使用局部 OnceLock，不会初始化真实 `WINDOWS_SERVICE_RUN_OPTIONS`。
+  - 已确认 Windows service main 读取 options、状态上报、stop/shutdown watch 信号桥接逻辑未被改变。
+- 遗留问题：
+  - Windows service stop/shutdown handler 中 `shutdown_tx.send(true)` 仍被忽略；当前语义是接收端已退出时无需再发送，后续如需停机诊断可继续追踪。
+  - `append_windows_service_error_log` 属于 best-effort 诊断日志，仍会在目录创建、打开或写入失败时放弃记录；这类失败不应遮蔽原始服务错误，但可在需要更强审计时单独设计。
+### 2026-07-05 第 62 轮：统一 MCP 缺省工具参数为空对象契约
+- 问题定位：
+  - 本轮扫描剩余 `unwrap_or_default` 后确认 `src/host_core/tool_dispatch.rs::call_runtime_tool` 使用 `req.arguments.unwrap_or_default()`。
+  - `RuntimeToolCallRequest.arguments` 唯一来自 MCP `ToolCallRequest.arguments: Option<Value>`，而 `serde_json::Value::default()` 是 `null`，不是空对象。
+  - CLI `--call-tools` 和通用 gRPC `tools/call` 缺省参数均已规范为 `{}`；MCP 路径把省略 `arguments` 转成 `null` 会让同一工具在不同入口看到不一致参数形态。
+  - 下游 `luaskill-config`、`skill-manager` 和动态 LuaSkill 调用均以 JSON 参数载荷为运行时契约；显式 `null` 应继续暴露给解析器，只有字段省略应规范为空对象。
+- 执行流程：
+  - MCP `tools/call` 由 `McpDispatcher::handle_tools_call` 解析为 `ToolCallRequest`，再构造 `RuntimeToolCallRequest`。
+  - `HostRuntime::call_runtime_tool` 解析工具 descriptor 后统一取得 args，并分发到宿主工具或动态 LuaSkill。
+  - 旧逻辑在这里调用 `unwrap_or_default()`，导致省略字段进入下游时变成 `Value::Null`。
+  - `luaskill-config` 在缺省参数下原本会报 `invalid type: null`，而不是基于空对象缺少 `action` 的参数错误。
+- 优化方案：
+  - 新增 `runtime_tool_arguments_or_empty_object`，将 `None` 明确规范为 `json!({})`。
+  - 保留 `Some(Value::Null)` 和其他显式调用方载荷原样透传，避免吞掉真实无效输入。
+  - `call_runtime_tool` 改为使用该 helper，移除对 `Value::default()` 的隐式依赖。
+  - 增加 helper 单元测试和 MCP 到 `luaskill-config` 的端到端回归测试。
+- 文件变更：
+  - 修改：`src/host_core/tool_dispatch.rs`
+  - 修改：`src/host_core/runtime/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test runtime_tool_arguments_or_empty_object`：通过，2 passed。
+  - `rtk cargo test tools_call_missing_arguments_uses_empty_object_contract`：通过，1 passed。
+  - `rtk cargo test tool_dispatch`：通过，2 passed。
+  - `rtk cargo test host_core::runtime`：通过，18 passed。
+  - `rtk cargo test transport::mcp`：通过，6 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，275 passed。
+  - `rtk cargo fmt --check`：通过。
+  - 定向复查：旧的 `req.arguments.unwrap_or_default`、`arguments.unwrap_or_default` 和目标 `Value::default()` 调用已无命中；仅保留新的 helper 与测试。
+- 修改部分代码审核：
+  - 已确认新增 helper 只处理省略参数，显式 `null`、数组、字符串、数字和对象均原样保留。
+  - 已确认 MCP `tools/call` 省略 `arguments` 时会进入空对象契约，下游错误从 `invalid type: null` 收敛为缺少必填 `action`。
+  - 已确认 CLI 与通用 gRPC 已有 `{}` 缺省行为没有被改变。
+  - 已确认本轮没有引入投机式 fallback，也没有把真实无效输入静默修正为对象。
+- 遗留问题：
+  - `transport/mcp/views.rs` 与 `dispatcher::handle_tools_call` 仍有 `params.unwrap_or_default()`；当前缺省 params 会经 serde 必填字段返回错误，没有成功伪装，后续可单独评估是否需要统一错误文案。
+  - `transport/stdio/server.rs` 仍会在 initialize 成功后重建 params，可后续沿 stdio initialize 预处理路径评估是否抽出共享解析。
+### 2026-07-05 第 63 轮：显式透传 streamable initialize 的 JSON-RPC 错误
+- 问题定位：
+  - 延续第 62 轮遗留项，确认 `transport/mcp/views.rs::initialize_value` 与 `dispatcher::handle_tools_call` 仍通过 `params.unwrap_or_default()` 把省略的必填 `params` 变成 `serde_json::Value::Null`。
+  - `InitializeRequest` 的 `protocolVersion` 与 `capabilities` 是协议必填字段，`ToolCallRequest.name` 也是 `tools/call` 的必填字段；省略整个 `params` 应直接被识别为缺失参数，而不是先构造 `null` 再依赖 serde 报错。
+  - 更严重的是 `src/transport/http/server/streamable.rs::handle_initialize_request` 在 dispatcher 返回 JSON-RPC error 时没有先检查 `error`，而是继续提取 `result.protocolVersion`。
+  - 因此 streamable HTTP initialize 的客户端错误会被掩盖成纯文本 `500 initialize response did not include result.protocolVersion.`，丢失原始 JSON-RPC 错误码和错误信息。
+- 执行流程：
+  - `handle_streamable_post` 解析 HTTP body 后用 `classify_jsonrpc_message` 识别 initialize request，并进入 `handle_initialize_request`。
+  - `handle_initialize_request` 调用 `McpDispatcher::handle_message`，dispatcher 再路由到 `views::initialize_value`。
+  - `views::initialize_value` 在参数无效、协议版本不支持或运行时更新失败时会返回 JSON-RPC error response。
+  - 旧的 streamable HTTP 成功路径没有区分 error response，直接调用 `negotiated_protocol_from_initialize` 查找 `result.protocolVersion`，于是把 dispatcher 已经产出的协议错误改写成内部错误。
+  - stdio 路径的 `build_initialize_request_context` 已先检查 `response.get("error")`，不会重建上下文；本轮问题集中在 streamable HTTP initialize 边界。
+- 优化方案：
+  - 新增 `src/transport/mcp/protocol/params.rs::parse_required_params`，统一解析必填 JSON-RPC `params`，对 `None` 返回明确的 `"{method} params are required."`。
+  - `views::initialize_value`、`McpDispatcher::handle_tools_call`、stdio initialize 上下文重建和 streamable HTTP initialize 上下文重建均改用该 helper。
+  - `handle_initialize_request` 在提取协商协议版本前先识别 dispatcher JSON-RPC error，并用 `json_with_status` 原样返回 JSON body。
+  - 新增 `jsonrpc_initialize_error_status`，将 JSON-RPC `-32603` 映射为 HTTP 500，其余 initialize 参数/请求类错误映射为 HTTP 400。
+  - 增加 parser、dispatcher 和 streamable HTTP 回归测试，覆盖缺失 `params` 不再被改写为内部错误。
+- 文件变更：
+  - 新增：`src/transport/mcp/protocol/params.rs`
+  - 修改：`src/transport/mcp/protocol.rs`
+  - 修改：`src/transport/mcp/views.rs`
+  - 修改：`src/transport/mcp/dispatcher.rs`
+  - 修改：`src/transport/stdio/server.rs`
+  - 修改：`src/transport/http/server/streamable.rs`
+  - 修改：`src/transport/http/server/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test parse_required_params`：通过，3 passed。
+  - `rtk cargo test dispatcher_rejects_initialize_without_params_as_invalid_params`：通过，1 passed。
+  - `rtk cargo test dispatcher_rejects_tools_call_without_params_as_invalid_params`：通过，1 passed。
+  - `rtk cargo test streamable_initialize_missing_params_returns_jsonrpc_bad_request`：通过，1 passed。
+  - `rtk cargo test transport::mcp`：通过，11 passed。
+  - `rtk cargo test transport::http::server`：通过，13 passed。
+  - `rtk cargo test transport::stdio`：通过，0 passed，281 filtered，确认 stdio 路径参与编译。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，281 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/transport/mcp`、`src/transport/stdio` 与 `src/transport/http/server/streamable.rs` 中本轮目标 `params.unwrap_or_default()` 已无命中，相关路径均改为 `parse_required_params`。
+- 修改部分代码审核：
+  - 已确认 `parse_required_params` 只把省略的 `params` 判定为缺失参数，不会把显式 `null`、数组或其他无效载荷改写为对象。
+  - 已确认 `initialize` 缺失 `params` 在 dispatcher 层返回 JSON-RPC `-32602` 与 `Invalid initialize params: initialize params are required.`。
+  - 已确认 `tools/call` 缺失 `params` 在工具解析前返回 JSON-RPC `-32602`，不会继续进入运行时工具解析。
+  - 已确认 streamable HTTP initialize 收到 dispatcher error 后不会创建 session，也不会再尝试读取 `result.protocolVersion`。
+  - 已确认内部 JSON-RPC `-32603` 仍按 HTTP 500 返回，客户端请求/参数类错误按 HTTP 400 返回。
+- 遗留问题：
+  - streamable HTTP 与 stdio 在 initialize 成功后仍会从原始 JSON 重建 `InitializeRequest` 以生成 `RequestContext`；本轮已统一为显式必填解析，但更长期可考虑让 dispatcher 返回 typed initialize outcome，彻底消除重复反序列化。
+  - streamable HTTP 的 client response 路径仍会在会话校验后调用 dispatcher，而 dispatcher 已证明会忽略 JSON-RPC response；后续可单独沿 response 处理链收掉这个无意义 no-op。
+### 2026-07-05 第 64 轮：移除 streamable client response 的无意义 dispatcher 派发
+- 问题定位：
+  - 延续第 63 轮遗留项，确认 `src/transport/http/server/streamable.rs::handle_streamable_client_response` 在会话和协议校验后仍调用 `dispatcher.handle_message_with_context`。
+  - `handle_streamable_post` 已通过 `classify_jsonrpc_message` 将该路径限定为客户端回传的 JSON-RPC response。
+  - `McpDispatcher::handle_single` 首行会通过 `is_jsonrpc_response_message` 识别这类 response 并直接返回 `None`，现有 dispatcher 单元测试也已覆盖 success/error response 均应被忽略。
+  - 旧逻辑为了执行必然 no-op 的 dispatcher 调用，还额外读取 request context、合并 header override，并用 `let _ =` 丢弃返回值，制造了“可能有副作用”的假象。
+- 执行流程：
+  - streamable HTTP POST 收到带 `id` 且只有 `result` 或 `error` 的 JSON-RPC 消息时，`classify_jsonrpc_message` 返回 `JsonRpcMessageKind::Response`。
+  - `handle_streamable_client_response` 校验 session id 是否存在，并调用 `validate_session_protocol` 校验 `MCP-Protocol-Version`。
+  - 旧逻辑随后读取 session request context，合并请求头客户端匹配名覆盖，再把 response 交给 dispatcher。
+  - dispatcher 发现该消息没有 `method` 且包含 `id` 与 `result/error` 后直接忽略；调用链没有任何运行时副作用，最终 HTTP 仍返回 `202 Accepted`。
+- 优化方案：
+  - 将 `handle_streamable_client_response` 的消息参数改为 `_msg`，明确该路径只做传输层确认。
+  - 删除 request context 读取、header override 合并和 dispatcher no-op 派发。
+  - 保留原有 session id 存在性与协议版本一致性校验，避免无会话或版本不匹配的 response 被接受。
+  - 增加 `streamable_client_response_returns_accepted_for_valid_session` 回归测试，锁定“有效会话 response 返回 202”的传输契约。
+- 文件变更：
+  - 修改：`src/transport/http/server/streamable.rs`
+  - 修改：`src/transport/http/server/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test streamable_client_response_returns_accepted_for_valid_session`：通过，1 passed。
+  - `rtk cargo test transport::http::server`：通过，14 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，282 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`handle_streamable_client_response` 中不再调用 dispatcher；剩余 `let _ = state.dispatcher...` 位于 notification 分支，仍负责 `notifications/initialized` 等真实通知副作用。
+- 修改部分代码审核：
+  - 已确认 response 路径仍拒绝缺失 session id、未知 session id 和协议版本不匹配。
+  - 已确认 response body 不再进入 dispatcher，因此不会伪装成可能改变 runtime 状态的路径。
+  - 已确认 notification 路径未被修改，仍会把合法 notification 交给 dispatcher 处理。
+  - 已确认新增测试只锁定 streamable response 的 HTTP 契约，不扩大 legacy SSE 或普通 request 行为。
+- 遗留问题：
+  - streamable HTTP 与 stdio 的 initialize 成功路径仍有重复反序列化，可后续通过 typed initialize outcome 继续收敛。
+  - gRPC heartbeat 使用 `SystemTime::duration_since(UNIX_EPOCH).unwrap_or_default()` 将时钟回拨异常变为 `0` 时间戳；该路径可在后续轮次单独确认是否需要显式错误事件或诊断。
+### 2026-07-05 第 65 轮：修复 gRPC heartbeat 虚假时间戳与空 uptime
+- 问题定位：
+  - 延续第 64 轮遗留项，确认 `src/transport/grpc/service/mcp.rs::connect` 在 heartbeat 中使用 `SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64`。
+  - 当系统墙钟早于 Unix epoch 或毫秒数超出 `i64` 可表示范围时，旧逻辑会把异常静默变成 `0` 或截断后的值，客户端会收到虚假的 epoch 时间戳。
+  - 同一 heartbeat 事件的 `uptime_sec` 被硬编码为 `0`，而 `McpServiceImpl` 已持有 `start_time: Instant`，说明协议字段存在但生产路径没有填真实服务运行时长。
+  - proto 定义中 `Connect` 返回 `stream ConnectEvent`，Rust 类型是 `Stream<Item = Result<ConnectEvent, Status>>`，因此异常可以显式作为 gRPC stream error 返回，不需要伪造正常心跳。
+- 执行流程：
+  - gRPC `Connect` 建立长连接后先发送 welcome event，再通过 `IntervalStream` 周期产生 heartbeat。
+  - 旧 heartbeat tick 分支直接在 async stream 内构造 `HeartbeatEvent`，时间戳计算失败时被 `unwrap_or_default()` 吞掉。
+  - 构造出的 `ConnectEvent` 被作为 `Ok(event)` 发给客户端，客户端无法区分真实 epoch 0 与本机时钟异常。
+  - `start_time` 仅被保存在 `McpServiceImpl`，旧 heartbeat 没有使用它，导致 `uptime_sec` 永远为 0。
+- 优化方案：
+  - 新增 `build_heartbeat_event(start_time, now)`，用显式时钟采样构造 heartbeat。
+  - 新增 `system_time_unix_millis`，将 epoch 之前的墙钟时间和超出 `i64` 毫秒范围的时间戳转换为 `Status::internal`。
+  - 新增 `duration_secs_to_i64`，将 service uptime 转换为 protobuf `int64` 秒数，并在极端超大值时显式饱和到 `i64::MAX`。
+  - `connect` 捕获 `self.start_time`，heartbeat tick 使用 helper；helper 返回错误时向 stream yield `Err(Status)` 并停止该连接流。
+  - 增加三条单元测试覆盖 epoch 之前时间、真实 timestamp/uptime 输出，以及超大 duration 饱和。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/mcp.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test system_time_unix_millis_rejects_pre_epoch_time`：通过，1 passed。
+  - `rtk cargo test build_heartbeat_event_uses_timestamp_and_uptime`：通过，1 passed。
+  - `rtk cargo test duration_secs_to_i64_saturates_large_values`：通过，1 passed。
+  - `rtk cargo test transport::grpc::service`：通过，17 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：首次发现 `duration_secs_to_i64` 可简化为 `Result::unwrap_or`；已自动修正后复跑通过，No issues found。
+  - `rtk cargo test`：通过，285 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/transport/grpc/service/mcp.rs` 中旧的 `duration_since(std::time::UNIX_EPOCH)`、`unwrap_or_default().as_millis()` 和 `uptime_sec: 0` 已无命中。
+- 修改部分代码审核：
+  - 已确认正常 heartbeat 会输出真实 Unix 毫秒时间戳。
+  - 已确认正常 heartbeat 会基于 `McpServiceImpl::start_time` 输出非固定的服务 uptime 秒数。
+  - 已确认 epoch 之前的墙钟异常会作为 `Status::internal` 暴露，并停止当前 stream，不再伪造成合法 heartbeat。
+  - 已确认超大 uptime 会饱和到 `i64::MAX`，不会发生有符号整数回绕。
+  - 已确认 welcome event、连接注册、连接注销和外部 queued event 转发逻辑未被改变。
+- 遗留问题：
+  - `ConnectRequest.connection_timeout_sec` 当前仍未参与连接生命周期控制；后续可沿 connect stream 的超时语义继续追踪。
+  - `McpService::healthz` 中 `_uptime` 仍只是计算后未返回，proto 当前没有 uptime 字段；若未来需要健康检查暴露运行时长，需要先调整协议字段。
+### 2026-07-05 第 66 轮：接入 gRPC connect 最大生命周期
+- 问题定位：
+  - 延续第 65 轮遗留项，确认 proto 中 `ConnectRequest.connection_timeout_sec` 注释为 `max connection lifetime in sec (default 86400)`。
+  - 全仓库搜索确认该字段除 proto 定义和请求类型外没有任何生命周期控制实现，`src/transport/grpc/service/mcp.rs::connect` 只使用了 `heartbeat_interval_ms`。
+  - 旧逻辑会让 connect stream 无限运行，调用方即使设置最大连接生命周期也不会生效。
+  - 由于 proto3 标量字段省略时表现为 `0`，需要把 `0` 明确解释为默认值，同时拒绝负数，避免把无效配置悄悄变成无限连接。
+- 执行流程：
+  - gRPC `Connect` 收到 `ConnectRequest` 后计算 heartbeat interval，注册 connection，发送 welcome event。
+  - 随后 async stream 在循环中等待 heartbeat tick 或外部 queued event。
+  - 旧循环没有任何 deadline 分支，只有接收端 drop 或内部 channel 关闭才会退出，并在退出后调用 `manager.unregister`。
+  - 这意味着 `connection_timeout_sec` 从请求进入服务后完全丢失，连接管理器也不会按调用方指定生命周期清理 session。
+- 优化方案：
+  - 新增 `DEFAULT_HEARTBEAT_INTERVAL_MS` 与 `DEFAULT_CONNECTION_TIMEOUT_SEC` 常量，替代 connect 中的魔法数字。
+  - 新增 `connection_timeout_duration`，将 `0` 解析为 86400 秒默认生命周期，将正数解析为指定秒数，将负数拒绝为 `Status::invalid_argument`。
+  - `connect` 在注册连接前解析 timeout；无效负数直接返回 gRPC invalid argument，不创建 session。
+  - async stream 内新增 pinned `tokio::time::sleep(connection_timeout)`，并在 `tokio::select!` 中加入 timeout 分支。
+  - timeout 到期时输出诊断日志并跳出循环，继续走原有 `manager.unregister(&session_id).await` 清理路径。
+  - 增加三条单元测试覆盖默认值、正数值和负数拒绝。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/mcp.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test connection_timeout_duration`：通过，3 passed。
+  - `rtk cargo test transport::grpc::service`：通过，20 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，288 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`connection_timeout_sec` 现在进入 `connection_timeout_duration`，connect stream 中存在 `connection_timeout_sleep` 分支；旧的 `30000` 与 `86400` 魔法数字已替换为具名常量。
+- 修改部分代码审核：
+  - 已确认 `0` timeout 保留 proto3 省略字段语义，解析为 86400 秒默认值。
+  - 已确认正数 timeout 按调用方给定秒数生效。
+  - 已确认负数 timeout 在连接注册前被拒绝，不会创建泄漏 session。
+  - 已确认 timeout 到期后仍复用原循环退出后的 unregister 清理路径。
+  - 已确认 heartbeat、queued event 转发、welcome event 和 heartbeat 时间戳修复逻辑未被改变。
+- 遗留问题：
+  - `heartbeat_interval_ms` 当前仍将负数与 0 一并视为默认值；后续可单独评估是否与 `connection_timeout_sec` 一样拒绝负数。
+  - connect stream 的超时行为目前通过解析 helper 与编译/模块测试覆盖，尚未加入基于 Tokio time pause 的端到端流超时测试；当前依赖 tokio `full` features，未启用明确的 test-util 时间控制。
+### 2026-07-05 第 67 轮：显式拒绝 gRPC heartbeat 负数间隔
+- 问题定位：
+  - 延续第 66 轮遗留项，确认 `src/transport/grpc/service/mcp.rs::connect` 对 `heartbeat_interval_ms` 使用 `if req.heartbeat_interval_ms > 0 { ... } else { DEFAULT }`。
+  - proto3 省略字段会表现为 `0`，因此 `0` 适合作为默认值语义；但负数不是省略字段，而是无效调用方输入。
+  - 旧逻辑把负数和 `0` 一起静默改成 30 秒默认间隔，使错误配置无法被调用方发现。
+  - 第 66 轮已对 `connection_timeout_sec` 建立“0 默认、负数拒绝”的生命周期参数规则，本轮将 heartbeat interval 与该规则对齐。
+- 执行流程：
+  - gRPC `Connect` 收到请求后先解析 heartbeat interval，再解析 connection timeout。
+  - 旧 interval 解析发生在连接注册前，但负数不会返回错误，只会落入默认值。
+  - 随后连接被注册并进入 async stream，调用方即使传入负数也会看到一条正常长连接，实际间隔变成 30 秒。
+- 优化方案：
+  - 新增 `heartbeat_interval_duration`，统一解析 `heartbeat_interval_ms`。
+  - `0` 明确解析为 `DEFAULT_HEARTBEAT_INTERVAL_MS`，保留 proto3 省略字段默认语义。
+  - 正数按调用方毫秒值转换为 `Duration`。
+  - 负数返回 `Status::invalid_argument("heartbeat_interval_ms must be positive or 0 for the default")`，并在连接注册前失败。
+  - 增加三条单元测试覆盖默认值、正数值和负数拒绝。
+- 文件变更：
+  - 修改：`src/transport/grpc/service/mcp.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test heartbeat_interval_duration`：通过，3 passed。
+  - `rtk cargo test transport::grpc::service`：通过，23 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，291 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`req.heartbeat_interval_ms` 现在只进入 `heartbeat_interval_duration`；旧的负数/0 混合默认分支已无命中，30 秒默认值只保留为具名常量 `DEFAULT_HEARTBEAT_INTERVAL_MS`。
+- 修改部分代码审核：
+  - 已确认 `0` heartbeat interval 保留 proto3 省略字段语义，解析为 30000ms。
+  - 已确认正数 heartbeat interval 按调用方毫秒值生效。
+  - 已确认负数 heartbeat interval 在连接注册前被拒绝，不会创建 session。
+  - 已确认 connection timeout、heartbeat event 构造、welcome event 和 unregister 清理逻辑未被改变。
+- 遗留问题：
+  - connect stream 的 timeout 分支仍缺少基于虚拟时间的端到端流测试；如需覆盖实际 sleep 行为，需要为 Tokio 启用 test-util 或设计可注入时钟。
+  - `McpService::healthz` 中 `_uptime` 仍未暴露到响应；这需要 proto 层字段设计后再处理。
+### 2026-07-05 第 68 轮：显式化进程信号关闭失败路径
+- 问题定位：
+  - 本轮扫描剩余吞错点时确认 `src/bootstrap/startup.rs::wait_for_process_shutdown_signal` 在 Unix 下使用 `signal(SignalKind::terminate()).ok()`。
+  - SIGTERM handler 注册失败会被静默转成 `None`，随后分支进入 `pending()`，导致服务只剩 Ctrl+C 路径且没有任何诊断。
+  - 同一关闭任务在收到信号后使用 `let _ = shutdown_tx.send(true)`，当传输层 shutdown receiver 已丢弃时也会静默忽略。
+  - `run_service_host_for_runtime_root` 的 `ProcessSignals` 分支负责非 Windows service 主体的 HTTP/gRPC 关闭信号，吞掉这两类失败会让服务停机能力和诊断不可靠。
+- 执行流程：
+  - 非 Windows service 主体进入 `run_service_host_for_runtime_root`，在 `ProcessShutdownMode::ProcessSignals` 下创建 `watch::channel(false)`。
+  - 旧逻辑 spawn 一个 async task 等待 `wait_for_process_shutdown_signal().await`，等待结束后直接忽略 `shutdown_tx.send(true)` 的结果。
+  - Unix 下 `wait_for_process_shutdown_signal` 同时等待 Ctrl+C 和 SIGTERM；但 SIGTERM handler 注册失败会被 `.ok()` 吞掉，SIGTERM 分支退化为永不完成的 pending future。
+  - 如果 Ctrl+C/SIGTERM 等待过程本身失败，旧函数也没有返回值，调用方无法获知失败原因。
+- 优化方案：
+  - 将 `wait_for_process_shutdown_signal` 返回值改为 `Result<(), String>`。
+  - Unix 下 SIGTERM handler 注册失败返回明确的 `failed to install SIGTERM handler: ...`。
+  - Ctrl+C 等待失败返回明确的 `failed to wait for Ctrl+C: ...`。
+  - SIGTERM stream 意外关闭返回明确诊断，而不是被视为正常 shutdown。
+  - 新增 `request_process_shutdown`，集中发送 watch shutdown=true，并返回是否至少一个 receiver 接收了更新。
+  - signal task 在等待失败时输出诊断并主动请求 shutdown；shutdown receiver 已丢弃时输出诊断，不再使用 `let _ =`。
+  - 增加两条测试覆盖 shutdown watch 正常发送和 receiver 已丢弃时的失败返回。
+- 文件变更：
+  - 修改：`src/bootstrap/startup.rs`
+  - 修改：`src/bootstrap/startup/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test request_process_shutdown`：通过，2 passed。
+  - `rtk cargo test startup`：通过，37 passed。
+  - `rtk cargo check`：首次在 Windows 目标发现 `request_process_shutdown` 普通构建 dead_code warning；已加窄范围 `#[cfg_attr(windows, allow(dead_code))]` 后复跑通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，293 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`signal(SignalKind::terminate()).ok()`、`let _ = shutdown_tx.send` 和 `tokio::signal::ctrl_c().await;` 在 startup 目标路径已无命中。
+- 修改部分代码审核：
+  - 已确认非 Windows 正常 Ctrl+C/SIGTERM 仍会请求同一个 watch shutdown。
+  - 已确认 SIGTERM handler 注册失败会显式返回错误，并由 spawn task 记录后请求 shutdown，不会进入无诊断半降级状态。
+  - 已确认 shutdown receiver 已丢弃时会返回 false 并记录诊断，不再被 `let _ =` 吞掉。
+  - 已确认 Windows service 主体仍走外部 `watch::Receiver<bool>`，未改变 Windows SCM stop/shutdown 语义。
+  - 已确认新增 Windows dead_code allow 只覆盖普通构建下不可达的 helper，测试目标仍直接覆盖该 helper。
+- 遗留问题：
+  - Windows service stop/shutdown handler 中 `shutdown_tx.send(true)` 仍被忽略；此前判断为接收端退出时无需再发送，但若要更强停机诊断可单独沿 SCM handler 路径处理。
+  - `McpService::healthz` 的 `_uptime` 仍未暴露；需要 proto 字段设计后再进入实现。
+### 2026-07-05 第 69 轮：显式记录 Windows service stop/shutdown 投递失败
+- 问题定位：
+  - 延续第 68 轮遗留项，确认 `src/service/windows.rs::run_windows_service_main` 的 SCM control handler 在 `ServiceControl::Stop | ServiceControl::Shutdown` 下使用 `let _ = shutdown_tx.send(true)`。
+  - 该 handler 是 Windows SCM stop/shutdown 请求进入共享 host runner 的唯一桥接点。
+  - 旧逻辑在 shared host runner 已退出、receiver 已丢弃或 shutdown 通道无法再投递时没有任何诊断。
+  - 文件内已有 `append_windows_service_error_log`，并且 dispatcher/main failure 已使用该日志，因此 stop/shutdown 投递失败也应进入同一诊断通道。
+- 执行流程：
+  - Windows SCM 进入 `service_main_entry` 后调用 `run_windows_service_main`。
+  - `run_windows_service_main` 创建 `watch::channel(false)`，并将 `shutdown_rx` 交给 `run_service_host_for_runtime_root(..., ProcessShutdownMode::External(...))`。
+  - SCM handler 捕获 `shutdown_tx`，收到 Stop 或 Shutdown 后发送 `true`，共享 host runner 再驱动 HTTP/gRPC 传输层关闭。
+  - 若 receiver 已被丢弃，旧逻辑仍返回 `ServiceControlHandlerResult::NoError`，但没有记录 stop 请求未投递到 runner。
+- 优化方案：
+  - 新增 `request_windows_service_shutdown`，集中发送 Windows service shutdown watch 更新，并返回是否至少一个 receiver 接收。
+  - SCM handler 捕获 `options.runtime_root.clone()` 作为日志根。
+  - Stop/Shutdown 发送失败时调用 `append_windows_service_error_log`，写入 `Windows service shutdown receiver was already dropped before SCM stop request could be delivered`。
+  - 保持 SCM handler 返回 `NoError`，避免诊断失败改变 SCM 控制回调契约。
+  - 增加两条测试覆盖 shutdown watch 正常发送和 receiver 已丢弃时的失败返回。
+- 文件变更：
+  - 修改：`src/service/windows.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test request_windows_service_shutdown`：通过，2 passed。
+  - `rtk cargo test service`：通过，65 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，295 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`src/service/windows.rs` 中旧的 `let _ = shutdown_tx.send` 已无命中；Stop/Shutdown handler 已改为 `request_windows_service_shutdown` 并在失败时写入 service error log。
+- 修改部分代码审核：
+  - 已确认正常 Stop/Shutdown 仍发送同一个 watch shutdown=true。
+  - 已确认 receiver 已丢弃时 helper 返回 false，handler 会写入既有 Windows service 错误日志。
+  - 已确认 SCM handler 仍对 Stop/Shutdown 返回 `NoError`，不改变 SCM 控制面响应。
+  - 已确认 service run options、状态上报、最终 stopped 状态和共享 host runner 调用未被改变。
+- 遗留问题：
+  - `append_windows_service_error_log` 本身仍是 best-effort，目录创建、打开或写入失败不会遮蔽原始 service 错误；若要强审计，需要设计独立可靠日志策略。
+  - `McpService::healthz` 的 `_uptime` 仍未暴露；需要 proto 字段设计后再处理。
+### 2026-07-05 第 70 轮：暴露 gRPC healthz 服务运行时长
+- 问题定位：
+  - 延续第 69 轮遗留项，确认 `src/transport/grpc/service/mcp.rs::healthz` 计算 `let _uptime = self.start_time.elapsed().as_secs();` 后直接丢弃。
+  - `McpServiceImpl` 已保存 `start_time: Instant`，第 65 轮也已让 heartbeat 使用该字段输出 `uptime_sec`，说明服务运行时长是有明确业务含义的运行时元数据。
+  - `proto/v1/mcp_service.proto::HealthzResponse` 只有 `status`、`version`、`protocol_version`，没有承载 uptime 的字段，导致 healthz handler 只能空算。
+  - `build.rs` 会通过 `tonic_prost_build` 重新生成 MCP server-only proto 代码，因此长期方案可以直接扩展 MCP gRPC healthz 响应契约。
+- 执行流程：
+  - gRPC `McpService::Healthz` 请求进入 `McpServiceImpl::healthz`。
+  - 旧逻辑读取 `self.start_time.elapsed().as_secs()` 到 `_uptime`，随后构造 `HealthzResponse` 返回 status/version/protocol_version。
+  - 因为 proto 响应没有 uptime 字段，客户端无法通过 healthz 获取服务运行时长；代码中的 `_uptime` 也只能靠下划线压制未使用警告。
+- 优化方案：
+  - 在 `proto/v1/mcp_service.proto::HealthzResponse` 新增 `int64 uptime_sec = 4`，并加入中英文字段注释。
+  - `healthz` 使用已有 `duration_secs_to_i64(self.start_time.elapsed())` 填充 `uptime_sec`，与 heartbeat 的 uptime 转换规则保持一致。
+  - 删除 `_uptime` 空算变量。
+  - 新增 `healthz_reports_elapsed_uptime` 测试，构造指定较早 `start_time` 的 `McpServiceImpl`，验证 healthz 返回 `uptime_sec >= 7`。
+- 文件变更：
+  - 修改：`proto/v1/mcp_service.proto`
+  - 修改：`src/transport/grpc/service/mcp.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test healthz_reports_elapsed_uptime`：通过，1 passed。
+  - `rtk cargo test transport::grpc::service`：通过，24 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，296 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`_uptime` 已无命中；`HealthzResponse` 和 `healthz` 均包含 `uptime_sec`。
+- 修改部分代码审核：
+  - 已确认 healthz 仍返回原有 `status`、`version` 和 `protocol_version`。
+  - 已确认 healthz uptime 与 heartbeat uptime 复用同一个 `duration_secs_to_i64` 转换规则，极端超大值会饱和到 `i64::MAX`。
+  - 已确认新增 proto 字段通过 build.rs 的生成链参与编译和测试。
+  - 已确认 VMM backend healthz relay 使用的是独立 `vmm.v1.HealthzResponse`，未被本轮 MCP healthz 字段变更影响。
+- 遗留问题：
+  - `append_windows_service_error_log` 仍是 best-effort 诊断日志；若要强审计，需要后续设计可靠日志策略。
+  - `model_provider/openai.rs` 中 provider 错误解析仍使用 `.ok()` 丢弃 JSON 解析失败细节，后续可沿 OpenAI-compatible 错误响应链路评估。
+### 2026-07-05 第 71 轮：保留 OpenAI-compatible 错误体 JSON 解析失败诊断
+- 问题定位：
+  - 延续第 70 轮遗留项，确认 `src/model_provider/openai.rs::provider_error_from_http_status` 使用 `serde_json::from_str::<Value>(&sanitized_body).ok()`。
+  - 非成功 HTTP 响应的正文会先按 API key 脱敏，再尝试解析常见 OpenAI-compatible JSON 错误结构。
+  - 旧逻辑在错误体不是合法 JSON 时丢弃 serde 解析失败细节，只把脱敏正文作为 `provider_message` fallback。
+  - 这会让最终 `ModelError.message` 只显示 `model provider returned HTTP xxx`，调用方无法知道供应商返回的是非 JSON 错误体还是合法 JSON 但缺少标准字段。
+- 执行流程：
+  - `post_json_value` 收到 provider HTTP 非 2xx 响应后读取 body，并调用 `provider_error_from_http_status(status, body, api_key)`。
+  - `provider_error_from_http_status` 对 body 脱敏后解析 JSON。
+  - 合法 JSON 错误体走 `extract_provider_message` 与 `extract_provider_code`，保留 provider message/code/status。
+  - 非 JSON 错误体旧逻辑通过 `.ok()` 丢弃 parse error，然后只把脱敏正文放入 `provider_message`，主错误摘要缺少非 JSON 诊断。
+- 优化方案：
+  - 将 `.ok()` 改为显式 `parsed_body_result` match，同时保留 `parsed_body` 与 `parse_error`。
+  - 合法 JSON 错误体的主错误信息保持 `model provider returned HTTP {status}`。
+  - 非 JSON 错误体的主错误信息改为 `model provider returned HTTP {status} with non-JSON error body: {serde_error}`。
+  - provider_message 仍使用脱敏后的原始正文 fallback，避免丢失供应商响应文本。
+  - 增加 `provider_error_reports_non_json_body_parse_failure` 测试，覆盖 parse error 进入主 message、API key 不泄漏、provider_message 脱敏、provider_code 为空和 provider_status 保留。
+- 文件变更：
+  - 修改：`src/model_provider/openai.rs`
+  - 修改：`src/model_provider/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test provider_error_reports_non_json_body_parse_failure`：通过，1 passed。
+  - `rtk cargo test provider_error_preserves_sanitized_provider_fields`：通过，1 passed。
+  - `rtk cargo test model_provider`：通过，12 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，297 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：旧的 `from_str::<Value>(&sanitized_body).ok()` 已无命中；新增 `parsed_body_result` 显式保留解析失败。
+- 修改部分代码审核：
+  - 已确认合法 JSON provider 错误体仍提取脱敏后的 provider message、provider code 和 HTTP status。
+  - 已确认非 JSON provider 错误体会在主错误摘要中标明 `non-JSON error body`。
+  - 已确认 API key 不会出现在主错误 message 或 provider_message 中。
+  - 已确认成功响应 JSON 解析路径未被修改。
+- 遗留问题：
+  - `append_windows_service_error_log` 仍是 best-effort 诊断日志；可后续单独评估是否需要可靠审计。
+  - `luaskills/engine_options.rs` 中配置路径转换仍有 `.ok()` 丢弃 UTF-8/path 转换失败细节，后续可沿 LuaSkills engine options 构建链路评估。
+### 2026-07-05 第 72 轮：显式拒绝 LuaSkills GitHub 环境变量非法文本
+- 问题定位：
+  - 延续第 71 轮遗留项扫描，确认目标并非路径转换，而是 `src/luaskills/engine_options.rs::build_luaskills_engine_options` 中读取 `VULCAN_GITHUB_BASE_URL` 与 `VULCAN_GITHUB_API_BASE_URL` 时使用 `std::env::var(...).ok()`。
+  - 这两个环境变量会覆盖 LuaSkills 网络下载使用的 GitHub base URL 与 API base URL。
+  - `std::env::var` 的 `NotPresent` 表示未配置，应该允许继续使用默认值；但 `NotUnicode` 表示环境变量存在但不是有效文本，旧逻辑会把它当成未配置。
+  - 这种吞错会让被污染的环境配置悄悄回退默认 GitHub 源，调用方难以发现真实配置问题。
+- 执行流程：
+  - 启动构建 LuaSkills engine options 时先解析 runtime root、temp/cache/root 目录和 host options。
+  - `build_luaskills_engine_options` 构造 `LuaRuntimeHostOptions`，其中 `github_base_url` 和 `github_api_base_url` 来自对应环境变量。
+  - 旧逻辑对 `std::env::var` 调用 `.ok()`，然后 trim/drop blank；NotPresent 与 NotUnicode 都会变成 `None`。
+  - 下游 LuaSkills runtime 看到 `None` 后会使用默认下载源，而不是暴露无效环境变量。
+- 优化方案：
+  - 新增 `optional_env_text`，读取可选文本环境变量，并返回 `Result<Option<String>, Box<dyn Error>>`。
+  - 新增 `optional_env_text_from_result`，将 `NotPresent` 解析为 `None`，将空白字符串解析为 `None`，将有效文本 trim 后返回 `Some`。
+  - `NotUnicode` 返回包含环境变量名和值调试表示的明确错误。
+  - `github_base_url` 与 `github_api_base_url` 改为使用 `optional_env_text(...) ?`，无效环境变量会中止 engine options 构建。
+  - 增加 helper 单元测试覆盖缺失、空白、有效 trim 和 NotUnicode 拒绝。
+- 文件变更：
+  - 修改：`src/luaskills/engine_options.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test optional_env_text_from_result`：通过，3 passed。
+  - `rtk cargo test luaskills`：通过，53 passed。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy --all-targets --all-features`：通过，No issues found。
+  - `rtk cargo test`：通过，300 passed。
+  - `rtk cargo fmt --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向复查：`VULCAN_GITHUB_BASE_URL` 与 `VULCAN_GITHUB_API_BASE_URL` 现在只通过 `optional_env_text` 读取；旧的 env `.ok()` 吞错分支已无命中。
+- 修改部分代码审核：
+  - 已确认未设置环境变量仍返回 `None`，保留默认 GitHub 源语义。
+  - 已确认空白环境变量仍返回 `None`，不把空字符串传给 LuaSkills runtime。
+  - 已确认有效环境变量会 trim 后传递。
+  - 已确认 NotUnicode 会返回显式错误，不再伪装成缺失配置。
+  - 已确认本轮没有引入 NUL 截断或多路径 fallback；曾临时写入的投机逻辑已在提交前移除。
+- 遗留问题：
+  - `append_windows_service_error_log` 仍是 best-effort 诊断日志；可后续单独评估是否需要可靠审计。
+  - 剩余 `.ok()` 命中仍包括 home dir/env fallback、HTTP header UTF-8 解析和测试清理路径，需要后续逐条按执行流评估。
+
+### 2026-07-05 第 73 轮：保留 runtime libs PATH 注入中的 OS 原生路径条目
+
+- 问题定位：
+  - 延续第 72 轮剩余坏味道扫描，确认 `src/bootstrap/runtime_init.rs::add_libs_to_path` 在 runtime libs 目录存在后使用 `std::env::var("PATH").unwrap_or_default()` 读取进程 PATH。
+  - `PATH` 是操作系统路径列表，不应强制当作 UTF-8 文本处理；Unix 环境变量可包含非 UTF-8 字节，旧逻辑会把 `NotUnicode` 和缺失 PATH 一起折叠成空字符串。
+  - 该函数会修改进程级 PATH，属于启动前置副作用；如果旧 PATH 被错误清空，后续 Lua C 模块 FFI 动态库解析会在更远处失败，诊断链路会被拉长。
+- 执行流程：
+  - `startup::run` 的 stdio/serve、`run_service_host_for_runtime_root`、`run_call_tool_mode`、`run_internal_luaexec_request_mode` 和 `root_skill_cli::initialize_root_skill_cli_config` 都会先加载配置，再调用 `add_libs_to_path`。
+  - `add_libs_to_path` 先解析 runtime_root，再检查 `<runtime_root>/libs`；目录存在时把该目录前置到当前进程 PATH。
+  - 因此 PATH 读取和拼接必须保留 OS 原生路径语义，且只在 libs 目录通过显式 metadata 检查后发生。
+- 优化方案：
+  - 新增 `prepend_runtime_libs_to_path`，把 PATH 拼装从字符串 `format!` 改为 `std::env::var_os`、`std::env::split_paths` 与 `std::env::join_paths`。
+  - 缺失 PATH 时只写入 runtime libs 单一路径，不再人为产生尾部分隔符。
+  - 存在 PATH 时保留原有 OS 原生路径条目，避免非 UTF-8 PATH 被吞掉或替换为空。
+  - 测试侧新增 `PathEnvGuard`，在 PATH 相关测试结束或 panic 后恢复原始进程环境，避免污染后续测试。
+  - 新增测试覆盖原 PATH 缺失时的完整 PATH 结果，并在 Unix 条件下覆盖非 UTF-8 PATH 条目保留。
+- 文件变更：
+  - 修改：`src/bootstrap/runtime_init.rs`
+  - 修改：`src/bootstrap/startup/tests.rs`
+  - 删除：无独立文件删除
+- 验证结果：
+  - `rtk cargo fmt`：通过。
+  - `rtk cargo test add_libs_to_path -- --nocapture`：通过，4 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo check`：通过。
+  - `rtk cargo clippy -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，301 passed。
+  - 定向复查：生产代码中 `std::env::var("PATH")` 已无命中；剩余命中仅在测试读取自身设置的 ASCII PATH 断言。
+- 修改部分代码审核：
+  - 已确认 `add_libs_to_path` 仍只在 runtime_root 解析成功且 libs 目录存在时修改 PATH。
+  - 已确认文件形态的 libs 路径仍会在 PATH 修改前返回 `runtime libs path is not a directory`。
+  - 已确认缺失原始 PATH 时，新 PATH 只包含 runtime libs 目录，不再生成多余分隔符。
+  - 已确认存在原始 PATH 时，通过 `split_paths`/`join_paths` 保留平台分隔规则和 OS 字符串语义。
+  - 已确认测试守卫使用 `var_os` 保存原始 PATH，能覆盖非 UTF-8 环境值，不再用字符串兜底恢复。
+- 遗留问题：
+  - 本轮按用户要求完成后收尾并结束持续目标，未继续开启第 74 轮扫描。
+  - 工作区仍包含大量前序轮次未提交改动与 `TASK_LOG.md` 未跟踪状态；本轮未执行 stage/commit，也未回滚任何既有改动。
+
+### 2026-07-11 第 74 轮：删除无消费者的服务 manifest 自循环状态
+
+- 问题定位：
+  - 通过 CodeKit 建立 `src/service` AST 结构并追踪 `HostServiceManifest`、`write_manifest_file`、`load_best_effort`、`remove_manifest_file` 的全部生产引用。
+  - 确认 manifest 子系统并不是服务运行、状态查询、启停或平台卸载决策的输入；唯一生产链是安装成功后写入，卸载前搜索并解析，卸载成功后再删除它自身。
+  - 旧安装顺序先执行平台服务注册，再写 manifest；若 manifest 写入失败，命令会报告失败，但平台服务已经安装，形成不可回滚的部分成功状态。
+  - 旧卸载顺序在调用平台服务管理器之前扫描当前目录、`output`、用户目录和平台默认目录下的新旧 manifest；无关的目录形态、读取或 JSON 解析错误都能阻断真正的卸载。
+  - 历史设计文档曾计划把 manifest 用于 `status` 与脚本集成，但源码与当前 README 均无对应消费者或公开契约；继续保留属于未落地的推测性状态层。
+- 执行流程：
+  - CLI 将 `service install/uninstall` 解析为 `ServiceCommand`，`run_service_command` 再分发到 `platform::install_service` 或 `platform::uninstall_service`。
+  - 安装主链依次解析运行根、构建 `ServiceInstallArtifact`、预检配置、准备日志目录、处理 force 重装并调用当前平台管理器写入服务定义。
+  - 卸载主链按当前平台与 scope 精确处理停止、服务缺席和定义删除；manifest 内容从未参与服务名、scope、平台管理器或定义路径决策。
+  - force 重装原本在平台精确缺席处理之外，再用跨平台宽泛错误文本吞掉最终卸载错误，可能把真实权限或命令失败误判为服务不存在。
+- 优化方案：
+  - 删除整个 `src/service/manifest.rs` 模块以及安装后的写入、卸载前的搜索解析和卸载后的删除逻辑。
+  - 删除仅为 manifest 序列化存在的 `ServiceScope`、`ServiceStartup` serde 派生和本地时间辅助函数。
+  - 删除 manifest 专用的 `<runtime_root>/state/service` 目录创建；只在配置预检成功后创建实际仍被服务日志使用的 `<runtime_root>/logs`。
+  - 将 force 重装清理改为直接传播 `uninstall_service` 结果，复用 Windows/systemd/launchd 各自的精确缺席语义，删除跨平台模糊文本 catch 与对应测试。
+  - 修正服务模块的目标条件：跨平台 `platform` 模块改为所有目标编译，依赖 `windows-service` 的 `windows` 模块仅在 Windows 编译。
+  - 清理 `ServiceInstallArtifact` 注释中的 manifest 残留表述；历史 completed 文档保持原样作为历史记录。
+- 文件变更：
+  - 修改：`src/service/mod.rs`
+  - 修改：`src/service/platform.rs`
+  - 修改：`src/service/definition.rs`
+  - 修改：`TASK_LOG.md`
+  - 删除：`src/service/manifest.rs`
+- 验证结果：
+  - `rtk cargo fmt --all -- --check`：通过。
+  - `rtk cargo test service`：通过，58 passed，235 filtered out。
+  - `rtk cargo check --all-targets`：当前 Windows 目标通过。
+  - `rtk cargo clippy --all-targets --all-features -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，293 passed。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo check --target x86_64-unknown-linux-gnu`：已尝试；在项目源码检查前被本机缺少 `x86_64-linux-gnu-gcc` 阻断，失败点位于 `ring` 与 `mlua-sys` 原生构建脚本，不作为源码验证通过项。
+  - CodeKit 定向复查：`HostServiceManifest`、manifest 读写/搜索 API、旧 force 重装模糊分类器以及 `state/service` 创建均为 0 命中。
+- 修改部分代码审核：
+  - 独立只读审查确认 manifest Rust 符号已无残留，且现有服务命令不再依赖被删除状态。
+  - 审查发现 force 重装外层仍按跨平台宽泛文本吞掉卸载错误，已自动删除该层并重新执行全部验证。
+  - 审查发现 manifest 专用空目录创建与 `ServiceInstallArtifact` 注释残留，均已自动清理。
+  - 审查发现 `platform`/`windows` 模块的 `cfg` 方向颠倒会阻断 Linux/macOS 编译，已按真实依赖边界修正并在 Windows 目标重新完成全量验证。
+  - 已确认平台服务安装完成后不再存在 manifest 写入这一不可回滚后置失败点。
+  - 已确认卸载在进入平台管理器前不再读取任何候选状态文件，损坏或遗留的 manifest 不会阻断服务删除。
+- 遗留问题：
+  - 既有磁盘上的 `host-service.json` 与 `host-service-<name>.json` 不再读取或自动清理；按“不考虑历史兼容”的要求不提供迁移或兼容删除逻辑。
+  - 历史 completed 设计文档仍记录当时的 manifest 方案，仅代表历史决策，不再描述当前实现。
+  - 本机缺少 Linux 原生交叉编译器，且未在 macOS 环境运行；Linux/macOS 仍需在对应目标环境完成源码编译与真实服务管理器集成验证。
+
+### 2026-07-11 第 75 轮：消除相对可执行路径测试的进程 CWD 污染
+
+- 问题定位：
+  - CodeKit 扫描确认 `luaskills::resolve_implicit_runtime_root_rejects_relative_executable_without_hosted_parent` 与 `tool_result_format::implicit_template_roots_reject_relative_executable_without_hosted_parent` 都会保存并修改进程级当前目录，结束时再手工恢复。
+  - 两条测试分别持有 `luaskills` 自己的 environment lock 与 tool-result 模块自己的 template lock；锁实例互不共享，Rust 并行测试时仍可能交错修改同一个进程 CWD。
+  - 任一测试在恢复语句前 panic 时都会把错误 CWD 泄漏给后续测试；另一测试还可能把已经被第一条测试切换后的目录误存为“原始目录”。
+  - 生产 helper `resolve_implicit_runtime_root_from_paths`、`resolve_runtime_skills_root_from_paths`、`resolve_runtime_resources_root_from_paths` 只读取显式 `current_dir` 与 `exe_path`，不读取进程 CWD 或模板运行时全局状态。
+- 执行流程：
+  - 生产配置、LuaSkills 与模板发现入口先通过 `std::env::current_exe()` 获取绝对可执行路径，再把该路径交给对应的显式路径 helper。
+  - 三条发现链都把 `<runtime_root>/bin/<executable>` 的祖父目录作为宿主运行根候选，再分别检查 `configs`、`skills` 或 `resources`。
+  - 旧测试为了模拟早期相对路径 fallback，把进程 CWD 切到临时 marker 目录；当前 helper 已经由显式参数决定路径，该全局副作用不再属于执行流程。
+- 优化方案：
+  - 删除两条测试中的进程 CWD 保存、切换、恢复和不相关局部锁，测试临时目录继续使用唯一名称并显式清理。
+  - 首次删除 CWD 操作后，独立审查发现旧错误实现也可能通过简化后的断言；因此没有接受弱化覆盖的版本。
+  - 新增共享纯函数 `hosted_runtime_root_from_executable`，只接受绝对 executable 路径，并统一返回 `<runtime_root>/bin/<executable>` 的祖父目录；相对路径明确返回 `None`。
+  - 配置发现、LuaSkills 运行根发现、tool-result skills/resources 发现统一复用该函数，删除三处重复的祖父目录推导。
+  - 新增纯函数正反测试：裸相对 executable 必须无候选，绝对 `bin` executable 必须返回运行根；上层两条测试继续验证 repository fallback 不会被相对 executable 干扰。
+- 文件变更：
+  - 新增：`src/support/runtime_layout.rs`
+  - 修改：`src/support/mod.rs`
+  - 修改：`src/config/runtime_root.rs`
+  - 修改：`src/luaskills/runtime_paths.rs`
+  - 修改：`src/luaskills/tests.rs`
+  - 修改：`src/support/tool_result_format/templates.rs`
+  - 修改：`src/support/tool_result_format/tests.rs`
+  - 修改：`TASK_LOG.md`
+  - 删除：无
+- 验证结果：
+  - `rtk cargo test hosted_runtime_root_`：通过，2 passed。
+  - `rtk cargo test relative_executable_without_hosted_parent -- --test-threads=16`：通过，2 passed。
+  - `rtk cargo check --all-targets`：当前 Windows 目标通过。
+  - `rtk cargo clippy --all-targets --all-features -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，295 passed。
+  - `rtk cargo fmt --all -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - CodeKit 定向复查：两条目标测试中 `set_current_dir` 与局部锁调用均为 0；源码剩余 `set_current_dir` 仅是服务宿主启动时有意切换运行根的生产行为。
+- 修改部分代码审核：
+  - 首次审查指出仅删除 CWD 与 marker 会让旧错误 fallback 也返回 `None`，属于回归覆盖退化；已自动改为共享纯路径 helper 与直接单元测试，并重新执行全部验证。
+  - 复审确认三个生产 caller 的 executable 均唯一来自 `std::env::current_exe()`，严格拒绝相对路径不会改变真实生产调用。
+  - 已确认共享 helper 的相对路径反例能够杀死旧的 `unwrap_or(exe_dir)` 类 fallback，绝对路径正例保持标准宿主布局。
+  - 已确认两条上层测试不再读写进程 CWD、环境变量或模板运行时全局状态，删除局部锁后不存在新的共享状态竞态。
+- 遗留问题：
+  - 其他测试模块仍各自管理进程环境变量和全局运行时回调；部分恢复逻辑只在测试末尾执行，可在后续轮次评估统一的作用域守卫。
+  - Linux/macOS 目标仍受本机原生交叉编译工具缺失限制，需在对应平台继续验证共享路径 helper 的目标路径语义。
+
+### 2026-07-11 第 76 轮：严格化工具预算配置并收敛运行时配置事务
+
+- 状态：
+  - 本轮完成了工具预算保留字段、三配置缓存与测试夹具的长期优化和验证。
+  - 独立复审确认模型回调注册仍无法与三配置缓存真正原子提交；修复需要调整核心依赖 `luaskills` 的公开回调 API，属于必须由用户确认的重大决策。
+  - 已按规则停止该重大依赖调整；用户随后要求当前任务结束后终止持续目标，因此该依赖事项作为明确未闭环项保留，不采用局部加锁伪装成原子提交。
+- 问题定位：
+  - `tool_configs.yaml` 的 `bytes_per_token` 与 `unlimited_bytes_cap` 原先通过字符串化后 `parse::<u64>().ok()` 消费；字符串、负数、浮点数、布尔值、`null` 或数组都会被静默解释为“没有覆盖”，预算再无提示地回落到客户端或默认值。
+  - 完整调用链为：启动预载/热重载读取工具配置，规范化后写入全局缓存；请求预算快照读取 skill 配置，提取估算覆盖，再按工具、客户端、默认值顺序合并并生成 Lua 预算。
+  - 客户端预算、工具配置和模型配置的 `OnceLock` 访问器在 `get_or_init` 外先求值加载函数，导致每次所谓缓存读取都会重新访问磁盘，然后丢弃新结果或错误。
+  - 热重载按客户端预算、工具配置、模型配置顺序分别提交；后续配置校验失败时，前一缓存已经更新，读取方可能看到混合版本。
+  - 工具配置缓存错误在 skill 名缺失或空白时会被提前转换为空对象，掩盖真实加载失败。
+  - 顶层 skill 名会先 `trim()` 再插入映射，`foo` 与 `" foo "` 可折叠成同一键并静默覆盖。
+  - 配置测试原先使用各模块私有锁，并分两次提交客户端预算与空工具配置；并行测试仍可交错修改进程级运行根和缓存。
+- 执行流程：
+  - 启动入口先统一解析 runtime root，再初始化三类配置的发现根，分阶段读取和校验三份配置，最后作为单一版本提交。
+  - 热重载入口复用同一聚合流程；任何发现、读取、解析或语义错误都会在写缓存前返回。
+  - 客户端预算解析在同一个事务读守卫内读取客户端规则和工具估算覆盖；模型配置读取也持有同一版本守卫。
+  - 缓存访问器只返回显式预载状态或“尚未预载”错误，请求期不再触发磁盘或环境读取。
+- 优化方案：
+  - 把两个工具估算保留字段收敛为类型化 `ToolEstimationOverride`，加载边界和消费边界都只接受 JSON/YAML 无符号整数数字。
+  - 为非法类型返回包含 `skill.field` 完整路径和实际类型的错误；未知通用字段仍保持一层标量或标量数组语义。
+  - 拒绝字段名与顶层 skill 名的首尾空白，消除近似保留键和规范化覆盖。
+  - 新增三配置分阶段加载与进程级事务读写锁；提交前先获取全部缓存写锁，再替换三份状态，锁失败不会产生部分提交。
+  - 删除生产请求路径的隐式加载和逐配置热重载；启动与宿主热重载统一调用聚合刷新。
+  - 先传播缓存错误，再解释缺失 skill；补齐具名、缺失和空白 skill 三种回归用例。
+  - 配置测试改用仓库级共享夹具锁；预算匹配夹具改为初始化三份运行根后调用生产聚合重载，一次提交完整版本。
+- 文件变更：
+  - 修改：`README.md`
+  - 修改：`runtime/configs/tool_configs.yaml`
+  - 修改：`src/bootstrap/runtime_preload.rs`
+  - 修改：`src/bootstrap/startup/tests.rs`
+  - 修改：`src/config/mod.rs`
+  - 修改：`src/config/client_budget.rs`
+  - 修改：`src/config/client_budget/resolution.rs`
+  - 修改：`src/config/client_budget/tests.rs`
+  - 修改：`src/config/client_budget/types.rs`
+  - 修改：`src/config/model_config.rs`
+  - 修改：`src/config/model_config/tests.rs`
+  - 修改：`src/config/tool_config.rs`
+  - 修改：`src/host_core/luaskills_api.rs`
+  - 修改：`src/model_provider/tests.rs`
+  - 修改：`TASK_LOG.md`
+  - 新增/删除：无
+- 验证结果：
+  - `rtk cargo test config::`：通过，53 passed。
+  - `rtk cargo test config:: -- --test-threads=16`：通过；共享配置夹具并发执行无失败。
+  - `rtk cargo check --all-targets`：当前 Windows 目标通过。
+  - `rtk cargo clippy --all-targets --all-features -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：在第 76 轮修复完成时通过，300 passed。
+  - `rtk cargo fmt --all -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - 定向源码复查确认生产请求路径只读取缓存；三份磁盘加载函数仅由分阶段加载入口调用。
+- 修改部分代码审核：
+  - 首次审查发现缺失 skill 会吞掉工具配置缓存错误，已调整错误传播顺序并补三类 skill 输入测试。
+  - 审查发现三个 `OnceLock` 访问器会在缓存命中前重复读盘，已改为显式预载状态并复查全部生产调用点。
+  - 审查发现逐配置热重载会产生混合版本，已改为分阶段读取、一次提交，并新增 poisoned 中间锁阻止部分提交的测试。
+  - 审查发现顶层 skill 名规范化覆盖与跨模块测试夹具竞争，均已自动修复并重新完成全量验证。
+  - 最终审查确认生产锁顺序一致、请求期磁盘 I/O 已消失、缓存提交本身具备原子版本边界。
+- 遗留问题与注意事项：
+  - `luaskills 0.4.3` 的 embedding 与 LLM 回调分别存放在两个独立 `Mutex<Option<...>>`，setter 返回 `()` 且内部 `unwrap()`；本仓库无法仅靠外层锁实现回调对与三配置缓存的真正原子提交。
+  - 正确长期方案是由 LuaSkills 提供单一模型回调注册表和批量提交 API，再由本仓库基于 staged model config 构造回调计划并纳入配置提交；该核心依赖变更未获授权，未实施。
+  - 因用户要求结束持续目标，本轮不继续等待该重大决策，也不采用会留下半更新窗口的兼容性补丁。
+
+### 2026-07-11 第 77 轮：严格化 launchd 用户域 UID 解析
+
+- 问题定位：
+  - CLI 把 `service install/uninstall/start/stop/restart/status/print-definition` 解析为 `ServiceCommand`，服务模块再分发到平台实现；`--scope user` 在 macOS 上最终都通过 `launchd_domain` 选择 `gui/<uid>` 域。
+  - 安装链由 `build_install_artifact` 生成 plist，平台层写入后执行 `launchctl bootstrap`；启动、重启、状态和卸载分别通过 `kickstart`、`print` 与 `bootout` 重复解析同一 launchd 域。
+  - 旧 UID 解析优先信任可变 `UID` 环境变量，只检查字符串非空；空白、负数、非数字和伪造值都可能直接进入域名。
+  - 环境变量缺失时通过 PATH 执行 `id -u`，不检查退出状态和 stderr，并使用 `from_utf8_lossy` 转换身份值；非零退出但携带 stdout、非法 UTF-8 或任意非空文本都可能成为域名。
+  - 同一宿主进程内环境变化可使安装、启动、状态和卸载指向不同域，而平台层其他 `launchctl` 命令已经统一检查退出状态，只有 UID 解析绕过该语义。
+- 执行流程：
+  - System scope 直接返回固定 `system`，不需要也不执行用户身份查询。
+  - User scope 现在只执行 macOS 固定系统命令 `/usr/bin/id -u`，把原始退出状态、stdout 与 stderr 交给严格解析器。
+  - 解析器先拒绝非零退出，再要求 stdout 为有效 UTF-8、trim 后非空、只包含 ASCII 十进制数字，并最终解析为 `u32`。
+  - 只有类型化 UID 能进入 `launchd_user_domain`，统一生成 `gui/<uid>`；stderr 仅用于错误诊断，允许有损显示但不参与身份选择。
+- 优化方案：
+  - 删除 `UID` 环境变量分支和 PATH 中的模糊 `id` 查找，固定使用 `/usr/bin/id`。
+  - 新增 `resolve_launchd_user_uid`，显式传播命令启动错误、退出码和 stderr。
+  - 新增纯解析函数覆盖成功输出、空白、负数、正号、非数字、`u32` 溢出、非法 UTF-8 与非零退出。
+  - 新增类型化域格式化函数，避免未经校验的字符串继续在调用链扩散。
+- 文件变更：
+  - 修改：`src/service/definition.rs`
+  - 修改：`TASK_LOG.md`
+  - 新增/删除：无
+- 验证结果：
+  - `rtk cargo test service::definition::tests`：通过，7 passed，297 filtered out。
+  - `rtk cargo test service`：通过，62 passed，242 filtered out。
+  - `rtk cargo check --all-targets`：当前 Windows 目标通过。
+  - `rtk cargo clippy --all-targets --all-features -- -D warnings`：通过，No issues found。
+  - `rtk cargo test`：通过，304 passed。
+  - `rtk cargo fmt --all -- --check`：通过。
+  - `rtk git diff --check`：通过。
+  - `rtk cargo check --target x86_64-apple-darwin`：已尝试；在检查项目源码前被 `ring` 构建脚本因本机缺少目标 C 编译器 `cc` 阻断，不作为 macOS 验证通过项。
+  - 定向搜索确认 `definition.rs` 中旧 `UID` 环境读取、PATH `id` 调用和 stdout `from_utf8_lossy` 身份转换均为 0 命中。
+- 修改部分代码审核：
+  - 审核确认 `/usr/bin/id` 是 UID 的唯一生产来源，身份值不再从多来源候选或有损文本中选择。
+  - 审核确认非零退出优先于 stdout 解析，即使 stdout 为 `501` 也会失败并保留退出码与 stderr 证据。
+  - 审核确认系统域不触发用户命令，用户域只接收 `u32`，所有 launchctl 调用继续复用同一域入口。
+  - 严格 Clippy、全量测试和 diff 检查未发现需继续自动修复的问题。
+- 遗留问题与注意事项：
+  - 本机无法完成 macOS 目标交叉编译，也未在真实 launchd 环境执行安装、启动、状态与卸载集成测试。
+  - `resolve_home_dir` 仍按 `HOME -> USERPROFILE` 两路取值且未校验绝对路径；launchd plist 的路径值仍使用 `to_string_lossy`。两项已完成事实勘察，但按用户“此次任务结束后结束目标”的要求不再开启新一轮修改。

@@ -146,7 +146,23 @@ impl McpServiceImpl {
         arguments: &str,
         request_context: RequestContext,
     ) -> (String, bool, String) {
-        let args: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
+        // Parse generic gRPC Call arguments into one JSON value used by the routing layer.
+        // 将通用 gRPC Call 参数解析为路由层使用的 JSON 值。
+        let args = match parse_grpc_call_arguments(arguments) {
+            Ok(args) => args,
+            Err(message) => return grpc_call_error_response(-32602, message),
+        };
+
+        // Normalize method-specific params before building the synthetic MCP message.
+        // 在构造模拟 MCP 消息前规范化特定方法的参数。
+        let params = if method == "tools/call" {
+            match build_grpc_tools_call_params(&args) {
+                Ok(params) => params,
+                Err(message) => return grpc_call_error_response(-32602, message),
+            }
+        } else {
+            args.clone()
+        };
 
         // Build a fake MCP message and route it.
         // 构造一条模拟 MCP 消息并路由到统一处理链。
@@ -154,14 +170,7 @@ impl McpServiceImpl {
             "jsonrpc": "2.0",
             "id": 0,
             "method": method,
-            "params": if method == "tools/call" {
-                json!({
-                    "name": args.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                    "arguments": args.get("arguments").cloned().unwrap_or(json!({}))
-                })
-            } else {
-                args.clone()
-            }
+            "params": params
         });
 
         let result = self
@@ -180,14 +189,10 @@ impl McpServiceImpl {
                 } else {
                     String::new()
                 };
-                let result_str = serde_json::to_string(&resp).unwrap_or_default();
+                let result_str = resp.to_string();
                 (result_str, is_error, message)
             }
-            None => (
-                serde_json::to_string(&json!({})).unwrap(),
-                false,
-                String::new(),
-            ),
+            None => ("{}".to_string(), false, String::new()),
         }
     }
 
@@ -198,6 +203,52 @@ impl McpServiceImpl {
             .resolve_vmm_backend()
             .map_err(|(_, message)| Status::failed_precondition(message))
     }
+}
+
+/// Parse the JSON argument string supplied to the generic gRPC MCP `Call` method.
+/// 解析传给通用 gRPC MCP `Call` 方法的 JSON 参数字符串。
+fn parse_grpc_call_arguments(arguments: &str) -> Result<Value, String> {
+    if arguments.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(arguments)
+        .map_err(|error| format!("Invalid McpCallRequest.arguments JSON: {error}"))
+}
+
+/// Build dispatcher-compatible params for the generic gRPC `tools/call` compatibility method.
+/// 为通用 gRPC `tools/call` 兼容方法构造 dispatcher 可消费的 params。
+fn build_grpc_tools_call_params(args: &Value) -> Result<Value, String> {
+    // Extract the required tool name so invalid requests fail before runtime lookup.
+    // 提取必填工具名称，使无效请求在运行时工具查找前失败。
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            "McpCallRequest.arguments for tools/call requires string field: name".to_string()
+        })?;
+    // Preserve caller-supplied tool arguments while defaulting the optional arguments field.
+    // 保留调用方提供的工具参数，仅对可选 arguments 字段使用默认值。
+    let arguments = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    Ok(json!({
+        "name": name,
+        "arguments": arguments,
+    }))
+}
+
+/// Build one gRPC `Call` response tuple for JSON-RPC level request errors.
+/// 为 JSON-RPC 层请求错误构造一个 gRPC `Call` 响应元组。
+fn grpc_call_error_response(code: i64, message: String) -> (String, bool, String) {
+    let result = json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "error": {
+            "code": code,
+            "message": message,
+        }
+    })
+    .to_string();
+    (result, true, message)
 }
 
 /// Serialize one transport payload into a JSON string for public gRPC responses.
@@ -281,6 +332,127 @@ fn grpc_tool_ids(tools: &[crate::host_core::host_adapter::ToolDescriptorSnapshot
     let mut ids = tools.iter().map(|tool| tool.id.clone()).collect::<Vec<_>>();
     ids.sort();
     ids
+}
+
+#[cfg(test)]
+mod mcp_grpc_tests {
+    use super::*;
+
+    /// Empty gRPC Call arguments should preserve the proto-default empty object behavior.
+    /// 验证空 gRPC Call 参数会保留 proto 默认的空对象行为。
+    #[test]
+    fn parse_grpc_call_arguments_accepts_empty_string_as_empty_object() {
+        // Parse the default proto string value used by callers that omit arguments.
+        // 解析调用方省略 arguments 时产生的 proto 默认字符串值。
+        let arguments = parse_grpc_call_arguments("").expect("empty arguments should parse");
+
+        assert_eq!(arguments, json!({}));
+    }
+
+    /// Generic gRPC tools/call params should require the same name field as MCP ToolCallRequest.
+    /// 验证通用 gRPC tools/call 参数应要求与 MCP ToolCallRequest 相同的 name 字段。
+    #[test]
+    fn build_grpc_tools_call_params_rejects_missing_name() {
+        // Build arguments without the required tool name field.
+        // 构造缺少必填工具名称字段的参数。
+        let arguments = json!({
+            "arguments": {
+                "topic": "x"
+            }
+        });
+
+        // Capture the explicit params validation error.
+        // 捕获显式参数校验错误。
+        let error = build_grpc_tools_call_params(&arguments).expect_err("missing name should fail");
+
+        assert!(error.contains("requires string field: name"));
+    }
+
+    /// Generic gRPC tools/call params should preserve the requested tool name and arguments.
+    /// 验证通用 gRPC tools/call 参数应保留请求的工具名称与参数。
+    #[test]
+    fn build_grpc_tools_call_params_preserves_name_and_arguments() {
+        // Build one valid tools/call argument payload.
+        // 构造一份合法的 tools/call 参数载荷。
+        let arguments = json!({
+            "name": "vulcan-help-list",
+            "arguments": {
+                "topic": "runtime"
+            }
+        });
+
+        // Build the normalized dispatcher params for a valid tools/call request.
+        // 为合法 tools/call 请求构造规范化后的 dispatcher 参数。
+        let params =
+            build_grpc_tools_call_params(&arguments).expect("valid tools/call params should build");
+
+        assert_eq!(params["name"].as_str(), Some("vulcan-help-list"));
+        assert_eq!(params["arguments"]["topic"].as_str(), Some("runtime"));
+    }
+
+    /// Invalid non-empty gRPC Call arguments should become a structured JSON-RPC error.
+    /// 验证非空无效 gRPC Call 参数会转换为结构化 JSON-RPC 错误。
+    #[tokio::test]
+    async fn dispatch_method_rejects_invalid_arguments_json() {
+        // Build the generic gRPC MCP service around an empty host runtime.
+        // 基于空宿主运行时构造通用 gRPC MCP 服务。
+        let service = McpServiceImpl::new(HostRuntime::new(), ConnectionManager::new());
+
+        // Dispatch a non-empty malformed JSON arguments payload.
+        // 分发一段非空且格式错误的 JSON 参数载荷。
+        let (result, is_error, message) = service
+            .dispatch_method("tools/list", "{", RequestContext::default())
+            .await;
+        let parsed: Value = serde_json::from_str(&result).expect("result should be valid JSON");
+
+        assert!(is_error);
+        assert!(message.contains("Invalid McpCallRequest.arguments JSON"));
+        assert_eq!(parsed["error"]["code"].as_i64(), Some(-32602));
+        assert_eq!(parsed["error"]["message"].as_str(), Some(message.as_str()));
+    }
+
+    /// Generic gRPC tools/call should reject missing names before runtime tool lookup.
+    /// 验证通用 gRPC tools/call 会在运行时工具查找前拒绝缺失名称。
+    #[tokio::test]
+    async fn dispatch_method_rejects_tools_call_without_name() {
+        // Build the generic gRPC MCP service around an empty host runtime.
+        // 基于空宿主运行时构造通用 gRPC MCP 服务。
+        let service = McpServiceImpl::new(HostRuntime::new(), ConnectionManager::new());
+
+        // Dispatch a tools/call payload without a tool name.
+        // 分发一段没有工具名称的 tools/call 载荷。
+        let (result, is_error, message) = service
+            .dispatch_method("tools/call", "{}", RequestContext::default())
+            .await;
+        // Parse the returned JSON-RPC error for status-code assertions.
+        // 解析返回的 JSON-RPC 错误以断言状态码。
+        let parsed: Value = serde_json::from_str(&result).expect("result should be valid JSON");
+
+        assert!(is_error);
+        assert!(message.contains("requires string field: name"));
+        assert_eq!(parsed["error"]["code"].as_i64(), Some(-32602));
+    }
+
+    /// Valid dispatcher responses should be returned as JSON without an empty-string fallback.
+    /// 验证合法 dispatcher 响应会以 JSON 返回，而不是依赖空字符串兜底。
+    #[tokio::test]
+    async fn dispatch_method_serializes_dispatcher_response_json() {
+        // Build the generic gRPC MCP service around an empty host runtime.
+        // 基于空宿主运行时构造通用 gRPC MCP 服务。
+        let service = McpServiceImpl::new(HostRuntime::new(), ConnectionManager::new());
+
+        // Dispatch a tools/list call with explicit empty arguments.
+        // 使用显式空对象参数分发 tools/list 调用。
+        let (result, is_error, message) = service
+            .dispatch_method("tools/list", "{}", RequestContext::default())
+            .await;
+        let parsed: Value = serde_json::from_str(&result).expect("result should be valid JSON");
+
+        assert!(!is_error);
+        assert!(message.is_empty());
+        assert_eq!(parsed["jsonrpc"].as_str(), Some("2.0"));
+        assert!(parsed.get("result").is_some());
+    }
 }
 
 #[cfg(test)]

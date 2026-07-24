@@ -44,8 +44,8 @@ If the tool takes no arguments, the third segment can be omitted:
 This syncs:
 
 - `output/debug/vulcan-agent-service.exe`
-- `output/skills/`
-- `output/lua_packages/`
+- `output/lua_runtime/skills/`
+- `output/lua_runtime/lua_packages/`
 - `output/configs/`
 
 For local tool debugging, use `output/debug/vulcan-agent-service.exe`.
@@ -57,7 +57,7 @@ Example for `vmcp-rg`:
 These examples assume the current working directory is the repository root.
 
 ```powershell
-.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
+.\output\debug\vulcan-agent-service.exe --call-tools vmcp-rg '{"dir":".\\runtime\\lua_runtime\\skills\\vulcan-codekit","ext":"lua","rg_pattern":"invalid_ext_argument"}'
 ```
 
 Example for `vmcp-ast`:
@@ -170,7 +170,7 @@ Possible reasons:
 
 - the tool name is wrong
 - the tool is not registered in `skill.json`
-- `output/skills` is not synced to the latest version
+- `output/lua_runtime/skills` is not synced to the latest version
 
 Fix:
 
@@ -182,24 +182,24 @@ Then retry.
 
 ### 7.2 Missing dependency errors
 
-If a skill declares `dependencies.yaml`, the loader checks the shared tool directory during load:
+If a skill declares `dependencies.yaml`, the loader checks its versioned tool dependencies during load under:
 
-- `output/bin/tools/`
+- `output/lua_runtime/dependencies/tools/`
 
 If the required binary is missing, make sure the build and dependency sync flow has completed.
 
-Also keep the two host-side paths separate:
+Also keep dependency tools and the host controller separate:
 
-- `output/bin/tools/`
-  - shared command-line tools such as `rg` and `ast-grep`
-- `output/bin/vldb-controller.exe`
+- `output/lua_runtime/dependencies/tools/`
+  - versioned skill command-line tools such as `rg` and `ast-grep`
+- `output/lua_runtime/bin/vldb-controller.exe`
   - the database controller executable
-  - this is not part of `bin/tools`
+  - this is not part of the versioned dependency tool tree
 
 If the skill being debugged touches SQLite or LanceDB, also verify that:
 
 - you have already run `make deps` and `make build`
-- `output/bin/vldb-controller.exe` exists
+- `output/lua_runtime/bin/vldb-controller.exe` exists
 - when `space_controller.auto_spawn=true`, `space_controller.endpoint` is a locally spawnable address
 - when using a remote controller, `auto_spawn=false` is set and the remote controller is already running
 - if you manually replace the controller binary, its release tag still matches the `vldb-controller-client` version locked by the current repository
