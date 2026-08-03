@@ -36,6 +36,7 @@ use crate::transport::mcp::mapping::runtime_context_from_mcp;
 #[cfg(test)]
 use crate::transport::mcp::protocol::RequestContext;
 use crate::transport::mcp::protocol::ToolCallResult;
+use crate::transport::shutdown::wait_for_shutdown_requested;
 #[cfg(test)]
 use luaskills::{LuaRuntimeHostOptions, RuntimeSkillRoot, SkillInstallSourceType};
 use serde_json::{Value, json};
@@ -295,7 +296,7 @@ async fn run_network_transports(
 async fn run_network_transports_with_shutdown(
     server: HostRuntime,
     cfg: &Config,
-    shutdown_rx: watch::Receiver<bool>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http_addr = cfg
         .http
@@ -309,7 +310,7 @@ async fn run_network_transports_with_shutdown(
     let server_for_http = server.clone();
     let server_for_grpc = server.clone();
     let http_shutdown_rx = shutdown_rx.clone();
-    let grpc_shutdown_rx = shutdown_rx;
+    let grpc_shutdown_rx = shutdown_rx.clone();
     let mut http_task = tokio::spawn(async move {
         transport::http::run_http_with_shutdown(server_for_http, &http_addr, http_shutdown_rx)
             .await
@@ -320,26 +321,47 @@ async fn run_network_transports_with_shutdown(
             .await
             .map_err(|error| format!("[gRPC] {error}"))
     });
-    let joined = tokio::time::timeout(SERVICE_TRANSPORT_SHUTDOWN_TIMEOUT, async {
-        tokio::join!(&mut http_task, &mut grpc_task)
-    })
-    .await;
-    match joined {
-        Ok((http_result, grpc_result)) => {
+    // Keep the timeout scoped to the shutdown phase; normal service lifetime must not be time-limited.
+    // 将超时限定在关闭阶段；服务正常运行期间不能被该超时强制终止。
+    tokio::select! {
+        http_result = &mut http_task => {
+            grpc_task.abort();
+            let _ = grpc_task.await;
             http_result??;
+            Ok(())
+        }
+        grpc_result = &mut grpc_task => {
+            http_task.abort();
+            let _ = http_task.await;
             grpc_result??;
             Ok(())
         }
-        Err(_) => {
-            http_task.abort();
-            grpc_task.abort();
-            let _ = http_task.await;
-            let _ = grpc_task.await;
-            Err(format!(
-                "transport shutdown exceeded {} seconds; HTTP and gRPC tasks were aborted",
-                SERVICE_TRANSPORT_SHUTDOWN_TIMEOUT.as_secs()
+        _ = wait_for_shutdown_requested(&mut shutdown_rx) => {
+            let joined = tokio::time::timeout(
+                SERVICE_TRANSPORT_SHUTDOWN_TIMEOUT,
+                async {
+                    tokio::join!(&mut http_task, &mut grpc_task)
+                },
             )
-            .into())
+            .await;
+            match joined {
+                Ok((http_result, grpc_result)) => {
+                    http_result??;
+                    grpc_result??;
+                    Ok(())
+                }
+                Err(_) => {
+                    http_task.abort();
+                    grpc_task.abort();
+                    let _ = http_task.await;
+                    let _ = grpc_task.await;
+                    Err(format!(
+                        "transport shutdown exceeded {} seconds; HTTP and gRPC tasks were aborted",
+                        SERVICE_TRANSPORT_SHUTDOWN_TIMEOUT.as_secs()
+                    )
+                    .into())
+                }
+            }
         }
     }
 }

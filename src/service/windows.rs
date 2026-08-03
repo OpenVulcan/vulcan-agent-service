@@ -201,7 +201,12 @@ fn run_windows_service_main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => ServiceControlHandlerResult::NotImplemented,
         },
-    )?;
+    )
+    .map_err(|error| {
+        let message = format!("failed to register Windows service control handler: {}", error);
+        append_windows_service_error_log(Some(runtime_root), &message);
+        message
+    })?;
     *status_handle_slot
         .lock()
         .map_err(|_| "Windows service status handle slot was poisoned")? = Some(status_handle);
@@ -215,25 +220,52 @@ fn run_windows_service_main() -> Result<(), Box<dyn std::error::Error>> {
         &status_handle,
         ServiceState::StartPending,
         ServiceControlAccept::empty(),
-        1,
-        WINDOWS_SERVICE_STOP_WAIT_HINT,
-    )?;
+        0,
+        Duration::default(),
+    )
+    .map_err(|error| {
+        append_windows_service_error_log(
+            Some(runtime_root),
+            &format!("failed to report StartPending: {}", error),
+        );
+        error
+    })?;
     set_windows_service_status(
         &status_handle,
         ServiceState::Running,
         ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
         0,
         Duration::default(),
-    )?;
+    )
+    .map_err(|error| {
+        append_windows_service_error_log(
+            Some(runtime_root),
+            &format!("failed to report Running: {}", error),
+        );
+        error
+    })?;
     let run_result =
         run_service_host_for_runtime_root(runtime_root, ProcessShutdownMode::External(shutdown_rx));
+    if let Err(error) = &run_result {
+        append_windows_service_error_log(
+            Some(runtime_root),
+            &format!("Windows service host returned an error: {}", error),
+        );
+    }
     set_windows_service_status(
         &status_handle,
         ServiceState::StopPending,
         ServiceControlAccept::empty(),
         2,
         Duration::from_secs(5),
-    )?;
+    )
+    .map_err(|error| {
+        append_windows_service_error_log(
+            Some(runtime_root),
+            &format!("failed to report StopPending after host exit: {}", error),
+        );
+        error
+    })?;
     set_windows_service_stopped(&status_handle, run_result.is_ok())?;
     run_result
 }
