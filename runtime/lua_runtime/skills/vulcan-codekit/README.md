@@ -179,15 +179,14 @@ It returns:
 - Line range
 - Complete node source
 - Per-node `ok` / `missing` / `ambiguous` / `duplicate` / `skipped` / `error` status
-- `node_hash` and `file_hash`
-- `overflow_mode: truncate`
+- Current source location and complete source are the primary result; runtime hashes and overflow metadata are omitted from normal success text
 
 Useful for:
 
 - Carefully reading the current implementation before patching
 - Reviewing one or more owner functions instead of a whole file
 - Avoiding a fallback to full-file reads just to get a function body
-- Carrying `node_hash` / `file_hash` into a later whole-function replacement
+- Preparing a complete replacement from the current implementation
 
 Node reads consistently use `nodes[]`:
 
@@ -228,9 +227,10 @@ Its boundaries are also clear:
 - it is a function/procedure-level whole-node replacement workflow, usually driven by `node-source` output
 - non-function symbols such as enum, enum variant/member, struct field, type alias, and statement-level nodes are not supported
 - Batch input uses `patches = [{ file, structural_path, replacement }, ...]`
-- You can pass `precondition = { node_hash, file_hash, range }` for stale checks
-- Successful results distinguish `previous_node_hash` from `new_node_hash`; later stale checks should use `new_node_hash`
-- Stale rejections return expected and actual diagnostic fields so callers can judge the current source state
+- You can optionally pass advanced `precondition = { node_hash, file_hash, range }` stale checks
+- Successful results include the actual post-write target lines and up to five lines of context before and after the target
+- Successful Markdown output does not expose internal source hashes or runtime request indexes
+- Stale rejections explain the source-change action; structured host diagnostics may retain expected and actual verification values
 - If a structural path matches multiple candidates, candidates are returned instead of modifying blindly
 
 ## A More Agent-friendly Code Workflow

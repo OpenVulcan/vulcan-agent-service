@@ -187,8 +187,8 @@ Remember:
 - `structural_path` is a slash-separated structural path suffix, not a regex or glob
 - it only extracts function or method nodes, matching the patch target model
 - missing, ambiguous, or invalid nodes are reported per node with `node_index` instead of failing the whole call
-- `max_nodes` defaults to 20; duplicates and skipped requests are reported explicitly
-- the rendered output explicitly states `overflow_mode: truncate`
+- `max_nodes` defaults to 20 and is an advanced batch safety limit; duplicates and skipped requests are reported only when they occur
+- node-source does not calculate hashes; normal success output contains only the current source and target location
 
 ### `vulcan-codekit-patch`
 
@@ -203,9 +203,10 @@ Remember:
 - single mode and batch mode are mutually exclusive; do not mix top-level `file`/`structural_path`/`replacement` with non-empty `patches[]`
 - `replacement` must be the complete function source
 - each patch item uses `structural_path`; it is a slash-separated structural path suffix, not a regex or glob
-- use `precondition = { node_hash, file_hash, range }` when patching from `node-source` output
-- after a successful patch, use `new_node_hash` rather than `previous_node_hash` for the next stale check
-- stale rejections include expected/actual diagnostics for the failed patch item
+- use `precondition = { node_hash, file_hash, range }` only for advanced stale checks
+- successful results include actual post-write target lines and up to five lines of context before and after the target
+- normal success output does not expose internal source hashes or runtime request indexes
+- stale rejections include an action-oriented source-change message; structured host diagnostics may retain verification values
 - overlapping same-file targets are rejected
 - do not use it for partial edits or scattered tweaks
 

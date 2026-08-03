@@ -566,10 +566,11 @@ local function append_file_summary(groups_by_directory, file_summary)
 end
 
 --[[
-构建最终 Markdown 文本，先给出总览摘要，再按目录分组输出文件摘要。
-Build the final Markdown text by emitting a summary first and then directory-grouped file summaries.
+ 构建最终 Markdown 文本，按目录分组输出文件摘要。
+ Build the final Markdown text by emitting directory-grouped file summaries.
 ]]
-local function build_tree_content(groups_by_directory, files_scanned, files_with_symbols, items_found)
+
+local function build_tree_content(groups_by_directory)
     local directories = {}
     for _, group in pairs(groups_by_directory or {}) do
         table.insert(directories, group)
@@ -580,10 +581,7 @@ local function build_tree_content(groups_by_directory, files_scanned, files_with
     end)
 
     local lines = {
-        "# AST TREE SUMMARY",
-        string.format("- files_scanned: %d", tonumber(files_scanned) or 0),
-        string.format("- files_with_symbols: %d", tonumber(files_with_symbols) or 0),
-        string.format("- items_found: %d", tonumber(items_found) or 0),
+        "# AST TREE",
     }
 
     if #directories == 0 then
@@ -633,7 +631,7 @@ end
 完成 tree 文本输出；是否原样返回还是分页改由宿主统一决定。
 Finalize the tree body; whether it stays inline or becomes paged is now decided by the host.
 ]]
-local function finalize_tree_content(content, summary_lines)
+local function finalize_tree_content(content)
     return tostring(content or ""), vulcan.runtime.overflow_type.page
 end
 
@@ -716,24 +714,11 @@ return function(args)
     end
 
     local groups_by_directory = {}
-    local files_with_symbols = 0
-    local items_found = 0
     for _, file_info in ipairs(files or {}) do
         local symbols = helpers.deduplicate_symbols(normalized_by_file[file_info.path] or {})
         local tree = (#symbols > 0) and helpers.build_symbol_tree(symbols) or {}
-        if #symbols > 0 then
-            files_with_symbols = files_with_symbols + 1
-            items_found = items_found + #symbols
-        end
         append_file_summary(groups_by_directory, build_file_summary(file_info.path, tree, helpers))
     end
 
-    return finalize_tree_content(
-        build_tree_content(groups_by_directory, #files, files_with_symbols, items_found),
-        {
-            string.format("files_scanned: %d", #files),
-            string.format("files_with_symbols: %d", files_with_symbols or 0),
-            string.format("items_found: %d", items_found or 0),
-        }
-    )
+    return finalize_tree_content(build_tree_content(groups_by_directory))
 end

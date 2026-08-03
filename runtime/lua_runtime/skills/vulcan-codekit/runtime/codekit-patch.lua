@@ -88,24 +88,6 @@ local function get_entry_dir()
 end
 
 --[[
-解析当前运行时可用的宿主进程执行函数，仅接受正式节点 `vulcan.process.exec`。
-Resolve the host-side process execution function and accept only the formal node `vulcan.process.exec`.
-
-返回 / Returns:
-- function|nil: 可调用的宿主执行函数；若宿主未注入则返回 nil。
-  Callable host execution function, or nil when the host did not inject one.
-]]
-local function get_host_exec_function()
-    if type(vulcan) ~= "table" then
-        return nil
-    end
-    if type(vulcan.process) == "table" and type(vulcan.process.exec) == "function" then
-        return vulcan.process.exec
-    end
-    return nil
-end
-
---[[
 懒加载 `codekit-ast-detail` 内部 helper，确保 `codekit-patch` 与现有 AST 规则、符号归一化和结构建树逻辑完全一致。
 Lazily load internal `codekit-ast-detail` helpers so `codekit-patch` remains fully aligned with the existing AST rules, symbol normalization, and tree-building logic.
 
@@ -310,45 +292,6 @@ local function render_patch_error(error_payload)
             end
             table.insert(lines, string.format("- %s", descriptor))
         end
-    end
-
-    return table.concat(lines, "\n")
-end
-
---[[
-把成功 patch 的结构化结果渲染成 Markdown 文本，便于 AI 直接理解修改落点。
-Render the successful patch result into Markdown text so the AI can immediately understand what was changed.
-
-参数 / Parameters:
-- result_payload(table|nil): patch 成功后的结构化结果 / Structured success payload after patching.
-
-返回 / Returns:
-- string: Markdown 格式的成功文本 / Markdown-formatted success text.
-]]
-local function render_patch_success(result_payload)
-    local payload = type(result_payload) == "table" and result_payload or {}
-    local patched_node = type(payload.patched_node) == "table" and payload.patched_node or {}
-
-    local lines = {
-        "# PATCH APPLIED",
-        string.format("- success: `%s`", tostring(payload.success == true)),
-    }
-
-    if payload.file then
-        table.insert(lines, string.format("- file: `%s`", tostring(payload.file)))
-    end
-    if payload.structural_path then
-        table.insert(lines, string.format("- structural_path: `%s`", tostring(payload.structural_path)))
-    end
-
-    table.insert(lines, "")
-    table.insert(lines, "## Patched Node")
-    table.insert(lines, string.format("- path: `%s`", tostring(patched_node.path or "unknown")))
-    table.insert(lines, string.format("- signature: `%s`", tostring(patched_node.signature or "")))
-    if patched_node.start_line and patched_node.end_line then
-        table.insert(lines, string.format("- lines: `L%d-%d`", tonumber(patched_node.start_line) or 0, tonumber(patched_node.end_line) or 0))
-    elseif patched_node.start_line then
-        table.insert(lines, string.format("- lines: `L%d`", tonumber(patched_node.start_line) or 0))
     end
 
     return table.concat(lines, "\n")
@@ -933,10 +876,15 @@ end
 --     table|nil: Canonical hunk table when the patched node can be mapped.
 -- 返回值：
 --     table|nil：可映射 patch 节点时返回 canonical hunk 表。
+
 local function build_patch_change_set_hunk(record, plan)
     local original_lines = record.original_lines or {}
-    local new_lines = record.new_lines or {}
-    local newline = record.newline or "\n"
+    local post_content = record.post_content
+    if type(post_content) ~= "table" or type(post_content.lines) ~= "table" then
+        return nil
+    end
+    local new_lines = post_content.lines
+    local newline = post_content.newline or "\n"
     local relocated = record.relocated_by_index and record.relocated_by_index[plan.patch_index] or plan.symbol
     if type(relocated) ~= "table" then
         return nil
@@ -948,10 +896,10 @@ local function build_patch_change_set_hunk(record, plan)
     local edited_end = tonumber(relocated.end_line) or edited_start
 
     return {
-        before = build_context_string(original_lines, original_start - 3, original_start - 1, newline),
+        before = build_context_string(original_lines, original_start - 5, original_start - 1, newline),
         delete = build_line_entries(original_lines, original_start, original_end),
         insert = build_line_entries(new_lines, edited_start, edited_end),
-        after = build_context_string(new_lines, edited_end + 1, edited_end + 3, newline),
+        after = build_context_string(new_lines, edited_end + 1, edited_end + 5, newline),
     }
 end
 
@@ -967,11 +915,13 @@ end
 --     table|nil: Canonical change-set file record when at least one hunk exists.
 -- 返回值：
 --     table|nil：至少存在一个 hunk 时返回 canonical change-set 文件记录。
+
 local function build_patch_change_set_file_record(record)
     if type(record) ~= "table" then
         return nil
     end
     local hunks = {}
+    local verification = {}
     local ordered_plans = clone_array(record.plans)
     table.sort(ordered_plans, function(left, right)
         return (left.symbol.start_line or 0) < (right.symbol.start_line or 0)
@@ -981,6 +931,15 @@ local function build_patch_change_set_file_record(record)
         if type(hunk) == "table" then
             table.insert(hunks, hunk)
         end
+        local result = record.applied_results_by_index and record.applied_results_by_index[plan.patch_index]
+        if type(result) == "table" then
+            table.insert(verification, {
+                patch_index = result.patch_index,
+                previous_node_hash = result.previous_node_hash,
+                new_node_hash = result.new_node_hash,
+                file_hash = result.file_hash,
+            })
+        end
     end
     if #hunks == 0 then
         return nil
@@ -989,6 +948,7 @@ local function build_patch_change_set_file_record(record)
         change = "modify",
         path = tostring(record.file or ""),
         hunks = hunks,
+        verification = verification,
     }
 end
 
@@ -1320,107 +1280,6 @@ end
 将 patch 结果写回磁盘，按“完整函数替换”规则覆盖目标函数节点源码。
 Persist the patch result to disk by replacing the target function node with a full-function replacement.
 ]]
-local function apply_patch_to_symbol(file_path, symbol, replacement_text)
-    local file_content, file_error = read_file_content(file_path)
-    if file_error then
-        return nil, file_error
-    end
-
-    local replacement_shape_error = validate_full_replacement_shape(symbol, replacement_text)
-    if replacement_shape_error then
-        return nil, replacement_shape_error
-    end
-
-    local replacement_lines = build_full_replacement_lines(symbol, file_content.lines, replacement_text)
-
-    local new_file_lines = build_replaced_file_lines(file_content.lines, symbol, replacement_lines)
-    local new_file_text = join_file_lines(new_file_lines, file_content.newline, file_content.has_trailing_newline)
-
-    local temp_path = build_sidecar_file_path(file_path, "vmcp_patch_tmp")
-    local backup_path = build_sidecar_file_path(file_path, "vmcp_patch_backup")
-    safe_remove_file(temp_path)
-    safe_remove_file(backup_path)
-
-    local temp_written, temp_write_error = pcall(vulcan.fs.write, temp_path, new_file_text)
-    if not temp_written then
-        safe_remove_file(temp_path)
-        return nil, {
-            error = "temp_file_write_failed",
-            message = tostring(temp_write_error),
-            file = file_path,
-            temp_file = temp_path,
-        }
-    end
-
-    local _, temp_validation_error = validate_ast_after_write(temp_path, AST_RUNTIME_HELPERS, symbol)
-    if temp_validation_error then
-        safe_remove_file(temp_path)
-        return nil, temp_validation_error
-    end
-
-    local moved_to_backup, backup_error = rename_file(file_path, backup_path)
-    if not moved_to_backup then
-        safe_remove_file(temp_path)
-        return nil, {
-            error = "backup_creation_failed",
-            message = tostring(backup_error),
-            file = file_path,
-            backup_file = backup_path,
-        }
-    end
-
-    local moved_temp_into_place, swap_error = rename_file(temp_path, file_path)
-    if not moved_temp_into_place then
-        rename_file(backup_path, file_path)
-        safe_remove_file(temp_path)
-        return nil, {
-            error = "temp_swap_failed",
-            message = tostring(swap_error),
-            file = file_path,
-            backup_file = backup_path,
-        }
-    end
-
-    local relocated_symbol, final_validation_error = validate_ast_after_write(file_path, AST_RUNTIME_HELPERS, symbol)
-    if final_validation_error then
-        safe_remove_file(file_path)
-        local restored, restore_error = rename_file(backup_path, file_path)
-        if not restored then
-            local fallback_ok, fallback_error = pcall(vulcan.fs.write, file_path, file_content.raw)
-            if not fallback_ok then
-                return nil, {
-                    error = "rollback_failed",
-                    message = "final validation failed and rollback could not restore the original file",
-                    file = file_path,
-                    validation = final_validation_error,
-                    restore_error = tostring(restore_error),
-                    fallback_error = tostring(fallback_error),
-                }
-            end
-        end
-        return nil, {
-            error = "patch_reverted_after_validation_failure",
-            message = "patched file failed AST validation and the original file was restored",
-            file = file_path,
-            validation = final_validation_error,
-        }
-    end
-
-    safe_remove_file(backup_path)
-
-    return {
-        success = true,
-        file = file_path,
-        structural_path = build_canonical_symbol_path(relocated_symbol or symbol),
-        patched_node = {
-            file = (relocated_symbol and relocated_symbol.file) or symbol.file,
-            path = build_canonical_symbol_path(relocated_symbol or symbol),
-            signature = trim(((relocated_symbol and relocated_symbol.signature) or symbol.signature) or ""),
-            start_line = (relocated_symbol and relocated_symbol.start_line) or symbol.start_line,
-            end_line = (relocated_symbol and relocated_symbol.end_line) or symbol.end_line,
-        },
-    }, nil
-end
 
 -- Compute a stable lightweight source hash for stale-check comparisons.
 -- 计算稳定的轻量源码哈希，用于 stale check 比对。
@@ -1452,6 +1311,70 @@ local function extract_symbol_source(file_content, symbol)
         table.insert(lines, file_content.lines[line_number] or "")
     end
     return table.concat(lines, "\n"), nil
+end
+
+-- Build the final patch result from the source that was actually written to disk.
+-- 根据实际写入磁盘的源码构造最终 patch 结果。
+--
+-- Parameters:
+--     record: Committed file record containing the post-write source snapshot.
+--     plan: Validated patch plan for one target node.
+-- 参数：
+--     record：包含写入后源码快照的已提交文件记录。
+--     plan：单个目标节点的已校验 patch 计划。
+--
+-- Returns:
+--     table, nil: Final applied result and no error.
+--     nil, table: No result and a structured verification error.
+-- 返回值：
+--     table, nil：最终应用结果和空错误。
+--     nil, table：无法构造结果时返回结构化验证错误。
+local function build_applied_patch_result(record, plan)
+    local post_content = record and record.post_content
+    local relocated = record and record.relocated_by_index and record.relocated_by_index[plan.patch_index]
+    if type(post_content) ~= "table" or type(relocated) ~= "table" then
+        return nil, {
+            error = "post_write_snapshot_missing",
+            message = "the committed file did not provide a post-write source snapshot",
+            file = plan.file,
+            patch_index = plan.patch_index,
+        }
+    end
+
+    local source_text, source_error = extract_symbol_source(post_content, relocated)
+    if source_error then
+        return nil, {
+            error = "post_write_source_extract_failed",
+            message = "the committed target source could not be extracted",
+            file = plan.file,
+            patch_index = plan.patch_index,
+            details = source_error,
+        }
+    end
+
+    local original_start = tonumber(plan.symbol and plan.symbol.start_line) or 1
+    local current_start = tonumber(relocated.start_line) or 1
+    local current_end = tonumber(relocated.end_line) or current_start
+    local new_node_hash = compute_source_hash(source_text)
+    local file_hash = compute_source_hash(post_content.raw)
+
+    return {
+        patch_index = plan.patch_index,
+        status = "applied",
+        file = plan.file,
+        structural_path = plan.structural_path,
+        path = build_canonical_symbol_path(relocated),
+        signature = trim(relocated.signature or ""),
+        start_line = relocated.start_line,
+        end_line = relocated.end_line,
+        source_text = source_text,
+        patched_lines = build_line_entries(post_content.lines, current_start, current_end),
+        before_context = build_line_entries(record.original_lines, original_start - 5, original_start - 1),
+        after_context = build_line_entries(post_content.lines, current_end + 1, current_end + 5),
+        previous_node_hash = plan.node_hash,
+        new_node_hash = new_node_hash,
+        file_hash = file_hash,
+    }, nil
 end
 
 -- Normalize the optional atomic argument; batch patching defaults to atomic.
@@ -1712,13 +1635,9 @@ local function sort_candidate_descriptors(candidates)
     end)
 end
 
--- Load and cache file content and AST context for one file.
--- 加载并缓存单个文件的文本与 AST 上下文。
-local function get_batch_file_context(file_path, helper_bundle, cache)
-    if cache[file_path] then
-        return cache[file_path]
-    end
-
+-- Load current file content and AST context for one file.
+-- 加载单个文件的当前文本与 AST 上下文。
+local function get_batch_file_context(file_path, helper_bundle)
     local file_content, file_error = read_file_content(file_path)
     local symbol_roots, file_info, ast_error = nil, nil, nil
     if not file_error then
@@ -1732,18 +1651,17 @@ local function get_batch_file_context(file_path, helper_bundle, cache)
         symbol_roots = symbol_roots,
         error = file_error or ast_error,
     }
-    cache[file_path] = context
     return context
 end
 
 -- Prepare one patch request by resolving its structural path and validating its replacement.
 -- 通过解析 structural_path 与校验 replacement 准备一个 patch 请求。
-local function prepare_patch_request(patch_request, helper_bundle, file_context_cache)
+local function prepare_patch_request(patch_request, helper_bundle)
     if patch_request.initial_error then
         return nil, patch_request.initial_error
     end
 
-    local context = get_batch_file_context(patch_request.file, helper_bundle, file_context_cache)
+    local context = get_batch_file_context(patch_request.file, helper_bundle)
     if context.error then
         return nil, context.error
     end
@@ -2007,6 +1925,7 @@ end
 
 -- Create and validate a temporary patched file for one target file.
 -- 为一个目标文件创建并校验临时 patch 文件。
+
 local function create_validated_patch_record(file_path, plans, helper_bundle)
     local file_context = plans[1].file_context
     local new_lines = build_batch_file_lines(file_context.content, plans)
@@ -2033,31 +1952,6 @@ local function create_validated_patch_record(file_path, plans, helper_bundle)
         return nil, validation_error
     end
 
-    -- Compute post-patch node hashes from the validated temporary source so success metadata can drive later stale checks.
-    -- 从已校验的临时源码计算 patch 后节点哈希，确保成功元数据可继续用于后续 stale check。
-    local new_file_content = {
-        raw = new_text,
-        lines = new_lines,
-        newline = file_context.content.newline,
-        has_trailing_newline = file_context.content.has_trailing_newline,
-    }
-    local new_node_hash_by_index = {}
-    for _, plan in ipairs(plans or {}) do
-        local relocated_symbol = relocated_by_index and relocated_by_index[plan.patch_index]
-        local new_source_text, new_source_error = extract_symbol_source(new_file_content, relocated_symbol)
-        if new_source_error then
-            safe_remove_file(temp_path)
-            return nil, {
-                error = "patched_node_source_extract_failed",
-                message = "patched node source could not be extracted after AST validation",
-                file = file_path,
-                patch_index = plan.patch_index,
-                details = new_source_error,
-            }
-        end
-        new_node_hash_by_index[plan.patch_index] = compute_source_hash(new_source_text)
-    end
-
     return {
         file = file_path,
         temp_path = temp_path,
@@ -2068,7 +1962,6 @@ local function create_validated_patch_record(file_path, plans, helper_bundle)
         new_lines = new_lines,
         newline = file_context.content.newline,
         relocated_by_index = relocated_by_index,
-        new_node_hash_by_index = new_node_hash_by_index,
     }, nil
 end
 
@@ -2095,6 +1988,7 @@ end
 
 -- Commit a set of pre-validated patch records, rolling back on any failure.
 -- 提交一组已预校验的 patch 记录，并在失败时回滚。
+
 local function commit_patch_records(records, helper_bundle)
     local committed = {}
     for _, record in ipairs(records or {}) do
@@ -2138,6 +2032,40 @@ local function commit_patch_records(records, helper_bundle)
             }
         end
         record.relocated_by_index = relocated_by_index
+
+        -- Read the committed file so returned source and context describe disk state, not the planned text.
+        -- 重新读取已提交文件，确保返回的源码和上下文来自磁盘实际状态，而不是预计算文本。
+        local post_content, post_read_error = read_file_content(record.file)
+        if post_read_error then
+            local rollback_errors = rollback_patch_records(committed)
+            return {
+                error = "post_write_read_failed",
+                message = "the committed file could not be re-read for result verification",
+                file = record.file,
+                details = post_read_error,
+                rollback_errors = rollback_errors,
+            }
+        end
+        record.post_content = post_content
+        record.applied_results_by_index = {}
+
+        -- Build every applied result before deleting backups so any verification failure remains recoverable.
+        -- 在删除备份前构造全部应用结果，保证验证失败时仍然可以恢复原文件。
+        for _, plan in ipairs(record.plans or {}) do
+            local applied_result, result_error = build_applied_patch_result(record, plan)
+            if result_error then
+                local rollback_errors = rollback_patch_records(committed)
+                return {
+                    error = "post_write_result_build_failed",
+                    message = "the committed patch result could not be built from disk state",
+                    file = record.file,
+                    patch_index = plan.patch_index,
+                    details = result_error,
+                    rollback_errors = rollback_errors,
+                }
+            end
+            record.applied_results_by_index[plan.patch_index] = applied_result
+        end
     end
 
     for _, record in ipairs(records or {}) do
@@ -2181,79 +2109,140 @@ end
 
 -- Render the batch patch result as Markdown.
 -- 将批量 patch 结果渲染为 Markdown。
+
+-- Build a Markdown fence longer than every backtick run in one line-entry list.
+-- 构造比一组行记录中所有反引号序列更长的 Markdown 围栏。
+--
+-- Parameters:
+--     entries: Line entries that will be rendered inside a Markdown block.
+-- 参数：
+--     entries：将被渲染到 Markdown 代码块中的行记录。
+--
+-- Returns:
+--     string: A fence with at least three backticks.
+-- 返回值：
+--     string：至少包含三个反引号的代码围栏。
+local function build_entries_markdown_fence(entries)
+    local longest_run = 2
+    for _, entry in ipairs(entries or {}) do
+        for run in tostring(entry.content or ""):gmatch("`+") do
+            longest_run = math.max(longest_run, #run)
+        end
+    end
+    return string.rep(string.char(96), longest_run + 1)
+end
+
 local function render_patch_batch_result(summary, results)
+    local rendered_results = results or {}
     local lines = {
-        "# PATCH BATCH RESULT",
-        string.format("- requested: `%d`", tonumber(summary.requested) or 0),
-        string.format("- applied: `%d`", tonumber(summary.applied) or 0),
-        string.format("- status: `%s`", tostring(summary.status or "unknown")),
-        string.format("- atomic: `%s`", tostring(summary.atomic == true)),
-        string.format("- reason: `%s`", tostring(summary.reason or "")),
+        "# PATCH RESULT",
+        string.format("- status: %s", tostring(summary.status or "unknown")),
     }
 
-    table.insert(lines, "")
-    table.insert(lines, "## Patches")
-    for _, result in ipairs(results or {}) do
+    if tonumber(summary.requested) and tonumber(summary.requested) > 1 then
+        table.insert(
+            lines,
+            string.format(
+                "- patches: %d applied of %d requested",
+                tonumber(summary.applied) or 0,
+                tonumber(summary.requested) or 0
+            )
+        )
+    end
+    if summary.atomic ~= true then
+        table.insert(lines, "- mode: partial")
+    end
+    if summary.reason and summary.reason ~= "" and summary.reason ~= "ok" then
+        table.insert(lines, string.format("- reason: %s", tostring(summary.reason)))
+    end
+
+    local function append_line_entries(title, entries)
+        if type(entries) ~= "table" or #entries == 0 then
+            return
+        end
+        local fence = build_entries_markdown_fence(entries)
         table.insert(lines, "")
-        table.insert(lines, string.format("### Patch %d", tonumber(result.patch_index) or 0))
-        table.insert(lines, string.format("- status: `%s`", tostring(result.status or "unknown")))
-        table.insert(lines, string.format("- file: `%s`", tostring(result.file or "")))
-        table.insert(lines, string.format("- structural_path: `%s`", tostring(result.structural_path or "")))
+        table.insert(lines, "### " .. title)
+        table.insert(lines, fence .. "text")
+        for _, entry in ipairs(entries) do
+            table.insert(
+                lines,
+                string.format(
+                    "L%d: %s",
+                    tonumber(entry.line) or 0,
+                    tostring(entry.content or "")
+                )
+            )
+        end
+        table.insert(lines, fence)
+    end
+
+    for index, result in ipairs(rendered_results) do
+        table.insert(lines, "")
+        if #rendered_results > 1 then
+            table.insert(lines, string.format("## Patch %d", tonumber(result.patch_index) or index))
+            table.insert(lines, "")
+        end
+        table.insert(lines, string.format("- status: %s", tostring(result.status or "unknown")))
+        table.insert(lines, string.format("- file: %s", tostring(result.file or "")))
+        table.insert(lines, string.format("- structural_path: %s", tostring(result.structural_path or "")))
         if result.path then
-            table.insert(lines, string.format("- path: `%s`", tostring(result.path)))
+            table.insert(lines, string.format("- path: %s", tostring(result.path)))
         end
         if result.signature then
-            table.insert(lines, string.format("- signature: `%s`", tostring(result.signature)))
+            table.insert(lines, string.format("- signature: %s", tostring(result.signature)))
         end
         if result.start_line and result.end_line then
-            table.insert(lines, string.format("- lines: `L%d-%d`", tonumber(result.start_line) or 0, tonumber(result.end_line) or 0))
-        end
-        if result.previous_node_hash then
-            table.insert(lines, string.format("- previous_node_hash: `%s`", tostring(result.previous_node_hash)))
-        end
-        if result.new_node_hash then
-            table.insert(lines, string.format("- new_node_hash: `%s`", tostring(result.new_node_hash)))
-        elseif result.node_hash then
-            table.insert(lines, string.format("- node_hash: `%s`", tostring(result.node_hash)))
-        end
-        if result.error then
-            table.insert(lines, string.format("- error: `%s`", tostring(result.error)))
-        end
-        if result.message then
-            table.insert(lines, string.format("- message: %s", tostring(result.message)))
-        end
-        if result.expected_node_hash then
-            table.insert(lines, string.format("- expected_node_hash: `%s`", tostring(result.expected_node_hash)))
-        end
-        if result.actual_node_hash then
-            table.insert(lines, string.format("- actual_node_hash: `%s`", tostring(result.actual_node_hash)))
-        end
-        if result.expected_file_hash then
-            table.insert(lines, string.format("- expected_file_hash: `%s`", tostring(result.expected_file_hash)))
-        end
-        if result.actual_file_hash then
-            table.insert(lines, string.format("- actual_file_hash: `%s`", tostring(result.actual_file_hash)))
-        end
-        if result.expected_range then
-            table.insert(lines, string.format("- expected_range: `%s`", format_range_diagnostic(result.expected_range)))
-        end
-        if result.actual_range then
-            table.insert(lines, string.format("- actual_range: `%s`", format_range_diagnostic(result.actual_range)))
-        end
-        if type(result.candidates) == "table" and #result.candidates > 0 then
-            table.insert(lines, "- candidates:")
-            for _, candidate in ipairs(result.candidates) do
-                table.insert(
-                    lines,
-                    string.format(
-                        "  - `%s` L%d-%d",
-                        tostring(candidate.path or ""),
-                        tonumber(candidate.start_line) or 0,
-                        tonumber(candidate.end_line) or 0
-                    )
+            table.insert(
+                lines,
+                string.format(
+                    "- lines: L%d-%d",
+                    tonumber(result.start_line) or 0,
+                    tonumber(result.end_line) or 0
                 )
+            )
+        end
+
+        if result.status == "applied" then
+            append_line_entries("Patch after code", result.patched_lines)
+            append_line_entries("Before context (up to 5 lines)", result.before_context)
+            append_line_entries("After context (up to 5 lines)", result.after_context)
+        else
+            if result.error then
+                table.insert(lines, string.format("- error: %s", tostring(result.error)))
+            end
+            if result.message then
+                table.insert(lines, string.format("- message: %s", tostring(result.message)))
+            end
+            if tostring(result.error or ""):match("^stale_") then
+                table.insert(lines, "- action: reread the current node with node-source and retry")
+            end
+            if result.expected_range then
+                table.insert(lines, string.format("- expected_range: %s", format_range_diagnostic(result.expected_range)))
+            end
+            if result.actual_range then
+                table.insert(lines, string.format("- actual_range: %s", format_range_diagnostic(result.actual_range)))
+            end
+            if type(result.candidates) == "table" and #result.candidates > 0 then
+                table.insert(lines, "- candidates:")
+                for _, candidate in ipairs(result.candidates) do
+                    table.insert(
+                        lines,
+                        string.format(
+                            "  - %s L%d-%d",
+                            tostring(candidate.path or ""),
+                            tonumber(candidate.start_line) or 0,
+                            tonumber(candidate.end_line) or 0
+                        )
+                    )
+                end
             end
         end
+    end
+
+    if #rendered_results == 0 then
+        table.insert(lines, "")
+        table.insert(lines, "- status: no patch results")
     end
 
     return table.concat(lines, "\n")
@@ -2290,7 +2279,6 @@ local function execute_patch_batch(args, helper_bundle)
     local patch_requests = normalize_patch_requests(args)
     local results_by_index = {}
     local plans = {}
-    local file_context_cache = {}
 
     for _, patch_request in ipairs(patch_requests) do
         if patch_request.patch_index > max_patches then
@@ -2302,7 +2290,7 @@ local function execute_patch_batch(args, helper_bundle)
                 message = "patch request skipped because max_patches was reached",
             }
         else
-            local plan, prepare_error = prepare_patch_request(patch_request, helper_bundle, file_context_cache)
+            local plan, prepare_error = prepare_patch_request(patch_request, helper_bundle)
             if prepare_error then
                 results_by_index[patch_request.patch_index] = build_rejected_result(patch_request, prepare_error)
             else
@@ -2408,21 +2396,7 @@ local function execute_patch_batch(args, helper_bundle)
         end
         for _, record in ipairs(records) do
             for _, plan in ipairs(record.plans or {}) do
-                local relocated = record.relocated_by_index and record.relocated_by_index[plan.patch_index] or plan.symbol
-                local new_node_hash = record.new_node_hash_by_index and record.new_node_hash_by_index[plan.patch_index] or nil
-                results_by_index[plan.patch_index] = {
-                    patch_index = plan.patch_index,
-                    status = "applied",
-                    file = plan.file,
-                    structural_path = plan.structural_path,
-                    path = build_canonical_symbol_path(relocated),
-                    signature = trim(relocated.signature or ""),
-                    start_line = relocated.start_line,
-                    end_line = relocated.end_line,
-                    previous_node_hash = plan.node_hash,
-                    new_node_hash = new_node_hash,
-                    node_hash = new_node_hash,
-                }
+                results_by_index[plan.patch_index] = record.applied_results_by_index[plan.patch_index]
                 summary.applied = summary.applied + 1
             end
         end
@@ -2451,21 +2425,7 @@ local function execute_patch_batch(args, helper_bundle)
             end
         else
             for _, plan in ipairs(record.plans or {}) do
-                local relocated = record.relocated_by_index and record.relocated_by_index[plan.patch_index] or plan.symbol
-                local new_node_hash = record.new_node_hash_by_index and record.new_node_hash_by_index[plan.patch_index] or nil
-                results_by_index[plan.patch_index] = {
-                    patch_index = plan.patch_index,
-                    status = "applied",
-                    file = plan.file,
-                    structural_path = plan.structural_path,
-                    path = build_canonical_symbol_path(relocated),
-                    signature = trim(relocated.signature or ""),
-                    start_line = relocated.start_line,
-                    end_line = relocated.end_line,
-                    previous_node_hash = plan.node_hash,
-                    new_node_hash = new_node_hash,
-                    node_hash = new_node_hash,
-                }
+                results_by_index[plan.patch_index] = record.applied_results_by_index[plan.patch_index]
                 summary.applied = summary.applied + 1
             end
             table.insert(committed_records, record)

@@ -8,7 +8,7 @@ Best for:
 - batch patching handler/helper/test changes in one call
 - avoiding stale line-based edits
 - keeping structural_path-based targeting precise
-- turning `node-source` output into a full-node replacement with stale checks
+- returning the actual post-write source and local context after a replacement
 
 Structural path syntax:
 
@@ -22,7 +22,7 @@ Input options:
 - batch mode: pass `patches = [{ file, structural_path, replacement }, ...]`
 - single mode and batch mode are mutually exclusive; non-empty `patches[]` must not be combined with top-level `file`, `structural_path`, `replacement`, or `precondition`
 - mixed single/batch input is rejected with `mixed_patch_modes`
-- optional stale checks: pass `precondition = { node_hash, file_hash, range }`
+- optional advanced stale checks: pass `precondition = { node_hash, file_hash, range }`
 - `replacement` must be the complete function/method source returned from the declaration line, not a body fragment
 
 Batch rules:
@@ -32,9 +32,10 @@ Batch rules:
 - set `atomic=false` only when partial application is explicitly desired
 - same-file patches are applied in descending line order
 - overlapping same-file target ranges are rejected
-- `max_patches` defaults to 20
-- applied results report `previous_node_hash` and `new_node_hash`; use `new_node_hash` for later stale checks
-- stale rejections report expected/actual diagnostics such as `expected_node_hash` and `actual_node_hash`
+- `max_patches` defaults to 20 and is an advanced batch safety limit
+- successful results contain the actual post-write target lines and up to five lines of context before and after the target
+- successful Markdown output does not include internal source hashes or runtime request indexes
+- stale rejections explain the source-change action; structured host diagnostics may still include expected/actual verification values
 - `precondition.node_hash` checks the current matched node source, `precondition.file_hash` checks the whole file, and `precondition.range` checks the current node line range
 
 Boundaries:
@@ -49,4 +50,5 @@ Typical route:
 2. Read exact current implementations with `node-source`.
 3. Prepare complete replacement source from the returned node bodies, keeping names and signatures aligned.
 4. Submit one `patches[]` batch with full replacement functions.
-5. Validate with TestKit or the project-specific check.
+5. Read the returned post-write code and context as the primary patch verification result.
+6. Validate with TestKit or the project-specific check.

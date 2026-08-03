@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "description": "Patch performs whole-node replacement for function/method targets only. The typical workflow is: first use node-source to read the exact current function/method source, then submit a complete replacement source through patch, optionally with node_hash/file_hash/range stale checks. This tool does not support enum, enum variant/member, struct field, type alias, or statement-level patching.",
+  "description": "Patch performs whole-node replacement for function/method targets only. The typical workflow is: first use node-source to read the exact current function/method source, then submit a complete replacement source through patch. The success result includes the actual post-write target lines and local context; node_hash/file_hash/range are optional advanced stale checks. This tool does not support enum, enum variant/member, struct field, type alias, or statement-level patching.",
   "properties": {
     "file": {
       "type": "string",
@@ -18,7 +18,7 @@
     "precondition": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional stale-check object for single mode. Omit top-level precondition when patches[] is non-empty; use per-item precondition instead.",
+      "description": "Optional advanced stale-check object for single mode. Omit top-level precondition when patches[] is non-empty; use per-item precondition instead. It is not required for normal patching.",
       "properties": {
         "node_hash": {
           "type": "string",
@@ -81,7 +81,7 @@
           "precondition": {
             "type": "object",
             "additionalProperties": false,
-            "description": "Optional stale-check object for the current batch item.",
+              "description": "Optional advanced stale-check object for the current batch item. Omit it for normal patching.",
             "properties": {
               "node_hash": {
                 "type": "string",
@@ -136,7 +136,7 @@
     },
     "max_patches": {
       "type": "integer",
-      "description": "Maximum patch requests to process in one call. Defaults to 20.",
+      "description": "Advanced batch safety limit. Maximum patch requests to process in one call. Defaults to 20; omit it for normal use.",
       "minimum": 1
     }
   },

@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "description": "Node-source is the read step of CodeKit's function/method whole-node replacement workflow. Use it to fetch the exact current function/method source before review or before sending a complete replacement to patch. Non-function symbols such as enum, enum variant/member, struct field, type alias, and statement-level nodes are not returned.",
+  "description": "Node-source is the read step of CodeKit's function/method whole-node replacement workflow. Use it to fetch the exact current function/method source before review or before sending a complete replacement to patch. Normal output contains the current source and target location without runtime hashes or overflow metadata. Non-function symbols such as enum, enum variant/member, struct field, type alias, and statement-level nodes are not returned.",
   "properties": {
     "nodes": {
       "type": "array",
@@ -27,7 +27,7 @@
     },
     "max_nodes": {
       "type": "integer",
-      "description": "Maximum function/method node requests to process before marking the rest as skipped. Defaults to 20.",
+      "description": "Advanced batch safety limit. Maximum function/method node requests to process before marking the rest as skipped. Defaults to 20; omit it for normal use.",
       "minimum": 1
     }
   },

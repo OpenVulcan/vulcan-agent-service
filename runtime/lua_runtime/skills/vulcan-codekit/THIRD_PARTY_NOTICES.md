@@ -1,6 +1,6 @@
 # 第三方版权与许可证声明
 
-本文件用于说明 `runtime/lua_runtime/skills/vulcan-codekit` 作为 skill 包运行时所依赖的第三方工具及其许可证信息。
+本文件用于说明 `runtime/skills/vulcan-codekit` 作为 skill 包运行时所依赖的第三方工具及其许可证信息。
 
 适用范围如下：
 

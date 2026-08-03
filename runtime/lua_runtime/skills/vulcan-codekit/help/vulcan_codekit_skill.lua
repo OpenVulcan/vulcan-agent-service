@@ -190,8 +190,8 @@ Remember:
 - it is the normal read step before `vulcan-codekit-patch`
 - it only extracts function or method nodes; non-function symbols such as enum, enum variant/member, struct field, type alias, and statement-level nodes are outside this tool model
 - missing, ambiguous, or invalid nodes are reported per node with `node_index` instead of failing the whole call
-- `max_nodes` defaults to 20; duplicates and skipped requests are reported explicitly
-- the rendered output explicitly states `overflow_mode: truncate`
+- `max_nodes` defaults to 20 and is an advanced batch safety limit; duplicates and skipped requests are reported only when they occur
+- normal success output contains the current source and target location without runtime hashes or overflow metadata
 
 ### `vulcan-codekit-patch`
 
@@ -204,12 +204,13 @@ Remember:
 - prefer `patches[]` for related handler/helper/test changes
 - batch mode defaults to `atomic=true`
 - single mode and batch mode are mutually exclusive; do not mix top-level `file`/`structural_path`/`replacement` with non-empty `patches[]`
-- use `vulcan-codekit-node-source` immediately before patching when you need current source text or stale-check hashes
+- use `vulcan-codekit-node-source` immediately before patching when you need current source text or target location
 - `replacement` must be the complete function or method source; this is a whole-node workflow, not a partial edit tool
 - each patch item uses `structural_path`; it is a slash-separated structural path suffix, not a regex or glob
-- use `precondition = { node_hash, file_hash, range }` when patching from `node-source` output
-- after a successful patch, use `new_node_hash` rather than `previous_node_hash` for the next stale check
-- stale rejections include expected/actual diagnostics for the failed patch item
+- use `precondition = { node_hash, file_hash, range }` only for advanced stale checks
+- successful results include actual post-write target lines and up to five lines of context before and after the target
+- normal success output does not expose internal source hashes or runtime request indexes
+- stale rejections include an action-oriented source-change message; structured host diagnostics may retain verification values
 - overlapping same-file targets are rejected
 - non-function symbols such as enum, enum variant/member, struct field, type alias, and statement-level nodes are not supported
 - do not use it for partial edits or scattered tweaks

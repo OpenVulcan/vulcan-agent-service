@@ -21,3 +21,5 @@ Typical route:
 1. Start from the clue.
 2. Run `rg`.
 3. Use the returned owner context to decide whether `ast-detail` is needed next.
+
+Output focuses on matching lines and their owning structure. It does not export Markdown to a caller-provided path; `export_md_path` is unsupported.

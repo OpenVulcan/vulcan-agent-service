@@ -7,7 +7,7 @@ Best for:
 - reading exact function or method bodies without opening the whole file
 - reviewing implementation details after structural owner discovery
 - preparing a safe full-function replacement for `vulcan-codekit-patch`
-- capturing `node_hash` and `file_hash` from the current node source for later stale checks
+- confirming the current source before an optional stale-checked replacement
 
 Typical route:
 
@@ -41,11 +41,10 @@ Per-node validation errors, such as a missing file or invalid structural path, a
 
 Batch behavior:
 
-- `max_nodes` defaults to 20
+- `max_nodes` defaults to 20 and is an advanced batch safety limit
 - repeated structural paths that resolve to the same node are reported as `duplicate`
 - requests beyond `max_nodes` are reported as `skipped`
 - same-file successful nodes are ordered by source line for easier reading
-- successful nodes include `node_hash` and `file_hash` for later patch stale checks
 - when a structural path resolves to a non-function symbol, the tool reports that the path is outside the function/method patch workflow
 
-The tool returns content with host-managed `truncate` overflow mode and includes `overflow_mode: truncate` in the rendered metadata.
+Successful output contains the file, structural path, canonical target, line range, signature, and complete current source. Runtime limits, request indexes, overflow metadata, and source hashes are not included. Node-source does not calculate hashes; patch accepts optional stale-check hashes only when the caller already has trusted values.

@@ -552,13 +552,13 @@ local function detect_fence_marker(line)
 end
 
 --[[
-从 Markdown 文件中提取 `#`、`##`、`###` 标题及其行号，并返回文件总行数，同时跳过代码围栏区域。
-Extract `#`, `##`, and `###` headings with line numbers from a Markdown file, return the total line count, and skip fenced code blocks.
+ 从 Markdown 文件中提取 `#`、`##`、`###` 标题及其行号，同时跳过代码围栏区域。
+ Extract `#`, `##`, and `###` headings with line numbers while skipping fenced code blocks.
 ]]
 local function extract_markdown_headings(file_path)
     local ok, file_content = pcall(vulcan.fs.read, file_path)
     if not ok then
-        return nil, 0, {
+        return nil, {
             error = "markdown_read_failed",
             message = tostring(file_content),
             path = file_path,
@@ -591,26 +591,20 @@ local function extract_markdown_headings(file_path)
         end
     end
 
-    return headings, #file_lines, nil
+    return headings, nil
 end
 
 --[[
-将扫描统计、文件菜单和标题目录详情渲染成单段 Markdown 文本，便于模型直接阅读而无需再解析结构体包装。
-Render scan statistics, the file menu, and heading details into a single Markdown text block so models can read it directly without unpacking a wrapper table.
+ 将文件菜单和标题目录详情渲染成单段 Markdown 文本，便于模型直接阅读而无需再解析结构体包装。
+ Render the file menu and heading details into a single Markdown text block so models can read them directly without unpacking a wrapper table.
 ]]
-local function build_markdown_menu_content(documents, stats)
+
+local function build_markdown_menu_content(documents)
     local lines = {
-        "# SCAN SUMMARY",
-        string.format(
-            "- files_scanned: %d | files_with_headings: %d | heading_items: %d | errors: %d",
-            tonumber(stats and stats.files_scanned) or 0,
-            tonumber(stats and stats.files_with_headings) or 0,
-            tonumber(stats and stats.items_found) or 0,
-            tonumber(stats and stats.error_count) or 0
-        ),
+        "# MARKDOWN MENU",
         "",
         "# FILE MENU",
-        "If the result is truncated, use the file menu to narrow the path scope and call this tool again with a smaller target set.",
+        "Use the file list to choose the document, then read the relevant heading body separately.",
     }
 
     if #(documents or {}) == 0 then
@@ -657,14 +651,7 @@ local function build_markdown_menu_content(documents, stats)
         if index > 1 then
             table.insert(lines, "")
         end
-        table.insert(
-            lines,
-            string.format(
-                "[%s Lines:%d]",
-                tostring(document.path or ""),
-                tonumber(document.line_count) or 0
-            )
-        )
+        table.insert(lines, string.format("[%s]", tostring(document.path or "")))
         if #(document.headings or {}) == 0 then
             table.insert(lines, "(no # / ## / ### headings found)")
         else
@@ -756,37 +743,22 @@ return function(args)
         return render_codekit_error_markdown("CodeKit Markdown Menu Error", ignore_error)
     end
 
-    local markdown_files, collection_errors, collection_error = collect_markdown_files(target_paths, recursive, ignore_enabled, helpers)
+    local markdown_files, _, collection_error = collect_markdown_files(target_paths, recursive, ignore_enabled, helpers)
     if collection_error then
         return render_codekit_error_markdown("CodeKit Markdown Menu Error", collection_error)
     end
 
     local documents = {}
-    local files_with_headings = 0
-    local headings_found = 0
-    local read_errors = clone_array(collection_errors)
 
     for _, file_info in ipairs(markdown_files or {}) do
-        local headings, line_count, heading_error = extract_markdown_headings(file_info.path)
-        if heading_error then
-            table.insert(read_errors, heading_error)
-        else
-            if #(headings or {}) > 0 then
-                files_with_headings = files_with_headings + 1
-                headings_found = headings_found + #headings
-            end
+        local headings, heading_error = extract_markdown_headings(file_info.path)
+        if not heading_error then
             table.insert(documents, {
                 path = file_info.path,
                 headings = headings or {},
-                line_count = line_count or 0,
             })
         end
     end
 
-    return finalize_markdown_menu_content(build_markdown_menu_content(documents, {
-        files_scanned = #(markdown_files or {}),
-        files_with_headings = files_with_headings,
-        items_found = headings_found,
-        error_count = #(read_errors or {}),
-    }))
+    return finalize_markdown_menu_content(build_markdown_menu_content(documents))
 end

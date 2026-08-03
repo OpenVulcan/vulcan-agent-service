@@ -207,17 +207,6 @@ local function extract_symbol_source(file_content, symbol)
     return table.concat(extracted_lines, "\n"), nil
 end
 
--- Compute a stable lightweight source hash for node and file freshness checks.
--- 计算稳定的轻量源码哈希，用于节点和文件新鲜度检查。
-local function compute_source_hash(text)
-    local hash = 5381
-    local source = tostring(text or "")
-    for index = 1, #source do
-        hash = ((hash * 131) + source:byte(index)) % 4294967296
-    end
-    return string.format("%08x", hash)
-end
-
 -- Validate and normalize the optional max_nodes argument.
 -- 校验并规范化可选的 max_nodes 参数。
 local function normalize_max_nodes(value)
@@ -354,77 +343,101 @@ local function build_node_identity_key(candidate)
     }, "\t")
 end
 
+-- Build a Markdown fence longer than any backtick run in the returned source.
+-- 构造比返回源码中最长反引号序列更长的 Markdown 围栏。
+--
+-- Parameters:
+--     source_text: Source text that will be placed inside the Markdown block.
+-- 参数：
+--     source_text：将被放入 Markdown 代码块的源码文本。
+--
+-- Returns:
+--     string: A fence with at least three backticks.
+-- 返回值：
+--     string：至少包含三个反引号的代码围栏。
+local function build_source_markdown_fence(source_text)
+    local longest_run = 2
+    for run in tostring(source_text or ""):gmatch("`+") do
+        longest_run = math.max(longest_run, #run)
+    end
+    return string.rep(string.char(96), longest_run + 1)
+end
+
 -- Render successful node source extraction results.
 -- 渲染成功的节点源码提取结果集合。
-local function render_node_source_result(summary, results)
-    local lines = {
-        "# NODE SOURCE SUMMARY",
-        "",
-        "- overflow_mode: `truncate`",
-        string.format("- nodes_requested: `%d`", tonumber(summary.nodes_requested) or 0),
-        string.format("- nodes_returned: `%d`", tonumber(summary.nodes_returned) or 0),
-        string.format("- ok: `%d`", tonumber(summary.ok) or 0),
-        string.format("- ambiguous: `%d`", tonumber(summary.ambiguous) or 0),
-        string.format("- missing: `%d`", tonumber(summary.missing) or 0),
-        string.format("- duplicate: `%d`", tonumber(summary.duplicate) or 0),
-        string.format("- skipped: `%d`", tonumber(summary.skipped) or 0),
-        string.format("- errors: `%d`", tonumber(summary.errors) or 0),
-        string.format("- max_nodes: `%d`", tonumber(summary.max_nodes) or DEFAULT_MAX_NODES),
-    }
 
-    for index, result in ipairs(results or {}) do
+local function render_node_source_result(summary, results)
+    local rendered_results = results or {}
+    local lines = {
+        "# NODE SOURCE",
+    }
+    local multiple = #rendered_results > 1
+
+    for index, result in ipairs(rendered_results) do
         local candidate = result.candidate or {}
         local fence_language = infer_fence_language(result.file)
+        local fence = build_source_markdown_fence(result.source_text)
+
         table.insert(lines, "")
-        table.insert(lines, string.format("## Node %d", index))
-        table.insert(lines, "")
-        table.insert(lines, string.format("- status: `%s`", tostring(result.status or "unknown")))
-        table.insert(lines, string.format("- request_index: `%d`", tonumber(result.request_index) or 0))
-        if result.node_index then
-            table.insert(lines, string.format("- node_index: `%d`", tonumber(result.node_index) or 0))
+        if multiple then
+            table.insert(lines, string.format("## Node %d", index))
+            table.insert(lines, "")
         end
-        table.insert(lines, string.format("- file: `%s`", tostring(result.file or "")))
-        table.insert(lines, string.format("- structural_path: `%s`", tostring(result.structural_path or "")))
+        table.insert(lines, string.format("- status: %s", tostring(result.status or "unknown")))
+        table.insert(lines, string.format("- file: %s", tostring(result.file or "")))
+        table.insert(lines, string.format("- structural_path: %s", tostring(result.structural_path or "")))
+
         if result.status == "ok" or result.status == "duplicate" then
-            table.insert(lines, string.format("- path: `%s`", tostring(candidate.path or "")))
-            table.insert(lines, string.format("- signature: `%s`", tostring(candidate.signature or "")))
-            table.insert(lines, string.format("- lines: `L%d-%d`", tonumber(candidate.start_line) or 0, tonumber(candidate.end_line) or 0))
-            if result.node_hash then
-                table.insert(lines, string.format("- node_hash: `%s`", tostring(result.node_hash)))
-            end
-            if result.file_hash then
-                table.insert(lines, string.format("- file_hash: `%s`", tostring(result.file_hash)))
-            end
-        end
-        if result.message then
-            table.insert(lines, string.format("- message: `%s`", tostring(result.message)))
-        end
-        if result.error then
-            table.insert(lines, string.format("- error: `%s`", tostring(result.error)))
-        end
-        if result.duplicate_of then
-            table.insert(lines, string.format("- duplicate_of: `%s`", tostring(result.duplicate_of)))
-        end
-        if result.candidates and #result.candidates > 0 then
-            table.insert(lines, "- candidates:")
-            for _, item in ipairs(result.candidates) do
-                table.insert(
-                    lines,
-                    string.format(
-                        "  - `%s` L%d-%d",
-                        tostring(item.path or ""),
-                        tonumber(item.start_line) or 0,
-                        tonumber(item.end_line) or 0
-                    )
+            table.insert(lines, string.format("- path: %s", tostring(candidate.path or "")))
+            table.insert(lines, string.format("- signature: %s", tostring(candidate.signature or "")))
+            table.insert(
+                lines,
+                string.format(
+                    "- lines: L%d-%d",
+                    tonumber(candidate.start_line) or 0,
+                    tonumber(candidate.end_line) or 0
                 )
-            end
+            )
         end
+
         if result.status == "ok" then
             table.insert(lines, "")
-            table.insert(lines, "```" .. fence_language)
+            table.insert(lines, fence .. fence_language)
             table.insert(lines, tostring(result.source_text or ""))
-            table.insert(lines, "```")
+            table.insert(lines, fence)
+        else
+            if result.node_index then
+                table.insert(lines, string.format("- input_index: %d", tonumber(result.node_index) or 0))
+            end
+            if result.message then
+                table.insert(lines, string.format("- message: %s", tostring(result.message)))
+            end
+            if result.error then
+                table.insert(lines, string.format("- error: %s", tostring(result.error)))
+            end
+            if result.duplicate_of then
+                table.insert(lines, string.format("- duplicate_of: %s", tostring(result.duplicate_of)))
+            end
+            if result.candidates and #result.candidates > 0 then
+                table.insert(lines, "- candidates:")
+                for _, item in ipairs(result.candidates) do
+                    table.insert(
+                        lines,
+                        string.format(
+                            "  - %s L%d-%d",
+                            tostring(item.path or ""),
+                            tonumber(item.start_line) or 0,
+                            tonumber(item.end_line) or 0
+                        )
+                    )
+                end
+            end
         end
+    end
+
+    if #rendered_results == 0 then
+        table.insert(lines, "")
+        table.insert(lines, "- status: no matching nodes")
     end
 
     return table.concat(lines, "\n")
@@ -468,8 +481,6 @@ return function(args)
         errors = 0,
         max_nodes = max_nodes,
     }
-    local ast_cache_by_file = {}
-    local file_cache_by_file = {}
     local seen_nodes = {}
 
     for _, request in ipairs(requests) do
@@ -499,15 +510,11 @@ return function(args)
                 goto continue
             end
 
-            local ast_entry = ast_cache_by_file[request.file]
-            if not ast_entry then
-                local symbol_roots, _, ast_error = helpers.collect_ast_for_file(request.file, ast_helpers)
-                ast_entry = {
-                    symbol_roots = symbol_roots,
-                    error = ast_error,
-                }
-                ast_cache_by_file[request.file] = ast_entry
-            end
+            local symbol_roots, _, ast_error = helpers.collect_ast_for_file(request.file, ast_helpers)
+            local ast_entry = {
+                symbol_roots = symbol_roots,
+                error = ast_error,
+            }
 
             if ast_entry.error then
                 summary.errors = summary.errors + 1
@@ -624,30 +631,23 @@ return function(args)
                             file = request.file,
                             structural_path = request.structural_path,
                             candidate = candidate,
-                            node_hash = seen_nodes[identity_key].node_hash,
-                            file_hash = seen_nodes[identity_key].file_hash,
                             duplicate_of = seen_nodes[identity_key].request_index,
                             message = "structural_path resolved to a node that was already returned",
                         })
                     else
-                        local file_content = file_cache_by_file[request.file]
-                        if not file_content then
-                            local read_content, read_error = read_file_content(request.file)
-                            if read_error then
-                                summary.errors = summary.errors + 1
-                                table.insert(results, {
-                                    status = "error",
-                                    request_index = request.request_index,
-                                    node_index = request.node_index,
-                                    file = request.file,
-                                    structural_path = request.structural_path,
-                                    error = tostring(read_error.error or "file_read_failed"),
-                                    message = tostring(read_error.message or read_error.error or "failed to read file"),
-                                })
-                                goto continue
-                            end
-                            file_content = read_content
-                            file_cache_by_file[request.file] = file_content
+                        local file_content, read_error = read_file_content(request.file)
+                        if read_error then
+                            summary.errors = summary.errors + 1
+                            table.insert(results, {
+                                status = "error",
+                                request_index = request.request_index,
+                                node_index = request.node_index,
+                                file = request.file,
+                                structural_path = request.structural_path,
+                                error = tostring(read_error.error or "file_read_failed"),
+                                message = tostring(read_error.message or read_error.error or "failed to read file"),
+                            })
+                            goto continue
                         end
 
                         local source_text, source_error = extract_symbol_source(file_content, matches[1])
@@ -664,14 +664,10 @@ return function(args)
                                 message = tostring(source_error.message or source_error.error or "failed to extract node source"),
                             })
                         else
-                            local node_hash = compute_source_hash(source_text)
-                            local file_hash = compute_source_hash(file_content.raw)
                             summary.ok = summary.ok + 1
                             summary.nodes_returned = summary.nodes_returned + 1
                             seen_nodes[identity_key] = {
                                 request_index = tostring(request.request_index),
-                                node_hash = node_hash,
-                                file_hash = file_hash,
                             }
                             table.insert(results, {
                                 status = "ok",
@@ -680,8 +676,6 @@ return function(args)
                                 file = request.file,
                                 structural_path = request.structural_path,
                                 candidate = candidate,
-                                node_hash = node_hash,
-                                file_hash = file_hash,
                                 source_text = source_text,
                             })
                         end
