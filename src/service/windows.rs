@@ -3,14 +3,20 @@ use crate::bootstrap::{ProcessShutdownMode, run_service_host_for_runtime_root};
 use chrono::Local;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
-use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+use windows_service::service_control_handler::{
+    self, ServiceControlHandlerResult, ServiceStatusHandle,
+};
 use windows_service::service_dispatcher;
+
+/// Maximum time advertised to SCM for graceful service shutdown.
+/// 向 SCM 声明的服务优雅停止最长等待时间。
+const WINDOWS_SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(30);
 
 /// Stable in-process storage for the parsed Windows service run options.
 /// 已解析的 Windows 服务运行选项在进程内的稳定存储。
@@ -164,10 +170,27 @@ fn run_windows_service_main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("missing Windows service runtime root")?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown_log_root = options.runtime_root.clone();
+    let status_handle_slot: Arc<Mutex<Option<ServiceStatusHandle>>> = Arc::new(Mutex::new(None));
+    let status_handle_slot_for_handler = Arc::clone(&status_handle_slot);
     let status_handle = service_control_handler::register(
         options.service_name.clone(),
         move |control_event| match control_event {
             ServiceControl::Stop | ServiceControl::Shutdown => {
+                if let Ok(status_guard) = status_handle_slot_for_handler.lock()
+                    && let Some(status_handle) = status_guard.as_ref()
+                    && let Err(error) = set_windows_service_status(
+                        status_handle,
+                        ServiceState::StopPending,
+                        ServiceControlAccept::empty(),
+                        1,
+                        WINDOWS_SERVICE_STOP_WAIT_HINT,
+                    )
+                {
+                    append_windows_service_error_log(
+                        shutdown_log_root.as_deref(),
+                        &format!("failed to report StopPending before shutdown: {}", error),
+                    );
+                }
                 if !request_windows_service_shutdown(&shutdown_tx) {
                     append_windows_service_error_log(
                         shutdown_log_root.as_deref(),
@@ -179,15 +202,28 @@ fn run_windows_service_main() -> Result<(), Box<dyn std::error::Error>> {
             _ => ServiceControlHandlerResult::NotImplemented,
         },
     )?;
+    *status_handle_slot
+        .lock()
+        .map_err(|_| "Windows service status handle slot was poisoned")? = Some(status_handle);
+    let status_handle = status_handle_slot
+        .lock()
+        .map_err(|_| "Windows service status handle slot was poisoned")?
+        .as_ref()
+        .copied()
+        .ok_or("Windows service status handle was not stored")?;
     set_windows_service_status(
         &status_handle,
         ServiceState::StartPending,
         ServiceControlAccept::empty(),
+        1,
+        WINDOWS_SERVICE_STOP_WAIT_HINT,
     )?;
     set_windows_service_status(
         &status_handle,
         ServiceState::Running,
         ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        0,
+        Duration::default(),
     )?;
     let run_result =
         run_service_host_for_runtime_root(runtime_root, ProcessShutdownMode::External(shutdown_rx));
@@ -195,6 +231,8 @@ fn run_windows_service_main() -> Result<(), Box<dyn std::error::Error>> {
         &status_handle,
         ServiceState::StopPending,
         ServiceControlAccept::empty(),
+        2,
+        Duration::from_secs(5),
     )?;
     set_windows_service_stopped(&status_handle, run_result.is_ok())?;
     run_result
@@ -218,14 +256,16 @@ fn set_windows_service_status(
     status_handle: &windows_service::service_control_handler::ServiceStatusHandle,
     state: ServiceState,
     controls_accepted: ServiceControlAccept,
+    checkpoint: u32,
+    wait_hint: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
         controls_accepted,
         exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
+        checkpoint,
+        wait_hint,
         process_id: None,
     })?;
     Ok(())

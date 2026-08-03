@@ -2321,8 +2321,26 @@ local function validate_detail_paths_argument(value)
     return normalized_paths, nil
 end
 
+-- Export the AST Tree helper boundary explicitly instead of relying on nested upvalue discovery.
+-- 显式导出 AST Tree 所需的辅助函数边界，避免依赖嵌套闭包的 upvalue 探测。
+local function expose_ast_tree_runtime_helpers()
+    return {
+        classify_target_path_modes = classify_target_path_modes,
+        find_binary = find_binary,
+        collect_files = collect_files,
+        validate_extension_argument = validate_extension_argument,
+        validate_noignore_argument = validate_noignore_argument,
+        run_language_scan = run_language_scan,
+        normalize_symbol = normalize_symbol,
+        deduplicate_symbols = deduplicate_symbols,
+        build_symbol_tree = build_symbol_tree,
+        get_file_line_count = get_file_line_count,
+    }
+end
+
 -- 技能入口 / Skill entry point invoked by the MCP host runtime.
 return function(args)
+    local _ast_tree_runtime_helper_export = expose_ast_tree_runtime_helpers
     local _, client_limit_error = initialize_ast_client_budget()
     if client_limit_error then
         return render_codekit_error_markdown("CodeKit AST Detail Error", client_limit_error)

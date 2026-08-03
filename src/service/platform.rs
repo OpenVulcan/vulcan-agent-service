@@ -1,5 +1,14 @@
 use super::*;
 use std::io::ErrorKind;
+use std::time::{Duration, Instant};
+
+/// Maximum time allowed for one Windows SCM state transition.
+/// Windows SCM 单次状态转换允许的最长等待时间。
+const WINDOWS_SERVICE_TRANSITION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Poll interval used while waiting for a Windows SCM state transition.
+/// 等待 Windows SCM 状态转换时使用的轮询间隔。
+const WINDOWS_SERVICE_STATE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub(super) fn install_service(
     options: ServiceInstallOptions,
@@ -407,11 +416,11 @@ fn run_windows_service_action(
     action: &str,
     service_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_command_checked(
-        "sc.exe",
-        &[OsString::from(action), OsString::from(service_name)],
-    )?;
-    Ok(())
+    match action {
+        "start" => run_windows_service_start(service_name),
+        "stop" => run_windows_service_stop(service_name),
+        _ => invoke_windows_service_action(action, service_name),
+    }
 }
 
 /// Stop one Windows service and accept the idempotent already-stopped or absent states.
@@ -419,10 +428,238 @@ fn run_windows_service_action(
 fn run_windows_service_stop_if_running(
     service_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_windows_service_action_with_allowed_diagnostic(
-        "stop",
+    run_windows_service_stop(service_name)
+}
+
+/// Represent the state values emitted by `sc.exe query`.
+/// 表示 `sc.exe query` 输出的 Windows 服务状态值。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsServiceState {
+    /// The service is not installed.
+    /// 服务尚未安装。
+    NotInstalled,
+    /// The service is stopped.
+    /// 服务已停止。
+    Stopped,
+    /// The service is starting.
+    /// 服务正在启动。
+    StartPending,
+    /// The service is stopping.
+    /// 服务正在停止。
+    StopPending,
+    /// The service is running.
+    /// 服务正在运行。
+    Running,
+    /// The service is continuing from a paused state.
+    /// 服务正在从暂停状态恢复。
+    ContinuePending,
+    /// The service is pausing.
+    /// 服务正在暂停。
+    PausePending,
+    /// The service is paused.
+    /// 服务已暂停。
+    Paused,
+    /// An SCM state code not known by this binary.
+    /// 当前二进制尚未识别的 SCM 状态码。
+    Unknown(u32),
+}
+
+impl WindowsServiceState {
+    /// Render a stable diagnostic label for one service state.
+    /// 为单个服务状态渲染稳定的诊断标签。
+    fn describe(self) -> String {
+        match self {
+            Self::NotInstalled => "NOT_INSTALLED".to_string(),
+            Self::Stopped => "STOPPED".to_string(),
+            Self::StartPending => "START_PENDING".to_string(),
+            Self::StopPending => "STOP_PENDING".to_string(),
+            Self::Running => "RUNNING".to_string(),
+            Self::ContinuePending => "CONTINUE_PENDING".to_string(),
+            Self::PausePending => "PAUSE_PENDING".to_string(),
+            Self::Paused => "PAUSED".to_string(),
+            Self::Unknown(code) => format!("UNKNOWN({code})"),
+        }
+    }
+}
+
+/// Convert the numeric state field from `sc.exe query` into a typed state.
+/// 将 `sc.exe query` 输出中的数字状态字段转换为类型化状态。
+fn parse_windows_service_state(
+    output: &str,
+) -> Result<WindowsServiceState, Box<dyn std::error::Error>> {
+    let state_code = output.lines().find_map(|line| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.first().copied() != Some("STATE") {
+            return None;
+        }
+        fields.get(2).and_then(|value| value.parse::<u32>().ok())
+    });
+    let state_code =
+        state_code.ok_or("sc.exe query output did not contain a numeric STATE field")?;
+    Ok(match state_code {
+        1 => WindowsServiceState::Stopped,
+        2 => WindowsServiceState::StartPending,
+        3 => WindowsServiceState::StopPending,
+        4 => WindowsServiceState::Running,
+        5 => WindowsServiceState::ContinuePending,
+        6 => WindowsServiceState::PausePending,
+        7 => WindowsServiceState::Paused,
+        code => WindowsServiceState::Unknown(code),
+    })
+}
+
+/// Query one Windows service state while preserving an absent-service result.
+/// 查询单个 Windows 服务状态，并保留服务不存在这一结果。
+fn capture_windows_service_state(
+    service_name: &str,
+) -> Result<WindowsServiceState, Box<dyn std::error::Error>> {
+    let outcome = capture_command_outcome(
+        "sc.exe",
+        &[OsString::from("query"), OsString::from(service_name)],
+    )?;
+    if outcome.success {
+        return parse_windows_service_state(&outcome.stdout);
+    }
+    let diagnostic = outcome.primary_diagnostic();
+    if is_windows_service_absent_message(diagnostic) {
+        return Ok(WindowsServiceState::NotInstalled);
+    }
+    Err(format!(
+        "sc.exe query failed for service '{}' with code {:?}: {}",
+        service_name, outcome.exit_code, diagnostic
+    )
+    .into())
+}
+
+/// Wait until a Windows service reaches the requested state using a testable state reader.
+/// 使用可测试的状态读取器等待 Windows 服务达到目标状态。
+fn wait_for_windows_service_state_with_reader<F>(
+    service_name: &str,
+    expected_state: WindowsServiceState,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut read_state: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnMut(&str) -> Result<WindowsServiceState, Box<dyn std::error::Error>>,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        let observed_state = read_state(service_name)?;
+        if observed_state == expected_state {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for Windows service '{}' to reach {}; last state was {}",
+                service_name,
+                expected_state.describe(),
+                observed_state.describe()
+            )
+            .into());
+        }
+        if !poll_interval.is_zero() {
+            std::thread::sleep(poll_interval);
+        }
+    }
+}
+
+/// Wait for one Windows service to reach a target state through the real SCM query.
+/// 通过真实 SCM 查询等待 Windows 服务达到目标状态。
+fn wait_for_windows_service_state(
+    service_name: &str,
+    expected_state: WindowsServiceState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    wait_for_windows_service_state_with_reader(
         service_name,
-        is_windows_service_absent_or_stopped_message,
+        expected_state,
+        WINDOWS_SERVICE_TRANSITION_TIMEOUT,
+        WINDOWS_SERVICE_STATE_POLL_INTERVAL,
+        capture_windows_service_state,
+    )
+}
+
+/// Start one Windows service and wait until SCM reports it as running.
+/// 启动一个 Windows 服务，并等待 SCM 报告其进入运行状态。
+fn run_windows_service_start(service_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    match capture_windows_service_state(service_name)? {
+        WindowsServiceState::Running => Ok(()),
+        WindowsServiceState::StartPending | WindowsServiceState::ContinuePending => {
+            wait_for_windows_service_state(service_name, WindowsServiceState::Running)
+        }
+        WindowsServiceState::StopPending => {
+            wait_for_windows_service_state(service_name, WindowsServiceState::Stopped)?;
+            invoke_windows_service_action("start", service_name)?;
+            wait_for_windows_service_state(service_name, WindowsServiceState::Running)
+        }
+        WindowsServiceState::Stopped | WindowsServiceState::Unknown(_) => {
+            invoke_windows_service_action("start", service_name)?;
+            wait_for_windows_service_state(service_name, WindowsServiceState::Running)
+        }
+        WindowsServiceState::Paused | WindowsServiceState::PausePending => Err(format!(
+            "cannot start Windows service '{}' while it is paused or pausing; stop it first",
+            service_name
+        )
+        .into()),
+        WindowsServiceState::NotInstalled => {
+            Err(format!("Windows service '{}' is not installed", service_name).into())
+        }
+    }
+}
+
+/// Stop one Windows service and wait until SCM reports it as stopped.
+/// 停止一个 Windows 服务，并等待 SCM 报告其进入停止状态。
+fn run_windows_service_stop(service_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    match capture_windows_service_state(service_name)? {
+        WindowsServiceState::NotInstalled | WindowsServiceState::Stopped => Ok(()),
+        WindowsServiceState::StopPending => {
+            wait_for_windows_service_state(service_name, WindowsServiceState::Stopped)
+        }
+        WindowsServiceState::StartPending
+        | WindowsServiceState::Running
+        | WindowsServiceState::ContinuePending
+        | WindowsServiceState::PausePending
+        | WindowsServiceState::Paused
+        | WindowsServiceState::Unknown(_) => {
+            invoke_windows_service_action("stop", service_name)?;
+            wait_for_windows_service_state(service_name, WindowsServiceState::Stopped)
+        }
+    }
+}
+
+/// Invoke one raw Windows SCM action and translate access-denied failures into actionable diagnostics.
+/// 调用一个原始 Windows SCM 动作，并将拒绝访问转换为可执行的诊断信息。
+fn invoke_windows_service_action(
+    action: &str,
+    service_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let outcome = capture_command_outcome(
+        "sc.exe",
+        &[OsString::from(action), OsString::from(service_name)],
+    )?;
+    if outcome.success {
+        return Ok(());
+    }
+    Err(windows_service_action_error(action, service_name, &outcome).into())
+}
+
+/// Render one Windows SCM action failure with explicit elevation guidance.
+/// 为 Windows SCM 动作失败渲染包含提权指导的明确错误。
+fn windows_service_action_error(
+    action: &str,
+    service_name: &str,
+    outcome: &CommandOutcome,
+) -> String {
+    let diagnostic = outcome.primary_diagnostic();
+    if is_windows_service_access_denied_message(diagnostic) {
+        return format!(
+            "Windows SCM denied '{}' for service '{}': access denied; run the command from an elevated Administrator shell. The service ACL intentionally does not grant ordinary interactive users stop/start rights.",
+            action, service_name
+        );
+    }
+    format!(
+        "sc.exe {} failed for service '{}' with code {:?}: {}",
+        action, service_name, outcome.exit_code, diagnostic
     )
 }
 
@@ -452,13 +689,7 @@ fn run_windows_service_action_with_allowed_diagnostic(
     if outcome.success || allowed_diagnostic(outcome.primary_diagnostic()) {
         return Ok(());
     }
-    Err(format!(
-        "sc.exe {} failed with code {:?}: {}",
-        action,
-        outcome.exit_code,
-        outcome.primary_diagnostic()
-    )
-    .into())
+    Err(windows_service_action_error(action, service_name, &outcome).into())
 }
 
 /// Return whether a Windows SCM diagnostic means the service does not exist.
@@ -472,11 +703,21 @@ fn is_windows_service_absent_message(text: &str) -> bool {
 
 /// Return whether a Windows SCM diagnostic means the service is absent or already stopped.
 /// 判断 Windows SCM 诊断是否表示服务不存在或已经停止。
+#[cfg(test)]
 fn is_windows_service_absent_or_stopped_message(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
     is_windows_service_absent_message(&lowered)
         || lowered.contains("service has not been started")
         || lowered.contains("the service has not been started")
+}
+
+/// Return whether a Windows SCM diagnostic indicates insufficient control permission.
+/// 判断 Windows SCM 诊断是否表示当前调用者缺少控制权限。
+fn is_windows_service_access_denied_message(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("access is denied")
+        || lowered.contains("openservice failed 5")
+        || lowered.contains("error 5")
 }
 
 /// Capture Windows service status output through `sc.exe query`.
@@ -891,6 +1132,57 @@ mod tests {
         assert!(is_windows_service_absent_or_stopped_message(
             "The service has not been started."
         ));
+    }
+
+    /// Windows SCM state parsing should use the numeric field rather than localized labels.
+    /// Windows SCM 状态解析应使用数字字段，而不是依赖本地化文本标签。
+    #[test]
+    fn windows_service_state_parser_reads_numeric_state() {
+        let state = parse_windows_service_state(
+            "SERVICE_NAME: VulcanAgentService\n        STATE              : 4  RUNNING\n",
+        )
+        .expect("numeric SCM state should parse");
+        assert_eq!(state, WindowsServiceState::Running);
+
+        let unknown = parse_windows_service_state("STATE              : 99  FUTURE\n")
+            .expect("unknown numeric SCM state should remain observable");
+        assert_eq!(unknown, WindowsServiceState::Unknown(99));
+    }
+
+    /// Windows SCM wait logic should observe a pending state before accepting the final state.
+    /// Windows SCM 等待逻辑应先观察挂起状态，再接受最终状态。
+    #[test]
+    fn windows_service_state_waiter_retries_until_expected_state() {
+        let mut states = vec![
+            WindowsServiceState::StopPending,
+            WindowsServiceState::Stopped,
+        ]
+        .into_iter();
+        wait_for_windows_service_state_with_reader(
+            "VulcanAgentService",
+            WindowsServiceState::Stopped,
+            Duration::from_secs(1),
+            Duration::ZERO,
+            |_| Ok(states.next().expect("state reader should be called twice")),
+        )
+        .expect("waiter should complete after observing the final state");
+    }
+
+    /// Windows SCM permission diagnostics should clearly identify the required elevation boundary.
+    /// Windows SCM 权限诊断应明确指出所需的提权边界。
+    #[test]
+    fn windows_service_access_denied_diagnostic_is_actionable() {
+        assert!(is_windows_service_access_denied_message(
+            "[SC] OpenService FAILED 5: Access is denied."
+        ));
+        let outcome = CommandOutcome {
+            success: false,
+            exit_code: Some(5),
+            stdout: String::new(),
+            stderr: "[SC] OpenService FAILED 5: Access is denied.".to_string(),
+        };
+        let message = windows_service_action_error("stop", "VulcanAgentService", &outcome);
+        assert!(message.contains("elevated Administrator shell"));
     }
 
     /// Systemd absence diagnostics should be accepted for uninstall cleanup paths.

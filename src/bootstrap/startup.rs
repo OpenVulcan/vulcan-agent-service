@@ -40,7 +40,12 @@ use crate::transport::mcp::protocol::ToolCallResult;
 use luaskills::{LuaRuntimeHostOptions, RuntimeSkillRoot, SkillInstallSourceType};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::time::Duration;
 use tokio::sync::watch;
+
+/// Maximum time allowed for HTTP and gRPC graceful shutdown before task abort.
+/// HTTP 与 gRPC 优雅停止在强制终止任务前允许的最长时间。
+const SERVICE_TRANSPORT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Shutdown source used by the shared long-running host service entrypoint.
 /// 共享长驻宿主服务入口使用的关闭信号来源。
@@ -305,20 +310,38 @@ async fn run_network_transports_with_shutdown(
     let server_for_grpc = server.clone();
     let http_shutdown_rx = shutdown_rx.clone();
     let grpc_shutdown_rx = shutdown_rx;
-    let http_task = tokio::spawn(async move {
+    let mut http_task = tokio::spawn(async move {
         transport::http::run_http_with_shutdown(server_for_http, &http_addr, http_shutdown_rx)
             .await
             .map_err(|error| format!("[HTTP] {error}"))
     });
-    let grpc_task = tokio::spawn(async move {
+    let mut grpc_task = tokio::spawn(async move {
         transport::grpc::run_grpc_with_shutdown(server_for_grpc, &grpc_addr, grpc_shutdown_rx)
             .await
             .map_err(|error| format!("[gRPC] {error}"))
     });
-    let (http_result, grpc_result) = tokio::join!(http_task, grpc_task);
-    http_result??;
-    grpc_result??;
-    Ok(())
+    let joined = tokio::time::timeout(SERVICE_TRANSPORT_SHUTDOWN_TIMEOUT, async {
+        tokio::join!(&mut http_task, &mut grpc_task)
+    })
+    .await;
+    match joined {
+        Ok((http_result, grpc_result)) => {
+            http_result??;
+            grpc_result??;
+            Ok(())
+        }
+        Err(_) => {
+            http_task.abort();
+            grpc_task.abort();
+            let _ = http_task.await;
+            let _ = grpc_task.await;
+            Err(format!(
+                "transport shutdown exceeded {} seconds; HTTP and gRPC tasks were aborted",
+                SERVICE_TRANSPORT_SHUTDOWN_TIMEOUT.as_secs()
+            )
+            .into())
+        }
+    }
 }
 
 /// Initialize Lua skills and invoke the target tool directly without starting transports.

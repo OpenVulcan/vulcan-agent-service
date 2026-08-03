@@ -130,18 +130,15 @@ local function load_ast_runtime_helpers()
         }
     end
 
-    local helpers = {
-        classify_target_path_modes = extract_upvalue_by_name(ast_entry, "classify_target_path_modes"),
-        find_binary = extract_upvalue_by_name(ast_entry, "find_binary"),
-        collect_files = extract_upvalue_by_name(ast_entry, "collect_files"),
-        validate_extension_argument = extract_upvalue_by_name(ast_entry, "validate_extension_argument"),
-        validate_noignore_argument = extract_upvalue_by_name(ast_entry, "validate_noignore_argument"),
-        run_language_scan = extract_upvalue_by_name(ast_entry, "run_language_scan"),
-        normalize_symbol = extract_upvalue_by_name(ast_entry, "normalize_symbol"),
-        deduplicate_symbols = extract_upvalue_by_name(ast_entry, "deduplicate_symbols"),
-        build_symbol_tree = extract_upvalue_by_name(ast_entry, "build_symbol_tree"),
-        get_file_line_count = extract_upvalue_by_name(ast_entry, "get_file_line_count"),
-    }
+    local helper_exporter = extract_upvalue_by_name(ast_entry, "expose_ast_tree_runtime_helpers")
+    if type(helper_exporter) ~= "function" then
+        return nil, {
+            error = "codekit_ast_helper_export_missing",
+            message = "codekit-ast-detail did not expose the explicit AST Tree helper boundary",
+            path = ast_entry_path,
+        }
+    end
+    local helpers = helper_exporter()
 
     for helper_name, helper_value in pairs(helpers) do
         if type(helper_value) ~= "function" then
