@@ -351,7 +351,7 @@ class ReleaseTests(unittest.TestCase):
         with tarfile.open(archive_path, "r:gz") as archive:
             member = archive.getmember("vulcan-agent-service-v0.1.0-linux-x64/bin/vulcan-agent-service")
             self.assertEqual(member.mode & 0o777, 0o751)
-            self.assertIn("vulcan-agent-service-v0.1.0-linux-x64/", archive.getnames())
+            self.assertTrue(archive.getmember("vulcan-agent-service-v0.1.0-linux-x64").isdir())
 
     # test_windows_requires_crt verifies that a Windows package cannot omit the CRT directory.
     # test_windows_requires_crt 验证 Windows 包不能省略 CRT 目录。
