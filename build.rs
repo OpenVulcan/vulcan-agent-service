@@ -49,7 +49,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo:rustc-link-arg-bin=vulcan-agent-service=-Wl,--export-dynamic")
         }
         Ok("macos") => {
-            println!("cargo:rustc-link-arg-bin=vulcan-agent-service=-Wl,-export_dynamic")
+            println!("cargo:rustc-link-arg-bin=vulcan-agent-service=-Wl,-export_dynamic");
+            // Packaged Lua modules reference @rpath libraries kept beside the runtime.
+            // 已打包的 Lua 模块通过 @rpath 引用运行目录内的动态库。
+            println!(
+                "cargo:rustc-link-arg-bin=vulcan-agent-service=-Wl,-rpath,@executable_path/../lua_runtime/libs"
+            );
         }
         _ => {}
     }

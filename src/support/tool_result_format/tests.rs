@@ -72,6 +72,9 @@ fn plain_result_defaults_to_truncate_policy() {
 /// 验证截断模式在内容超出预算时会渲染配置的超限提示。
 #[test]
 fn truncate_mode_returns_notice_when_overflowed() {
+    // Serialize default-template assertions with tests that replace process-wide template roots.
+    // 将默认模板断言与替换进程级模板根的测试串行化。
+    let _guard = template_runtime_lock().lock().expect("lock should succeed");
     let rendered = render_tool_result_text(
         &RuntimeInvocationResult::from_content_parts(
             "line1\nline2\nline3".to_string(),
