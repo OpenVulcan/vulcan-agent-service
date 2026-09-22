@@ -297,6 +297,31 @@ install_python_runtime() {
     UV_PYTHON_INSTALL_DIR="$python_root" "$uv_exe" python install "$PYTHON_VERSION"
   fi
 
+  # uv may create absolute aliases inside its install root; make them portable before packaging.
+  # uv 可能在安装根内创建绝对路径别名；打包前将其转换为可迁移的相对链接。
+  python3 - "$python_root" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+# Managed CPython root is the only allowed destination for converted links.
+# 受管 CPython 根目录是转换后链接唯一允许指向的范围。
+root = Path(sys.argv[1]).resolve()
+for link in root.rglob("*"):
+    if not link.is_symlink():
+        continue
+    target_text = os.readlink(link)
+    if not os.path.isabs(target_text):
+        continue
+    target = Path(target_text).resolve(strict=True)
+    if not target.is_relative_to(root):
+        raise SystemExit(f"managed Python link escapes its install root: {link} -> {target}")
+    relative_target = os.path.relpath(target, link.parent)
+    is_directory = target.is_dir()
+    link.unlink()
+    link.symlink_to(relative_target, target_is_directory=is_directory)
+PY
+
   local python_exe relative_exe
   python_exe="$(UV_PYTHON_INSTALL_DIR="$python_root" "$uv_exe" python find "$PYTHON_VERSION" | head -n 1)"
   if [ -z "$python_exe" ] || [ ! -x "$python_exe" ]; then

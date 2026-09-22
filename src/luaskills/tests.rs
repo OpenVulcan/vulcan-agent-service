@@ -486,8 +486,13 @@ fn build_engine_options_maps_space_controller_configuration() {
             .host_options
             .space_controller
             .executable_path
-            .as_ref(),
-        Some(&copied_executable)
+            .as_ref()
+            .expect("controller executable should be configured")
+            .canonicalize()
+            .expect("controller option should resolve"),
+        copied_executable
+            .canonicalize()
+            .expect("controller fixture should resolve")
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -520,9 +525,24 @@ fn build_engine_options_sets_fixed_system_lua_lib_dir() {
     )
     .expect("failed to build luaskills engine options");
 
+    let system_lua_lib = options
+        .host_options
+        .system_lua_lib_dir
+        .as_ref()
+        .expect("system Lua directory should be configured");
     assert_eq!(
-        options.host_options.system_lua_lib_dir.as_ref(),
-        Some(&root.join("lua_runtime").join("system_lua_lib"))
+        system_lua_lib.file_name(),
+        Some(std::ffi::OsStr::new("system_lua_lib"))
+    );
+    assert_eq!(
+        system_lua_lib
+            .parent()
+            .expect("system Lua directory should have a runtime parent")
+            .canonicalize()
+            .expect("runtime parent should resolve"),
+        root.join("lua_runtime")
+            .canonicalize()
+            .expect("runtime fixture should resolve")
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1077,7 +1097,14 @@ fn resolve_application_root_uses_config_file_directory_for_relative_paths() {
     let resolved = resolve_application_root_from_config(&config)
         .expect("runtime root lookup should succeed")
         .expect("runtime root should resolve");
-    assert_eq!(resolved, runtime_root);
+    assert_eq!(
+        resolved
+            .canonicalize()
+            .expect("resolved runtime root should exist"),
+        runtime_root
+            .canonicalize()
+            .expect("runtime fixture should resolve")
+    );
     std::fs::remove_dir_all(&base_dir).expect("test runtime root should be removed");
 }
 
@@ -1713,14 +1740,27 @@ fn build_engine_options_strips_windows_verbatim_prefix_from_lua_package_paths() 
     // Expected Lua package root keeps the normal drive-letter spelling so Lua's `?` placeholder remains unambiguous.
     // 期望的 Lua 包根目录保留普通盘符写法，避免 Lua 的 `?` 占位符产生歧义。
     let expected_lua_packages_dir = root.join("lua_runtime").join("lua_packages");
-    assert_eq!(
-        options.host_options.lua_packages_dir.as_ref(),
-        Some(&expected_lua_packages_dir)
-    );
-    assert_eq!(
-        options.host_options.host_provided_lua_root.as_ref(),
-        Some(&expected_lua_packages_dir)
-    );
+    let lua_packages_dir = options
+        .host_options
+        .lua_packages_dir
+        .as_ref()
+        .expect("Lua package directory should be configured");
+    let host_lua_root = options
+        .host_options
+        .host_provided_lua_root
+        .as_ref()
+        .expect("host Lua root should be configured");
+    for configured in [lua_packages_dir, host_lua_root] {
+        assert!(!configured.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(
+            configured
+                .canonicalize()
+                .expect("configured Lua root should resolve"),
+            expected_lua_packages_dir
+                .canonicalize()
+                .expect("Lua package fixture should resolve")
+        );
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

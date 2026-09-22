@@ -760,7 +760,18 @@ mod tests {
         .expect("missing writable environment root should remain valid")
         .expect("configured environment root should resolve");
 
-        assert_eq!(resolved, application_root.join("managed/environments"));
+        assert!(resolved.ends_with("managed/environments"));
+        assert_eq!(
+            resolved
+                .parent()
+                .and_then(std::path::Path::parent)
+                .expect("managed path should have an application root")
+                .canonicalize()
+                .expect("resolved application root should exist"),
+            application_root
+                .canonicalize()
+                .expect("application fixture should resolve")
+        );
         std::fs::remove_dir_all(&application_root).expect("application fixture should be removed");
     }
 }

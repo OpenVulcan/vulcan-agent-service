@@ -1197,14 +1197,22 @@ fn add_libs_to_path_prepends_existing_runtime_libs_dir() {
 
     add_libs_to_path(&config).expect("existing libs path should be prepended");
 
-    #[cfg(windows)]
-    let separator = ";";
-    #[cfg(not(windows))]
-    let separator = ":";
+    let current_path = std::env::var_os("PATH").expect("PATH should be set");
+    let path_entries: Vec<_> = std::env::split_paths(&current_path).collect();
     assert_eq!(
-        std::env::var("PATH").expect("PATH should remain valid unicode"),
-        format!("{}{}original-path", libs_dir.to_string_lossy(), separator),
+        path_entries
+            .first()
+            .expect("runtime libs should be prepended")
+            .canonicalize()
+            .expect("runtime libs should resolve"),
+        libs_dir
+            .canonicalize()
+            .expect("libs directory should resolve"),
         "PATH should prepend runtime libs"
+    );
+    assert_eq!(
+        path_entries.get(1),
+        Some(&std::path::PathBuf::from("original-path"))
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1231,10 +1239,14 @@ fn add_libs_to_path_sets_only_runtime_libs_when_path_is_missing() {
 
     let current_path = std::env::var_os("PATH").expect("PATH should be set");
     let path_entries: Vec<_> = std::env::split_paths(&current_path).collect();
+    assert_eq!(path_entries.len(), 1);
     assert_eq!(
-        path_entries,
-        vec![libs_dir],
-        "PATH should contain only the runtime libs path when original PATH is missing"
+        path_entries[0]
+            .canonicalize()
+            .expect("runtime libs should resolve"),
+        libs_dir
+            .canonicalize()
+            .expect("libs directory should resolve")
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1266,8 +1278,14 @@ fn add_libs_to_path_preserves_non_unicode_path_entries() {
     let current_path = std::env::var_os("PATH").expect("PATH should be set");
     let path_entries: Vec<_> = std::env::split_paths(&current_path).collect();
     assert_eq!(
-        path_entries.first(),
-        Some(&libs_dir),
+        path_entries
+            .first()
+            .expect("runtime libs should be prepended")
+            .canonicalize()
+            .expect("runtime libs should resolve"),
+        libs_dir
+            .canonicalize()
+            .expect("libs directory should resolve"),
         "PATH should prepend runtime libs before existing entries"
     );
     assert_eq!(
