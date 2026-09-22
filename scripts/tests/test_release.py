@@ -353,6 +353,24 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(member.mode & 0o777, 0o751)
             self.assertTrue(archive.getmember("vulcan-agent-service-v0.1.0-linux-x64").isdir())
 
+    # test_macos_archive_aliases_upstream_native_modules verifies LuaSkills' dylib lookup contract.
+    # test_macos_archive_aliases_upstream_native_modules 验证 LuaSkills 的 dylib 查找契约。
+    @unittest.skipIf(os.name == "nt", "Windows fixtures cannot reliably create Unix symbolic links")
+    def test_macos_archive_aliases_upstream_native_modules(self) -> None:
+        """Keep official .so modules and add relative .dylib aliases for macOS.
+        保留官方 .so 模块，并为 macOS 增加相对路径的 .dylib 别名。
+        """
+
+        fixture = self._fixture("aarch64-apple-darwin")
+        fixture._write("third_party/luaskills_runtime/lua_packages/lib/lua/cjson.so", "native\n")
+        archive_path = self._patched_package(fixture)
+        prefix = "vulcan-agent-service-v0.1.0-macos-arm64/lua_runtime/lua_packages/lib/lua/"
+        with tarfile.open(archive_path, "r:gz") as archive:
+            self.assertTrue(archive.getmember(prefix + "cjson.so").isfile())
+            alias = archive.getmember(prefix + "cjson.dylib")
+            self.assertTrue(alias.issym())
+            self.assertEqual(alias.linkname, "cjson.so")
+
     # test_windows_requires_crt verifies that a Windows package cannot omit the CRT directory.
     # test_windows_requires_crt 验证 Windows 包不能省略 CRT 目录。
     def test_windows_requires_crt(self) -> None:

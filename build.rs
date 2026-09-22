@@ -42,5 +42,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rustc-link-arg-bin=vulcan-agent-service=/NOIMPLIB");
     }
 
+    // Native Lua modules resolve LuaJIT C symbols from the running executable.
+    // 原生 Lua 模块需要从当前可执行文件解析 LuaJIT C 符号。
+    match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("linux") => {
+            println!("cargo:rustc-link-arg-bin=vulcan-agent-service=-Wl,--export-dynamic")
+        }
+        Ok("macos") => {
+            println!("cargo:rustc-link-arg-bin=vulcan-agent-service=-Wl,-export_dynamic")
+        }
+        _ => {}
+    }
+
     Ok(())
 }

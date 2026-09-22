@@ -289,6 +289,37 @@ def _copy_tree_contents(source: Path, destination: Path) -> None:
         _copy_entry(child, destination / child.name)
 
 
+# _add_macos_lua_module_aliases matches LuaSkills 0.5.7's dylib search paths to upstream .so modules.
+# _add_macos_lua_module_aliases 使 LuaSkills 0.5.7 的 dylib 搜索路径匹配上游 .so 模块。
+def _add_macos_lua_module_aliases(lua_packages: Path) -> None:
+    """Create relative dylib aliases for packaged macOS Lua C modules.
+    为已打包的 macOS Lua C 模块创建相对路径的 dylib 别名。
+
+    Args:
+        lua_packages: Staged lua_packages directory from the official runtime asset.
+    Raises:
+        ReleaseError: If the native module tree or an alias destination is invalid.
+    Returns:
+        None.
+    """
+
+    module_root = lua_packages / "lib" / "lua"
+    if not module_root.is_dir() or module_root.is_symlink():
+        raise ReleaseError(f"macOS Lua native module directory is missing: {module_root}")
+    modules = sorted(module_root.rglob("*.so"))
+    if not modules:
+        raise ReleaseError(f"macOS Lua native modules are missing: {module_root}")
+    for module in modules:
+        if not module.is_file() or module.is_symlink():
+            raise ReleaseError(f"macOS Lua native module is not a regular file: {module}")
+        alias = module.with_suffix(".dylib")
+        if _archive_exists(alias):
+            raise ReleaseError(f"macOS Lua native module alias already exists: {alias}")
+        # A sibling-relative link survives extraction and stays inside the release archive.
+        # 指向同目录文件的相对链接在解压后仍有效，并始终处于发行包内。
+        alias.symlink_to(module.name)
+
+
 # _require_file returns a real file and gives missing assets one consistent error.
 # _require_file 返回真实文件，并为缺失资源提供统一错误。
 def _require_file(path: Path, label: str) -> Path:
@@ -902,6 +933,9 @@ def package_release(
             if not any(source_directory.iterdir()):
                 raise ReleaseError(f"required LuaSkills runtime directory is empty: {source_directory}")
             _copy_tree_contents(source_directory, lua_runtime / directory_name)
+
+        if spec.platform.startswith("macos-"):
+            _add_macos_lua_module_aliases(lua_runtime / "lua_packages")
 
         _copy_tree_contents(overflow_source, lua_runtime / "resources" / "overflow_templates")
         managed_destination = lua_runtime / "dependencies" / "runtimes"
