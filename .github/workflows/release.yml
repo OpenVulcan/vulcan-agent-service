@@ -1,0 +1,213 @@
+# Build and publish the application version selected by an existing Git tag.
+# 根据已有 Git 标签构建并发布应用版本。
+name: Release agent-service
+run-name: Release ${{ inputs.tag }}
+
+# Tag pushes deliberately have no trigger; publishing is always manually requested.
+# 打标推送不设置触发器，发布始终由手动操作发起。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to publish (for example v0.1.0)'
+        required: true
+        type: string
+        default: v0.1.0
+
+permissions:
+  contents: read
+
+# Serialize attempts for the same version without cancelling an active publication.
+# 串行执行同一版本的发布尝试，且不取消正在进行的发布。
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHONUTF8: '1'
+  RUST_TOOLCHAIN: 1.97.1
+  LUA_RUNTIME_PACKAGES_VERSION: v0.1.8
+
+jobs:
+  version:
+    name: Validate version tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Resolve the exact tagged commit
+        id: commit
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo 'A version tag such as v0.1.0 is required.' >&2
+            exit 1
+          fi
+          commit="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          git checkout --detach "$commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Check Cargo version against tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python scripts/release.py metadata --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
+      - name: Test release assembly rules
+        run: python -m unittest discover -s scripts/tests -p 'test_release.py' -v
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: vulcan-agent-service.exe
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: vulcan-agent-service
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: vulcan-agent-service
+          - platform: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: vulcan-agent-service
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            binary: vulcan-agent-service
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Prepare MSVC tools
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+      - name: Install the selected Rust compiler
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$BUILD_TARGET"
+          rustup override set "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: release-${{ matrix.target }}
+      # Consume published runtime assets; this workflow only compiles agent-service.
+      # 使用已发布的运行资源，本流程只编译 agent-service。
+      - name: Prepare published runtime assets on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/install_host_deps.ps1
+          ./scripts/install_lua_deps.ps1
+          ./scripts/deps/fetch_managed_runtimes.ps1 -Target all
+      - name: Prepare published runtime assets on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bash scripts/install_host_deps.sh
+          bash scripts/install_lua_deps.sh
+          bash scripts/deps/fetch_managed_runtimes.sh all
+      - name: Test and compile the application version
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          cargo test --locked --release --target "$BUILD_TARGET"
+          cargo build --locked --release --target "$BUILD_TARGET"
+      - name: Assemble a clean versioned application archive
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          BINARY_NAME: ${{ matrix.binary }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          # Supply official app-local CRT files only for the Windows distribution.
+          # 仅为 Windows 发行包提供官方应用本地 CRT 文件。
+          package_args=()
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            package_args+=(--windows-crt-dir "${VCToolsRedistDir:?}/x64/Microsoft.VC143.CRT")
+          fi
+          python scripts/release.py package --tag "$RELEASE_TAG" --target "$BUILD_TARGET" --binary "target/$BUILD_TARGET/release/$BINARY_NAME" --output-dir dist "${package_args[@]}"
+      - name: Smoke test the extracted application
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          BUILD_PLATFORM: ${{ matrix.platform }}
+        run: python scripts/release_smoke.py --directory dist --tag "$RELEASE_TAG" --platform "$BUILD_PLATFORM"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish verified release
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify all five archives and checksums
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: python scripts/release.py verify-assets --directory dist --version "$RELEASE_VERSION"
+      - name: Publish complete assets from a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.version.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$RELEASE_COMMIT"
+          if gh release view "$RELEASE_TAG" --json isDraft > release-state.json 2>/dev/null; then
+            python -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "Refusing to overwrite an already published version"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "agent-service $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

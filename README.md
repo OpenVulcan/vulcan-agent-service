@@ -530,6 +530,33 @@ parameter description 与 final AI-facing `input_schema`，
 - 受管 Python/Node 发行包固定放在 `output/lua_runtime/dependencies/runtimes`，可写环境固定放在 `output/lua_runtime/dependencies/envs`
 - 构建只复制配置、共享资源与 `third_party` 基础资源，并保留已有 output 数据；不会扫描、同步或回写仓库源码 skill、依赖和状态目录
 
+## GitHub 版本发布
+
+应用版本以 `Cargo.toml` 的 `package.version` 为唯一来源，当前为 **0.1.0**，对应标签 **v0.1.0**。
+
+`Release agent-service` 工作流只支持手动运行。推送 tag 不会触发发布。在 GitHub Actions 中打开该流程，选择 `Run workflow`，工作流分支选择 `main`，在 `tag` 中填写已有版本标签。流程会校验标签与 Cargo 版本一致，并让所有构建任务使用同一个标签提交。
+
+| 平台 | Rust 目标 | 发行格式 |
+| --- | --- | --- |
+| Windows x64 | `x86_64-pc-windows-msvc` | `.zip` |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` |
+
+发布流程使用原生 runner、锁定的 Rust 工具链和 `Cargo.lock` 编译 agent-service。运行资源取自已发布的 LuaSkills packages、controller 和受管 Python/Node 发行包。每个平台都执行测试、解压后的程序启动检查，再上传版本归档及其 `.sha256` 文件。
+
+归档命名示例：`vulcan-agent-service-v0.1.0-windows-x64.zip`。解压后进入同名目录，使用 `bin/vulcan-agent-service(.exe)` 启动。归档包含宿主配置、默认系统技能清单、基础 Lua 资源、controller 与受管运行时；系统技能、安装状态、数据库、用户配置和本地 `output/` 数据不进入发行包。新安装默认关闭 VMM。
+
+五个平台全部通过且校验和验证成功后，流程才将完整资产从草稿发布为正式 GitHub Release，并附带 `SHA256SUMS`。失败时修复代码、将尚未发布的版本标签更新到修复提交，再手动运行同一流程。已正式发布的版本不会被自动覆盖，应递增 Cargo 版本后发布新标签。
+
+本地检查发布工具：
+
+```text
+python scripts/release.py metadata --tag v0.1.0
+python -m unittest discover -s scripts/tests -p test_release.py -v
+```
+
 ## 后续方向
 
 - 继续完善 system tools 的宿主枚举与包装模型

@@ -1,5 +1,7 @@
 /target
 /output
+/dist
+__pycache__/
 /temp
 /third_party
 /mcp_server

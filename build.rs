@@ -35,8 +35,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // LuaJIT static objects carry CRT export directives; this executable has no consumers for the auxiliary import/export libraries they would generate.
     // LuaJIT 静态对象携带 CRT 导出指令；本可执行文件没有辅助导入库与导出库的消费者，因此无需生成这些文件。
-    println!("cargo:rustc-link-arg-bin=vulcan-agent-service=/NOEXP");
-    println!("cargo:rustc-link-arg-bin=vulcan-agent-service=/NOIMPLIB");
+    // Apply MSVC-only switches according to the compilation target, including cross builds.
+    // 根据编译目标应用 MSVC 专用开关，交叉编译时同样遵循目标平台。
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bin=vulcan-agent-service=/NOEXP");
+        println!("cargo:rustc-link-arg-bin=vulcan-agent-service=/NOIMPLIB");
+    }
 
     Ok(())
 }
