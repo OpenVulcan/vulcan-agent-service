@@ -22,8 +22,14 @@ get_release_by_tag_or_null() {
     local api_url="https://api.github.com/repos/${repo}/releases/tags/${tag_name}"
     local response_file
     response_file="$(mktemp)"
+    # Authenticate CI release lookups so parallel platform jobs do not exhaust anonymous API limits.
+    # 鉴权 CI 发行版查询，避免并行平台任务耗尽匿名 API 配额。
+    local curl_auth_args=()
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        curl_auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    fi
     local http_code
-    http_code="$(curl -sSL -o "$response_file" -w '%{http_code}' "$api_url")"
+    http_code="$(curl -sSL "${curl_auth_args[@]}" -o "$response_file" -w '%{http_code}' "$api_url")"
     if [ "$http_code" = "200" ]; then
         cat "$response_file"
         rm -f "$response_file"

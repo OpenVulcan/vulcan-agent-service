@@ -131,11 +131,24 @@ jobs:
       - name: Prepare published runtime assets on Unix
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           bash scripts/install_host_deps.sh
           bash scripts/install_lua_deps.sh
           bash scripts/deps/fetch_managed_runtimes.sh all
-      - name: Test and compile the application version
+      - name: Test and compile the application version on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          cargo test --locked --release --target $env:BUILD_TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --release --target $env:BUILD_TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test and compile the application version on Unix
+        if: runner.os != 'Windows'
         shell: bash
         env:
           BUILD_TARGET: ${{ matrix.target }}

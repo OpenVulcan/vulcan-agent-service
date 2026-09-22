@@ -166,8 +166,8 @@ archive_matches_sha256() {
 }
 
 save_release_asset_with_sha256() {
-    # Download one GitHub Release asset and verify its .sha256 sidecar.
-    # 下载单个 GitHub Release 资产并校验其 .sha256 旁路文件。
+    # Download one GitHub Release asset and verify its sidecar or API digest.
+    # 下载单个 GitHub Release 资产，并校验其旁路文件或 API 摘要。
     local repo="$1"
     local tag="$2"
     local asset_name="$3"
@@ -184,9 +184,32 @@ save_release_asset_with_sha256() {
     archive_url="$(release_asset_url "$repo" "$tag" "$asset_name")"
     sha_url="$(release_asset_url "$repo" "$tag" "$sha_asset_name")"
 
-    echo "==> Downloading checksum: $sha_url" >&2
-    curl -fSL "$sha_url" -o "$sha_path"
-    expected_sha256="$(awk '{print tolower($1)}' "$sha_path")"
+    # Published bundles have no sidecar, so read the exact asset digest from GitHub.
+    # 已发布的元数据包没有旁路校验文件，因此从 GitHub 读取该资产的精确摘要。
+    if [ "$sha_asset_name" = "luaskills-packages-bundle-${tag}.sha256" ]; then
+        local curl_auth_args=()
+        if [ -n "${GITHUB_TOKEN:-}" ]; then
+            curl_auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+        fi
+        expected_sha256="$(curl -fsSL "${curl_auth_args[@]}" "https://api.github.com/repos/${repo}/releases/tags/${tag}" | python3 -c '
+import json
+import re
+import sys
+
+name = sys.argv[1]
+assets = [asset for asset in json.load(sys.stdin)["assets"] if asset["name"] == name]
+if len(assets) != 1:
+    raise SystemExit(f"expected one GitHub asset named {name}, got {len(assets)}")
+digest = assets[0].get("digest", "")
+if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+    raise SystemExit(f"missing SHA-256 digest for GitHub asset {name}")
+print(digest.removeprefix("sha256:").lower())
+' "$asset_name")"
+    else
+        echo "==> Downloading checksum: $sha_url" >&2
+        curl -fSL "$sha_url" -o "$sha_path"
+        expected_sha256="$(awk '{print tolower($1)}' "$sha_path")"
+    fi
 
     if archive_matches_sha256 "$archive_path" "$expected_sha256"; then
         echo "==> Reusing verified archive: $archive_path" >&2
