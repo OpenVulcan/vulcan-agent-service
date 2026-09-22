@@ -396,7 +396,10 @@ class ReleaseTests(unittest.TestCase):
             if arguments[:2] != ["otool", "-L"]:
                 return ""
             image = Path(arguments[2])
-            dependencies = "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
+            dependencies = ""
+            if image.suffix == ".dylib":
+                dependencies += f"\t/usr/local/lib/{image.name} (compatibility version 1.0.0)\n"
+            dependencies += "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
             if image.name == "lcurl.so":
                 dependencies += (
                     "\t@rpath/libcurl.4.dylib (compatibility version 4.0.0)\n"
@@ -412,6 +415,10 @@ class ReleaseTests(unittest.TestCase):
             commands,
         )
         self.assertIn(["codesign", "--force", "--sign", "-", str(modules / "lcurl.so")], commands)
+        self.assertIn(
+            ["install_name_tool", "-id", "@rpath/libssl.3.dylib", str(libs / "libssl.3.dylib")],
+            commands,
+        )
         self.assertFalse((libs / "libcurl.4.dylib").exists())
 
     # test_windows_requires_crt verifies that a Windows package cannot omit the CRT directory.

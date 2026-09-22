@@ -377,9 +377,15 @@ def _relocate_macos_libraries(lua_runtime: Path) -> None:
         if not lines or not lines[0].rstrip().endswith(":"):
             raise ReleaseError(f"unexpected otool dependency output for {image}")
         changed = False
-        for line in lines[1:]:
+        for dependency_index, line in enumerate(lines[1:]):
             dependency = line.strip().split(" (", 1)[0]
             if not dependency:
+                continue
+            if image.suffix == ".dylib" and dependency_index == 0:
+                _run_macos_linker_tool([
+                    "install_name_tool", "-id", f"@rpath/{image.name}", str(image),
+                ])
+                changed = True
                 continue
             if dependency.startswith(("/usr/lib/", "/System/Library/")):
                 continue
@@ -397,6 +403,8 @@ def _relocate_macos_libraries(lua_runtime: Path) -> None:
             if not dependency.startswith("/"):
                 continue
             dependency_name = Path(dependency).name
+            if dependency_name.startswith("libluajit"):
+                dependency_name = "libluajit-5.1.dylib"
             if dependency_name not in bundled_names:
                 raise ReleaseError(f"unbundled macOS absolute dependency: {image}: {dependency}")
             _run_macos_linker_tool([
