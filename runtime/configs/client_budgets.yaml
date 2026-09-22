@@ -119,6 +119,37 @@ clients:
               path: "~/.codex/config.toml"
               field: "tool_output_token_limit"
 
+  # DeepSeek Harness（DSH）在 MCP initialize 握手中自带唯一标识
+  # clientInfo.name = "dsh-mcp-client"，且既不设置 VULCAN_CLIENT_MATCH_NAME，
+  # 也不发送 Vulcan-Client-Match-Name 头，因此预算匹配看到的就是该自带标识，
+  # 用精确 pattern 命中即可，客户端侧无需任何额外配置。
+  # English: DeepSeek Harness (DSH) self-identifies in the MCP initialize
+  # handshake as clientInfo.name = "dsh-mcp-client" and overrides it through
+  # neither VULCAN_CLIENT_MATCH_NAME nor the Vulcan-Client-Match-Name header, so
+  # budget matching sees that built-in identity and this exact pattern is enough.
+  #
+  # DSH 自身负责超限工具结果：其 spill-policy 在超过 50000 UTF-8 字节时把全文写入
+  # spill 文件，只把有界的首尾预览交给模型；因此这里声明为不限（-1，按
+  # unlimited_bytes_cap 封顶 200KB，再经 safe_bytes_ratio 后实际约 190KB）。
+  # 若服务端提前按 50000 字节截断，DSH 落盘的将是被截断的副本而不是全文。
+  # English: DSH owns oversized tool results itself: its spill-policy writes the
+  # full text to a spill file above 50000 UTF-8 bytes and hands the model only a
+  # bounded head/tail preview, so the budget is declared unlimited (-1, capped by
+  # unlimited_bytes_cap at 200KB and exposed as ~190KB after safe_bytes_ratio).
+  # Truncating at 50000 here would leave DSH spilling an already-cut copy.
+  - pattern: "dsh-mcp-client"
+    budgets:
+      tool_result:
+        bytes:
+          default: -1
+        lines:
+          default: -1
+      file_read:
+        bytes:
+          default: -1
+        lines:
+          default: -1
+
   - pattern: "*claude-code*"
     budgets:
       tool_result:

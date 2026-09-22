@@ -335,6 +335,101 @@ function Get-RelativePathCompat {
     return [Uri]::UnescapeDataString($RelativeUri.ToString()).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
 }
 
+function Get-ReadyRuntimeExecutable {
+    <#
+    .SYNOPSIS
+    Resolve one reusable runtime entry only when its manifest identity and root ownership are complete.
+    仅当运行时清单身份与根目录归属完整时解析可复用入口。
+
+    .PARAMETER Directory
+    Versioned managed-runtime directory that owns the manifest and executable.
+    拥有清单与入口文件的版本化受管运行时目录。
+
+    .PARAMETER Runtime
+    Expected runtime family recorded in the manifest.
+    清单中记录的预期运行时族。
+
+    .PARAMETER Version
+    Expected exact runtime version recorded in the manifest.
+    清单中记录的预期精确运行时版本。
+
+    .PARAMETER Platform
+    Expected runtime platform key recorded in the manifest.
+    清单中记录的预期运行时平台键。
+
+    .PARAMETER ExpectedExecutable
+    Optional exact relative executable declaration; empty accepts the manifest-owned relative entry.
+    可选的精确相对入口声明；为空时接受清单拥有的相对入口。
+
+    .OUTPUTS
+    Root-owned executable path when the installation is reusable, otherwise no value.
+    安装可复用时返回根内入口路径，否则不返回值。
+    #>
+    param(
+        [string]$Directory,
+        [string]$Runtime,
+        [string]$Version,
+        [string]$Platform,
+        [string]$ExpectedExecutable = ""
+    )
+
+    # Exact runtime manifest path inspected as the reuse authority.
+    # 作为复用依据检查的精确运行时清单路径。
+    $ManifestPath = Join-Path $Directory "runtime-manifest.json"
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        # Decoded manifest object used to validate identity and entry ownership together.
+        # 用于同时校验身份与入口归属的已解码清单对象。
+        $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+    if (
+        $Manifest.schema_version -ne 1 -or
+        [string]$Manifest.runtime -cne $Runtime -or
+        [string]$Manifest.version -cne $Version -or
+        [string]$Manifest.platform -cne $Platform
+    ) {
+        return $null
+    }
+    # Relative executable declaration controlled by the validated manifest.
+    # 由已验证清单控制的相对入口声明。
+    $Executable = [string]$Manifest.executable
+    if (
+        [string]::IsNullOrWhiteSpace($Executable) -or
+        [System.IO.Path]::IsPathRooted($Executable) -or
+        (-not [string]::IsNullOrWhiteSpace($ExpectedExecutable) -and $Executable -cne $ExpectedExecutable)
+    ) {
+        return $null
+    }
+    # Declared executable candidate before canonical root-ownership validation.
+    # 在规范根归属校验之前得到的声明入口候选。
+    $Candidate = Join-Path $Directory $Executable
+    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+        return $null
+    }
+    try {
+        # Candidate path relative to the managed root, used to reject parent traversal.
+        # 相对于受管根的候选路径，用于拒绝父级穿越。
+        $RelativeCandidate = Get-RelativePathCompat -BasePath $Directory -TargetPath $Candidate
+    } catch {
+        return $null
+    }
+    # Platform directory separator used for an exact leading-parent component test.
+    # 用于精确检测前导父级组件的平台目录分隔符。
+    $Separator = [System.IO.Path]::DirectorySeparatorChar
+    if (
+        $RelativeCandidate -eq ".." -or
+        $RelativeCandidate.StartsWith("..$Separator", [System.StringComparison]::Ordinal) -or
+        [System.IO.Path]::IsPathRooted($RelativeCandidate)
+    ) {
+        return $null
+    }
+    return (Resolve-Path -LiteralPath $Candidate).Path
+}
+
 function Install-UvRuntime {
     <#
     .SYNOPSIS
@@ -356,10 +451,17 @@ function Install-UvRuntime {
     # UvExe stores the final executable path.
     # UvExe 保存最终可执行文件路径。
     $UvExe = Join-Path $UvTarget $UvExeName
-    if ((Test-Path -LiteralPath $UvExe) -and -not $Force) {
-        return $UvExe
+    # Manifest-owned reusable uv entry, empty when the existing installation is incomplete or mismatched.
+    # 由清单拥有的可复用 uv 入口；现有安装不完整或不匹配时为空。
+    $ReadyUv = if (-not $Force) {
+        Get-ReadyRuntimeExecutable -Directory $UvTarget -Runtime "uv" -Version $UvVersion -Platform $Platform.key -ExpectedExecutable $UvExeName
+    } else {
+        $null
     }
-    if ((Test-Path -LiteralPath $UvTarget) -and $Force) {
+    if ($ReadyUv) {
+        return $ReadyUv
+    }
+    if (Test-Path -LiteralPath $UvTarget) {
         Remove-Item -Recurse -Force -LiteralPath $UvTarget
     }
 
@@ -444,10 +546,17 @@ function Install-PythonRuntime {
     # PythonRoot stores uv-managed Python installations for this exact platform.
     # PythonRoot 保存当前平台下由 uv 管理的 Python 安装。
     $PythonRoot = Join-Path $DistributionRoot "python\cpython-$PythonVersion-$($Platform.key)"
-    if ((Test-Path -LiteralPath (Join-Path $PythonRoot "runtime-manifest.json")) -and -not $Force) {
+    # Manifest-owned reusable interpreter, empty when the existing installation is incomplete or mismatched.
+    # 由清单拥有的可复用解释器；现有安装不完整或不匹配时为空。
+    $ReadyPython = if (-not $Force) {
+        Get-ReadyRuntimeExecutable -Directory $PythonRoot -Runtime "python" -Version $PythonVersion -Platform $Platform.key
+    } else {
+        $null
+    }
+    if ($ReadyPython) {
         return
     }
-    if ((Test-Path -LiteralPath $PythonRoot) -and $Force) {
+    if (Test-Path -LiteralPath $PythonRoot) {
         Remove-Item -Recurse -Force -LiteralPath $PythonRoot
     }
     Ensure-Dir $PythonRoot
@@ -512,10 +621,17 @@ function Install-NodeRuntime {
     # NodeExe stores the final Node executable path.
     # NodeExe 保存最终 Node 可执行文件路径。
     $NodeExe = Join-Path $NodeTarget $NodeExeName
-    if ((Test-Path -LiteralPath $NodeExe) -and -not $Force) {
-        return $NodeExe
+    # Manifest-owned reusable Node entry, empty when the existing installation is incomplete or mismatched.
+    # 由清单拥有的可复用 Node 入口；现有安装不完整或不匹配时为空。
+    $ReadyNode = if (-not $Force) {
+        Get-ReadyRuntimeExecutable -Directory $NodeTarget -Runtime "node" -Version $NodeVersion -Platform $Platform.key -ExpectedExecutable $NodeExeName
+    } else {
+        $null
     }
-    if ((Test-Path -LiteralPath $NodeTarget) -and $Force) {
+    if ($ReadyNode) {
+        return $ReadyNode
+    }
+    if (Test-Path -LiteralPath $NodeTarget) {
         Remove-Item -Recurse -Force -LiteralPath $NodeTarget
     }
 
@@ -617,10 +733,17 @@ function Install-PnpmRuntime {
     # PnpmEntry stores the pnpm CommonJS entry file.
     # PnpmEntry 保存 pnpm 的 CommonJS 入口文件。
     $PnpmEntry = Join-Path $PnpmTarget "bin\pnpm.cjs"
-    if ((Test-Path -LiteralPath $PnpmEntry) -and -not $Force) {
+    # Manifest-owned reusable pnpm entry, empty when the existing installation is incomplete or mismatched.
+    # 由清单拥有的可复用 pnpm 入口；现有安装不完整或不匹配时为空。
+    $ReadyPnpm = if (-not $Force) {
+        Get-ReadyRuntimeExecutable -Directory $PnpmTarget -Runtime "pnpm" -Version $PnpmVersion -Platform "any" -ExpectedExecutable "bin/pnpm.cjs"
+    } else {
+        $null
+    }
+    if ($ReadyPnpm) {
         return
     }
-    if ((Test-Path -LiteralPath $PnpmTarget) -and $Force) {
+    if (Test-Path -LiteralPath $PnpmTarget) {
         Remove-Item -Recurse -Force -LiteralPath $PnpmTarget
     }
 

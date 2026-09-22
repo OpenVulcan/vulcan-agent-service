@@ -89,8 +89,8 @@ pub fn build_luaskills_engine_options(
     Ok(LuaEngineOptions::new(pool_config, host_options))
 }
 
-/// Validate the shape of every fixed LuaSkills 0.5.5 directory before engine construction.
-/// 在引擎构造前校验 LuaSkills 0.5.5 全部固定目录的形态。
+/// Validate the shape of every fixed LuaSkills 0.5.7 directory before engine construction.
+/// 在引擎构造前校验 LuaSkills 0.5.7 全部固定目录的形态。
 /// Parameters: `runtime_root` is the existing isolated LuaSkills package root.
 /// 参数：`runtime_root` 是已存在的隔离 LuaSkills 包根目录。
 /// Returns unit when every present path is a directory, otherwise an explicit shape or metadata error.
@@ -212,8 +212,8 @@ fn resolve_managed_runtime_root_override(
     }
 }
 
-/// Merge host-managed runtime policy overrides onto the upstream 0.5.5 defaults.
-/// 将宿主受管运行时策略覆盖项合并到上游 0.5.5 默认值。
+/// Merge host-managed runtime policy overrides onto the upstream 0.5.7 defaults.
+/// 将宿主受管运行时策略覆盖项合并到上游 0.5.7 默认值。
 /// Parameters: `config` contains optional positive policy limits.
 /// 参数：`config` 包含可选的正数策略限制。
 /// Returns one validated policy or an explicit field-qualified error.

@@ -199,7 +199,7 @@ runtime/lua_runtime/skills/<skill>/
 
 ### 3. Runtime Config 工具
 
-LuaSkills 0.5.5 的技能包配置 dispatcher 由服务中枢直接暴露为：
+LuaSkills 0.5.7 的技能包配置 dispatcher 由服务中枢直接暴露为：
 
 - `runtime-config`
 
@@ -457,7 +457,7 @@ cargo run -- --update-root-skills --runtime-root output
 当前仓库通过 Cargo 原生版本依赖引用：
 
 ```toml
-luaskills = "0.5.5"
+luaskills = "0.5.7"
 ```
 
 相关地址：
@@ -466,11 +466,15 @@ luaskills = "0.5.5"
 - Cargo：<https://crates.io/crates/luaskills>
 - Runtime packages：<https://github.com/LuaSkills/luaskills-packages>
 
-当前 `0.5.5` 对接下，`luaskills` 主仓库只继续发布 FFI SDK 与 demo 包；
+当前 `0.5.7` 对接下，`luaskills` 主仓库发布 Rust crate、FFI SDK、demo 与调试工具；
 Lua runtime packages 与原生依赖包已经独立到 `luaskills-packages` 发布，
 本仓库里的依赖拉取脚本也按这个拆分后的发布模型工作。
 
-`0.5.5` 保持固定 `runtime_root`、受管 Python/Node 发行根、可写环境根与 Worker/持久会话资源策略，并将 Rust controller client 与受管 VLDB 运行时统一对齐到 `vldb-controller 0.2.3` 和 `vldb-sqlite 0.1.6`。技能包配置使用显式用户级 `skill_config_root`、普通与 ROOT 系统双存储、类型化声明、revision、CAS、缓存监听和标准 `runtime-config` dispatcher。
+`0.5.7` 保持固定 `runtime_root`、受管 Python/Node 发行根、可写环境根与 Worker/持久会话资源策略，并将 Rust controller client 与受管 VLDB 运行时统一对齐到 `vldb-controller 0.2.3` 和 `vldb-sqlite 0.1.6`。技能包配置使用显式用户级 `skill_config_root`、普通与 ROOT 系统双存储、类型化声明、revision、CAS、缓存监听和标准 `runtime-config` dispatcher。
+
+本次从 `0.5.5` 同步到 `0.5.7`，包含上游的运行时、缓存、文件监听与 FFI 修复；`0.5.7` 修复原子替换配置文件时的监听路由，并恢复 Linux ARM64 技能包业务校验。运行时资源包继续使用独立的 `luaskills-packages` `0.1` 版本线。详见 [上游发布说明](https://github.com/LuaSkills/luaskills/releases/tag/v0.5.7)。
+
+本仓库的 PowerShell / Shell 受管 Python、Node 与包管理器拉取脚本同步了上游清单复用校验：只有版本、平台、运行时类型与根内入口文件均有效时才复用安装，否则重新安装；默认暂存目录与发行根仍位于 `third_party`。
 
 同时，宿主直接复用 LuaSkills 导出的工具说明文本；
 `vulcan-agent-service` 现在直接复用 `luaskills` 导出的 entry description、

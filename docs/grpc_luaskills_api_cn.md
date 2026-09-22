@@ -68,7 +68,7 @@ gRPC 对接方应按自身能力选择处理模式：
 | 动态调用 | `CallTool` | 调用一个 LuaSkills 动态工具。 |
 | Help | `ListHelp` | 返回已注册 LuaSkills help 树的 Markdown 渲染文本。 |
 | Help | `GetHelp` | 按 `skill_id + flow` 返回指定 help 节点的 Markdown 文本。 |
-| 配置 | `RuntimeConfig` | 分发 LuaSkills 0.5.5 标准技能包配置 JSON 请求，并返回稳定 JSON 响应包络。 |
+| 配置 | `RuntimeConfig` | 分发 LuaSkills 0.5.7 标准技能包配置 JSON 请求，并返回稳定 JSON 响应包络。 |
 | 安装管理 | `ListInstalledSkills` | 渲染 USER 层受管 LuaSkills 清单。 |
 | 安装管理 | `InstallSkill` | 从来源安装一个 USER 层 LuaSkill。 |
 | 安装管理 | `UpdateSkill` | 按 `skill_id` 更新一个 USER 层 LuaSkill。 |
@@ -198,7 +198,7 @@ grpcurl -plaintext \
 
 ## 配置接口
 
-Skill 配置由宿主授权，协议、声明校验、双存储路由、revision、CAS、缓存与事件由 LuaSkills 0.5.5 管理；Lua skill 内部的 `vulcan.config.*` 使用同一套配置服务。
+Skill 配置由宿主授权，协议、声明校验、双存储路由、revision、CAS、缓存与事件由 LuaSkills 0.5.7 管理；Lua skill 内部的 `vulcan.config.*` 使用同一套配置服务。
 
 | RPC | 参数 | 说明 |
 | --- | --- | --- |

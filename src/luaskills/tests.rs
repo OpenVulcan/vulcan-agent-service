@@ -492,8 +492,8 @@ fn build_engine_options_maps_space_controller_configuration() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Engine options should pin the fixed `system_lua_lib` directory from the LuaSkills 0.5.5 runtime root.
-/// 引擎选项应从 LuaSkills 0.5.5 运行根固定 `system_lua_lib` 目录。
+/// Engine options should pin the fixed `system_lua_lib` directory from the LuaSkills 0.5.7 runtime root.
+/// 引擎选项应从 LuaSkills 0.5.7 运行根固定 `system_lua_lib` 目录。
 #[test]
 fn build_engine_options_sets_fixed_system_lua_lib_dir() {
     let _guard = acquire_environment_lock();
@@ -1324,8 +1324,8 @@ fn map_runtime_entry_to_mcp_tool_omits_environment_id_parameter() {
     assert!(!schema.contains_key("environment_id"));
 }
 
-/// MCP tool mapping should preserve the normalized tool and parameter descriptions exported by LuaSkills 0.5.5.
-/// MCP 工具映射应保留 LuaSkills 0.5.5 导出的规范化工具说明与参数说明文本。
+/// MCP tool mapping should preserve the normalized tool and parameter descriptions exported by LuaSkills 0.5.7.
+/// MCP 工具映射应保留 LuaSkills 0.5.7 导出的规范化工具说明与参数说明文本。
 #[test]
 fn map_runtime_entry_to_mcp_tool_preserves_luaskills_normalized_descriptions() {
     let entry = RuntimeEntryDescriptor {

@@ -14,9 +14,9 @@
 
 当前仓库已支持 `--call-tools <tool_name> [json_arguments]` 本地调试模式，可在不启动 HTTP / gRPC 服务的情况下直接初始化 Lua skill 并执行目标 tool。
 
-## LuaSkills 0.5.5 技能包配置
+## LuaSkills 0.5.7 技能包配置
 
-配置归属于技能包，而不是单个 entry。同一包内的所有 entry 共享顶层声明、持久化命名空间、revision 和可选业务校验器。声明只能放在 `skill.yaml` 顶层；entry 内的 `config` 或 `config_validator` 会被 0.5.5 作为未知字段拒绝。
+配置归属于技能包，而不是单个 entry。同一包内的所有 entry 共享顶层声明、持久化命名空间、revision 和可选业务校验器。声明只能放在 `skill.yaml` 顶层；entry 内的 `config` 或 `config_validator` 会被 0.5.7 作为未知字段拒绝。
 
 最小声明示例：
 

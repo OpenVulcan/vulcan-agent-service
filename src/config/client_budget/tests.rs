@@ -1,4 +1,4 @@
-use super::resolution::parse_metric_literal;
+use super::resolution::{apply_safe_bytes_ratio, parse_metric_literal};
 use super::*;
 use crate::support::{RuntimeClientInfo, RuntimeRequestContext};
 use serde_yaml::from_str;
@@ -211,6 +211,12 @@ fn client_budget_yaml_parses_expected_rules() {
         parsed
             .clients
             .iter()
+            .any(|rule| rule.pattern == "dsh-mcp-client")
+    );
+    assert!(
+        parsed
+            .clients
+            .iter()
             .any(|rule| rule.pattern == "*claude-code*")
     );
     assert!(
@@ -256,6 +262,58 @@ fn client_budget_yaml_parses_expected_rules() {
         byte_config.config_sources[0].field.as_deref(),
         Some("tool_output.max_bytes")
     );
+}
+
+/// Verify that the shipped DSH rule declares unlimited bytes for both scopes, so DSH's own spill policy owns oversized results.
+/// 验证随包发布的 DSH 规则把两个场景的字节预算都声明为不限，从而由 DSH 自身的 spill 策略处理超限结果。
+#[test]
+fn dsh_client_rule_declares_unlimited_tool_result_and_file_read_budgets() {
+    let yaml = include_str!("../../../runtime/configs/client_budgets.yaml");
+    let parsed: ClientBudgetConfig = from_str(yaml).expect("client_budgets.yaml should parse");
+
+    // DSH self-identifies as this exact MCP client name, so the rule anchors on
+    // the built-in identity rather than on a header or environment override.
+    // DSH 自带该客户端标识，因此规则锚定自带标识，而不依赖头信息或环境变量覆盖。
+    let dsh_rule = parsed
+        .clients
+        .iter()
+        .find(|rule| rule.pattern == "dsh-mcp-client")
+        .expect("dsh rule should exist");
+
+    let tool_override = crate::config::tool_config::ToolEstimationOverride::default();
+    let estimation = merge_effective_estimation(&parsed.defaults.estimation, None, &tool_override);
+    let expected_bytes = apply_safe_bytes_ratio(
+        estimation.unlimited_bytes_cap,
+        estimation.safe_bytes_ratio,
+    );
+
+    for scope_name in ["tool_result", "file_read"] {
+        let metrics = dsh_rule
+            .budgets
+            .get(scope_name)
+            .unwrap_or_else(|| panic!("dsh {scope_name} budget should exist"));
+        // Every metric must be an explicit unlimited `-1` default with no
+        // external source, which resolves through the unlimited byte cap.
+        // 每个度量都必须是显式不限的 `-1` 默认值且没有外部来源，最终折算到不限字节上限。
+        for (metric_name, metric_config) in metrics {
+            assert_eq!(
+                metric_config.default,
+                Some(-1),
+                "dsh {scope_name}.{metric_name} should default to unlimited"
+            );
+            assert!(
+                metric_config.config_sources.is_empty(),
+                "dsh {scope_name}.{metric_name} should not read an external source"
+            );
+        }
+
+        let scope = resolve_scope_budget(metrics, &estimation);
+        assert_eq!(
+            scope.bytes, expected_bytes,
+            "dsh {scope_name} bytes should resolve to the unlimited cap"
+        );
+        assert_eq!(scope.lines, -1);
+    }
 }
 
 /// JSON config sources should resolve nested dotted fields so OpenCode budget values can be loaded from `tool_output.*`.

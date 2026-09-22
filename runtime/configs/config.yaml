@@ -42,8 +42,8 @@ vmm: "http://127.0.0.1:17625"
 # runtime_root: "D:/projects/vulcan-agent-service/output"
 # Linux/macOS 示例 / Linux/macOS example:
 # runtime_root: "/opt/vulcan/output"
-# 中文：LuaSkills 0.5.5 技能包配置使用独立的用户级绝对根目录。
-# English: LuaSkills 0.5.5 package configuration uses a dedicated absolute user-level root.
+# LuaSkills 0.5.7 package configuration uses a dedicated absolute user-level root.
+# LuaSkills 0.5.7 技能包配置使用独立的用户级绝对根目录。
 # 中文：省略时，Windows 使用 `%USERPROFILE%\.vulcan\agent-service\config`，Unix 使用 `$HOME/.vulcan/agent-service/config`。
 # English: When omitted, Windows uses `%USERPROFILE%\.vulcan\agent-service\config`; Unix uses `$HOME/.vulcan/agent-service/config`.
 # 中文：正式服务部署建议显式配置，LuaSkills 会派生 `skills/config.json` 与 `system-skills/config.json`。
@@ -57,8 +57,8 @@ vmm: "http://127.0.0.1:17625"
 # managed_runtime_distribution_root: "lua_runtime/dependencies/runtimes"
 # managed_runtime_environment_root: "lua_runtime/dependencies/envs"
 
-# Managed worker and persistent-session policy. Omitted fields inherit the exact LuaSkills 0.5.5 defaults.
-# 受管 Worker 与持久会话策略。省略字段时继承当前 LuaSkills 0.5.5 的精确默认值。
+# Managed worker and persistent-session policy. Omitted fields inherit the exact LuaSkills 0.5.7 defaults.
+# 受管 Worker 与持久会话策略。省略字段时继承当前 LuaSkills 0.5.7 的精确默认值。
 # managed_runtime_config:
 #   worker_pool_max_size_per_environment: 4
 #   worker_idle_ttl_secs: 60

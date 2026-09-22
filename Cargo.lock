@@ -1251,9 +1251,9 @@ dependencies = [
 
 [[package]]
 name = "luaskills"
-version = "0.5.5"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7eb2b996127efd03b9ad49f32f4b8dfe45b8466474c7d1670e0ebeb8f5a84bd5"
+checksum = "a32b5ca94e4f0cb7c1f33db54f0e5ac69a83c41cf07d150c382ea59845fd8d65"
 dependencies = [
  "base64",
  "encoding_rs",
@@ -1743,7 +1743,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

@@ -145,9 +145,72 @@ payload = {
     "executable": executable,
     "source": source,
 }
+
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2)
     handle.write("\n")
+PY
+}
+
+ready_runtime_executable() {
+  # Resolve one reusable runtime entry only when its manifest identity and root ownership are complete.
+  # 仅当运行时清单身份与根目录归属完整时解析可复用入口。
+  local directory="$1"
+  local runtime="$2"
+  local version="$3"
+  local platform="$4"
+  local expected_executable="$5"
+  python3 - "$directory" "$runtime" "$version" "$platform" "$expected_executable" <<'PY'
+import json
+import os
+import sys
+
+# Runtime root plus expected manifest identity supplied by the shell installer.
+# 由 shell 安装器提供的运行时根及预期清单身份。
+directory, runtime, version, platform, expected_executable = sys.argv[1:]
+# Exact manifest path whose identity and entry are validated together.
+# 身份与入口会被一并校验的精确清单路径。
+manifest_path = os.path.join(directory, "runtime-manifest.json")
+try:
+    # UTF-8 manifest stream that also tolerates an optional byte-order mark.
+    # 同时容忍可选字节序标记的 UTF-8 清单流。
+    with open(manifest_path, encoding="utf-8-sig") as handle:
+        # Decoded manifest object used as the sole reuse authority.
+        # 作为唯一复用依据的已解码清单对象。
+        manifest = json.load(handle)
+except (OSError, ValueError):
+    raise SystemExit(1)
+# Required identity fields bound to the versioned runtime directory.
+# 绑定到版本化运行时目录的必需身份字段。
+expected_identity = {
+    "schema_version": 1,
+    "runtime": runtime,
+    "version": version,
+    "platform": platform,
+}
+if any(manifest.get(key) != value for key, value in expected_identity.items()):
+    raise SystemExit(1)
+# Manifest-declared relative entry path selected for reuse.
+# 从清单中选择用于复用的相对入口路径。
+executable = manifest.get("executable")
+if not isinstance(executable, str) or not executable or os.path.isabs(executable):
+    raise SystemExit(1)
+if expected_executable and executable != expected_executable:
+    raise SystemExit(1)
+# Canonical runtime root used to reject manifest entry traversal.
+# 用于拒绝清单入口穿越的规范运行时根。
+root = os.path.realpath(directory)
+# Canonical entry candidate derived from the validated relative declaration.
+# 从已验证相对声明派生出的规范入口候选。
+candidate = os.path.realpath(os.path.join(root, executable))
+try:
+    if os.path.commonpath((root, candidate)) != root:
+        raise SystemExit(1)
+except ValueError:
+    raise SystemExit(1)
+if not os.path.isfile(candidate):
+    raise SystemExit(1)
+print(candidate)
 PY
 }
 
@@ -158,11 +221,17 @@ install_uv_runtime() {
   local uv_asset="$2"
   local uv_target="$DISTRIBUTION_ROOT/python/uv-$UV_VERSION-$platform_key"
   local uv_exe="$uv_target/uv"
-  if [ -x "$uv_exe" ] && [ "$FORCE" != "1" ]; then
-    printf '%s\n' "$uv_exe"
+  # Manifest-owned reusable uv entry, empty when the existing installation is incomplete or mismatched.
+  # 由清单拥有的可复用 uv 入口；现有安装不完整或不匹配时为空。
+  local ready_uv=""
+  if [ "$FORCE" != "1" ]; then
+    ready_uv="$(ready_runtime_executable "$uv_target" uv "$UV_VERSION" "$platform_key" uv 2>/dev/null || true)"
+  fi
+  if [ -n "$ready_uv" ] && [ -x "$ready_uv" ]; then
+    printf '%s\n' "$ready_uv"
     return
   fi
-  if [ -d "$uv_target" ] && [ "$FORCE" = "1" ]; then
+  if [ -e "$uv_target" ] || [ -L "$uv_target" ]; then
     rm -rf "$uv_target"
   fi
 
@@ -208,10 +277,16 @@ install_python_runtime() {
   local uv_exe
   uv_exe="$(install_uv_runtime "$platform_key" "$uv_asset")"
   local python_root="$DISTRIBUTION_ROOT/python/cpython-$PYTHON_VERSION-$platform_key"
-  if [ -f "$python_root/runtime-manifest.json" ] && [ "$FORCE" != "1" ]; then
+  # Manifest-owned reusable interpreter, empty when the existing installation is incomplete or mismatched.
+  # 由清单拥有的可复用解释器；现有安装不完整或不匹配时为空。
+  local ready_python=""
+  if [ "$FORCE" != "1" ]; then
+    ready_python="$(ready_runtime_executable "$python_root" python "$PYTHON_VERSION" "$platform_key" "" 2>/dev/null || true)"
+  fi
+  if [ -n "$ready_python" ] && [ -x "$ready_python" ]; then
     return
   fi
-  if [ -d "$python_root" ] && [ "$FORCE" = "1" ]; then
+  if [ -e "$python_root" ] || [ -L "$python_root" ]; then
     rm -rf "$python_root"
   fi
   ensure_dir "$python_root"
@@ -247,11 +322,17 @@ install_node_runtime() {
   local node_extract_template="$3"
   local node_target="$DISTRIBUTION_ROOT/node/node-$NODE_VERSION-$platform_key"
   local node_exe="$node_target/bin/node"
-  if [ -x "$node_exe" ] && [ "$FORCE" != "1" ]; then
-    printf '%s\n' "$node_exe"
+  # Manifest-owned reusable Node entry, empty when the existing installation is incomplete or mismatched.
+  # 由清单拥有的可复用 Node 入口；现有安装不完整或不匹配时为空。
+  local ready_node=""
+  if [ "$FORCE" != "1" ]; then
+    ready_node="$(ready_runtime_executable "$node_target" node "$NODE_VERSION" "$platform_key" bin/node 2>/dev/null || true)"
+  fi
+  if [ -n "$ready_node" ] && [ -x "$ready_node" ]; then
+    printf '%s\n' "$ready_node"
     return
   fi
-  if [ -d "$node_target" ] && [ "$FORCE" = "1" ]; then
+  if [ -e "$node_target" ] || [ -L "$node_target" ]; then
     rm -rf "$node_target"
   fi
 
@@ -306,10 +387,16 @@ install_pnpm_runtime() {
   node_exe="$(install_node_runtime "$platform_key" "$node_asset_template" "$node_extract_template")"
   local pnpm_target="$DISTRIBUTION_ROOT/node/pnpm-$PNPM_VERSION"
   local pnpm_entry="$pnpm_target/bin/pnpm.cjs"
-  if [ -f "$pnpm_entry" ] && [ "$FORCE" != "1" ]; then
+  # Manifest-owned reusable pnpm entry, empty when the existing installation is incomplete or mismatched.
+  # 由清单拥有的可复用 pnpm 入口；现有安装不完整或不匹配时为空。
+  local ready_pnpm=""
+  if [ "$FORCE" != "1" ]; then
+    ready_pnpm="$(ready_runtime_executable "$pnpm_target" pnpm "$PNPM_VERSION" any bin/pnpm.cjs 2>/dev/null || true)"
+  fi
+  if [ -n "$ready_pnpm" ]; then
     return
   fi
-  if [ -d "$pnpm_target" ] && [ "$FORCE" = "1" ]; then
+  if [ -e "$pnpm_target" ] || [ -L "$pnpm_target" ]; then
     rm -rf "$pnpm_target"
   fi
 

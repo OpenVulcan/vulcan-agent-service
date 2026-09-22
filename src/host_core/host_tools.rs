@@ -82,7 +82,7 @@ pub(super) fn skill_manager_tool() -> RuntimeToolDescriptor {
 pub(super) fn runtime_config_tool() -> RuntimeToolDescriptor {
     RuntimeToolDescriptor::with_annotations(
         "runtime-config",
-        "Dispatch one already-authorized LuaSkills 0.5.5 package-configuration request. Supports `describe`, `validate`, `list`, `get`, `set`, `delete`, and `refresh`; typed values, batch writes, revisions, CAS, declaration validation, ROOT/system-store routing, and response errors follow the upstream stable JSON contract. This tool requires user confirmation because the single canonical entry can disclose values or mutate persisted configuration.",
+        "Dispatch one already-authorized LuaSkills 0.5.7 package-configuration request. Supports `describe`, `validate`, `list`, `get`, `set`, `delete`, and `refresh`; typed values, batch writes, revisions, CAS, declaration validation, ROOT/system-store routing, and response errors follow the upstream stable JSON contract. This tool requires user confirmation because the single canonical entry can disclose values or mutate persisted configuration.",
         json!({
             "action": {
                 "type": "string",
