@@ -75,7 +75,7 @@ pub(super) fn resolve_runtime_skills_root_from_paths(
     }
 
     let repository_root = current_dir
-        .join("runtime")
+        .join("output")
         .join("lua_runtime")
         .join("skills");
     if optional_template_directory_present(&repository_root, "repository template skills root")? {
@@ -144,10 +144,7 @@ pub(super) fn resolve_runtime_resources_root_from_paths(
         }
     }
 
-    let repository_root = current_dir
-        .join("runtime")
-        .join("lua_runtime")
-        .join("resources");
+    let repository_root = current_dir.join("resources");
     if optional_template_directory_present(&repository_root, "repository template resources root")?
     {
         return Ok(Some(repository_root));

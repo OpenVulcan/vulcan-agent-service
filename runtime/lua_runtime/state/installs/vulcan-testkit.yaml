@@ -1,8 +1,0 @@
-skill_id: vulcan-testkit
-version: 0.1.2
-managed: true
-source:
-  source_type: github
-  locator: LuaSkills/vulcan-testkit
-  tag: v0.1.2
-installed_at_unix_ms: 1781510256358

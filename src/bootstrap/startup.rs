@@ -14,6 +14,7 @@ use super::runtime_init::{
     select_root_skill_manager_root, sort_skill_manager_formal_roots,
 };
 use super::runtime_preload::preload_runtime_mcp_configs;
+use super::system_skills::initialize_system_skills;
 use crate::config::Config;
 use crate::host_core::{HostRuntime, host_tool_requires_lua_engine, is_host_tool_name};
 use crate::luaskills_adapter::{
@@ -92,6 +93,12 @@ fn print_call_tools_result(
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let runtime_mode = parse_runtime_mode()?;
     match runtime_mode {
+        RuntimeMode::Init => {
+            // Reuse the local lifecycle setup without opening HTTP, gRPC, or stdio transports.
+            // 复用本地生命周期初始化，不开启 HTTP、gRPC 或 stdio 传输。
+            let config = super::root_skill_cli::initialize_root_skill_cli_config()?;
+            initialize_system_skills(&config, true)
+        }
         RuntimeMode::CallTool {
             tool_name,
             arguments,
@@ -108,6 +115,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         RuntimeMode::Service(command) => run_service_command(command),
         RuntimeMode::Stdio => {
             let cfg = Config::load()?;
+            initialize_system_skills(&cfg, false)?;
             add_libs_to_path(&cfg)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -119,6 +127,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         RuntimeMode::Serve => {
             let cfg = Config::load()?;
+            initialize_system_skills(&cfg, false)?;
             add_libs_to_path(&cfg)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -164,6 +173,7 @@ pub(crate) fn run_service_host_for_runtime_root(
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_current_dir(runtime_root)?;
     let cfg = load_service_config_from_runtime_root(runtime_root)?;
+    initialize_system_skills(&cfg, false)?;
     add_libs_to_path(&cfg)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -378,6 +388,7 @@ fn run_call_tool_mode(
     set_non_error_logging_enabled(false);
     install_luaskills_log_callback();
     let config = Config::load()?;
+    initialize_system_skills(&config, false)?;
     initialize_runtime_temp_root_from_config(&config)?;
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs(&config)?;

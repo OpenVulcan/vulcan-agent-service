@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 /// Command-line runtime mode.
 /// 命令行运行模式。
 pub(super) enum RuntimeMode {
+    /// Initialize missing configured ROOT skills without starting transports.
+    /// 初始化配置中缺失的 ROOT 技能，不启动传输服务。
+    Init,
     /// Start the MCP server on stdio using Content-Length framed JSON-RPC.
     /// 使用 Content-Length 分帧 JSON-RPC 的 stdio 方式启动 MCP 服务。
     Stdio,
@@ -75,6 +78,10 @@ pub(super) fn parse_runtime_mode() -> Result<RuntimeMode, Box<dyn std::error::Er
 pub(super) fn parse_runtime_mode_from_args(
     args: &[String],
 ) -> Result<RuntimeMode, Box<dyn std::error::Error>> {
+    if args.get(1).map(String::as_str) == Some("init") {
+        validate_root_skill_path_args(args, 2, "init")?;
+        return Ok(RuntimeMode::Init);
+    }
     if args.get(1).map(String::as_str) == Some("service") {
         return Ok(RuntimeMode::Service(parse_service_command_from_args(args)?));
     }
@@ -113,7 +120,7 @@ pub(super) fn parse_runtime_mode_from_args(
     }
     for index in 0..args.len() {
         if args[index] == "--update-root-skills" {
-            validate_root_skills_update_args(args, index + 1)?;
+            validate_root_skill_path_args(args, index + 1, "--update-root-skills")?;
             return Ok(RuntimeMode::RootSkillsUpdate);
         }
     }
@@ -235,14 +242,19 @@ fn parse_root_skill_install_source_type_from_args(
     Ok(source_type)
 }
 
-/// Validate command-local arguments accepted by the ROOT update-all command.
-/// 校验 ROOT 全量更新命令接受的命令局部参数。
-fn validate_root_skills_update_args(
+/// Validate runtime-root-only arguments for a local lifecycle command.
+/// 校验本地生命周期命令仅包含运行根的参数。
+/// `args` is argv, `start_index` selects the suffix, and `command` labels errors.
+/// `args` 是参数列表，`start_index` 指定后缀起点，`command` 标识错误所属命令。
+/// Returns success or an explicit invalid/missing argument error.
+/// 返回成功或明确的非法及缺失参数错误。
+fn validate_root_skill_path_args(
     args: &[String],
     start_index: usize,
+    command: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Walk only the suffix after `--update-root-skills` so global flags before the command stay valid.
-    // 仅遍历 `--update-root-skills` 之后的参数后缀，使命令之前的全局标志仍然有效。
+    // Inspect only this command's suffix so another mode cannot be selected accidentally.
+    // 只检查本命令的参数后缀，避免意外选中另一种模式。
     let mut cursor = start_index;
     while cursor < args.len() {
         match args[cursor].as_str() {
@@ -257,10 +269,10 @@ fn validate_root_skills_update_args(
                 cursor += 1;
             }
             value if value.starts_with('-') => {
-                return Err(format!("Unknown --update-root-skills flag: {}", value).into());
+                return Err(format!("Unknown {command} flag: {}", value).into());
             }
             value => {
-                return Err(format!("Unexpected --update-root-skills argument: {}", value).into());
+                return Err(format!("Unexpected {command} argument: {}", value).into());
             }
         }
     }

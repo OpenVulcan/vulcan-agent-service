@@ -338,7 +338,11 @@ pub(super) fn build_root_skill_cli_context(
             max_size: 1,
             idle_ttl_secs: 300,
         },
-        build_luaskills_cache_config(None, None, None),
+        build_luaskills_cache_config(
+            config.tool_cache_max_entries,
+            config.tool_cache_default_ttl_secs,
+            config.tool_cache_max_ttl_secs,
+        ),
     )?;
     // Clone host options before moving the full options into LuaEngine.
     // 在完整选项移入 LuaEngine 前克隆宿主选项。

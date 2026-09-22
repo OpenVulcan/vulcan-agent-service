@@ -142,6 +142,7 @@ fn parse_runtime_mode_allows_runtime_root_in_call_tools_mode() {
             assert_eq!(simulated_client_name, DEFAULT_CALL_TOOL_CLIENT_NAME);
         }
         RuntimeMode::Serve
+        | RuntimeMode::Init
         | RuntimeMode::RootSkillInstall { .. }
         | RuntimeMode::RootSkillsUpdate
         | RuntimeMode::Service(..)
@@ -188,6 +189,7 @@ fn parse_runtime_mode_accepts_stdio_mode() {
     match mode {
         RuntimeMode::Stdio => {}
         RuntimeMode::Serve
+        | RuntimeMode::Init
         | RuntimeMode::CallTool { .. }
         | RuntimeMode::RootSkillInstall { .. }
         | RuntimeMode::RootSkillsUpdate
@@ -196,6 +198,50 @@ fn parse_runtime_mode_accepts_stdio_mode() {
             panic!("expected stdio runtime mode");
         }
     }
+}
+
+/// Init mode should parse its runtime-root option without falling through to service startup.
+/// init 模式应解析 runtime-root 选项，而不是落回服务启动流程。
+#[test]
+fn parse_runtime_mode_accepts_init_mode() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "init".to_string(),
+        "--runtime-root".to_string(),
+        "output".to_string(),
+    ];
+    let mode = parse_runtime_mode_from_args(&args).expect("init mode should parse");
+    match mode {
+        RuntimeMode::Init => {}
+        RuntimeMode::Serve
+        | RuntimeMode::Stdio
+        | RuntimeMode::CallTool { .. }
+        | RuntimeMode::RootSkillInstall { .. }
+        | RuntimeMode::RootSkillsUpdate
+        | RuntimeMode::Service(..)
+        | RuntimeMode::InternalLuaexecRequest { .. } => {
+            panic!("expected init runtime mode");
+        }
+    }
+}
+
+/// Init mode should reject flags outside its command-local path contract.
+/// init 模式应拒绝超出命令路径契约的标志。
+#[test]
+fn parse_runtime_mode_rejects_unknown_init_flag() {
+    let args = vec![
+        "vulcan-agent-service.exe".to_string(),
+        "init".to_string(),
+        "--unknown-init-flag".to_string(),
+    ];
+    let error = match parse_runtime_mode_from_args(&args) {
+        Ok(_) => panic!("unknown init flag should fail"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("Unknown init flag"),
+        "unexpected error: {error}"
+    );
 }
 
 /// Service install mode should parse into the dedicated cross-platform service command instead of falling through to normal serve mode.
@@ -353,6 +399,7 @@ fn parse_runtime_mode_accepts_root_install_mode() {
             assert_eq!(source_type, Some(SkillInstallSourceType::Github));
         }
         RuntimeMode::Serve
+        | RuntimeMode::Init
         | RuntimeMode::Stdio
         | RuntimeMode::CallTool { .. }
         | RuntimeMode::RootSkillsUpdate
@@ -376,6 +423,7 @@ fn parse_runtime_mode_accepts_root_update_mode() {
     match mode {
         RuntimeMode::RootSkillsUpdate => {}
         RuntimeMode::Serve
+        | RuntimeMode::Init
         | RuntimeMode::Stdio
         | RuntimeMode::CallTool { .. }
         | RuntimeMode::RootSkillInstall { .. }
@@ -463,6 +511,7 @@ fn parse_runtime_mode_allows_inline_runtime_root_in_call_tools_mode() {
             assert_eq!(tool_name, "demo-tool");
         }
         RuntimeMode::Serve
+        | RuntimeMode::Init
         | RuntimeMode::Stdio
         | RuntimeMode::RootSkillInstall { .. }
         | RuntimeMode::RootSkillsUpdate

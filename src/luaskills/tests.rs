@@ -1089,6 +1089,10 @@ fn resolve_skill_roots_uses_config_base_dir_for_relative_paths() {
     let config_dir = base_dir.join("configs");
     let skills_dir = base_dir.join("project-skills");
     std::fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    // The loaded configuration owns its runtime layout even when only USER is explicitly configured.
+    // 即使只显式配置 USER，已加载配置所在应用也拥有自己的运行目录布局。
+    std::fs::create_dir_all(base_dir.join("lua_runtime"))
+        .expect("failed to create configuration-owned LuaSkills runtime");
     std::fs::create_dir_all(&skills_dir).expect("failed to create relative skills directory");
     let config = Config {
         skill_roots: Some(vec![NamedSkillRootConfig {
@@ -1225,7 +1229,7 @@ fn resolve_implicit_application_root_rejects_file_shaped_repository_runtime_path
     let _guard = acquire_environment_lock();
     let base_dir = unique_test_dir("implicit-runtime-file");
     let fake_exe = base_dir.join("bin").join("vulcan-agent-service.exe");
-    let runtime_file = base_dir.join("runtime");
+    let runtime_file = base_dir.join("output");
     std::fs::create_dir_all(fake_exe.parent().expect("fake exe parent should exist"))
         .expect("failed to create fake exe parent");
     std::fs::write(&fake_exe, b"fake-exe").expect("failed to create fake exe");

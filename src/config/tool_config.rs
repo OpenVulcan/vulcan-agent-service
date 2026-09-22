@@ -461,7 +461,7 @@ mod tests {
     /// 仓库工具配置模板应满足当前严格契约。
     #[test]
     fn tool_config_template_parses() {
-        let yaml = include_str!("../../runtime/configs/tool_configs.yaml");
+        let yaml = include_str!("../../configs/tool_configs.yaml");
         let parsed: Value = serde_yaml::from_str(yaml).expect("tool_configs.yaml should parse");
         let normalized =
             normalize_tool_config_root(&parsed).expect("tool config template should normalize");

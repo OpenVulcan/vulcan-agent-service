@@ -190,7 +190,7 @@ Usage:
   ./make.sh deps managed # fetch managed Python + Node distributions
   ./make.sh deps python # fetch managed Python distribution only
   ./make.sh deps node   # fetch managed Node + pnpm distributions only
-  ./make.sh update-skills [skill-id...] # update output skills and sync them into runtime
+  ./make.sh update-skills [skill-id...] # update skills in output/lua_runtime
 EOF
 }
 

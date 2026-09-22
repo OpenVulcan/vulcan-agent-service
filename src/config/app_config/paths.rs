@@ -102,8 +102,8 @@ fn normalize_cli_path_arg(raw_path: &str, label: &str) -> ConfigPathResult<PathB
 
 /// Find configs/config.yaml in the parent output directory of the running executable.
 /// 在运行中可执行文件的上级输出目录中查找 configs/config.yaml。
-/// The repository template lives in runtime/configs/config.yaml and is copied here during build.
-/// 仓库模板文件位于 runtime/configs/config.yaml，构建后会复制到这里。
+/// The repository template lives in configs/config.yaml and is copied here during build.
+/// 仓库模板文件位于 configs/config.yaml，构建后会复制到这里。
 /// Returns the config path when it exists, `None` when absent, or an executable-path error.
 /// 返回存在的配置路径、缺失时的 `None`，或可执行文件路径错误。
 pub(super) fn find_exe_parent_config() -> ConfigPathResult<Option<String>> {

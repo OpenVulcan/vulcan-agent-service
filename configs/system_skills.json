@@ -1,0 +1,36 @@
+{
+  "format_version": 1,
+  "auto_install": true,
+  "skills": [
+    {
+      "name": "vulcan-codekit",
+      "github": "LuaSkills/vulcan-codekit",
+      "enabled": true
+    },
+    {
+      "name": "vulcan-file",
+      "github": "LuaSkills/vulcan-file",
+      "enabled": true
+    },
+    {
+      "name": "vulcan-curl",
+      "github": "LuaSkills/vulcan-curl",
+      "enabled": true
+    },
+    {
+      "name": "vulcan-lua",
+      "github": "LuaSkills/vulcan-lua",
+      "enabled": true
+    },
+    {
+      "name": "vulcan-testkit",
+      "github": "LuaSkills/vulcan-testkit",
+      "enabled": true
+    },
+    {
+      "name": "vulcan-workmem",
+      "github": "LuaSkills/vulcan-workmem",
+      "enabled": true
+    }
+  ]
+}

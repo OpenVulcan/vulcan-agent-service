@@ -126,12 +126,13 @@ pub(super) fn run_root_skills_update_mode() -> Result<(), Box<dyn std::error::Er
 
 /// Initialize shared runtime state for local ROOT lifecycle commands.
 /// 为本地 ROOT 生命周期命令初始化共享运行时状态。
-fn initialize_root_skill_cli_config() -> Result<Config, Box<dyn std::error::Error>> {
+pub(super) fn initialize_root_skill_cli_config() -> Result<Config, Box<dyn std::error::Error>> {
     set_non_error_logging_enabled(false);
     install_luaskills_log_callback();
     // Load config through the normal runtime-root discovery path so CLI behavior stays consistent.
     // 通过标准 runtime-root 发现路径加载配置，保持 CLI 行为一致。
     let config = Config::load()?;
+    super::system_skills::prepare_runtime_directory(&config)?;
     initialize_runtime_temp_root_from_config(&config)?;
     maintain_runtime_temp_dir(CleanupTrigger::Startup)?;
     preload_runtime_mcp_configs(&config)?;

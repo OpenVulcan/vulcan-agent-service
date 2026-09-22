@@ -16,6 +16,9 @@ pub mod model_config;
 /// Shared helpers for runtime-root override discovery.
 /// 运行根覆盖发现的共享辅助逻辑。
 mod runtime_root;
+/// Host policy for automatic ROOT system-skill installation.
+/// 宿主自动安装 ROOT 系统技能的策略配置。
+pub(crate) mod system_skills;
 /// Tool-specific runtime configuration loading and lookup.
 /// 工具维度运行时配置加载与查询。
 pub mod tool_config;

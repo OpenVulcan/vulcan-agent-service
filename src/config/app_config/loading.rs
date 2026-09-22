@@ -30,8 +30,8 @@ impl Config {
 
     /// Load configuration strictly from the runtime-root layout or the built-in executable-side runtime layout.
     /// 严格从 runtime_root 目录布局或内置的可执行文件同级运行目录布局加载配置。
-    /// The repository template lives at `runtime/configs/config.yaml` and is synced during build.
-    /// 仓库内默认模板文件位于 `runtime/configs/config.yaml`，构建时会同步到输出目录。
+    /// The repository template lives at `configs/config.yaml` and is synced during build.
+    /// 仓库内默认模板文件位于 `configs/config.yaml`，构建时会同步到输出目录。
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let args: Vec<String> = std::env::args().collect();
         let runtime_root_arg =
@@ -62,7 +62,7 @@ impl Config {
                 } else {
                     eprintln!("[Config]   - <exe_parent>/configs/config.yaml");
                 }
-                eprintln!("[Config] Template source in repository: runtime/configs/config.yaml");
+                eprintln!("[Config] Template source in repository: configs/config.yaml");
                 eprintln!(
                     "[Config] Provide config via --runtime-root and place config at <runtime_root>/configs/config.yaml, or place the built config file at <exe_parent>/configs/config.yaml."
                 );

@@ -50,7 +50,7 @@ fn effective_model_config_from_runtime_state_reports_cached_error() {
 /// 验证仓库内模型配置模板始终可解析。
 #[test]
 fn model_config_template_parses() {
-    let yaml = include_str!("../../../runtime/configs/model_config.yaml");
+    let yaml = include_str!("../../../configs/model_config.yaml");
     let parsed: ModelConfig = serde_yaml::from_str(yaml).expect("model_config.yaml parses");
 
     assert_eq!(

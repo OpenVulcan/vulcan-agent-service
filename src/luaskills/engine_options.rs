@@ -82,6 +82,15 @@ pub fn build_luaskills_engine_options(
     host_options.runlua_pool_config = resolve_runlua_pool_config(config);
     host_options.reserved_entry_names = host_reserved_tool_names();
     host_options.ignored_skill_ids = resolve_ignored_skill_ids(config);
+    // Explicitly disabled system skills must be ignored before dependencies and Lua entries load.
+    // 明确禁用的系统技能必须在加载依赖与 Lua 入口前被忽略。
+    let application_root = resolve_application_root_from_config(config)?
+        .ok_or("Failed to resolve application root for system skills")?;
+    for skill in crate::config::system_skills::load_system_skills(&application_root)?.skills {
+        if !skill.enabled {
+            push_unique_skill_id(&mut host_options.ignored_skill_ids, &skill.name);
+        }
+    }
     host_options.capabilities = LuaRuntimeCapabilityOptions {
         enable_skill_management_bridge: false,
         enable_managed_io_compat: true,

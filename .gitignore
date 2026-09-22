@@ -5,14 +5,5 @@
 /mcp_server
 /.qwen
 /.vulcan
-/runtime/logs/
-/runtime/lua_runtime/bin/tools/controller/
-/runtime/lua_runtime/databases/
-/runtime/lua_runtime/dependencies/envs/
-/runtime/lua_runtime/dependencies/runtimes/
-/runtime/lua_runtime/libs/
-/runtime/lua_runtime/lua_packages/
-/runtime/lua_runtime/system_lua_lib/
-/runtime/lua_runtime/temp/
 /docs/plan/
 /docs/completed/

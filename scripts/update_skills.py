@@ -1,6 +1,6 @@
 """
-Update managed LuaSkills from output/lua_runtime and sync them back into runtime/lua_runtime.
-从 output/lua_runtime 更新受管 LuaSkills，并同步回 runtime/lua_runtime。
+Update managed LuaSkills in one selected runtime directory.
+在一个指定的运行根目录中更新受管 LuaSkills。
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ import ctypes
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -156,20 +155,6 @@ def unique_paths(paths: Iterable[Path]) -> list[Path]:
             seen.add(resolved)
             ordered.append(resolved)
     return ordered
-
-
-def assert_path_within(root: Path, path: Path, description: str) -> None:
-    """
-    Ensure a filesystem path remains inside the expected root before destructive sync operations.
-    在执行破坏性同步操作前，确保文件系统路径仍位于预期根目录内。
-    """
-
-    root_path = root.resolve()
-    target_path = path.resolve()
-    try:
-        target_path.relative_to(root_path)
-    except ValueError as error:
-        raise RuntimeError(f"{description} is outside allowed root: {target_path}") from error
 
 
 def candidate_library_paths(root: Path) -> list[Path]:
@@ -458,70 +443,6 @@ def update_skill(library: ctypes.CDLL, engine_id: int, output_runtime_root: Path
     )
 
 
-def sync_directory(source: Path, destination: Path, guard_root: Path | None = None) -> None:
-    """
-    Replace one destination directory with one source directory.
-    使用源目录替换目标目录。
-    """
-
-    if not source.exists():
-        raise RuntimeError(f"Source directory does not exist: {source}")
-    if guard_root is not None:
-        assert_path_within(guard_root, destination, "Directory sync destination")
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination)
-
-
-def sync_file(source: Path, destination: Path, guard_root: Path | None = None) -> None:
-    """
-    Replace one destination file with one source file.
-    使用源文件替换目标文件。
-    """
-
-    if not source.exists():
-        raise RuntimeError(f"Source file does not exist: {source}")
-    if guard_root is not None:
-        assert_path_within(guard_root, destination, "File sync destination")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-
-
-def sync_skill_to_runtime(
-    output_runtime_root: Path,
-    target_runtime_root: Path,
-    skill_id: str,
-    sync_dependencies: bool,
-) -> None:
-    """
-    Sync one updated skill directory and install record into runtime/.
-    将单个已更新技能目录与安装记录同步到 runtime/。
-    """
-
-    sync_directory(
-        output_runtime_root / "skills" / skill_id,
-        target_runtime_root / "skills" / skill_id,
-        guard_root=target_runtime_root,
-    )
-    sync_file(
-        output_runtime_root / "state" / "installs" / f"{skill_id}.yaml",
-        target_runtime_root / "state" / "installs" / f"{skill_id}.yaml",
-        guard_root=target_runtime_root,
-    )
-
-    if not sync_dependencies:
-        return
-    for dependency_kind in ["tools", "lua", "ffi"]:
-        source = output_runtime_root / "dependencies" / dependency_kind / skill_id
-        if source.exists():
-            sync_directory(
-                source,
-                target_runtime_root / "dependencies" / dependency_kind / skill_id,
-                guard_root=target_runtime_root,
-            )
-
-
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """
     Parse command-line options for the MCP skill update workflow.
@@ -529,17 +450,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     """
 
     parser = argparse.ArgumentParser(
-        description="Update managed LuaSkills from output/ and sync them into runtime/."
+        description="Update managed LuaSkills in one selected runtime directory."
     )
     parser.add_argument(
         "--output-runtime-root",
         default="output/lua_runtime",
-        help="LuaSkills runtime root used as the update staging area. Defaults to ./output/lua_runtime.",
-    )
-    parser.add_argument(
-        "--target-runtime-root",
-        default="runtime/lua_runtime",
-        help="LuaSkills source root that receives updated skills and install records. Defaults to ./runtime/lua_runtime.",
+        help="LuaSkills runtime root to update. Defaults to ./output/lua_runtime.",
     )
     parser.add_argument(
         "--skill-config-root",
@@ -563,14 +479,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Do not run cargo build when no LuaSkills FFI library is found.",
     )
     parser.add_argument(
-        "--no-sync-dependencies",
-        action="store_true",
-        help="Only sync skills and state install records, leaving dependency directories unchanged.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the resolved operation without updating or syncing files.",
+        help="Print the resolved operation without updating files.",
     )
     parser.add_argument(
         "skill_ids",
@@ -582,14 +493,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def run(argv: list[str]) -> int:
     """
-    Execute the full MCP output-to-runtime update workflow.
-    执行完整的 MCP output 到 runtime 更新工作流。
+    Execute the managed LuaSkills update workflow in one runtime directory.
+    在一个运行根目录中执行受管 LuaSkills 更新工作流。
     """
 
     args = parse_args(argv)
     root = project_root()
     output_runtime_root = resolve_repo_relative_path(root, args.output_runtime_root)
-    target_runtime_root = resolve_repo_relative_path(root, args.target_runtime_root)
     skill_config_root = resolve_skill_config_root(args.skill_config_root)
 
     requested_skill_ids = [*args.skill_id, *args.skill_ids]
@@ -601,7 +511,6 @@ def run(argv: list[str]) -> int:
         )
 
     print("[update-skills] Output runtime:", output_runtime_root)
-    print("[update-skills] Target runtime:", target_runtime_root)
     print("[update-skills] Skill config root:", skill_config_root)
     print("[update-skills] Skills:", ", ".join(skill_ids))
 
@@ -610,7 +519,6 @@ def run(argv: list[str]) -> int:
         return 0
 
     ensure_runtime_layout(output_runtime_root)
-    ensure_runtime_layout(target_runtime_root)
 
     library_path = resolve_library_path(root, args.luaskills_lib, args.skip_build)
     print("[update-skills] FFI library:", library_path)
@@ -647,19 +555,6 @@ def run(argv: list[str]) -> int:
             "luaskills_ffi_engine_free_json",
             {"engine_id": engine_id},
         )
-
-    if output_runtime_root == target_runtime_root:
-        print("[update-skills] Output and target runtime roots are identical; sync skipped.")
-        return 0
-
-    for skill_id in skill_ids:
-        sync_skill_to_runtime(
-            output_runtime_root,
-            target_runtime_root,
-            skill_id,
-            sync_dependencies=not args.no_sync_dependencies,
-        )
-        print(f"[update-skills] Synced {skill_id} into target runtime.")
 
     return 0
 

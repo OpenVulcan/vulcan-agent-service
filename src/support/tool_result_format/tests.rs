@@ -326,13 +326,8 @@ fn implicit_template_roots_reject_file_shaped_skills_and_resources_paths() {
         b"not-a-directory",
     )
     .expect("failed to create file-shaped hosted skills path");
-    std::fs::create_dir_all(root.join("runtime").join("lua_runtime"))
-        .expect("failed to create repository runtime parent");
-    std::fs::write(
-        root.join("runtime").join("lua_runtime").join("resources"),
-        b"not-a-directory",
-    )
-    .expect("failed to create file-shaped repository resources path");
+    std::fs::write(root.join("resources"), b"not-a-directory")
+        .expect("failed to create file-shaped repository resources path");
 
     // The hosted executable-side skills marker is a file and should now fail explicitly.
     // 宿主可执行文件侧的 skills 标记为文件，现在应显式失败。

@@ -193,7 +193,7 @@ fn merge_effective_estimation_uses_defaults_without_override() {
 /// 验证运行时 YAML 规则能正确解析出我们约定的客户端与工具预算结构。
 #[test]
 fn client_budget_yaml_parses_expected_rules() {
-    let yaml = include_str!("../../../runtime/configs/client_budgets.yaml");
+    let yaml = include_str!("../../../configs/client_budgets.yaml");
     let parsed: ClientBudgetConfig = from_str(yaml).expect("client_budgets.yaml should parse");
 
     assert_eq!(
@@ -268,7 +268,7 @@ fn client_budget_yaml_parses_expected_rules() {
 /// 验证随包发布的 DSH 规则把两个场景的字节预算都声明为不限，从而由 DSH 自身的 spill 策略处理超限结果。
 #[test]
 fn dsh_client_rule_declares_unlimited_tool_result_and_file_read_budgets() {
-    let yaml = include_str!("../../../runtime/configs/client_budgets.yaml");
+    let yaml = include_str!("../../../configs/client_budgets.yaml");
     let parsed: ClientBudgetConfig = from_str(yaml).expect("client_budgets.yaml should parse");
 
     // DSH self-identifies as this exact MCP client name, so the rule anchors on
@@ -466,7 +466,7 @@ fn read_metric_from_source_reports_invalid_env_value() {
 /// 验证当客户端未显式配置 file_read 时，会自动回退复用同客户端的 tool_result 预算。
 #[test]
 fn resolve_client_budget_snapshot_falls_back_file_read_to_tool_result() {
-    let yaml = include_str!("../../../runtime/configs/client_budgets.yaml");
+    let yaml = include_str!("../../../configs/client_budgets.yaml");
     let parsed: ClientBudgetConfig = from_str(yaml).expect("client_budgets.yaml should parse");
 
     let codex_rule = parsed

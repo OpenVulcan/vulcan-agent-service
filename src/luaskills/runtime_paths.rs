@@ -129,6 +129,15 @@ pub fn resolve_application_root_from_config(config: &Config) -> Result<Option<Pa
         )?));
     }
 
+    // A loaded config anchors the runtime even when the executable is launched from another directory.
+    // 即使从其他目录启动可执行文件，已加载配置也为运行根提供确定锚点。
+    if let Some(config_base_dir) = resolve_config_base_dir(config) {
+        return canonicalize_lua_visible_directory(
+            &config_base_dir,
+            "loaded configuration application root",
+        )
+        .map(Some);
+    }
     let exe_path = std::env::current_exe().map_err(|error| {
         format!("failed to resolve current executable while resolving runtime_root: {error}")
     })?;
@@ -162,7 +171,7 @@ pub(super) fn resolve_implicit_application_root_from_paths(
         }
     }
 
-    let repository_root = current_dir.join("runtime");
+    let repository_root = current_dir.join("output");
     if optional_directory_present(&repository_root, "implicit repository application root")? {
         return Ok(Some(canonicalize_lua_visible_directory(
             &repository_root,

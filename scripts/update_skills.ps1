@@ -1,24 +1,18 @@
 ﻿param(
-    # Optional skill ids to update; omitted means all install records under output/lua_runtime/state/installs.
+    # Optional skill ids to update; omitted means all install records under the selected runtime root.
     # 可选的待更新技能标识；省略时使用 output/lua_runtime/state/installs 下的全部安装记录。
     [string[]]$SkillId = @(),
-    # Runtime root used as the update staging area.
-    # 作为更新暂存区使用的运行根。
+    # Runtime root to update; defaults to output/lua_runtime.
+    # 要更新的运行根；默认值为 output/lua_runtime。
     [string]$OutputRuntimeRoot = "output\lua_runtime",
-    # Runtime root that receives updated skills and install records.
-    # 接收已更新技能与安装记录的运行根。
-    [string]$TargetRuntimeRoot = "runtime\lua_runtime",
     # Optional explicit LuaSkills FFI dynamic library path.
     # 可选的显式 LuaSkills FFI 动态库路径。
     [string]$LuaskillsLib = "",
     # Skip cargo build when no local LuaSkills FFI library is available.
     # 当没有可用本地 LuaSkills FFI 动态库时跳过 cargo build。
     [switch]$SkipBuild,
-    # Only sync skills and state install records.
-    # 仅同步技能目录与 state 安装记录。
-    [switch]$NoSyncDependencies,
-    # Print the resolved operation without updating or syncing files.
-    # 打印解析后的操作但不执行更新或同步。
+    # Print the resolved operation without updating files.
+    # 打印解析后的操作但不执行更新。
     [switch]$DryRun
 )
 
@@ -59,8 +53,7 @@ Set-Location -LiteralPath $ProjectRoot
 $PythonCommand = @(Resolve-PythonCommand)
 $PythonArgs = @(
     (Join-Path $ProjectRoot "scripts\update_skills.py"),
-    "--output-runtime-root", $OutputRuntimeRoot,
-    "--target-runtime-root", $TargetRuntimeRoot
+    "--output-runtime-root", $OutputRuntimeRoot
 )
 
 foreach ($Item in $SkillId) {
@@ -74,9 +67,6 @@ if ($LuaskillsLib) {
 }
 if ($SkipBuild) {
     $PythonArgs += "--skip-build"
-}
-if ($NoSyncDependencies) {
-    $PythonArgs += "--no-sync-dependencies"
 }
 if ($DryRun) {
     $PythonArgs += "--dry-run"

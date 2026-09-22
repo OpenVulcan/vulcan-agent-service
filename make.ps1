@@ -217,7 +217,7 @@ function Show-Usage {
     Write-Host "  ./make deps managed # fetch managed Python + Node distributions"
     Write-Host "  ./make deps python # fetch managed Python distribution only"
     Write-Host "  ./make deps node   # fetch managed Node + pnpm distributions only"
-    Write-Host "  ./make update-skills [skill-id...] # update output skills and sync them into runtime"
+    Write-Host "  ./make update-skills [skill-id...] # update skills in output/lua_runtime"
 }
 
 # NormalizedMode stores the canonical top-level command token used by the dispatcher below.

@@ -68,7 +68,7 @@
 
 - `output/lua_runtime/bin`
 
-同时建议通过 `runtime/configs/config.yaml` 中的 `space_controller` 段配置：
+同时建议通过 `configs/config.yaml` 中的 `space_controller` 段配置：
 
 - `endpoint`
 - `auto_spawn`
@@ -157,24 +157,23 @@ vulcan-agent-service service print-definition
 
 LuaSkills 是当前对外的核心能力面。  
 在 MCP 面上它表现为 tools，在 gRPC 面上则由 `LuaSkillsService` 的显式 RPC 与 `CallTool` 动态入口共同暴露。  
-官方 skill 目前包括：
+默认初始化清单包含以下六个 skill：
 
 - `vulcan-lua`
 - `vulcan-codekit`
 - `vulcan-curl`
 - `vulcan-file`
-- `vulcan-ai-memory`
 - `vulcan-workmem`
 - `vulcan-testkit`
 
-`vulcan-ai-memory` 默认以 skill 形式加载。  
-如果显式配置 `vmm_enable=true` 且提供 `vmm` gRPC 端点，宿主会跳过 `vulcan-ai-memory`，由 VMM 接管 AI 记忆能力。  
+默认清单已移除 `vulcan-ai-memory`。新安装默认关闭 VMM，需要时通过 `config.yaml` 的 `vmm_enable` 与 `vmm` 显式启用。
+
 `vulcan-workmem` 不属于 VMM gRPC 接管范围，会继续走 SQLite skill。
 
-这些 skill 已迁移到新的目录结构：
+运行时安装的 skill 使用以下目录结构：
 
 ```text
-runtime/lua_runtime/skills/<skill>/
+output/lua_runtime/skills/<skill>/
 ├─ skill.yaml
 ├─ help/
 ├─ runtime/
@@ -182,6 +181,8 @@ runtime/lua_runtime/skills/<skill>/
 ├─ resources/
 └─ licenses/
 ```
+
+构建只准备配置、共享资源和 `third_party` 提供的基础运行时资源，不会把仓库中的 skill、依赖或状态目录复制到 `output`。缺失的运行时目录由启动初始化流程创建，system skill 按 `configs/system_skills.json` 管理。
 
 ### 2. Help 工具
 
@@ -271,28 +272,21 @@ src/
 ├─ model_provider/        # 模型能力桥接与回调注册
 └─ support/               # 结果格式化、日志、运行时上下文与临时文件维护
 
-runtime/
-├─ configs/               # 宿主配置模板，仅供主程序读取
-└─ lua_runtime/           # 完整 LuaSkills 运行时源码镜像
-   ├─ bin/                # controller 与宿主提供工具
-   ├─ skills/             # 官方内建 LuaSkills
-   ├─ dependencies/       # Skill 依赖、受管发行包与环境
-   ├─ databases/          # SQLite / LanceDB 数据目录
-   ├─ resources/          # LuaSkills 共享资源与公共模板
-   ├─ libs/               # FFI 与原生动态库
-   ├─ lua_packages/       # Lua 包目录
-   ├─ state/              # 技能状态与安装记录
-   └─ temp/               # LuaSkills 临时文件
+configs/                  # 宿主配置模板与 system skill 安装清单
+└─ system_skills.json     # 自动初始化使用的 system skill 清单
+
+resources/
+└─ overflow_templates/    # 宿主共享的溢出结果模板
 
 output/
 ├─ bin/                   # release 宿主主程序
 ├─ debug/                 # debug 宿主主程序
-├─ configs/               # 构建同步后的宿主配置
+├─ configs/               # 构建复制的宿主配置
 ├─ logs/                  # 宿主日志目录
-└─ lua_runtime/           # 实际运行使用的完整 LuaSkills 包
+└─ lua_runtime/           # 实际运行使用的 LuaSkills 运行根
    ├─ bin/                # vldb-controller 与宿主提供工具
-   ├─ skills/             # ROOT 系统技能
-   ├─ dependencies/       # Skill 依赖、runtimes 与 envs
+   ├─ skills/             # 初始化或安装后的 ROOT 系统技能
+   ├─ dependencies/       # LuaSkills 依赖、runtimes 与 envs
    ├─ databases/          # SQLite / LanceDB 数据目录
    ├─ resources/          # LuaSkills 共享资源
    ├─ libs/               # FFI 与原生动态库
@@ -313,10 +307,12 @@ output/
 - `client_budgets.yaml`
 - `tool_configs.yaml`
 - `model_config.yaml`
+- `system_skills.json`
 
 其中：
 
 - 四份 YAML 都必须显式声明 `format_version: 1`；缺失版本、版本不匹配和各自固定结构中的未知字段都会直接导致加载失败
+- `system_skills.json` 的根结构固定为 `format_version: 1`、`auto_install` 和 `skills`；每个条目包含 `name`、`github` 与 `enabled: true/false`
 - `config.yaml` / `client_budgets.yaml` / `tool_configs.yaml` / `model_config.yaml`
   - 属于宿主层配置，由 `vulcan-agent-service` 自己读取
   - `tool_configs.yaml` 的顶层结构固定为 `format_version` 与 `skills`，具体技能配置放在 `skills.<skill_name>` 下
@@ -327,7 +323,37 @@ output/
   - LuaSkills 分别持久化到 `<skill_config_root>/skills/config.json` 与 `<skill_config_root>/system-skills/config.json`
   - ROOT 技能固定进入 `system-skills`，其他正式层进入 `skills`
   - 构建和打包不会复制、清空或覆盖该用户配置根
-  - 宿主通过标准 `runtime-config` MCP 工具和 `RuntimeConfig` gRPC RPC 暴露上游严格 JSON 契约
+- 宿主通过标准 `runtime-config` MCP 工具和 `RuntimeConfig` gRPC RPC 暴露上游严格 JSON 契约
+
+### Runtime 初始化与 system skill
+
+启动时宿主会自动创建运行根下缺失的 `lua_runtime` 子目录，并读取 `configs/system_skills.json`（构建后为 `<runtime-root>/configs/system_skills.json`）。当 `auto_install: true` 时，宿主只会自动安装其中 `enabled: true` 且尚未存在的 system skill；`auto_install: false` 会禁止启动阶段自动安装。`enabled: false` 的条目既不会被安装，也不会被加载。
+
+初始化同时尊重 `ignored_skill_ids` 与持久化停用记录。已安装技能不会自动升级；安装失败会返回非零状态，下次启动重试缺失条目。多个进程共享同一 ROOT 时通过文件锁串行安装。修改禁用配置后需重启服务。
+
+需要显式准备运行根时，可以执行：
+
+```text
+vulcan-agent-service init --runtime-root <dir>
+```
+
+显式 `init` 会安装清单中的启用条目，即使 `auto_install` 为 `false`；它始终跳过 `enabled: false` 的条目。清单示例：
+
+```json
+{
+  "format_version": 1,
+  "auto_install": true,
+  "skills": [
+    {
+      "name": "vulcan-codekit",
+      "github": "LuaSkills/vulcan-codekit",
+      "enabled": true
+    }
+  ]
+}
+```
+
+首次独立运行建议先执行 `init --runtime-root output`，再启动服务；正常启动也会执行同一运行根的目录初始化和自动 system skill 检查。
 
 ### Lua VM 池配置
 
@@ -378,6 +404,8 @@ make deps
 make build
 ```
 
+构建会先确认 Cargo 构建成功，再复制宿主配置、共享资源和 `third_party` 基础资源。`output/configs` 中已有的安装配置会保留，模型配置不会被构建脚本改成启用状态；仓库 skill、源码依赖和源码状态不会被复制到 `output`。
+
 依赖可按域单独准备：
 
 ```bash
@@ -408,6 +436,12 @@ cargo test
 
 ```bash
 cargo run -- --stdio --runtime-root output
+```
+
+也可以先显式初始化运行根：
+
+```bash
+cargo run -- init --runtime-root output
 ```
 
 如果直接执行构建产物，则继续使用运行目录自动发现：
@@ -488,13 +522,13 @@ parameter description 与 final AI-facing `input_schema`，
 
 ## 运行目录约定
 
-- `runtime/configs` 只保存宿主配置模板；`runtime/lua_runtime` 保存完整 LuaSkills 源码运行时镜像
+- `configs/` 保存宿主配置模板与 `system_skills.json`；`resources/overflow_templates/` 保存宿主共享模板
 - `output/` 是应用根，只允许保留宿主主程序、`configs`、`logs` 与 `lua_runtime` 容器
-- `output/bin` 与 `output/debug` 只保存宿主主程序，不再承载 controller 或 Lua 工具
-- `output/lua_runtime` 是唯一 LuaSkills 根；`skills`、`dependencies`、`databases`、`temp`、`libs`、`lua_packages`、`resources`、`state` 全部位于其下
+- `output/bin` 与 `output/debug` 只保存宿主主程序，不承载 controller 或 Lua 工具
+- `output/lua_runtime` 是唯一 LuaSkills 根；启动初始化按需创建 `skills`、`dependencies`、`databases`、`temp`、`libs`、`lua_packages`、`resources`、`state` 等目录
 - `vldb-controller(.exe)` 与共享宿主工具固定放在 `output/lua_runtime/bin`
 - 受管 Python/Node 发行包固定放在 `output/lua_runtime/dependencies/runtimes`，可写环境固定放在 `output/lua_runtime/dependencies/envs`
-- 构建只生成并同步上述当前目录，不扫描或改写当前布局以外的输出目录
+- 构建只复制配置、共享资源与 `third_party` 基础资源，并保留已有 output 数据；不会扫描、同步或回写仓库源码 skill、依赖和状态目录
 
 ## 后续方向
 

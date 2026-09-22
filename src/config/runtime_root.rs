@@ -52,7 +52,7 @@ pub(super) fn find_optional_runtime_config_file(
         }
     }
 
-    let repository_path = Path::new("runtime").join("configs").join(file_name);
+    let repository_path = Path::new("configs").join(file_name);
     optional_config_file_at(repository_path, config_label)
 }
 

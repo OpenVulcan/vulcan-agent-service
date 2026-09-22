@@ -8,7 +8,7 @@ use super::{Config, ManagedRuntimeConfigSection, RunLuaPoolConfigSection};
 /// 仓库应用配置模板应满足当前严格契约。
 #[test]
 fn application_config_template_parses() {
-    let yaml = include_str!("../../../runtime/configs/config.yaml");
+    let yaml = include_str!("../../../configs/config.yaml");
     let parsed: Config = serde_yaml::from_str(yaml).expect("config.yaml should parse");
 
     assert_eq!(
@@ -32,12 +32,9 @@ fn normalize_cli_runtime_root_arg_anchors_relative_paths_to_cwd() {
 #[test]
 fn normalize_cli_config_path_anchors_relative_paths_to_cwd() {
     let cwd = std::env::current_dir().expect("cwd should resolve");
-    let normalized = normalize_cli_config_path("runtime/configs/config.yaml")
-        .expect("config path should normalize");
-    assert_eq!(
-        normalized,
-        cwd.join("runtime").join("configs").join("config.yaml")
-    );
+    let normalized =
+        normalize_cli_config_path("configs/config.yaml").expect("config path should normalize");
+    assert_eq!(normalized, cwd.join("configs").join("config.yaml"));
 }
 
 /// Runtime-root config discovery should return the concrete config path when the file exists.
