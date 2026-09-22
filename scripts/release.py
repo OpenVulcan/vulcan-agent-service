@@ -359,6 +359,11 @@ def _relocate_macos_libraries(lua_runtime: Path) -> None:
 
     libs = lua_runtime / "libs"
     module_root = lua_runtime / "lua_packages" / "lib" / "lua"
+    # The upstream curl dylib references an omitted Homebrew libssh2. Use Apple's stable curl ABI.
+    # 上游 curl 动态库引用了未打包的 Homebrew libssh2，因此改用 Apple 稳定的 curl ABI。
+    for curl_library in libs.glob("libcurl*.dylib"):
+        if curl_library.is_symlink() or curl_library.is_file():
+            curl_library.unlink()
     bundled_names = {entry.name for entry in libs.iterdir() if entry.is_file()}
     images = sorted(
         path for root in (libs, module_root) for path in root.rglob("*")
@@ -377,6 +382,13 @@ def _relocate_macos_libraries(lua_runtime: Path) -> None:
             if not dependency:
                 continue
             if dependency.startswith(("/usr/lib/", "/System/Library/")):
+                continue
+            if Path(dependency).name.startswith("libcurl."):
+                _run_macos_linker_tool([
+                    "install_name_tool", "-change", dependency,
+                    "/usr/lib/libcurl.4.dylib", str(image),
+                ])
+                changed = True
                 continue
             if dependency.startswith("@rpath/"):
                 if Path(dependency).name not in bundled_names:
