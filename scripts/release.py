@@ -320,6 +320,84 @@ def _add_macos_lua_module_aliases(lua_packages: Path) -> None:
         alias.symlink_to(module.name)
 
 
+# _run_macos_linker_tool executes one native inspection or rewrite command with explicit errors.
+# _run_macos_linker_tool 执行一次原生依赖检查或改写命令，并显式报告错误。
+def _run_macos_linker_tool(arguments: list[str]) -> str:
+    """Run a macOS linker tool and return stdout on success.
+    运行 macOS 链接工具，并在成功时返回标准输出。
+
+    Args:
+        arguments: Executable and arguments without a shell.
+    Returns:
+        Command stdout.
+    Raises:
+        ReleaseError: If the tool is unavailable or exits unsuccessfully.
+    """
+
+    try:
+        result = subprocess.run(arguments, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise ReleaseError(f"macOS linker tool is unavailable: {arguments[0]}: {error}") from error
+    if result.returncode != 0:
+        raise ReleaseError(f"macOS linker tool failed: {' '.join(arguments)}: {result.stderr.strip()}")
+    return result.stdout
+
+
+# _relocate_macos_libraries removes upstream CI paths from packaged Mach-O dependencies.
+# _relocate_macos_libraries 从已打包 Mach-O 依赖中移除上游 CI 的绝对路径。
+def _relocate_macos_libraries(lua_runtime: Path) -> None:
+    """Bind packaged Mach-O modules and libraries to the bundled runtime lib directory.
+    将已打包的 Mach-O 模块与动态库绑定到随包运行库目录。
+
+    Args:
+        lua_runtime: Staged lua_runtime root containing libs and lua_packages.
+    Returns:
+        None.
+    Raises:
+        ReleaseError: If an external dependency cannot map to a bundled library.
+    """
+
+    libs = lua_runtime / "libs"
+    module_root = lua_runtime / "lua_packages" / "lib" / "lua"
+    bundled_names = {entry.name for entry in libs.iterdir() if entry.is_file()}
+    images = sorted(
+        path for root in (libs, module_root) for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink() and path.suffix in {".dylib", ".so"}
+    )
+    if not images:
+        raise ReleaseError(f"macOS runtime contains no Mach-O libraries: {lua_runtime}")
+    for image in images:
+        listing = _run_macos_linker_tool(["otool", "-L", str(image)])
+        lines = listing.splitlines()
+        if not lines or not lines[0].rstrip().endswith(":"):
+            raise ReleaseError(f"unexpected otool dependency output for {image}")
+        changed = False
+        for line in lines[1:]:
+            dependency = line.strip().split(" (", 1)[0]
+            if not dependency:
+                continue
+            if dependency.startswith(("/usr/lib/", "/System/Library/")):
+                continue
+            if dependency.startswith("@rpath/"):
+                if Path(dependency).name not in bundled_names:
+                    raise ReleaseError(f"unbundled macOS run-path dependency: {image}: {dependency}")
+                continue
+            if not dependency.startswith("/"):
+                continue
+            dependency_name = Path(dependency).name
+            if dependency_name not in bundled_names:
+                raise ReleaseError(f"unbundled macOS absolute dependency: {image}: {dependency}")
+            _run_macos_linker_tool([
+                "install_name_tool", "-change", dependency,
+                f"@rpath/{dependency_name}", str(image),
+            ])
+            changed = True
+        if changed:
+            # Re-sign only rewritten images after install_name_tool changes their load commands.
+            # 仅对加载命令被改写的镜像重新签名，避免签名失效。
+            _run_macos_linker_tool(["codesign", "--force", "--sign", "-", str(image)])
+
+
 # _require_file returns a real file and gives missing assets one consistent error.
 # _require_file 返回真实文件，并为缺失资源提供统一错误。
 def _require_file(path: Path, label: str) -> Path:
@@ -936,6 +1014,8 @@ def package_release(
 
         if spec.platform.startswith("macos-"):
             _add_macos_lua_module_aliases(lua_runtime / "lua_packages")
+            if sys.platform == "darwin":
+                _relocate_macos_libraries(lua_runtime)
 
         _copy_tree_contents(overflow_source, lua_runtime / "resources" / "overflow_templates")
         managed_destination = lua_runtime / "dependencies" / "runtimes"

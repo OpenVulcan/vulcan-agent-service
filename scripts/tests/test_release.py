@@ -371,6 +371,50 @@ class ReleaseTests(unittest.TestCase):
             self.assertTrue(alias.issym())
             self.assertEqual(alias.linkname, "cjson.so")
 
+    # test_macos_relocation_rewrites_bundled_absolute_dependencies verifies upstream build paths are removed.
+    # test_macos_relocation_rewrites_bundled_absolute_dependencies 验证上游构建绝对路径被移除。
+    def test_macos_relocation_rewrites_bundled_absolute_dependencies(self) -> None:
+        """Rewrite only a bundled absolute dependency and re-sign its changed image.
+        仅改写随包绝对依赖，并重新签名被修改的镜像。
+        """
+
+        root = Path(self.temporary_directory.name) / "lua_runtime"
+        libs = root / "libs"
+        modules = root / "lua_packages" / "lib" / "lua"
+        libs.mkdir(parents=True)
+        modules.mkdir(parents=True)
+        for path in (libs / "libcurl.4.dylib", libs / "libssl.3.dylib", modules / "lcurl.so"):
+            path.write_bytes(b"fixture")
+
+        # The mocked otool listing reproduces the absolute OpenSSL path found in the published macOS asset.
+        # 模拟的 otool 列表复现已发布 macOS 资产中的 OpenSSL 绝对路径。
+        def tool_output(arguments: list[str]) -> str:
+            """Return one fixture otool listing or acknowledge a rewrite command.
+            返回一次 fixture 的 otool 列表，或确认一次改写命令。
+            """
+
+            if arguments[:2] != ["otool", "-L"]:
+                return ""
+            image = Path(arguments[2])
+            dependencies = "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
+            if image.name == "libcurl.4.dylib":
+                dependencies += (
+                    "\t/Users/runner/work/luaskills-packages/luaskills/third_party/deps/openssl/lib/"
+                    "libssl.3.dylib (compatibility version 3.0.0)\n"
+                )
+            return f"{image}:\n{dependencies}"
+
+        with mock.patch.object(release, "_run_macos_linker_tool", side_effect=tool_output) as tool:
+            release._relocate_macos_libraries(root)
+        commands = [call.args[0] for call in tool.call_args_list]
+        self.assertIn(
+            ["install_name_tool", "-change",
+             "/Users/runner/work/luaskills-packages/luaskills/third_party/deps/openssl/lib/libssl.3.dylib",
+             "@rpath/libssl.3.dylib", str(libs / "libcurl.4.dylib")],
+            commands,
+        )
+        self.assertIn(["codesign", "--force", "--sign", "-", str(libs / "libcurl.4.dylib")], commands)
+
     # test_windows_requires_crt verifies that a Windows package cannot omit the CRT directory.
     # test_windows_requires_crt 验证 Windows 包不能省略 CRT 目录。
     def test_windows_requires_crt(self) -> None:
